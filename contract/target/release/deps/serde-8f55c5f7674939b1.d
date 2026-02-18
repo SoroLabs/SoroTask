@@ -1,0 +1,14 @@
+/home/knights/Documents/Project/SoroTask/contract/target/release/deps/serde-8f55c5f7674939b1.d: /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/knights/Documents/Project/SoroTask/contract/target/release/build/serde-73146a8a2805c522/out/private.rs
+
+/home/knights/Documents/Project/SoroTask/contract/target/release/deps/libserde-8f55c5f7674939b1.rlib: /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/knights/Documents/Project/SoroTask/contract/target/release/build/serde-73146a8a2805c522/out/private.rs
+
+/home/knights/Documents/Project/SoroTask/contract/target/release/deps/libserde-8f55c5f7674939b1.rmeta: /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/knights/Documents/Project/SoroTask/contract/target/release/build/serde-73146a8a2805c522/out/private.rs
+
+/home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/home/knights/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/home/knights/Documents/Project/SoroTask/contract/target/release/build/serde-73146a8a2805c522/out/private.rs:
+
+# env-dep:OUT_DIR=/home/knights/Documents/Project/SoroTask/contract/target/release/build/serde-73146a8a2805c522/out
