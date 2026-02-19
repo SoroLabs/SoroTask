@@ -39,3 +39,6 @@ impl SoroTaskContract {
         // TODO: Implement task execution logic
     }
 }
+
+mod test;
+
