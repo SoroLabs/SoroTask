@@ -13,13 +13,22 @@ pub struct TaskConfig {
     pub gas_balance: i128,
 }
 
+#[contracttype]
+pub enum DataKey {
+    Task(u64),
+}
+
 #[contract]
 pub struct SoroTaskContract;
 
 #[contractimpl]
 impl SoroTaskContract {
-    pub fn register(env: Env, config: TaskConfig) {
-        // TODO: Implement registration logic
+    pub fn register(env: Env, task_id: u64, config: TaskConfig) {
+        env.storage().persistent().set(&DataKey::Task(task_id), &config);
+    }
+
+    pub fn get_task(env: Env, task_id: u64) -> Option<TaskConfig> {
+        env.storage().persistent().get(&DataKey::Task(task_id))
     }
 
     pub fn monitor(env: Env) {
