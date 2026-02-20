@@ -1,8 +1,18 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Symbol, Val, Vec, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, Symbol,
+    Val, Vec,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    InvalidInterval = 1,
+}
 
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct TaskConfig {
     pub creator: Address,
     pub target: Address,
@@ -17,6 +27,7 @@ pub struct TaskConfig {
 #[contracttype]
 pub enum DataKey {
     Task(u64),
+    Counter,
 }
 
 pub trait ResolverInterface {
@@ -28,10 +39,35 @@ pub struct SoroTaskContract;
 
 #[contractimpl]
 impl SoroTaskContract {
-    pub fn register(env: Env, task_id: u64, config: TaskConfig) {
-        env.storage().persistent().set(&DataKey::Task(task_id), &config);
+    /// Registers a new task in the marketplace.
+    /// Returns the unique sequential ID of the registered task.
+    pub fn register(env: Env, config: TaskConfig) -> u64 {
+        // Ensure the creator has authorized the registration
+        config.creator.require_auth();
+
+        // Validate the task interval
+        if config.interval == 0 {
+            panic_with_error!(&env, Error::InvalidInterval);
+        }
+
+        // Generate a unique sequential ID
+        let mut counter: u64 = env.storage().persistent().get(&DataKey::Counter).unwrap_or(0);
+        counter += 1;
+        env.storage().persistent().set(&DataKey::Counter, &counter);
+
+        // Store the task configuration
+        env.storage().persistent().set(&DataKey::Task(counter), &config);
+
+        // Emit TaskRegistered event
+        env.events().publish(
+            (Symbol::new(&env, "TaskRegistered"), counter),
+            config.creator.clone(),
+        );
+
+        counter
     }
 
+    /// Retrieves a task configuration by its ID.
     pub fn get_task(env: Env, task_id: u64) -> Option<TaskConfig> {
         env.storage().persistent().get(&DataKey::Task(task_id))
     }
@@ -40,6 +76,7 @@ impl SoroTaskContract {
         // TODO: Implement task monitoring logic
     }
 
+    /// Executes a task if its conditions are met.
     pub fn execute(env: Env, task_id: u64) {
         let task_key = DataKey::Task(task_id);
         let mut config: TaskConfig = env.storage().persistent().get(&task_key).expect("Task not found");
@@ -70,3 +107,5 @@ impl SoroTaskContract {
         }
     }
 }
+
+
