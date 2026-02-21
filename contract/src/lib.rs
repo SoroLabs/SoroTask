@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, Symbol,
-    Val, Vec, IntoVal,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, IntoVal,
+    Symbol, Val, Vec,
 };
 
 #[contracterror]
@@ -123,14 +123,14 @@ impl SoroTaskContract {
             Some(ref resolver_address) => {
                 let mut resolver_call_args = Vec::<Val>::new(&env);
                 resolver_call_args.push_back(config.args.clone().into_val(&env));
-                match env.try_invoke_contract::<bool, soroban_sdk::Error>(
-                    resolver_address,
-                    &Symbol::new(&env, "check_condition"),
-                    resolver_call_args,
-                ) {
-                    Ok(Ok(true)) => true,
-                    _ => false,
-                }
+                matches!(
+                    env.try_invoke_contract::<bool, soroban_sdk::Error>(
+                        resolver_address,
+                        &Symbol::new(&env, "check_condition"),
+                        resolver_call_args,
+                    ),
+                    Ok(Ok(true))
+                )
             }
             None => true,
         };
@@ -151,7 +151,6 @@ impl SoroTaskContract {
     }
 }
 
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -160,7 +159,7 @@ impl SoroTaskContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _, Events},
+        testutils::{Address as _, Events, Ledger as _},
         vec, Env, FromVal, IntoVal,
     };
 
@@ -252,9 +251,9 @@ mod tests {
 
         let target = env.register_contract(None, MockTarget);
         let cfg = base_config(&env, target.clone());
-        client.register(&1_u64, &cfg);
+        let task_id = client.register(&cfg);
 
-        let stored = client.get_task(&1_u64).expect("task should exist");
+        let stored = client.get_task(&task_id).expect("task should exist");
         assert_eq!(stored.target, target);
         assert_eq!(stored.interval, 3_600);
         assert_eq!(stored.last_run, 0, "last_run must start at 0");
@@ -275,12 +274,12 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         let target = env.register_contract(None, MockTarget);
-        client.register(&1_u64, &base_config(&env, target));
+        let task_id = client.register(&base_config(&env, target));
 
         set_timestamp(&env, 12_345);
-        client.execute(&1_u64);
+        client.execute(&task_id);
 
-        let updated = client.get_task(&1_u64).unwrap();
+        let updated = client.get_task(&task_id).unwrap();
         assert_eq!(
             updated.last_run, 12_345,
             "last_run must reflect ledger timestamp after execution"
@@ -310,11 +309,11 @@ mod tests {
             gas_balance: 500,
         };
 
-        client.register(&2_u64, &cfg);
+        let task_id = client.register(&cfg);
         set_timestamp(&env, 99_999);
-        client.execute(&2_u64);
+        client.execute(&task_id);
 
-        assert_eq!(client.get_task(&2_u64).unwrap().last_run, 99_999);
+        assert_eq!(client.get_task(&task_id).unwrap().last_run, 99_999);
     }
 
     /// When a resolver returns true the target is invoked and last_run updated.
@@ -324,20 +323,19 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         let target = env.register_contract(None, MockTarget);
-        let resolver =
-            env.register_contract(None, resolver_true::MockResolverTrue);
+        let resolver = env.register_contract(None, resolver_true::MockResolverTrue);
 
         let cfg = TaskConfig {
             resolver: Some(resolver),
             ..base_config(&env, target)
         };
 
-        client.register(&3_u64, &cfg);
+        let task_id = client.register(&cfg);
         set_timestamp(&env, 55_000);
-        client.execute(&3_u64);
+        client.execute(&task_id);
 
         assert_eq!(
-            client.get_task(&3_u64).unwrap().last_run,
+            client.get_task(&task_id).unwrap().last_run,
             55_000,
             "resolver approved — last_run must be updated"
         );
@@ -351,20 +349,19 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         let target = env.register_contract(None, MockTarget);
-        let resolver =
-            env.register_contract(None, resolver_false::MockResolverFalse);
+        let resolver = env.register_contract(None, resolver_false::MockResolverFalse);
 
         let cfg = TaskConfig {
             resolver: Some(resolver),
             ..base_config(&env, target)
         };
 
-        client.register(&4_u64, &cfg);
+        let task_id = client.register(&cfg);
         set_timestamp(&env, 77_777);
-        client.execute(&4_u64);
+        client.execute(&task_id);
 
         assert_eq!(
-            client.get_task(&4_u64).unwrap().last_run,
+            client.get_task(&task_id).unwrap().last_run,
             0,
             "resolver denied — last_run must not change"
         );
@@ -377,22 +374,21 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         let target = env.register_contract(None, MockTarget);
-        client.register(&5_u64, &base_config(&env, target));
+        let task_id = client.register(&base_config(&env, target));
 
         set_timestamp(&env, 1_000);
-        client.execute(&5_u64);
-        assert_eq!(client.get_task(&5_u64).unwrap().last_run, 1_000);
+        client.execute(&task_id);
+        assert_eq!(client.get_task(&task_id).unwrap().last_run, 1_000);
 
         set_timestamp(&env, 2_000);
-        client.execute(&5_u64);
+        client.execute(&task_id);
         assert_eq!(
-            client.get_task(&5_u64).unwrap().last_run,
+            client.get_task(&task_id).unwrap().last_run,
             2_000,
             "last_run must advance on each execution"
         );
     }
-  
-  
+
     #[test]
     fn test_register_and_get() {
         let env = Env::default();
@@ -495,5 +491,5 @@ mod tests {
 
         let result = client.try_register(&config);
         assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(1))));
-  }
+    }
 }
