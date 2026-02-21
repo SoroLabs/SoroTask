@@ -1,0 +1,55 @@
+name: Rust Contract CI
+
+on:
+  push:
+    branches: [ "main", "feat/*" ]
+    paths:
+      - 'contract/**'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    branches: [ "main", "feat/*" ]
+    paths:
+      - 'contract/**'
+      - '.github/workflows/rust.yml'
+
+# This ensures all 'run' commands happen inside the Rust directory
+defaults:
+  run:
+    working-directory: ./contract
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate-and-build:
+    name: Format, Lint, Test, and Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Modern Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Cache Cargo Registry & Build Artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Tell the cache exactly where our Rust workspace is located
+          workspaces: "./contract -> target"
+
+      - name: Check Formatting (fmt)
+        run: cargo fmt --all -- --check
+
+      - name: Run Linter (clippy) - Strict
+        # The -D warnings flag fulfills "Fail on warnings" requirement
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run Unit Tests (test)
+        run: cargo test
+
+      - name: Build WebAssembly (build)
+        run: cargo build --target wasm32-unknown-unknown --release
