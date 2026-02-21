@@ -2,12 +2,12 @@ name: Rust Contract CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feat/*" ]
     paths:
       - 'contract/**'
       - '.github/workflows/rust.yml'
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "feat/*" ]
     paths:
       - 'contract/**'
       - '.github/workflows/rust.yml'
