@@ -1,4 +1,5 @@
 const EventEmitter = require('events');
+const metrics = require('./metrics');
 
 class ExecutionQueue extends EventEmitter {
     constructor(limit) {
@@ -25,19 +26,26 @@ class ExecutionQueue extends EventEmitter {
         const validTaskIds = taskIds.filter(id => !this.failedTasks.has(id));
         this.depth = validTaskIds.length;
 
+        // Track tasks due for this cycle
+        metrics.increment('tasksDueTotal', validTaskIds.length);
+
+        const cycleStartTime = Date.now();
+
         const cyclePromises = validTaskIds.map(taskId => {
             return this.limit(async () => {
                 this.inFlight++;
                 this.depth--;
-                
+
                 this.emit('task:started', taskId);
                 try {
                     await executorFn(taskId);
                     this.completed++;
+                    metrics.increment('tasksExecutedTotal');
                     this.emit('task:success', taskId);
                 } catch (error) {
                     this.failedCount++;
                     this.failedTasks.add(taskId);
+                    metrics.increment('tasksFailedTotal');
                     this.emit('task:failed', taskId, error);
                 } finally {
                     this.inFlight--;
@@ -52,14 +60,17 @@ class ExecutionQueue extends EventEmitter {
         } catch (e) {
             // Already handled in loop
         } finally {
+            const cycleDuration = Date.now() - cycleStartTime;
+            metrics.record('lastCycleDurationMs', cycleDuration);
+
             this.emit('cycle:complete', {
-                depth: this.depth, 
-                inFlight: this.inFlight, 
+                depth: this.depth,
+                inFlight: this.inFlight,
                 completed: this.completed,
                 failed: this.failedCount
             });
-            
-            // Note: failedTasks remain stored across a cycle, to ensure tasks that fail 
+
+            // Note: failedTasks remain stored across a cycle, to ensure tasks that fail
             // after retries are not repeatedly re-queued until manually reset if needed.
             this.activePromises = [];
             this.completed = 0;
