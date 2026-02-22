@@ -22,12 +22,40 @@ NETWORK_PASSPHRASE="Test SDF Future Network ; October 2022"
 
 # The secret key of the keeper account that will submit the transactions
 KEEPER_SECRET="S..."
+
+# The contract ID of the deployed SoroTask contract
+CONTRACT_ID="C..."
+
+# Polling interval in milliseconds (default: 10000ms = 10 seconds)
+POLLING_INTERVAL_MS=10000
+
+# Maximum number of concurrent task reads during polling (default: 10)
+MAX_CONCURRENT_READS=10
+
+# Maximum number of concurrent task executions (default: 3)
+MAX_CONCURRENT_EXECUTIONS=3
+
+# Maximum task ID to check (default: 100) - or use TASK_IDS for specific tasks
+MAX_TASK_ID=100
+
+# Optional: Comma-separated list of specific task IDs to monitor
+# TASK_IDS="1,2,3,5,8"
+
+# Wait for transaction confirmation (default: true, set to 'false' to disable)
+WAIT_FOR_CONFIRMATION=true
 ```
 
 ### Explanation of Variables:
 - **`SOROBAN_RPC_URL`**: This is the endpoint the bot uses to communicate with the network. You can use public nodes provided by Stellar or set up your own. 
 - **`NETWORK_PASSPHRASE`**: This ensures your bot is talking to the right network (e.g., Futurenet, Testnet, or Public Network).
 - **`KEEPER_SECRET`**: Your keeper wallet's secret key. *Keep this private and never commit it to version control (we've ensured `.env` is ignored by git).*
+- **`CONTRACT_ID`**: The deployed SoroTask contract address that the keeper will monitor and execute tasks from.
+- **`POLLING_INTERVAL_MS`**: How often (in milliseconds) the keeper checks for due tasks. Lower values mean more frequent checks but higher RPC usage.
+- **`MAX_CONCURRENT_READS`**: Maximum number of tasks to query in parallel during each poll. Higher values speed up polling but increase RPC load.
+- **`MAX_CONCURRENT_EXECUTIONS`**: Maximum number of tasks that can be executed simultaneously. Controls execution throughput.
+- **`MAX_TASK_ID`**: The keeper will check task IDs from 1 to this value. Alternatively, use `TASK_IDS` to specify exact task IDs.
+- **`TASK_IDS`**: Optional comma-separated list of specific task IDs to monitor (e.g., "1,2,3,5"). If set, overrides `MAX_TASK_ID`.
+- **`WAIT_FOR_CONFIRMATION`**: Whether to wait for transaction confirmation after submitting. Set to 'false' for fire-and-forget mode.
 
 ## Setup Instructions
 
