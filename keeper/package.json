@@ -4,7 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+
+    "test": "echo \"No tests specified\"",
+    "lint": "echo \"No linting configured\""
+
     "test": "jest"
+
   },
   "keywords": [],
   "author": "",
