@@ -4,18 +4,15 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-
-    "test": "echo \"No tests specified\"",
+    "test": "jest",
     "lint": "echo \"No linting configured\""
-
-    "test": "jest"
-
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "dotenv": "^17.3.1",
+    "node-fetch": "^2.7.0",
     "p-limit": "^3.1.0",
     "soroban-client": "^1.0.1"
   },
