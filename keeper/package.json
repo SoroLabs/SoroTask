@@ -1,15 +1,11 @@
 {
   "name": "keeper",
   "version": "1.0.0",
-  "description": "",
+  "description": "SoroTask Keeper Bot",
   "main": "index.js",
   "scripts": {
-
-    "test": "echo \"No tests specified\"",
+    "test": "jest",
     "lint": "echo \"No linting configured\""
-
-    "test": "jest"
-
   },
   "keywords": [],
   "author": "",
@@ -17,5 +13,8 @@
   "dependencies": {
     "dotenv": "^17.3.1",
     "@stellar/stellar-sdk": "^14.5.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   }
 }
