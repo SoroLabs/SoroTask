@@ -12,7 +12,7 @@ const { Keypair, Server, Account } = require('soroban-client');
 async function initializeKeeperAccount() {
     const secret = process.env.KEEPER_SECRET;
     if (!secret) {
-        throw new Error('KEEPER_SECRET environment variable is not defined');
+        throw new Error('KEEPER_SECRET environment  variable is not defined');
     }
 
     let keypair;
