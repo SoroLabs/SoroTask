@@ -9,6 +9,9 @@ use soroban_sdk::{
 #[repr(u32)]
 pub enum Error {
     InvalidInterval = 1,
+    Unauthorized = 2,
+    InsufficientBalance = 3,
+    NotInitialized = 4,
 }
 
 #[contracttype]
@@ -28,6 +31,7 @@ pub struct TaskConfig {
 pub enum DataKey {
     Task(u64),
     Counter,
+    Token,
 }
 
 pub trait ResolverInterface {
@@ -152,6 +156,92 @@ impl SoroTaskContract {
             config.last_run = env.ledger().timestamp();
             env.storage().persistent().set(&task_key, &config);
         }
+    }
+
+    /// Initializes the contract with a gas token.
+    pub fn init(env: Env, token: Address) {
+        if env.storage().instance().has(&DataKey::Token) {
+            panic!("Already initialized");
+        }
+        env.storage().instance().set(&DataKey::Token, &token);
+    }
+
+    /// Deposits gas tokens to a task's balance.
+    pub fn deposit_gas(env: Env, task_id: u64, from: Address, amount: i128) {
+        from.require_auth();
+
+        let task_key = DataKey::Task(task_id);
+        let mut config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Not initialized");
+
+        // Transfer tokens to contract
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&from, &env.current_contract_address(), &amount);
+
+        // Update balance
+        config.gas_balance += amount;
+        env.storage().persistent().set(&task_key, &config);
+
+        // Emit event
+        env.events().publish(
+            (Symbol::new(&env, "GasDeposited"), task_id),
+            (from, amount),
+        );
+    }
+
+    /// Withdraws gas tokens from a task's balance.
+    /// Only the task creator can withdraw.
+    pub fn withdraw_gas(env: Env, task_id: u64, amount: i128) {
+        let task_key = DataKey::Task(task_id);
+        let mut config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+
+        // Ensure only creator can withdraw
+        config.creator.require_auth();
+
+        if config.gas_balance < amount {
+            panic_with_error!(&env, Error::InsufficientBalance);
+        }
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Not initialized");
+
+        // Transfer tokens back to creator
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &config.creator, &amount);
+
+        // Update balance
+        config.gas_balance -= amount;
+        env.storage().persistent().set(&task_key, &config);
+
+        // Emit event
+        env.events().publish(
+            (Symbol::new(&env, "GasWithdrawn"), task_id),
+            (config.creator.clone(), amount),
+        );
+    }
+
+    /// Returns the global gas token address.
+    pub fn get_token(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Not initialized")
     }
 }
 
@@ -547,4 +637,5 @@ mod tests {
         client.execute(&task_id);
         assert_eq!(client.get_task(&task_id).unwrap().last_run, 150);
     }
+
 }
