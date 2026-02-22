@@ -1,14 +1,14 @@
 {
   "name": "keeper",
   "version": "1.0.0",
-  "description": "",
+  "description": "SoroTask Keeper Bot",
+  "type": "module",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
     "test": "jest"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "dotenv": "^17.3.1",
     "p-limit": "^3.1.0",
