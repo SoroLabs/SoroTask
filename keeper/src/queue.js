@@ -1,91 +1,79 @@
-const EventEmitter = require('events');
+import EventEmitter from "events";
+import pLimit from "p-limit";
 
-class ExecutionQueue extends EventEmitter {
-    constructor(limit) {
-        super();
-        this.concurrencyLimit = parseInt(limit || process.env.MAX_CONCURRENT_EXECUTIONS || 3, 10);
-        
-        // p-limit export resolution for CJS environments depending on library version
-        const pLimitMod = require('p-limit');
-        const pLimit = pLimitMod.default || pLimitMod;
-        
-        this.limit = pLimit(this.concurrencyLimit);
-        
-        this.depth = 0;
-        this.inFlight = 0;
-        this.completed = 0;
-        this.failedCount = 0;
-        
-        this.activePromises = [];
-        this.failedTasks = new Set();
-    }
+export class ExecutionQueue extends EventEmitter {
+  constructor(limit) {
+    super();
 
-    async enqueue(taskIds, executorFn) {
-        // Pre-filter valid tasks (e.g., skip ones that failed in previous runs this cycle if persistent)
-        const validTaskIds = taskIds.filter(id => !this.failedTasks.has(id));
-        this.depth = validTaskIds.length;
+    this.concurrencyLimit = parseInt(
+      limit || process.env.MAX_CONCURRENT_EXECUTIONS || 3,
+      10
+    );
 
-        const cyclePromises = validTaskIds.map(taskId => {
-            return this.limit(async () => {
-                this.inFlight++;
-                this.depth--;
-                
-                this.emit('task:started', taskId);
-                try {
-                    await executorFn(taskId);
-                    this.completed++;
-                    this.emit('task:success', taskId);
-                } catch (error) {
-                    this.failedCount++;
-                    this.failedTasks.add(taskId);
-                    this.emit('task:failed', taskId, error);
-                } finally {
-                    this.inFlight--;
-                }
-            });
-        });
+    this.limit = pLimit(this.concurrencyLimit);
 
-        this.activePromises.push(...cyclePromises);
+    this.depth = 0;
+    this.inFlight = 0;
+    this.completed = 0;
+    this.failedCount = 0;
+
+    this.activePromises = [];
+    this.failedTasks = new Set();
+  }
+
+  async enqueue(taskIds, executorFn) {
+    const validTaskIds = taskIds.filter(
+      (id) => !this.failedTasks.has(id)
+    );
+
+    this.depth = validTaskIds.length;
+
+    const cyclePromises = validTaskIds.map((taskId) => {
+      return this.limit(async () => {
+        this.inFlight++;
+        this.depth--;
+
+        this.emit("task:started", taskId);
 
         try {
-            await Promise.all(cyclePromises);
-        } catch (e) {
-            // Already handled in loop
+          await executorFn(taskId);
+          this.completed++;
+          this.emit("task:success", taskId);
+        } catch (error) {
+          this.failedCount++;
+          this.failedTasks.add(taskId);
+          this.emit("task:failed", taskId, error);
         } finally {
-            this.emit('cycle:complete', {
-                depth: this.depth, 
-                inFlight: this.inFlight, 
-                completed: this.completed,
-                failed: this.failedCount
-            });
-            
-            // Note: failedTasks remain stored across a cycle, to ensure tasks that fail 
-            // after retries are not repeatedly re-queued until manually reset if needed.
-            this.activePromises = [];
-            this.completed = 0;
-            this.failedCount = 0;
+          this.inFlight--;
         }
+      });
+    });
+
+    this.activePromises.push(...cyclePromises);
+
+    try {
+      await Promise.all(cyclePromises);
+    } catch (_) {
+      // already handled
+    } finally {
+      this.emit("cycle:complete", {
+        depth: this.depth,
+        inFlight: this.inFlight,
+        completed: this.completed,
+        failed: this.failedCount,
+      });
+
+      this.activePromises = [];
+      this.completed = 0;
+      this.failedCount = 0;
     }
+  }
 
-    async drain() {
-        console.log(`[ExecutionQueue] Draining queue. Waiting for ${this.limit.activeCount} pending/in-flight tasks to complete/cancel...`);
-        
-        // Clear tasks that haven't started yet
-        this.limit.clearQueue();
+  async drain() {
+    this.limit.clearQueue();
 
-        // When tasks are cleared, their promises stay pending forever in activePromises 
-        // We only really want to wait for the ones that actually started doing work
-        // We can do this implicitly by just polling or race. 
-        // Actually Promise.allSettled on `this.activePromises` hangs if some limits were cleared, 
-        // because pLimit cleared tasks are NEVER resolved/rejected!
-        // To fix this, resolve any hanging promises locally, or simply resolve drain when inFlight is 0.
-        
-        while(this.inFlight > 0) {
-           await new Promise(r => setTimeout(r, 50));
-        }
-
-        console.log('[ExecutionQueue] Drained successfully.');
+    while (this.inFlight > 0) {
+      await new Promise((r) => setTimeout(r, 50));
     }
+  }
 }
-
-module.exports = ExecutionQueue;
