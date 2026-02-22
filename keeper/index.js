@@ -4,13 +4,20 @@ const ExecutionQueue = require('./src/queue');
 
 async function main() {
     console.log("Starting SoroTask Keeper...");
-    
-    // TODO: Initialize Soroban server connection
-    // const server = new Server(process.env.SOROBAN_RPC_URL);
-    
-    // TODO: Load keeper account
-    // const keeper = Keypair.fromSecret(process.env.KEEPER_SECRET);
-    
+
+    const { initializeKeeperAccount } = require('./src/account');
+
+    let keeperData;
+    try {
+        keeperData = await initializeKeeperAccount();
+    } catch (err) {
+        console.error(`Failed to initialize keeper: ${err.message}`);
+        process.exit(1);
+    }
+
+    const { keypair, accountResponse } = keeperData;
+
+
     const queue = new ExecutionQueue();
 
     queue.on('task:started', (taskId) => console.log(`Started execution for task ${taskId}`));
@@ -39,11 +46,11 @@ async function main() {
     const pollingInterval = setInterval(async () => {
         console.log("Checking for due tasks...");
         // TODO: Query contract for tasks due for execution
-        
+
         // Mocking some due tasks to test enqueue
         // const dueTaskIds = await getDueTasks();
         // await queue.enqueue(dueTaskIds, dummyExecutor);
-        
+
     }, 10000);
 }
 
