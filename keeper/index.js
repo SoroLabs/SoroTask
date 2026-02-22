@@ -1,9 +1,18 @@
 require('dotenv').config();
 const { Server, Keypair } = require('soroban-client');
 const ExecutionQueue = require('./src/queue');
+const GasMonitor = require('./src/gasMonitor');
+const MetricsServer = require('./src/metrics');
 
 async function main() {
     console.log("Starting SoroTask Keeper...");
+    
+    // Initialize gas monitor
+    const gasMonitor = new GasMonitor();
+    
+    // Initialize metrics server
+    const metricsServer = new MetricsServer(gasMonitor);
+    await metricsServer.start();
     
     // TODO: Initialize Soroban server connection
     // const server = new Server(process.env.SOROBAN_RPC_URL);
@@ -20,6 +29,18 @@ async function main() {
 
     // Dummy executor function for now
     const dummyExecutor = async (taskId) => {
+        // In a real implementation, this would check the actual gas balance from the contract
+        // For now, simulate with a random gas balance
+        const simulatedGasBalance = Math.floor(Math.random() * 1000); // Random balance between 0-999
+        
+        // Check gas balance and decide whether to proceed
+        const shouldSkip = await gasMonitor.checkGasBalance(taskId, simulatedGasBalance);
+        
+        if (shouldSkip) {
+            console.log(`Skipping execution for task ${taskId} due to insufficient gas balance.`);
+            return;
+        }
+        
         return new Promise((resolve) => setTimeout(resolve, 500));
     };
 

@@ -22,12 +22,47 @@ NETWORK_PASSPHRASE="Test SDF Future Network ; October 2022"
 
 # The secret key of the keeper account that will submit the transactions
 KEEPER_SECRET="S..."
+
+# Gas balance monitoring configuration
+# Threshold for gas balance warning (default: 500)
+GAS_WARN_THRESHOLD=500
+
+# Optional webhook URL for low gas alerts (if not set, webhook alerts are disabled)
+ALERT_WEBHOOK_URL="https://your-webhook-url.com/alert"
+
+# Debounce period for alerts in milliseconds (default: 3600000 = 1 hour)
+ALERT_DEBOUNCE_MS=3600000
+
+# Port for metrics server (default: 3000)
+METRICS_PORT=3000
 ```
 
 ### Explanation of Variables:
 - **`SOROBAN_RPC_URL`**: This is the endpoint the bot uses to communicate with the network. You can use public nodes provided by Stellar or set up your own. 
 - **`NETWORK_PASSPHRASE`**: This ensures your bot is talking to the right network (e.g., Futurenet, Testnet, or Public Network).
 - **`KEEPER_SECRET`**: Your keeper wallet's secret key. *Keep this private and never commit it to version control (we've ensured `.env` is ignored by git).*
+- **`GAS_WARN_THRESHOLD`**: The gas balance threshold below which warnings will be logged (default: 500).
+- **`ALERT_WEBHOOK_URL`**: Optional webhook URL to receive low gas balance alerts.
+- **`ALERT_DEBOUNCE_MS`**: Debounce period in milliseconds to prevent spamming webhook alerts for the same task (default: 3600000 ms = 1 hour).
+- **`METRICS_PORT`**: Port where the metrics endpoint will be available (default: 3000).
+
+## Gas Balance Monitoring
+
+The SoroTask Keeper includes gas balance monitoring to prevent task starvation. The system:
+- Monitors the `gas_balance` field on each registered task
+- Logs a WARNING when gas balance falls below the `GAS_WARN_THRESHOLD`
+- Logs an ERROR and skips execution when gas balance is ≤ 0
+- Optionally sends webhook alerts to `ALERT_WEBHOOK_URL` for low gas events
+- Tracks `tasksLowGasCount` metric in the `/metrics` endpoint
+- Implements debouncing to prevent duplicate alerts within `ALERT_DEBOUNCE_MS` period
+
+## Metrics Endpoint
+
+The keeper exposes metrics at `http://localhost:{METRICS_PORT}/metrics` (default: http://localhost:3000/metrics) in Prometheus format, including:
+- `soro_task_low_gas_count`: Number of tasks with low gas balance
+- `soro_task_gas_warn_threshold`: Current gas balance warning threshold
+- `soro_task_alert_debounce_ms`: Debounce period for alerts
+- `soro_task_alert_webhook_enabled`: Whether webhook alerts are enabled
 
 ## Setup Instructions
 
@@ -40,7 +75,7 @@ Once you have your prerequisite software and environment variables ready, follow
    ```
 
 2. **Install Dependencies**  
-   Run the following command to install the required Node.js packages (`soroban-client` and `dotenv`):
+   Run the following command to install the required Node.js packages (`soroban-client`, `dotenv`, and `node-fetch`):
    ```bash
    npm install
    ```
