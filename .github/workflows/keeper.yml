@@ -1,0 +1,111 @@
+name: Keeper Node.js CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "keeper/**"
+      - ".github/workflows/keeper.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "keeper/**"
+      - ".github/workflows/keeper.yml"
+
+# This ensures all 'run' commands happen inside the Keeper directory
+defaults:
+  run:
+    working-directory: ./keeper
+
+concurrency:
+  group: keeper-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ESLint)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: "./keeper/package-lock.json"
+
+      - name: Cache npm registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-20-npm-${{ hashFiles('./keeper/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-20-npm-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+  test:
+    name: Test (Jest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: "./keeper/package-lock.json"
+
+      - name: Cache npm registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-20-npm-${{ hashFiles('./keeper/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-20-npm-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Jest tests with coverage
+        env:
+          NODE_ENV: test
+          SOROBAN_RPC_URL: http://localhost
+          CONTRACT_ID: GFAKE
+        run: npm test
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: keeper-coverage-report
+          path: keeper/coverage
+          retention-days: 30
+
+  docker:
+    name: Docker Build Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./keeper
+          file: ./keeper/Dockerfile
+          push: false
+          tags: sorotask-keeper:test

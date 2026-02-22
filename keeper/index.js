@@ -3,13 +3,13 @@ const { Server, Keypair } = require('soroban-client');
 const ExecutionQueue = require('./src/queue');
 
 async function main() {
-    console.log("Starting SoroTask Keeper...");
+  console.log("Starting SoroTask Keeper...");
     
-    // TODO: Initialize Soroban server connection
-    // const server = new Server(process.env.SOROBAN_RPC_URL);
+  // TODO: Initialize Soroban server connection
+  // const server = new Server(process.env.SOROBAN_RPC_URL);
     
-    // TODO: Load keeper account
-    // const keeper = Keypair.fromSecret(process.env.KEEPER_SECRET);
+  // TODO: Load keeper account
+  // const keeper = Keypair.fromSecret(process.env.KEEPER_SECRET);
     
     const queue = new ExecutionQueue();
 
@@ -48,5 +48,5 @@ async function main() {
 }
 
 main().catch(err => {
-    console.error("Keeper failed:", err);
+  console.error("Keeper failed:", err);
 });

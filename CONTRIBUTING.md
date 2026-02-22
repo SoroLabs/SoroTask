@@ -53,14 +53,49 @@ cd contract
 cargo fmt --all
 ```
 
+### Keeper (Node.js)
+
+```bash
+cd keeper
+npm install
+npm run lint
+npm test
+```
+
 ### JavaScript/TypeScript (frontend)
 
 ```bash
 cd frontend
+npm install
 npm run lint
 ```
 
 If you changed both Rust and frontend code, run both checks.
+
+## Automated CI Requirements
+
+All pull requests must pass the following automated checks before they can be merged:
+
+### Keeper Service (`keeper/**`)
+- **Lint**: ESLint validation of all JavaScript files
+- **Test**: Jest test suite with minimum 70% code coverage
+- **Docker**: Dockerfile successfully builds without errors
+
+### Contract (`contract/**`)
+- **Formatting**: Rust code formatted with `cargo fmt`
+- **Linting**: Rust code passes `cargo clippy` checks
+- **Tests**: All Rust unit tests pass
+- **Build**: WebAssembly compilation succeeds
+
+These checks run automatically on every pull request. You can verify locally before pushing:
+
+```bash
+# For Keeper changes
+cd keeper && npm run lint && npm test
+
+# For Contract changes
+cd contract && cargo fmt --all && cargo test && cargo clippy --all-targets
+```
 
 ## Pull Request Expectations
 

@@ -1,0 +1,4 @@
+{"total": {"lines":{"total":7,"covered":0,"skipped":0,"pct":0},"statements":{"total":7,"covered":0,"skipped":0,"pct":0},"functions":{"total":3,"covered":0,"skipped":0,"pct":0},"branches":{"total":0,"covered":0,"skipped":0,"pct":100},"branchesTrue":{"total":0,"covered":0,"skipped":0,"pct":"Unknown"}}
+,"C:\\Users\\u-adamu\\Desktop\\wave 2\\SoroTask\\keeper\\index.js": {"lines":{"total":6,"covered":0,"skipped":0,"pct":0},"functions":{"total":3,"covered":0,"skipped":0,"pct":0},"statements":{"total":6,"covered":0,"skipped":0,"pct":0},"branches":{"total":0,"covered":0,"skipped":0,"pct":100}}
+,"C:\\Users\\u-adamu\\Desktop\\wave 2\\SoroTask\\keeper\\jest.config.js": {"lines":{"total":1,"covered":0,"skipped":0,"pct":0},"functions":{"total":0,"covered":0,"skipped":0,"pct":100},"statements":{"total":1,"covered":0,"skipped":0,"pct":0},"branches":{"total":0,"covered":0,"skipped":0,"pct":100}}
+}

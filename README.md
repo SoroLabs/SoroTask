@@ -1,5 +1,8 @@
 # SoroTask
 
+[![Keeper CI](https://github.com/your-org/sorotask/actions/workflows/keeper.yml/badge.svg)](https://github.com/your-org/sorotask/actions/workflows/keeper.yml)
+[![Rust Contract CI](https://github.com/your-org/sorotask/actions/workflows/rust.yml/badge.svg)](https://github.com/your-org/sorotask/actions/workflows/rust.yml)
+
 SoroTask is a decentralized automation marketplace on Soroban. It allows users to schedule recurring tasks (like yield harvesting) and incentivizes Keepers to execute them.
 
 ## Project Structure
