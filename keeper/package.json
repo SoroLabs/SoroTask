@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "dev": "node index.js",
     "test": "jest",
+    "docker:build": "docker build -t sorotask-keeper .",
+    "docker:run": "docker run --env-file .env -p 3001:3001 -v $(pwd)/data:/app/data sorotask-keeper"
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "lint": "echo \"No linting configured\""

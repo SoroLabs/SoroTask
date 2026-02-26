@@ -5,6 +5,12 @@ Welcome to the SoroTask Keeper network! This guide provides step-by-step instruc
 ## Prerequisites
 
 Before you begin, ensure you have the following installed on your machine:
+
+### Option 1: Docker (Recommended for Production)
+- [Docker](https://docs.docker.com/get-docker/) (v20.10 or higher)
+- [Docker Compose](https://docs.docker.com/compose/install/) (v2.0 or higher)
+
+### Option 2: Local Development
 - [Node.js](https://nodejs.org/) (v16 or higher)
 - [npm](https://npmjs.com/) 
 
@@ -58,6 +64,139 @@ WAIT_FOR_CONFIRMATION=true
 - **`WAIT_FOR_CONFIRMATION`**: Whether to wait for transaction confirmation after submitting. Set to 'false' for fire-and-forget mode.
 
 ## Setup Instructions
+
+### Docker Deployment (Recommended)
+
+Docker provides a reproducible, portable deployment that works on any cloud VM, VPS, or container orchestrator. This is the recommended approach for production deployments.
+
+#### Quick Start with Docker Compose
+
+1. **Navigate to the Repository Root**
+   ```bash
+   cd /path/to/sorotask
+   ```
+
+2. **Configure Environment Variables**
+   
+   Copy the example environment file and configure it:
+   ```bash
+   cp keeper/.env.example keeper/.env
+   ```
+   
+   Edit `keeper/.env` with your configuration (see Environment Variables section below).
+
+3. **Start the Keeper**
+   
+   From the repository root:
+   ```bash
+   docker compose up -d
+   ```
+   
+   This will:
+   - Build the Docker image with multi-stage optimization
+   - Start the keeper container in detached mode
+   - Mount `./keeper/data` for task registry persistence
+   - Expose port 3001 for health checks and metrics
+   - Automatically restart the container unless explicitly stopped
+
+4. **View Logs**
+   ```bash
+   docker compose logs -f keeper
+   ```
+
+5. **Check Health Status**
+   ```bash
+   curl http://localhost:3001/health
+   ```
+
+6. **Stop the Keeper**
+   ```bash
+   docker compose down
+   ```
+
+#### Docker Commands Reference
+
+**Build the image:**
+```bash
+cd keeper
+npm run docker:build
+```
+
+**Run standalone container:**
+```bash
+cd keeper
+npm run docker:run
+```
+
+**Manual Docker commands:**
+```bash
+# Build
+docker build -t sorotask-keeper ./keeper
+
+# Run with environment file and volume
+docker run -d \
+  --name sorotask-keeper \
+  --env-file ./keeper/.env \
+  -p 3001:3001 \
+  -v $(pwd)/keeper/data:/app/data \
+  --restart unless-stopped \
+  sorotask-keeper
+
+# View logs
+docker logs -f sorotask-keeper
+
+# Stop and remove
+docker stop sorotask-keeper
+docker rm sorotask-keeper
+```
+
+#### Docker Deployment Features
+
+- **Multi-stage build**: Optimized image size with separate dependency and runtime stages
+- **Security hardening**: Runs as non-root user (`node`)
+- **Health checks**: Built-in health monitoring via `/health` endpoint
+- **Data persistence**: Task registry persisted in `./keeper/data` volume
+- **Automatic restart**: Container restarts automatically on failure
+- **Log rotation**: Configured with 10MB max size and 3 file retention
+- **Minimal base**: Uses `node:20-alpine` for smallest footprint
+
+#### Cloud Deployment Examples
+
+**AWS EC2 / DigitalOcean / Linode:**
+```bash
+# SSH into your VM
+ssh user@your-server-ip
+
+# Clone repository
+git clone https://github.com/your-org/sorotask.git
+cd sorotask
+
+# Configure environment
+cp keeper/.env.example keeper/.env
+nano keeper/.env  # Edit with your settings
+
+# Start with Docker Compose
+docker compose up -d
+
+# Verify it's running
+docker compose ps
+curl http://localhost:3001/health
+```
+
+**Kubernetes:**
+```bash
+# Build and push to registry
+docker build -t your-registry/sorotask-keeper:latest ./keeper
+docker push your-registry/sorotask-keeper:latest
+
+# Create ConfigMap from .env
+kubectl create configmap keeper-config --from-env-file=keeper/.env
+
+# Deploy (create your k8s manifests based on docker-compose.yml)
+kubectl apply -f k8s/keeper-deployment.yaml
+```
+
+### Local Development Setup
 
 Once you have your prerequisite software and environment variables ready, follow these steps on a clean environment:
 

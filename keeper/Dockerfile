@@ -1,26 +1,45 @@
-# Use the lightweight Alpine Linux version of Node to drastically reduce image size
-FROM node:20-alpine
+# Multi-stage build for production-ready Keeper container
+# Stage 1: Dependencies
+FROM node:20-alpine AS deps
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Set environment to production to ensure frameworks optimize their execution
-ENV NODE_ENV=production
-
-# Copy only the dependency definitions first to leverage Docker layer caching.
-# If package.json doesn't change, Docker skips running npm install on rebuilds.
+# Copy package files
 COPY package*.json ./
 
-# Install dependencies.
-# Using a clean install if a lockfile exists, otherwise fallback to install.
-RUN npm ci || npm install
+# Install production dependencies only
+RUN npm ci --only=production && \
+    npm cache clean --force
 
-# Copy the rest of the application code
-COPY . .
+# Stage 2: Runner
+FROM node:20-alpine AS runner
 
-# SECURITY: Run the container as the unprivileged 'node' user instead of 'root'
-# This prevents privilege escalation attacks if the bot is compromised.
+WORKDIR /app
+
+# Set production environment
+ENV NODE_ENV=production
+
+# Copy production dependencies from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy application code
+COPY package*.json ./
+COPY index.js ./
+COPY src ./src
+
+# Create data directory for task registry persistence
+RUN mkdir -p /app/data && \
+    chown -R node:node /app
+
+# SECURITY: Run as non-root user
 USER node
 
-# Command to start the Keeper bot as specified in the README
+# Expose metrics/health check port
+EXPOSE 3001
+
+# Health check using the /health endpoint
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:3001/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+
+# Start the Keeper bot
 CMD ["node", "index.js"]

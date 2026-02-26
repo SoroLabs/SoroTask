@@ -16,6 +16,27 @@ SoroTask is a decentralized automation marketplace on Soroban. It allows users t
 
 ## Setup Instructions
 
+### Quick Start with Docker (Recommended)
+
+The fastest way to run a Keeper is using Docker:
+
+```bash
+# 1. Configure environment
+cp keeper/.env.example keeper/.env
+# Edit keeper/.env with your settings
+
+# 2. Start the keeper
+docker compose up -d
+
+# 3. Check status
+docker compose logs -f keeper
+curl http://localhost:3001/health
+```
+
+See [keeper/README.md](keeper/README.md) for detailed Docker deployment documentation.
+
+### Manual Setup
+
 ### 1. Smart Contract
 ```bash
 cd contract
