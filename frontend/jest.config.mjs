@@ -1,4 +1,4 @@
-const nextJest = require('next/jest')
+import nextJest from 'next/jest.js'
 
 const createJestConfig = async () => {
   const nextConfig = await nextJest({
@@ -16,10 +16,7 @@ const createJestConfig = async () => {
       '!src/**/__tests__/**',
       '!src/**/__mocks__/**',
     ],
-    coveragePathIgnorePatterns: [
-      '/node_modules/',
-      '/.next/',
-    ],
+    coveragePathIgnorePatterns: ['/node_modules/', '/.next/'],
     coverageThreshold: {
       global: {
         branches: 70,
@@ -38,4 +35,4 @@ const createJestConfig = async () => {
   })
 }
 
-module.exports = createJestConfig()
+export default createJestConfig()

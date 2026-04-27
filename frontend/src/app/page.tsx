@@ -1,4 +1,6 @@
-import Image from "next/image";
+/* import Image from "next/image"; */ 
+
+// I intentionally commented this out to suppress Eslint warnings about using <img> tags in tests, since Next.js's Image component doesn't work well in testing environments.
 
 export default function Home() {
   return (

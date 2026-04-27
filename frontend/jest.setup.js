@@ -1,3 +1,5 @@
+/* eslint-disable @next/next/no-img-element */
+
 import '@testing-library/jest-dom'
 
 // Mock environment variables for tests
