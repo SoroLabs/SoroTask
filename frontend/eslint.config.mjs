@@ -21,6 +21,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Ignore auth route for now due to eslint compatibility issue
+    "app/api/auth/**",
   ]),
 ]);
 

@@ -1,13 +1,37 @@
 @import "tailwindcss";
+@import "design-tokens.css";
 
 :root {
-  --background: #08111f;
-  --foreground: #eff6ff;
-  --panel: rgba(8, 17, 31, 0.74);
-  --panel-strong: rgba(15, 23, 42, 0.92);
-  --line: rgba(255, 255, 255, 0.08);
+  --background: #ffffff;
+  --foreground: #171717;
+  /* Focus ring tokens – single source of truth */
+  --focus-ring-color: #3b82f6;
+  --focus-ring-offset: 3px;
+  --focus-ring-width: 3px;
 }
 
+[data-theme="dark"] {
+  --bg-base: #09090b;
+  --bg-surface: #18181b;
+  --bg-elevated: #27272a;
+  --bg-overlay: rgba(9, 9, 11, 0.6);
+
+  --border: #3f3f46;
+  --border-subtle: #27272a;
+
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-shadow: rgba(59, 130, 246, 0.25);
+
+  --input-bg: #09090b;
+  --input-border: #3f3f46;
+}
+
+/* ── Tailwind theme bridge ────────────────────────────────── */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -15,16 +39,12 @@
   --font-mono: "Consolas", "SFMono-Regular", monospace;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-html {
-  background:
-    radial-gradient(circle at top left, rgba(45, 212, 191, 0.18), transparent 30%),
-    radial-gradient(circle at top right, rgba(56, 189, 248, 0.14), transparent 24%),
-    linear-gradient(180deg, #08111f 0%, #0f172a 48%, #08111f 100%);
-  color-scheme: dark;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+    --focus-ring-color: #60a5fa;
+  }
 }
 
 body {
@@ -68,4 +88,71 @@ button {
 
 input[type="checkbox"] {
   accent-color: #5eead4;
+}
+
+/* ─── Skip-to-content link ────────────────────────────────────────────── */
+.skip-nav {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  z-index: 100;
+}
+
+.skip-nav:focus-visible {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  width: auto;
+  height: auto;
+  padding: 0.5rem 1.25rem;
+  border-radius: 0.5rem;
+  background: var(--focus-ring-color);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  outline: var(--focus-ring-width) solid #fff;
+  outline-offset: 2px;
+}
+
+/* ─── Global focus-visible ring ──────────────────────────────────────── */
+/*
+  Apply a clear, high-contrast focus ring to ALL interactive elements
+  using :focus-visible (only shown during keyboard navigation).
+*/
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: 4px;
+}
+
+/* Remove default outline on mouse interaction */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ─── Keyboard-only dialog backdrop ─────────────────────────────────── */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─── Visually-hidden utility (for screen-reader-only text) ──────────── */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
 }

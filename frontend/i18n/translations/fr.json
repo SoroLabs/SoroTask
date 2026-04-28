@@ -1,0 +1,96 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "Portefeuille de Connexion",
+    "close": "Fermer",
+    "cancel": "Annuler",
+    "save": "Enregistrer",
+    "edit": "Modifier",
+    "delete": "Supprimer",
+    "loading": "Chargement...",
+    "error": "Erreur",
+    "success": "Succès",
+    "warning": "Avertissement",
+    "no_data": "Aucune donnée disponible"
+  },
+  "calendar": {
+    "title": "Calendrier de Planification des Tâches",
+    "today": "Aujourd'hui",
+    "previous_month": "Mois précédent",
+    "next_month": "Mois suivant",
+    "timezone": "Fuseau horaire",
+    "legend": {
+      "today": "Aujourd'hui",
+      "task_with_deadline": "Tâche avec échéance",
+      "multiple_tasks": "Plusieurs tâches à la même date",
+      "past_deadline": "Échéance dépassée"
+    },
+    "selected_date_title": "Tâches le {date}",
+    "no_tasks_scheduled": "Aucune tâche programmée",
+    "schedule_calendar": "Calendrier de Programmation"
+  },
+  "calendar_day": {
+    "more_button": "+{count} plus",
+    "tasks_label": "{count} tâche{plural}"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "{count} tâche{plural} programmée{plural}",
+    "click_task_to_view": "Cliquez sur la tâche pour voir les détails"
+  },
+  "task_detail": {
+    "title": "Détails de la Tâche",
+    "status": "Statut",
+    "contract_address": "Adresse du Contrat",
+    "description": "Description",
+    "schedule_settings": "Paramètres de Planification",
+    "execution_interval": "Intervalle d'Exécution",
+    "gas_balance": "Solde de Gaz",
+    "next_execution": "Prochaine Exécution",
+    "deadline": "Date Limite",
+    "due_date": "Date d'Échéance",
+    "time_until_deadline": "Temps jusqu'à l'Échéance",
+    "due_today": "Dû Aujourd'hui!",
+    "overdue_by": "En retard de {days} jour{plural}",
+    "days_remaining": "{days} jour{plural} restant{plural}",
+    "created": "Créé",
+    "timezone_label": "Fuseau Horaire",
+    "tags": "Étiquettes",
+    "edit_task": "Modifier la Tâche",
+    "view_logs": "Afficher les Journaux",
+    "status_pending": "En Attente",
+    "status_active": "Actif",
+    "status_completed": "Terminé",
+    "status_failed": "Échoué",
+    "status_paused": "Pausé"
+  },
+  "forms": {
+    "create_automation_task": "Créer une Tâche d'Automatisation",
+    "your_tasks": "Mes Tâches",
+    "target_contract_address": "Adresse du Contrat Cible",
+    "contract_placeholder": "C...",
+    "function_name": "Nom de la Fonction",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "Intervalle (secondes)",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "Solde de Gaz (XLM)",
+    "gas_balance_placeholder": "10",
+    "register_task": "Enregistrer la Tâche",
+    "no_tasks_registered_yet": "Aucune tâche enregistrée pour l'instant."
+  },
+  "execution_logs": {
+    "title": "Journaux d'Exécution",
+    "task_id": "ID de Tâche",
+    "target": "Cible",
+    "keeper": "Gardien",
+    "status": "Statut",
+    "timestamp": "Horodatage",
+    "status_success": "Succès",
+    "mins_ago": "il y a {mins} minutes"
+  },
+  "formatting": {
+    "hours_short": "h",
+    "seconds_short": "s",
+    "interval_display": "{hours}h ({seconds} secondes)",
+    "xlm_unit": "XLM"
+  }
+}

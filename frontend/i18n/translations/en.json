@@ -1,0 +1,96 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "Connect Wallet",
+    "close": "Close",
+    "cancel": "Cancel",
+    "save": "Save",
+    "edit": "Edit",
+    "delete": "Delete",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "warning": "Warning",
+    "no_data": "No data available"
+  },
+  "calendar": {
+    "title": "Task Scheduling Calendar",
+    "today": "Today",
+    "previous_month": "Previous month",
+    "next_month": "Next month",
+    "timezone": "Timezone",
+    "legend": {
+      "today": "Today",
+      "task_with_deadline": "Task with deadline",
+      "multiple_tasks": "Multiple tasks on same date",
+      "past_deadline": "Past deadline"
+    },
+    "selected_date_title": "Tasks on {date}",
+    "no_tasks_scheduled": "No tasks scheduled",
+    "schedule_calendar": "Schedule Calendar"
+  },
+  "calendar_day": {
+    "more_button": "+{count} more",
+    "tasks_label": "{count} task{plural}"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "{count} task{plural} scheduled",
+    "click_task_to_view": "Click task to view details"
+  },
+  "task_detail": {
+    "title": "Task Details",
+    "status": "Status",
+    "contract_address": "Contract Address",
+    "description": "Description",
+    "schedule_settings": "Schedule Settings",
+    "execution_interval": "Execution Interval",
+    "gas_balance": "Gas Balance",
+    "next_execution": "Next Execution",
+    "deadline": "Deadline",
+    "due_date": "Due Date",
+    "time_until_deadline": "Time Until Deadline",
+    "due_today": "Due Today!",
+    "overdue_by": "Overdue by {days} day{plural}",
+    "days_remaining": "{days} day{plural} remaining",
+    "created": "Created",
+    "timezone_label": "Timezone",
+    "tags": "Tags",
+    "edit_task": "Edit Task",
+    "view_logs": "View Logs",
+    "status_pending": "Pending",
+    "status_active": "Active",
+    "status_completed": "Completed",
+    "status_failed": "Failed",
+    "status_paused": "Paused"
+  },
+  "forms": {
+    "create_automation_task": "Create Automation Task",
+    "your_tasks": "Your Tasks",
+    "target_contract_address": "Target Contract Address",
+    "contract_placeholder": "C...",
+    "function_name": "Function Name",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "Interval (seconds)",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "Gas Balance (XLM)",
+    "gas_balance_placeholder": "10",
+    "register_task": "Register Task",
+    "no_tasks_registered_yet": "No tasks registered yet."
+  },
+  "execution_logs": {
+    "title": "Execution Logs",
+    "task_id": "Task ID",
+    "target": "Target",
+    "keeper": "Keeper",
+    "status": "Status",
+    "timestamp": "Timestamp",
+    "status_success": "Success",
+    "mins_ago": "{mins} mins ago"
+  },
+  "formatting": {
+    "hours_short": "h",
+    "seconds_short": "s",
+    "interval_display": "{hours}h ({seconds} seconds)",
+    "xlm_unit": "XLM"
+  }
+}

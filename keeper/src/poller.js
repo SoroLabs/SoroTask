@@ -1,5 +1,5 @@
 const { Contract, xdr, TransactionBuilder, BASE_FEE, Networks, scValToNative } = require('@stellar/stellar-sdk');
-const { createConcurrencyLimit } = require('./concurrency');
+const { createRateLimiter } = require('./concurrency');
 const { createLogger } = require('./logger');
 
 /**
@@ -14,15 +14,30 @@ class TaskPoller {
 
     // Structured logger for poller module
     this.logger = options.logger || createLogger('poller');
+    this.metricsServer = options.metricsServer;
 
     // Configuration with defaults
     this.maxConcurrentReads = parseInt(
       options.maxConcurrentReads || process.env.MAX_CONCURRENT_READS || 10,
       10,
     );
+    this.maxReadsPerSecond = parseInt(
+      options.maxReadsPerSecond || process.env.MAX_READS_PER_SECOND || 20,
+      10,
+    );
 
-    // Create concurrency limiter for parallel task reads
-    this.readLimit = createConcurrencyLimit(this.maxConcurrentReads);
+    // Create rate limiter for parallel task reads
+    this.readLimit = createRateLimiter({
+      concurrency: this.maxConcurrentReads,
+      rps: this.maxReadsPerSecond,
+      logger: this.logger,
+      name: 'poller-reads',
+      onThrottle: (event) => {
+        if (this.metricsServer) {
+          this.metricsServer.increment('throttledRequestsTotal', { name: event.name });
+        }
+      },
+    });
 
     // Statistics
     this.stats = {
@@ -32,15 +47,26 @@ class TaskPoller {
       tasksSkipped: 0,
       errors: 0,
     };
+
+    this.lastCycleInsights = {
+      backlogSize: 0,
+      dueCount: 0,
+      dueSoonCount: 0,
+      minSecondsUntilDue: null,
+      avgRpcLatencyMs: 0,
+      cycleDurationMs: 0,
+      errors: 0,
+    };
   }
 
   /**
      * Poll the contract for all registered tasks and determine which are due for execution.
      *
      * @param {number[]} taskIds - Array of task IDs to check
+     * @param {Object} options - Optional parameters (e.g. registry)
      * @returns {Promise<number[]>} Array of task IDs that are due for execution
      */
-  async pollDueTasks(taskIds) {
+  async pollDueTasks(taskIds, options = {}) {
     const startTime = Date.now();
     this.stats.lastPollTime = new Date().toISOString();
     this.stats.tasksChecked = 0;
@@ -48,8 +74,20 @@ class TaskPoller {
     this.stats.tasksSkipped = 0;
     this.stats.errors = 0;
 
+    const rpcLatencies = [];
+    const secondsUntilDueValues = [];
+
     if (!taskIds || taskIds.length === 0) {
       this.logger.info('No tasks to check');
+      this.lastCycleInsights = {
+        backlogSize: 0,
+        dueCount: 0,
+        dueSoonCount: 0,
+        minSecondsUntilDue: null,
+        avgRpcLatencyMs: 0,
+        cycleDurationMs: 0,
+        errors: 0,
+      };
       return [];
     }
 
@@ -64,7 +102,12 @@ class TaskPoller {
 
       // Process tasks in parallel with concurrency control
       const taskChecks = taskIds.map(taskId =>
-        this.readLimit(() => this.checkTask(taskId, currentTimestamp)),
+        this.readLimit(async () => {
+          const startedAt = Date.now();
+          const result = await this.checkTask(taskId, currentTimestamp);
+          rpcLatencies.push(Date.now() - startedAt);
+          return result;
+        }),
       );
 
       const results = await Promise.allSettled(taskChecks);
@@ -83,6 +126,10 @@ class TaskPoller {
             this.stats.tasksSkipped++;
           }
 
+          if (Number.isFinite(result.value.secondsUntilDue)) {
+            secondsUntilDueValues.push(result.value.secondsUntilDue);
+          }
+
           this.stats.tasksChecked++;
         } else if (result.status === 'rejected') {
           this.stats.errors++;
@@ -91,6 +138,23 @@ class TaskPoller {
       });
 
       const duration = Date.now() - startTime;
+
+      const avgRpcLatencyMs = rpcLatencies.length > 0
+        ? Math.round(rpcLatencies.reduce((sum, value) => sum + value, 0) / rpcLatencies.length)
+        : 0;
+      const positiveDueWindows = secondsUntilDueValues.filter(value => value > 0);
+      const dueSoonCount = positiveDueWindows.filter(value => value <= 60).length;
+
+      this.lastCycleInsights = {
+        backlogSize: taskIds.length,
+        dueCount: dueTaskIds.length,
+        dueSoonCount,
+        minSecondsUntilDue: positiveDueWindows.length > 0 ? Math.min(...positiveDueWindows) : null,
+        avgRpcLatencyMs,
+        cycleDurationMs: duration,
+        errors: this.stats.errors,
+      };
+
       this.logPollSummary(duration);
 
       return dueTaskIds;
@@ -109,7 +173,7 @@ class TaskPoller {
      * @param {number} currentTimestamp - Current ledger timestamp
      * @returns {Promise<{isDue: boolean, taskId: number, reason?: string}>}
      */
-  async checkTask(taskId, currentTimestamp) {
+  async checkTask(taskId, currentTimestamp, registry) {
     try {
       // Read task configuration from contract using view call
       const taskConfig = await this.getTaskConfig(taskId);
@@ -117,6 +181,11 @@ class TaskPoller {
       if (!taskConfig) {
         this.logger.warn('Task not found (may have been deregistered)', { taskId });
         return { isDue: false, taskId, reason: 'not_found' };
+      }
+
+      // Update registry with latest task details
+      if (registry) {
+        registry.updateTask(taskId, { ...taskConfig, status: taskConfig.gas_balance > 0 ? 'active' : 'low_gas' });
       }
 
       // Check gas balance
@@ -139,7 +208,13 @@ class TaskPoller {
         });
       }
 
-      return { isDue, taskId };
+      return {
+        isDue,
+        taskId,
+        secondsUntilDue: Number.isFinite(nextRunTime)
+          ? Math.max(0, nextRunTime - currentTimestamp)
+          : null,
+      };
 
     } catch (error) {
       this.logger.error('Error checking task', { taskId, error: error.message });
@@ -281,10 +356,10 @@ class TaskPoller {
   }
 
   /**
-     * Log a summary of the polling cycle.
-     *
-     * @param {number} duration - Duration of the poll in milliseconds
-     */
+   * Log a summary of the polling cycle.
+   *
+   * @param {number} duration - Duration of the poll in milliseconds
+   */
   logPollSummary(duration) {
     this.logger.info('Poll complete', {
       durationMs: duration,
@@ -296,12 +371,49 @@ class TaskPoller {
   }
 
   /**
-     * Get current polling statistics.
-     *
-     * @returns {Object} Current statistics
-     */
+   * Check gas forecast for a task before execution (optional enhancement).
+   * Can be used to warn about potential underfunded conditions.
+   *
+   * @param {number} taskId
+   * @param {object} taskConfig
+   * @param {object} gasMonitor - GasMonitor instance with forecaster
+   * @returns {object|null} Forecast data if available
+   */
+  checkForecast(taskId, taskConfig, gasMonitor) {
+    if (!gasMonitor) {
+      return null;
+    }
+
+    try {
+      const forecast = gasMonitor.getForecast(taskId, taskConfig.gas_balance);
+
+      if (forecast.confidence === 'high' && forecast.isUnderfunded) {
+        this.logger.warn('Task forecast: High-risk underfunded execution', {
+          taskId,
+          estimatedCost: forecast.estimatedCost,
+          gasBalance: taskConfig.gas_balance,
+          recommendedBalance: forecast.recommendedBalance,
+        });
+      }
+
+      return forecast;
+    } catch (error) {
+      this.logger.debug('Error checking forecast', { taskId, error: error.message });
+      return null;
+    }
+  }
+
+  /**
+   * Get current polling statistics.
+   *
+   * @returns {Object} Current statistics
+   */
   getStats() {
     return { ...this.stats };
+  }
+
+  getCycleInsights() {
+    return { ...this.lastCycleInsights };
   }
 }
 

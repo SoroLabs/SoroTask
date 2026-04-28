@@ -212,6 +212,10 @@ class MockSorobanRpcServer {
       return this.getAccount(params);
     case 'simulateTransaction':
       return this.simulateTransaction();
+    case 'sendTransaction':
+      return this.sendTransaction(params);
+    case 'getTransaction':
+      return this.getTransaction(params);
     default: {
       const error = new Error(`Unsupported mock RPC method: ${method}`);
       error.code = -32601;
@@ -287,6 +291,23 @@ class MockSorobanRpcServer {
     }
 
     return clone(this.defaultSimulationResponse);
+  }
+
+  sendTransaction(params) {
+    return {
+      status: 'PENDING',
+      hash: 'mock-tx-hash-' + Date.now() + '-' + Math.floor(Math.random() * 1000000)
+    };
+  }
+
+  getTransaction(params) {
+    return {
+      status: 'SUCCESS',
+      latestLedger: this.latestLedger.sequence,
+      latestLedgerCloseTime: Date.now(),
+      oldestLedger: 1,
+      oldestLedgerCloseTime: 0
+    };
   }
 
   readBody(req) {

@@ -1,4 +1,5 @@
 const { createLogger } = require('./logger');
+const { GasForecaster } = require('./gasForecaster');
 
 class GasMonitor {
   constructor(logger) {
@@ -16,6 +17,9 @@ class GasMonitor {
     this.lastAlertTimestamps = new Map();
     this.tasksLowGasCount = 0;
     this.lowGasTasks = new Set();
+
+    // Initialize gas forecaster for budget forecasting
+    this.forecaster = new GasForecaster(this.logger);
   }
 
   async checkGasBalance(taskId, gasBalance) {
@@ -87,7 +91,62 @@ class GasMonitor {
       gasWarnThreshold: this.GAS_WARN_THRESHOLD,
       alertWebhookEnabled: !!this.ALERT_WEBHOOK_URL,
       alertDebounceMs: this.ALERT_DEBOUNCE_MS,
+      forecastingEnabled: true,
+      forecastSafetyBuffer: this.forecaster.SAFETY_BUFFER_MULTIPLIER,
+      forecastAggregationWindow: this.forecaster.AGGREGATION_WINDOW_SECONDS,
     };
+  }
+
+  /**
+   * Record execution cost for forecasting model.
+   * Called after a task execution completes.
+   *
+   * @param {number|string} taskId
+   * @param {number} feePaid - Gas fee paid in transaction
+   */
+  recordExecution(taskId, feePaid) {
+    this.forecaster.recordExecution(taskId, feePaid);
+  }
+
+  /**
+   * Get forecast for upcoming task execution.
+   *
+   * @param {number|string} taskId
+   * @param {number} gasBalance - Current gas balance
+   * @returns {object} Forecast data with confidence level and risk assessment
+   */
+  getForecast(taskId, gasBalance) {
+    return this.forecaster.forecastTaskGas(taskId, gasBalance);
+  }
+
+  /**
+   * Get forecasts for multiple tasks.
+   *
+   * @param {Array} tasks - Array of {taskId, gasBalance}
+   * @returns {object} Aggregated forecast with risk level
+   */
+  getForecastMultiple(tasks) {
+    return this.forecaster.forecastMultipleTasks(tasks);
+  }
+
+  /**
+   * Get aggregated forecasts by time window.
+   *
+   * @param {Array} tasks - Array of tasks with timing info
+   * @param {number} currentTime - Current timestamp
+   * @returns {Array} Forecasts grouped by time window
+   */
+  forecastByWindow(tasks, currentTime) {
+    return this.forecaster.aggregateByWindow(tasks, currentTime);
+  }
+
+  /**
+   * Get forecaster state for metrics/monitoring.
+   *
+   * @returns {object} Forecaster diagnostics
+   */
+  getForecasterState() {
+    return this.forecaster.getState();
   }
 }
 

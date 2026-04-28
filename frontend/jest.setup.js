@@ -1,7 +1,20 @@
-import '@testing-library/jest-dom'
+require('@testing-library/jest-dom')
+const React = require('react')
 
 // Mock environment variables for tests
 process.env.NEXT_PUBLIC_API_URL = 'http://localhost:3000'
+
+// Suppress known Tiptap duplicate-extension warning in tests
+const originalWarn = console.warn.bind(console)
+beforeAll(() => {
+  console.warn = (...args) => {
+    if (typeof args[0] === 'string' && args[0].includes('Duplicate extension')) return
+    originalWarn(...args)
+  }
+})
+afterAll(() => {
+  console.warn = originalWarn
+})
 
 // Mock Next.js router
 jest.mock('next/router', () => ({

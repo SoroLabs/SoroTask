@@ -52,6 +52,7 @@ proptest! {
             gas_balance,
             whitelist: Vec::new(&env),
             is_active: false, // The register function sets this to true
+            blocked_by: Vec::new(&env),
         };
 
         let task_id = client.register(&config);
@@ -84,10 +85,10 @@ proptest! {
             gas_balance: 100,
             whitelist: Vec::new(&env),
             is_active: false,
+            blocked_by: Vec::new(&env),
         };
 
         let task_id = client.register(&config);
-        
         let mut expected_active = true;
 
         for should_pause in actions {
@@ -138,6 +139,7 @@ proptest! {
             gas_balance: initial_balance,
             whitelist: Vec::new(&env),
             is_active: false,
+            blocked_by: Vec::new(&env),
         };
 
         let task_id = client.register(&config);

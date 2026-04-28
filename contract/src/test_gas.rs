@@ -36,6 +36,7 @@ fn base_config(env: &Env, target: Address) -> TaskConfig {
         gas_balance: 1_000,
         whitelist: Vec::new(env),
         is_active: true,
+        blocked_by: Vec::new(env),
     }
 }
 
@@ -71,6 +72,22 @@ fn test_gas_register() {
 
     track_gas(&env, "register", || {
         client.register(&cfg);
+    });
+}
+
+#[test]
+fn test_gas_monitor_active_index() {
+    let (env, client) = setup();
+    let target = env.register_contract(None, MockTarget);
+    let cfg = base_config(&env, target);
+
+    for _ in 0..32 {
+        client.register(&cfg);
+    }
+
+    env.ledger().set_timestamp(10_000);
+    track_gas(&env, "monitor", || {
+        client.monitor();
     });
 }
 

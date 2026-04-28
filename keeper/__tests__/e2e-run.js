@@ -4,8 +4,6 @@ const {
   Contract,
   TransactionBuilder,
   BASE_FEE,
-  Networks,
-  Address,
   scValToNative,
 } = require('@stellar/stellar-sdk');
 const { spawn, execSync } = require('child_process');
@@ -36,7 +34,7 @@ const creatorKeypair = Keypair.fromSecret(CREATOR_SECRET);
 
 async function registerTask() {
   console.log('Registering a task using stellar-cli...');
-  
+
   // Construct the command
   // Note: we use --config as the argument name because that's what's in lib.rs: register(env, config)
   const cmd = `stellar contract invoke \
@@ -77,9 +75,9 @@ async function getTaskLastRun(taskId) {
     })
       .addOperation(contract.call('get_task', rpc.nativeToScVal(taskId, { type: 'u64' })))
       .setTimeout(30)
-      .build()
+      .build(),
   );
-  
+
   if (result.error) {
     throw new Error('Failed to get task: ' + JSON.stringify(result.error));
   }
@@ -97,15 +95,15 @@ async function runTest() {
     console.log('Starting keeper process...');
     // Ensure we are in the keeper directory
     const keeperDir = path.resolve(__dirname, '..');
-    
+
     const keeper = spawn('node', ['index.js'], {
       cwd: keeperDir,
-      env: { 
-        ...process.env, 
+      env: {
+        ...process.env,
         POLLING_INTERVAL_MS: '2000',
         LOG_LEVEL: 'debug',
         // Make sure data dir is clean for E2E
-        DATA_DIR: path.join(keeperDir, 'data-e2e')
+        DATA_DIR: path.join(keeperDir, 'data-e2e'),
       },
       stdio: 'inherit',
     });
@@ -119,7 +117,7 @@ async function runTest() {
       await new Promise((r) => setTimeout(r, 5000));
       const currentLastRun = await getTaskLastRun(taskId);
       console.log('Current last_run:', currentLastRun);
-      
+
       if (currentLastRun > initialLastRun) {
         console.log('SUCCESS: Task executed!');
         executed = true;
