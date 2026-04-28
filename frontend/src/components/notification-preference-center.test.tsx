@@ -88,4 +88,37 @@ describe("NotificationPreferenceCenter", () => {
       screen.getByText(/allow notifications to recover delivery/i),
     ).toBeInTheDocument();
   });
+
+  it("simulates only the channels that each category actually supports", async () => {
+    permissionState = "granted";
+
+    render(<NotificationPreferenceCenter />);
+
+    fireEvent.click(screen.getByLabelText("Weekly digest"));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Simulate this notification" })[6],
+    );
+
+    expect(await screen.findByText("Delivered to Email summaries")).toBeInTheDocument();
+    expect(screen.queryByText("Delivered to In-app feed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Delivered to Browser push")).not.toBeInTheDocument();
+  });
+
+  it("does not show a blocked browser warning for categories that never use browser delivery", async () => {
+    permissionState = "denied";
+
+    render(<NotificationPreferenceCenter />);
+
+    fireEvent.click(screen.getByLabelText("Weekly digest"));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Simulate this notification" })[6],
+    );
+
+    expect(
+      await screen.findByText("Delivered to Email summaries"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/browser push blocked by browser permission/i),
+    ).not.toBeInTheDocument();
+  });
 });

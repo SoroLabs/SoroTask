@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SoroTask Frontend Performance Monitoring",
+  title: "SoroTask Notification Preferences",
   description:
-    "Track route load, task open, search, and mutation responsiveness in the SoroTask frontend.",
+    "Manage in-app, browser, and email notification behavior for task events from one unified preference center.",
 };
 
 export default function RootLayout({
