@@ -12,6 +12,7 @@
     "test:watch": "jest --watch"
   },
   "dependencies": {
+    "@stellar/freighter-api": "6.0.1",
     "next": "16.2.1",
     "react": "19.2.4",
     "react-dom": "19.2.4"
@@ -20,6 +21,7 @@
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.4.2",
     "@testing-library/react": "^16.0.0",
+    "@testing-library/user-event": "^14.5.2",
     "@types/jest": "^29.5.11",
     "@types/node": "^25",
     "@types/react": "^19",

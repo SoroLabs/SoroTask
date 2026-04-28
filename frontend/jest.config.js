@@ -42,6 +42,10 @@ const customConfig = {
     // Align with tsconfig.json paths: @/* maps to the project root.
     '^@/(.*)$': '<rootDir>/$1',
   },
+  // @stellar/freighter-api ships as ESM — tell Jest to transform it via Babel.
+  transformIgnorePatterns: [
+    '/node_modules/(?!(@stellar/freighter-api)/)',
+  ],
 }
 
 module.exports = createJestConfig(customConfig)
