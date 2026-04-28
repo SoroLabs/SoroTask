@@ -127,7 +127,11 @@ function buildSimulationEntry(
     categoryId: category.id,
     title: simulationMessages[category.id],
     channels: getActiveDeliveryChannels(preferences, category.id, permission),
-    blockedChannels: getBlockedDeliveryChannels(preferences, permission),
+    blockedChannels: getBlockedDeliveryChannels(
+      preferences,
+      category.id,
+      permission,
+    ),
     createdAt: new Date().toISOString(),
   };
 }

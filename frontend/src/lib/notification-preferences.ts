@@ -175,7 +175,14 @@ export function getActiveDeliveryChannels(
     return [];
   }
 
-  return (Object.keys(preferences.channels) as NotificationChannel[]).filter(
+  const categoryDefinition = notificationCategories.find(
+    (category) => category.id === categoryId,
+  );
+  const allowedChannels =
+    categoryDefinition?.recommendedChannels ??
+    (Object.keys(preferences.channels) as NotificationChannel[]);
+
+  return allowedChannels.filter(
     (channel) => {
       if (!preferences.channels[channel]) {
         return false;
@@ -192,9 +199,21 @@ export function getActiveDeliveryChannels(
 
 export function getBlockedDeliveryChannels(
   preferences: NotificationPreferences,
+  categoryId: NotificationCategoryId,
   permission: BrowserPermissionState,
 ): NotificationChannel[] {
-  if (preferences.channels.browser && permission !== "granted") {
+  const categoryDefinition = notificationCategories.find(
+    (category) => category.id === categoryId,
+  );
+  const usesBrowserChannel =
+    categoryDefinition?.recommendedChannels.includes("browser") ?? true;
+
+  if (
+    preferences.categories[categoryId] &&
+    preferences.channels.browser &&
+    usesBrowserChannel &&
+    permission !== "granted"
+  ) {
     return ["browser"];
   }
 

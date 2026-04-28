@@ -3,9 +3,9 @@ import "./globals.css";
 import { CommandPalette } from "@/components/CommandPalette";
 
 export const metadata: Metadata = {
-  title: "SoroTask Frontend Performance Monitoring",
+  title: "SoroTask Notification Preferences",
   description:
-    "Track route load, task open, search, and mutation responsiveness in the SoroTask frontend.",
+    "Manage in-app, browser, and email notification behavior for task events from one unified preference center.",
 };
 
 // Runs before first paint to avoid theme flash
