@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="X-UA-Compatible" />
+    <title>Polling Engine Performance</title>
+  </head>
+  <body>
+    <table>
+      <thead>
+        <tr>
+          <th>name</th><th>ops</th><th>margin</th><th>percentSlower</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Poll 10 Tasks (Low Load)</td><td>389</td><td>2.19</td><td>0</td>
+        </tr><tr>
+          <td>Poll 100 Tasks (Medium Load)</td><td>60</td><td>2.39</td><td>84.58</td>
+        </tr><tr>
+          <td>Poll 1000 Tasks (Heavy Load)</td><td>6</td><td>1.97</td><td>98.46</td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>

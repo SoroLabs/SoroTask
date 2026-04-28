@@ -1,0 +1,96 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "连接钱包",
+    "close": "关闭",
+    "cancel": "取消",
+    "save": "保存",
+    "edit": "编辑",
+    "delete": "删除",
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功",
+    "warning": "警告",
+    "no_data": "没有可用数据"
+  },
+  "calendar": {
+    "title": "任务调度日历",
+    "today": "今天",
+    "previous_month": "上个月",
+    "next_month": "下个月",
+    "timezone": "时区",
+    "legend": {
+      "today": "今天",
+      "task_with_deadline": "带截止日期的任务",
+      "multiple_tasks": "同一日期的多个任务",
+      "past_deadline": "已过期的截止日期"
+    },
+    "selected_date_title": "{date}的任务",
+    "no_tasks_scheduled": "没有计划的任务",
+    "schedule_calendar": "任务调度日历"
+  },
+  "calendar_day": {
+    "more_button": "+{count}更多",
+    "tasks_label": "{count}项任务"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "{count}项计划任务",
+    "click_task_to_view": "单击任务查看详情"
+  },
+  "task_detail": {
+    "title": "任务详情",
+    "status": "状态",
+    "contract_address": "合约地址",
+    "description": "描述",
+    "schedule_settings": "计划设置",
+    "execution_interval": "执行间隔",
+    "gas_balance": "燃料余额",
+    "next_execution": "下次执行",
+    "deadline": "截止日期",
+    "due_date": "到期日期",
+    "time_until_deadline": "距截止日期还有",
+    "due_today": "今天到期!",
+    "overdue_by": "逾期{days}天",
+    "days_remaining": "剩余{days}天",
+    "created": "创建于",
+    "timezone_label": "时区",
+    "tags": "标签",
+    "edit_task": "编辑任务",
+    "view_logs": "查看日志",
+    "status_pending": "待定",
+    "status_active": "活跃",
+    "status_completed": "已完成",
+    "status_failed": "失败",
+    "status_paused": "已暂停"
+  },
+  "forms": {
+    "create_automation_task": "创建自动化任务",
+    "your_tasks": "我的任务",
+    "target_contract_address": "目标合约地址",
+    "contract_placeholder": "C...",
+    "function_name": "函数名称",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "间隔(秒)",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "燃料余额(XLM)",
+    "gas_balance_placeholder": "10",
+    "register_task": "注册任务",
+    "no_tasks_registered_yet": "尚未注册任何任务。"
+  },
+  "execution_logs": {
+    "title": "执行日志",
+    "task_id": "任务ID",
+    "target": "目标",
+    "keeper": "管理者",
+    "status": "状态",
+    "timestamp": "时间戳",
+    "status_success": "成功",
+    "mins_ago": "{mins}分钟前"
+  },
+  "formatting": {
+    "hours_short": "小时",
+    "seconds_short": "秒",
+    "interval_display": "{hours}小时({seconds}秒)",
+    "xlm_unit": "XLM"
+  }
+}

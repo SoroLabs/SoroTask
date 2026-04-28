@@ -1,0 +1,96 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "Geldbörse Verbinden",
+    "close": "Schließen",
+    "cancel": "Abbrechen",
+    "save": "Speichern",
+    "edit": "Bearbeiten",
+    "delete": "Löschen",
+    "loading": "Lädt...",
+    "error": "Fehler",
+    "success": "Erfolg",
+    "warning": "Warnung",
+    "no_data": "Keine Daten verfügbar"
+  },
+  "calendar": {
+    "title": "Aufgabenplanungskalender",
+    "today": "Heute",
+    "previous_month": "Vorheriger Monat",
+    "next_month": "Nächster Monat",
+    "timezone": "Zeitzone",
+    "legend": {
+      "today": "Heute",
+      "task_with_deadline": "Aufgabe mit Deadline",
+      "multiple_tasks": "Mehrere Aufgaben am selben Tag",
+      "past_deadline": "Deadline überschritten"
+    },
+    "selected_date_title": "Aufgaben am {date}",
+    "no_tasks_scheduled": "Keine Aufgaben geplant",
+    "schedule_calendar": "Planungskalender"
+  },
+  "calendar_day": {
+    "more_button": "+{count} weitere",
+    "tasks_label": "{count} Aufgabe{plural}"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "{count} Aufgabe{plural} geplant",
+    "click_task_to_view": "Klicken Sie auf die Aufgabe, um Details anzuzeigen"
+  },
+  "task_detail": {
+    "title": "Aufgabendetails",
+    "status": "Status",
+    "contract_address": "Vertrag Adresse",
+    "description": "Beschreibung",
+    "schedule_settings": "Planungseinstellungen",
+    "execution_interval": "Ausführungsintervall",
+    "gas_balance": "Gasguthaben",
+    "next_execution": "Nächste Ausführung",
+    "deadline": "Deadline",
+    "due_date": "Fälligkeitsdatum",
+    "time_until_deadline": "Verbleibende Zeit bis Deadline",
+    "due_today": "Heute fällig!",
+    "overdue_by": "{days} Tag{plural} überfällig",
+    "days_remaining": "{days} Tag{plural} verbleibend",
+    "created": "Erstellt",
+    "timezone_label": "Zeitzone",
+    "tags": "Tags",
+    "edit_task": "Aufgabe Bearbeiten",
+    "view_logs": "Protokolle Anzeigen",
+    "status_pending": "Ausstehend",
+    "status_active": "Aktiv",
+    "status_completed": "Abgeschlossen",
+    "status_failed": "Fehlgeschlagen",
+    "status_paused": "Angehalten"
+  },
+  "forms": {
+    "create_automation_task": "Automatisierungsaufgabe Erstellen",
+    "your_tasks": "Meine Aufgaben",
+    "target_contract_address": "Ziel-Kontraktadresse",
+    "contract_placeholder": "C...",
+    "function_name": "Funktionsname",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "Intervall (Sekunden)",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "Gasguthaben (XLM)",
+    "gas_balance_placeholder": "10",
+    "register_task": "Aufgabe Registrieren",
+    "no_tasks_registered_yet": "Noch keine Aufgaben registriert."
+  },
+  "execution_logs": {
+    "title": "Ausführungsprotokolle",
+    "task_id": "Aufgaben-ID",
+    "target": "Ziel",
+    "keeper": "Verwalter",
+    "status": "Status",
+    "timestamp": "Zeitstempel",
+    "status_success": "Erfolg",
+    "mins_ago": "vor {mins} Minuten"
+  },
+  "formatting": {
+    "hours_short": "Std",
+    "seconds_short": "s",
+    "interval_display": "{hours}Std ({seconds} Sekunden)",
+    "xlm_unit": "XLM"
+  }
+}

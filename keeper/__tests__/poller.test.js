@@ -37,6 +37,16 @@ describe('TaskPoller', () => {
         tasksSkipped: 0,
         errors: 0,
       });
+
+      expect(poller.getCycleInsights()).toEqual({
+        backlogSize: 0,
+        dueCount: 0,
+        dueSoonCount: 0,
+        minSecondsUntilDue: null,
+        avgRpcLatencyMs: 0,
+        cycleDurationMs: 0,
+        errors: 0,
+      });
     });
   });
 
@@ -117,6 +127,23 @@ describe('TaskPoller', () => {
       await poller.pollDueTasks([1]);
       expect(poller.stats.lastPollTime).toBeTruthy();
     });
+
+    it('should expose cycle insights for scheduler decisions', async () => {
+      const taskIds = [1, 2];
+
+      jest.spyOn(poller, 'checkTask')
+        .mockResolvedValueOnce({ isDue: false, taskId: 1, secondsUntilDue: 45 })
+        .mockResolvedValueOnce({ isDue: true, taskId: 2, secondsUntilDue: 0 });
+
+      await poller.pollDueTasks(taskIds);
+      const insights = poller.getCycleInsights();
+
+      expect(insights.backlogSize).toBe(2);
+      expect(insights.dueCount).toBe(1);
+      expect(insights.dueSoonCount).toBe(1);
+      expect(insights.minSecondsUntilDue).toBe(45);
+      expect(insights.avgRpcLatencyMs).toBeGreaterThanOrEqual(0);
+    });
   });
 
   describe('checkTask', () => {
@@ -125,7 +152,7 @@ describe('TaskPoller', () => {
 
       const result = await poller.checkTask(1, 1000);
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isDue: false,
         taskId: 1,
         reason: 'not_found',
@@ -141,7 +168,7 @@ describe('TaskPoller', () => {
 
       const result = await poller.checkTask(1, 1000);
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isDue: false,
         taskId: 1,
         reason: 'skipped',
@@ -157,7 +184,7 @@ describe('TaskPoller', () => {
 
       const result = await poller.checkTask(1, 1000);
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isDue: false,
         taskId: 1,
         reason: 'skipped',
@@ -173,9 +200,10 @@ describe('TaskPoller', () => {
 
       const result = await poller.checkTask(1, 1000);
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isDue: true,
         taskId: 1,
+        secondsUntilDue: 0,
       });
     });
 
@@ -188,9 +216,10 @@ describe('TaskPoller', () => {
 
       const result = await poller.checkTask(1, 1000);
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isDue: false,
         taskId: 1,
+        secondsUntilDue: 100,
       });
     });
 
@@ -203,9 +232,10 @@ describe('TaskPoller', () => {
 
       const result = await poller.checkTask(1, 1000);
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isDue: true,
         taskId: 1,
+        secondsUntilDue: 0,
       });
     });
   });

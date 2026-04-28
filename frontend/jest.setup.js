@@ -1,11 +1,23 @@
-import '@testing-library/jest-dom'
+require('@testing-library/jest-dom')
+const React = require('react')
 
 // Mock environment variables for tests
 process.env.NEXT_PUBLIC_API_URL = 'http://localhost:3000'
 
-// The project uses the Next.js App Router (app/ directory).
-// App Router uses next/navigation — NOT next/router (which is Pages Router only).
-jest.mock('next/navigation', () => ({
+// Suppress known Tiptap duplicate-extension warning in tests
+const originalWarn = console.warn.bind(console)
+beforeAll(() => {
+  console.warn = (...args) => {
+    if (typeof args[0] === 'string' && args[0].includes('Duplicate extension')) return
+    originalWarn(...args)
+  }
+})
+afterAll(() => {
+  console.warn = originalWarn
+})
+
+// Mock Next.js router
+jest.mock('next/router', () => ({
   useRouter() {
     return {
       push: jest.fn(),
@@ -32,6 +44,9 @@ jest.mock('next/navigation', () => ({
 // Mock Next.js Image component to avoid next/image optimisation in tests.
 jest.mock('next/image', () => ({
   __esModule: true,
-  // eslint-disable-next-line jsx-a11y/alt-text
-  default: (props) => <img {...props} />,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  default: ({ priority: _priority, ...props }) => {
+    // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
+    return <img {...props} />
+  },
 }))

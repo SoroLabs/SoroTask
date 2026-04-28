@@ -1,0 +1,2 @@
+# This directory is used for task registry persistence
+# It will be mounted as a Docker volume

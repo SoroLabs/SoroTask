@@ -12,7 +12,7 @@ logger.info = () => {};
 logger.error = () => {};
 logger.warn = () => {};
 
-const CONTRACT_ID = 'CCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+const CONTRACT_ID = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
 
 function createMockTaskConfig() {
   const config = {
@@ -57,26 +57,33 @@ async function runBenchmark() {
 
   const generateTaskIds = (count) => Array.from({ length: count }, (_, i) => i + 1);
 
+  const memBefore = process.memoryUsage();
+  console.log(`Memory before polling benchmarks: ${Math.round(memBefore.heapUsed / 1024 / 1024)} MB`);
+
   await benny.suite(
     'Polling Engine Performance',
 
-    benny.add('Poll 10 Tasks', async () => {
+    benny.add('Poll 10 Tasks (Low Load)', async () => {
       await poller.pollDueTasks(generateTaskIds(10));
     }),
 
-    benny.add('Poll 100 Tasks', async () => {
+    benny.add('Poll 100 Tasks (Medium Load)', async () => {
       await poller.pollDueTasks(generateTaskIds(100));
     }),
 
-    benny.add('Poll 500 Tasks', async () => {
-      await poller.pollDueTasks(generateTaskIds(500));
+    benny.add('Poll 1000 Tasks (Heavy Load)', async () => {
+      await poller.pollDueTasks(generateTaskIds(1000));
     }),
 
     benny.cycle(),
     benny.complete(),
-    benny.save({ file: 'polling-results', format: 'json', details: true }),
-    benny.save({ file: 'polling-results', format: 'table.html' }),
+    benny.save({ folder: 'benchmarks/results', file: 'polling-results', format: 'json', details: true }),
+    benny.save({ folder: 'benchmarks/results', file: 'polling-results', format: 'table.html' }),
   );
+
+  const memAfter = process.memoryUsage();
+  console.log(`Memory after polling benchmarks: ${Math.round(memAfter.heapUsed / 1024 / 1024)} MB`);
+  console.log(`Heap growth: ${Math.round((memAfter.heapUsed - memBefore.heapUsed) / 1024 / 1024)} MB`);
 
   await server.stop();
 }
