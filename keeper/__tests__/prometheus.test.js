@@ -8,6 +8,27 @@ const mockGasMonitor = {
     gasWarnThreshold: 1000000,
     alertDebounceMs: 60000,
     alertWebhookEnabled: false,
+    forecastingEnabled: true,
+    forecastSafetyBuffer: 1.5,
+    forecastAggregationWindow: 3600,
+  })),
+  getForecasterState: jest.fn(() => ({
+    trackedTasks: 0,
+    totalHistoricalSamples: 0,
+    safetyBufferMultiplier: 1.5,
+    aggregationWindowSeconds: 3600,
+    highConfidenceThreshold: 5,
+    taskSamples: [],
+  })),
+  getForecast: jest.fn(() => ({
+    taskId: '1',
+    estimatedCost: 1000,
+    confidence: 'low',
+    historicalSamples: 0,
+    isUnderfunded: false,
+    recommendedBalance: 1500,
+    buffer: 500,
+    stats: null,
   })),
 };
 

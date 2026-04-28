@@ -1,26 +1,158 @@
 @import "tailwindcss";
+@import "design-tokens.css";
 
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* Focus ring tokens – single source of truth */
+  --focus-ring-color: #3b82f6;
+  --focus-ring-offset: 3px;
+  --focus-ring-width: 3px;
 }
 
+[data-theme="dark"] {
+  --bg-base: #09090b;
+  --bg-surface: #18181b;
+  --bg-elevated: #27272a;
+  --bg-overlay: rgba(9, 9, 11, 0.6);
+
+  --border: #3f3f46;
+  --border-subtle: #27272a;
+
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-shadow: rgba(59, 130, 246, 0.25);
+
+  --input-bg: #09090b;
+  --input-border: #3f3f46;
+}
+
+/* ── Tailwind theme bridge ────────────────────────────────── */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: "Segoe UI", "Inter", system-ui, sans-serif;
+  --font-mono: "Consolas", "SFMono-Regular", monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --focus-ring-color: #60a5fa;
   }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: "Segoe UI", "Inter", system-ui, sans-serif;
+  min-height: 100vh;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+.media-frame {
+  contain: paint;
+}
+
+.media-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: inherit;
+}
+
+::selection {
+  background: rgba(45, 212, 191, 0.3);
+  color: white;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+input[type="checkbox"] {
+  accent-color: #5eead4;
+}
+
+/* ─── Skip-to-content link ────────────────────────────────────────────── */
+.skip-nav {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  z-index: 100;
+}
+
+.skip-nav:focus-visible {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  width: auto;
+  height: auto;
+  padding: 0.5rem 1.25rem;
+  border-radius: 0.5rem;
+  background: var(--focus-ring-color);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  outline: var(--focus-ring-width) solid #fff;
+  outline-offset: 2px;
+}
+
+/* ─── Global focus-visible ring ──────────────────────────────────────── */
+/*
+  Apply a clear, high-contrast focus ring to ALL interactive elements
+  using :focus-visible (only shown during keyboard navigation).
+*/
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: 4px;
+}
+
+/* Remove default outline on mouse interaction */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ─── Keyboard-only dialog backdrop ─────────────────────────────────── */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─── Visually-hidden utility (for screen-reader-only text) ──────────── */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
 }

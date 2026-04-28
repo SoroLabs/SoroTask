@@ -11,6 +11,7 @@ class TaskRegistry {
     this.server = server;
     this.contractId = contractId;
     this.taskIds = new Set();
+    this.tasks = new Map(); // Store taskId -> taskDetails (including status, logs)
     this.lastSeenLedger = options.startLedger || 0;
     this.logger = options.logger || createLogger('registry');
     this._ensureDataDir();
@@ -41,6 +42,29 @@ class TaskRegistry {
      */
   getTaskIds() {
     return Array.from(this.taskIds).sort((a, b) => a - b);
+  }
+
+  /**
+   * Get all tasks with their current details and status.
+   * @returns {Object[]}
+   */
+  getTasksWithStats() {
+    return Array.from(this.tasks.values()).sort((a, b) => b.id - a.id);
+  }
+
+  /**
+   * Update task details or status.
+   * @param {number} taskId 
+   * @param {Object} update 
+   */
+  updateTask(taskId, update) {
+    const existing = this.tasks.get(taskId) || { id: taskId, status: 'unknown' };
+    this.tasks.set(taskId, { ...existing, ...update, updatedAt: new Date().toISOString() });
+    
+    // Also ensure it's in taskIds
+    if (!this.taskIds.has(taskId)) {
+      this.taskIds.add(taskId);
+    }
   }
 
   // ---- internal ----
@@ -92,6 +116,7 @@ class TaskRegistry {
             const taskId = this._extractTaskId(event);
             if (taskId !== null && !this.taskIds.has(taskId)) {
               this.taskIds.add(taskId);
+              this.updateTask(taskId, { id: taskId, status: 'registered', registeredAt: event.ledgerCloseAt });
               this.logger.info('Discovered task ID', { taskId });
             }
           } catch (err) {
@@ -155,6 +180,11 @@ class TaskRegistry {
         if (Array.isArray(data.taskIds)) {
           data.taskIds.forEach(id => this.taskIds.add(id));
         }
+        if (data.tasks) {
+          Object.entries(data.tasks).forEach(([id, details]) => {
+            this.tasks.set(Number(id), details);
+          });
+        }
         if (data.lastSeenLedger && data.lastSeenLedger > this.lastSeenLedger) {
           this.lastSeenLedger = data.lastSeenLedger;
         }
@@ -169,6 +199,7 @@ class TaskRegistry {
     try {
       const data = {
         taskIds: Array.from(this.taskIds).sort((a, b) => a - b),
+        tasks: Object.fromEntries(this.tasks),
         lastSeenLedger: this.lastSeenLedger,
         updatedAt: new Date().toISOString(),
       };
@@ -180,3 +211,4 @@ class TaskRegistry {
 }
 
 module.exports = TaskRegistry;
+

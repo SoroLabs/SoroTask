@@ -4,30 +4,78 @@ node_modules/
 .env.local
 
 # Coverage reports
+
 coverage/
 *.lcov
 .nyc_output/
-
 # Rust build artifacts
+
 target/
 Cargo.lock
 **/*.rs.bk
-
 # Next.js
 .next/
 out/
 dist/
-
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
 # OS
 .DS_Store
 Thumbs.db
-
 # CI
 .github/workflows/*.log
+# Additional patterns for Node.js, Rust, and OS (appended to avoid duplicates with existing)
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pids
+*.pid
+*.seed
+*.pid.lock
+# Coverage directories (additional to existing)
+.jest/
+# Dependency directories
+jspm_packages/
+typings/
+.yarn/
+.pnp.*
+.yarn-install-state.gz
+# Misc
+.tsbuildinfo
+.npm
+.eslintcache
+.stylelintcache
+.lutecache
+.netscape
+.gh-pages
+.sass-cache
+.links
+.bundle
+.betterer-results
+*.tgz
+*.war
+*.jar
+# OS generated files (additional)
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cdr
+*.sav
+*.tmp
+*.temp
+# Miscellaneous
+*.backup
+*.bak
+*.log.*
+# Docker
+docker-compose.override.yml
+docker-compose.*.override.yml
+# Environments
+.env.*
+!.env.example
