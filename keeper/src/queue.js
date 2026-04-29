@@ -43,24 +43,31 @@ class ExecutionQueue extends EventEmitter {
     this.retryTaskIds = new Set(); // Tasks being retried in current cycle
   }
 
-  async enqueue(taskIds, executorFn) {
-    const validTaskIds = taskIds.filter((id) => !this.failedTasks.has(id));
+  async enqueue(tasksToEnqueue, executorFn) {
+    const validTasks = tasksToEnqueue.filter((task) => {
+      const taskId = typeof task === 'object' ? task.taskId : task;
+      return !this.failedTasks.has(taskId);
+    });
 
-    this.depth = validTaskIds.length;
+    this.depth = validTasks.length;
 
     // Track tasks due for this cycle
     if (this.metricsServer) {
-      this.metricsServer.increment("tasksDueTotal", validTaskIds.length);
+      this.metricsServer.increment("tasksDueTotal", validTasks.length);
     }
 
     const cycleStartTime = Date.now();
 
-    const cyclePromises = validTaskIds.map((taskId) => {
+    const cyclePromises = validTasks.map((task) => {
       return this.limit(async () => {
-        let attemptContext = null;
+        const taskId = typeof task === 'object' ? task.taskId : task;
+        const initialContext = typeof task === 'object' ? task.context : {};
+        let attemptContext = { ...initialContext };
 
         if (this.idempotencyGuard) {
           const lockResult = this.idempotencyGuard.acquire(taskId);
+          attemptContext.attemptId = lockResult.attemptId;
+
           if (!lockResult.acquired) {
             if (this.metricsServer) {
               this.metricsServer.increment("tasksSkippedIdempotencyTotal", 1);
@@ -68,10 +75,10 @@ class ExecutionQueue extends EventEmitter {
             this.emit("task:skipped", taskId, {
               reason: "idempotency_lock",
               attemptId: lockResult.attemptId,
+              pollCorrelationId: attemptContext.pollCorrelationId,
             });
             return;
           }
-          attemptContext = { attemptId: lockResult.attemptId };
         }
 
         this.inFlight++;
@@ -108,7 +115,7 @@ class ExecutionQueue extends EventEmitter {
               attemptId: attemptContext?.attemptId,
             });
           }
-          this.emit("task:success", taskId);
+          this.emit("task:success", taskId, attemptContext);
         } catch (error) {
           this.failedCount++;
           this.failedTasks.add(taskId);
@@ -134,7 +141,7 @@ class ExecutionQueue extends EventEmitter {
               lastError: error.message || String(error),
             });
           }
-          this.emit("task:failed", taskId, error);
+          this.emit("task:failed", taskId, error, attemptContext);
         } finally {
           // Attempt to release the lock if we hold it
           try {

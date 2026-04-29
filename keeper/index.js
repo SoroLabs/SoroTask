@@ -107,6 +107,9 @@ async function main() {
   // Task executor function - calls contract.execute(keeper, task_id)
   // In dry-run mode, simulates the transaction without submitting it.
   const executeTask = async (taskId, context = {}) => {
+    const correlationId = context.correlationId || context.attemptId;
+    const taskLogger = correlationId ? logger.childWithTrace(correlationId) : logger;
+    
     const account = await server.getAccount(keypair.publicKey());
     const deps = {
       server,
@@ -118,7 +121,7 @@ async function main() {
 
     if (DRY_RUN) {
       const result = await dryRunTask(taskId, deps);
-      logger.info("Dry-run result", {
+      taskLogger.info("Dry-run result", {
         taskId,
         status: result.status,
         estimatedFee: result.simulation?.estimatedFee ?? null,
@@ -130,7 +133,8 @@ async function main() {
     try {
       const retryResult = await executeTaskWithRetry(taskId, deps, {
         attemptId: context.attemptId,
-        logger,
+        correlationId,
+        logger: taskLogger,
         onRetry: (_error, _attempt, _delay, retryContext) => {
           idempotencyGuard.touchRetry(taskId, {
             lastError: retryContext?.message || null,
@@ -138,18 +142,20 @@ async function main() {
         },
       });
 
-      logger.info("Task execution completed", {
+      taskLogger.info("Task execution completed", {
         taskId,
         attemptId: context.attemptId || null,
+        correlationId,
         retries: retryResult.retries,
         attempts: retryResult.attempts,
         duplicate: Boolean(retryResult.duplicate),
         txHash: retryResult.result?.txHash || null,
       });
     } catch (error) {
-      logger.error("Failed to execute task", {
+      taskLogger.error("Failed to execute task", {
         taskId,
         attemptId: context.attemptId || null,
+        correlationId,
         error: error.error?.message || error.message || String(error),
         classification: error.classification || null,
         context: error.context || null,
@@ -192,7 +198,14 @@ async function main() {
           stateFile: lockSnapshot.stateFile,
           activeLocks: lockSnapshot.lockCount,
         });
-        await queue.enqueue(dueTaskIds, executeTask);
+        
+        // Transform the dueTask results to pass correlation IDs to the queue
+        const tasksToEnqueue = dueTaskIds.map(d => ({
+          taskId: d.taskId,
+          context: { pollCorrelationId: d.correlationId }
+        }));
+        
+        await queue.enqueue(tasksToEnqueue, executeTask);
       } else {
         logger.info("No tasks due for execution");
       }
@@ -224,7 +237,11 @@ async function main() {
       const taskIds = registry.getTaskIds();
       const dueTaskIds = await poller.pollDueTasks(taskIds);
       if (dueTaskIds.length > 0) {
-        await queue.enqueue(dueTaskIds, executeTask);
+        const tasksToEnqueue = dueTaskIds.map(d => ({
+          taskId: d.taskId,
+          context: { pollCorrelationId: d.correlationId }
+        }));
+        await queue.enqueue(tasksToEnqueue, executeTask);
       }
     } catch (error) {
       logger.error("Error in initial poll", { error: error.message });
