@@ -272,6 +272,104 @@ class ExecutionQueue extends EventEmitter {
   }
 
   /**
+   * Graceful shutdown with timeout handling
+   * 
+   * @param {Object} options - Shutdown options
+   * @param {number} options.drainTimeoutMs - Timeout for draining in-flight tasks (default: 30000ms)
+   * @param {Function} options.onProgress - Callback for progress updates
+   * @returns {Object} Shutdown summary with completion status
+   */
+  async gracefulShutdown(options = {}) {
+    const drainTimeoutMs = parseInt(
+      options.drainTimeoutMs || process.env.SHUTDOWN_DRAIN_TIMEOUT_MS || 30000,
+      10
+    );
+    const onProgress = options.onProgress || (() => {});
+
+    const startTime = Date.now();
+    const initialInFlight = this.inFlight;
+
+    this.logger.info("Starting graceful queue shutdown", {
+      drainTimeoutMs,
+      inFlightTasks: initialInFlight,
+      queuedTasks: this.depth,
+    });
+
+    // Phase 1: Stop accepting new tasks
+    this.limit.clearQueue();
+    this.depth = 0;
+    onProgress({ phase: "clearing-queue", remaining: this.inFlight });
+
+    // Phase 2: Wait for in-flight tasks with timeout
+    const drained = await Promise.race([
+      // Wait for all active promises
+      (async () => {
+        if (this.activePromises.length > 0) {
+          await Promise.allSettled(this.activePromises);
+        }
+        // Wait for in-flight counter to reach zero
+        while (this.inFlight > 0) {
+          await new Promise((r) => setTimeout(r, 50));
+          onProgress({ phase: "draining", remaining: this.inFlight });
+        }
+        return true;
+      })(),
+      // Timeout promise
+      new Promise((resolve) => {
+        const timeoutId = setTimeout(() => {
+          this.logger.warn("Graceful shutdown drain timeout", {
+            remainingInFlight: this.inFlight,
+            durationMs: Date.now() - startTime,
+          });
+          resolve(false);
+        }, drainTimeoutMs);
+
+        // Clear timeout if drain completes first
+        this.once("drain:complete", () => clearTimeout(timeoutId));
+      }),
+    ]);
+
+    const durationMs = Date.now() - startTime;
+    const summary = {
+      drained,
+      initialInFlight,
+      remaining: this.inFlight,
+      durationMs,
+      completedCount: this.completed,
+      failedCount: this.failedCount,
+    };
+
+    if (drained) {
+      this.logger.info("Queue gracefully drained", {
+        ...summary,
+        timeoutMs: drainTimeoutMs,
+      });
+    } else {
+      this.logger.warn("Queue drain timeout, forcing shutdown", {
+        ...summary,
+        timeoutMs: drainTimeoutMs,
+      });
+    }
+
+    this.emit("drain:complete", summary);
+    return summary;
+  }
+
+  /**
+   * Get current in-flight status
+   */
+  getInFlightStatus() {
+    return {
+      inFlight: this.inFlight,
+      activePromises: this.activePromises.length,
+      depth: this.depth,
+      completed: this.completed,
+      failed: this.failedCount,
+      failedTaskIds: Array.from(this.failedTasks),
+    };
+  }
+
+  /**
    * Get retry queue statistics
    */
   getRetryStatistics() {
