@@ -20,6 +20,7 @@ class Metrics {
       avgFeePaidXlm: 0,
       lastCycleDurationMs: 0,
       rpcCircuitState: 0, // 0 = CLOSED, 1 = HALF_OPEN, 2 = OPEN
+      backlogSize: 0,
     };
 
     this.feeSamples = [];
@@ -59,6 +60,9 @@ class Metrics {
     if (typeof state.rpcConnected === 'boolean') {
       this.rpcConnected = state.rpcConnected;
     }
+    if (typeof state.backlogSize === 'number') {
+      this.gauges.backlogSize = state.backlogSize;
+    }
   }
 
   snapshot() {
@@ -75,16 +79,40 @@ class Metrics {
       this.lastPollAt &&
       now - this.lastPollAt.getTime() > staleThreshold;
 
+    const rpcCircuit = this.gauges.rpcCircuitState === 2 ? 'OPEN' : (this.gauges.rpcCircuitState === 1 ? 'HALF_OPEN' : 'CLOSED');
+
+    let status = 'ok';
+    let reason = 'Keeper is operating normally';
+
+    if (!this.rpcConnected || rpcCircuit === 'OPEN') {
+      status = 'failing';
+      reason = 'RPC connection lost or circuit breaker is OPEN';
+    } else if (isStale) {
+      status = 'stale';
+      reason = `No polling activity for over ${staleThreshold}ms`;
+    } else if (rpcCircuit === 'HALF_OPEN') {
+      status = 'degraded_rpc';
+      reason = 'Partial RPC failure, circuit breaker is HALF_OPEN';
+    } else if (this.gauges.backlogSize >= 50) {
+      status = 'degraded_backlog';
+      reason = `High retry backlog pressure (${this.gauges.backlogSize} tasks)`;
+    }
+
     return {
-      status: isStale ? 'stale' : 'ok',
+      status,
+      reason,
       uptime: uptimeSeconds,
       lastPollAt: this.lastPollAt ? this.lastPollAt.toISOString() : null,
       rpcConnected: this.rpcConnected,
-      rpcCircuitState: this.gauges.rpcCircuitState === 2 ? 'OPEN' : (this.gauges.rpcCircuitState === 1 ? 'HALF_OPEN' : 'CLOSED'),
+      rpcCircuitState: rpcCircuit,
+      backlogSize: this.gauges.backlogSize || 0,
     };
   }
 
   reset() {
+    this.counters = {
+      tasksCheckedTotal: 0,
+      tasksDueTotal: 0,
       tasksExecutedTotal: 0,
       tasksFailedTotal: 0,
       throttledRequestsTotal: 0,
@@ -356,7 +384,8 @@ class MetricsServer {
     const healthStatus = this.metrics.getHealthStatus(
       this.healthStaleThreshold,
     );
-    const httpStatus = healthStatus.status === 'stale' ? 503 : 200;
+    const isError = ['failing', 'stale'].includes(healthStatus.status);
+    const httpStatus = isError ? 503 : 200;
 
     res.writeHead(httpStatus, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(healthStatus, null, 2));
