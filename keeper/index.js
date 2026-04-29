@@ -12,6 +12,8 @@ const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
 const { StartupValidator } = require("./src/validator");
+const { MetricsServer } = require("./src/metrics");
+const { GasMonitor } = require("./src/gasMonitor");
 
 // Create root logger for the main module
 const logger = createLogger("keeper");
@@ -70,15 +72,21 @@ async function main() {
     logger: createLogger("idempotency"),
   });
 
-  // Initialize polling engine with logger
+  // Initialize monitoring components
+  const gasMonitor = new GasMonitor(createLogger("gasMonitor"));
+  const metricsServer = new MetricsServer(gasMonitor, createLogger("metrics"));
+  metricsServer.start();
+
+  // Initialize polling engine with logger and metrics
   const poller = new TaskPoller(server, config.contractId, {
     maxConcurrentReads: process.env.MAX_CONCURRENT_READS,
     logger: createLogger("poller"),
+    metricsServer,
   });
   logger.info("Poller initialized", { contractId: config.contractId });
 
-  // Initialize execution queue
-  const queue = new ExecutionQueue(undefined, undefined, { idempotencyGuard });
+  // Initialize execution queue with metrics
+  const queue = new ExecutionQueue(undefined, metricsServer, { idempotencyGuard });
   const queueLogger = createLogger("queue");
 
   queue.on("task:started", (taskId, context) =>

@@ -75,9 +75,11 @@ class Metrics {
   getHealthStatus(staleThreshold) {
     const now = Date.now();
     const uptimeSeconds = Math.floor((now - this.startTime) / 1000);
-    const isStale =
-      this.lastPollAt &&
-      now - this.lastPollAt.getTime() > staleThreshold;
+    
+    // Determine staleness
+    const timeSinceLastPoll = this.lastPollAt ? now - this.lastPollAt.getTime() : null;
+    const isStale = this.lastPollAt && timeSinceLastPoll > staleThreshold;
+    const isWarningStale = this.lastPollAt && timeSinceLastPoll > (staleThreshold / 2);
 
     const rpcCircuit = this.gauges.rpcCircuitState === 2 ? 'OPEN' : (this.gauges.rpcCircuitState === 1 ? 'HALF_OPEN' : 'CLOSED');
 
@@ -86,16 +88,19 @@ class Metrics {
 
     if (!this.rpcConnected || rpcCircuit === 'OPEN') {
       status = 'failing';
-      reason = 'RPC connection lost or circuit breaker is OPEN';
+      reason = 'RPC connection lost or circuit breaker is OPEN. Service is non-functional.';
     } else if (isStale) {
       status = 'stale';
-      reason = `No polling activity for over ${staleThreshold}ms`;
+      reason = `Critical: No polling activity for over ${staleThreshold}ms. Poller may be hung.`;
     } else if (rpcCircuit === 'HALF_OPEN') {
       status = 'degraded_rpc';
-      reason = 'Partial RPC failure, circuit breaker is HALF_OPEN';
+      reason = 'Warning: Partial RPC failure detected, circuit breaker is in HALF_OPEN state.';
+    } else if (isWarningStale) {
+      status = 'degraded_stale';
+      reason = `Warning: Polling activity is delayed (${Math.round(timeSinceLastPoll / 1000)}s since last poll).`;
     } else if (this.gauges.backlogSize >= 50) {
       status = 'degraded_backlog';
-      reason = `High retry backlog pressure (${this.gauges.backlogSize} tasks)`;
+      reason = `Warning: High retry backlog pressure (${this.gauges.backlogSize} tasks). Execution may be delayed.`;
     }
 
     return {
@@ -103,9 +108,14 @@ class Metrics {
       reason,
       uptime: uptimeSeconds,
       lastPollAt: this.lastPollAt ? this.lastPollAt.toISOString() : null,
+      secondsSinceLastPoll: timeSinceLastPoll ? Math.floor(timeSinceLastPoll / 1000) : null,
       rpcConnected: this.rpcConnected,
       rpcCircuitState: rpcCircuit,
       backlogSize: this.gauges.backlogSize || 0,
+      details: {
+        is_healthy: status === 'ok' || status.startsWith('degraded'),
+        severity: status === 'failing' || status === 'stale' ? 'CRITICAL' : (status.startsWith('degraded') ? 'WARNING' : 'INFO')
+      }
     };
   }
 
