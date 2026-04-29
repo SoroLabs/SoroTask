@@ -35,6 +35,8 @@ describe('TaskPoller', () => {
         tasksChecked: 0,
         tasksDue: 0,
         tasksSkipped: 0,
+        tasksSmoothed: 0,
+        unacceptablyLate: 0,
         errors: 0,
       });
 
@@ -144,6 +146,28 @@ describe('TaskPoller', () => {
       expect(insights.minSecondsUntilDue).toBe(45);
       expect(insights.avgRpcLatencyMs).toBeGreaterThanOrEqual(0);
     });
+
+    describe('load smoothing metrics', () => {
+      beforeEach(() => {
+        poller.maxJitterSeconds = 10;
+        poller.unacceptableLatenessSeconds = 300;
+        mockServer.getLatestLedger.mockResolvedValue({ sequence: 1000 });
+      });
+
+      it('should aggregate tasksSmoothed and unacceptablyLate statistics', async () => {
+        jest.spyOn(poller, 'checkTask')
+          .mockResolvedValueOnce({ isDue: false, taskId: 1, reason: 'jitter_smoothed' })
+          .mockResolvedValueOnce({ isDue: true, taskId: 2, isUnacceptablyLate: true, lateness: 500 })
+          .mockResolvedValueOnce({ isDue: true, taskId: 3, isUnacceptablyLate: false, lateness: 0 });
+
+        const result = await poller.pollDueTasks([1, 2, 3]);
+
+        expect(result).toEqual([2, 3]);
+        expect(poller.stats.tasksSmoothed).toBe(1);
+        expect(poller.stats.unacceptablyLate).toBe(1);
+        expect(poller.stats.tasksDue).toBe(2);
+      });
+    });
   });
 
   describe('checkTask', () => {
@@ -236,6 +260,65 @@ describe('TaskPoller', () => {
         isDue: true,
         taskId: 1,
         secondsUntilDue: 0,
+      });
+    });
+
+    describe('load smoothing (jitter)', () => {
+      beforeEach(() => {
+        poller.maxJitterSeconds = 10;
+        poller.unacceptableLatenessSeconds = 300;
+      });
+
+      it('should apply deterministic jitter and return jitter_smoothed when inside window', async () => {
+        jest.spyOn(poller, 'getTaskConfig').mockResolvedValue({
+          last_run: 500,
+          interval: 500, // nextRunTime = 1000
+          gas_balance: 1000,
+        });
+
+        // For taskId=1, jitter = (1 * 2654435761) % 11 = 10
+        // effectiveNextRunTime = 1010
+
+        // At timestamp 1000, strictly due, but not effectively due
+        const result1 = await poller.checkTask(1, 1000);
+        expect(result1).toMatchObject({
+          isDue: false,
+          taskId: 1,
+          reason: 'jitter_smoothed',
+          isUnacceptablyLate: false,
+        });
+
+        // At timestamp 1009, still not effectively due
+        const result2 = await poller.checkTask(1, 1009);
+        expect(result2.isDue).toBe(false);
+
+        // At timestamp 1010, effectively due
+        const result3 = await poller.checkTask(1, 1010);
+        expect(result3).toMatchObject({
+          isDue: true,
+          taskId: 1,
+          lateness: 0,
+          isUnacceptablyLate: false,
+        });
+      });
+
+      it('should detect unacceptable lateness', async () => {
+        jest.spyOn(poller, 'getTaskConfig').mockResolvedValue({
+          last_run: 500,
+          interval: 500, // nextRunTime = 1000
+          gas_balance: 1000,
+        });
+
+        // For taskId=1, jitter = 10. effectiveNextRunTime = 1010
+        // Timestamp 1500 -> lateness = 1500 - 1010 = 490 (> 300)
+
+        const result = await poller.checkTask(1, 1500);
+        expect(result).toMatchObject({
+          isDue: true,
+          taskId: 1,
+          lateness: 490,
+          isUnacceptablyLate: true,
+        });
       });
     });
   });

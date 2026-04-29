@@ -26,6 +26,16 @@ class TaskPoller {
       10,
     );
 
+    // Load smoothing configuration
+    this.maxJitterSeconds = parseInt(
+      options.maxJitterSeconds !== undefined ? options.maxJitterSeconds : (process.env.MAX_TASK_JITTER_SECONDS || 0),
+      10,
+    );
+    this.unacceptableLatenessSeconds = parseInt(
+      options.unacceptableLatenessSeconds !== undefined ? options.unacceptableLatenessSeconds : (process.env.UNACCEPTABLE_LATENESS_SECONDS || 300),
+      10,
+    );
+
     // Create rate limiter for parallel task reads
     this.readLimit = createRateLimiter({
       concurrency: this.maxConcurrentReads,
@@ -45,6 +55,8 @@ class TaskPoller {
       tasksChecked: 0,
       tasksDue: 0,
       tasksSkipped: 0,
+      tasksSmoothed: 0,
+      unacceptablyLate: 0,
       errors: 0,
     };
 
@@ -72,6 +84,8 @@ class TaskPoller {
     this.stats.tasksChecked = 0;
     this.stats.tasksDue = 0;
     this.stats.tasksSkipped = 0;
+    this.stats.tasksSmoothed = 0;
+    this.stats.unacceptablyLate = 0;
     this.stats.errors = 0;
 
     const rpcLatencies = [];
@@ -122,8 +136,13 @@ class TaskPoller {
           if (isDue) {
             dueTaskIds.push(taskId);
             this.stats.tasksDue++;
+            if (result.value.isUnacceptablyLate) {
+              this.stats.unacceptablyLate++;
+            }
           } else if (reason === 'skipped') {
             this.stats.tasksSkipped++;
+          } else if (reason === 'jitter_smoothed') {
+            this.stats.tasksSmoothed++;
           }
 
           if (Number.isFinite(result.value.secondsUntilDue)) {
@@ -196,23 +215,66 @@ class TaskPoller {
 
       // Calculate if task is due: last_run + interval <= currentTimestamp
       const nextRunTime = taskConfig.last_run + taskConfig.interval;
-      const isDue = nextRunTime <= currentTimestamp;
+
+      let jitter = 0;
+      if (this.maxJitterSeconds > 0) {
+        // Deterministic pseudo-random jitter based on taskId
+        // Using a prime multiplier to distribute values evenly
+        jitter = (Number(taskId) * 2654435761) % (this.maxJitterSeconds + 1);
+      }
+
+      const effectiveNextRunTime = nextRunTime + jitter;
+      const isDue = effectiveNextRunTime <= currentTimestamp;
+      const isStrictlyDue = nextRunTime <= currentTimestamp;
+
+      let reason = null;
+      let lateness = 0;
+      let isUnacceptablyLate = false;
 
       if (isDue) {
+        lateness = currentTimestamp - effectiveNextRunTime;
+        isUnacceptablyLate = lateness > this.unacceptableLatenessSeconds;
+
+        if (isUnacceptablyLate) {
+          this.logger.warn('Task is unacceptably late', {
+            taskId,
+            latenessSeconds: lateness,
+            nextRunTime,
+            effectiveNextRunTime,
+            currentTimestamp,
+            interval: taskConfig.interval,
+          });
+        }
+
         this.logger.info('Task is due', {
           taskId,
           lastRun: taskConfig.last_run,
           interval: taskConfig.interval,
           nextRun: nextRunTime,
+          jitterApplied: jitter,
+          effectiveNextRun: effectiveNextRunTime,
           current: currentTimestamp,
+          latenessSeconds: lateness,
+        });
+      } else if (isStrictlyDue) {
+        reason = 'jitter_smoothed';
+        this.logger.debug('Task execution smoothed by jitter', {
+          taskId,
+          nextRunTime,
+          effectiveNextRunTime,
+          currentTimestamp,
+          jitterSeconds: jitter,
         });
       }
 
       return {
         isDue,
         taskId,
-        secondsUntilDue: Number.isFinite(nextRunTime)
-          ? Math.max(0, nextRunTime - currentTimestamp)
+        reason,
+        lateness: isDue ? lateness : 0,
+        isUnacceptablyLate,
+        secondsUntilDue: Number.isFinite(effectiveNextRunTime)
+          ? Math.max(0, effectiveNextRunTime - currentTimestamp)
           : null,
       };
 
@@ -365,6 +427,8 @@ class TaskPoller {
       durationMs: duration,
       checked: this.stats.tasksChecked,
       due: this.stats.tasksDue,
+      smoothed: this.stats.tasksSmoothed,
+      late: this.stats.unacceptablyLate,
       skipped: this.stats.tasksSkipped,
       errors: this.stats.errors,
     });

@@ -39,6 +39,9 @@ export function loadConfig() {
       parseInt(process.env.CIRCUIT_FAILURE_THRESHOLD, 10) || 5,
     circuitRecoveryTimeoutMs:
       parseInt(process.env.CIRCUIT_RECOVERY_TIMEOUT_MS, 10) || 30000,
+    // Load smoothing configuration
+    maxJitterSeconds: parseInt(process.env.MAX_TASK_JITTER_SECONDS, 10) || 0,
+    unacceptableLatenessSeconds: parseInt(process.env.UNACCEPTABLE_LATENESS_SECONDS, 10) || 300,
     // Logging configuration
     logLevel: process.env.LOG_LEVEL || 'info',
     nodeEnv: process.env.NODE_ENV || 'production',
