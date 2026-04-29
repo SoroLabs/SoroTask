@@ -12,6 +12,7 @@ const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
 const { StartupValidator } = require("./src/validator");
+const { AdminServer } = require("./src/admin");
 
 // Create root logger for the main module
 const logger = createLogger("keeper");
@@ -69,6 +70,10 @@ async function main() {
   const idempotencyGuard = new ExecutionIdempotencyGuard({
     logger: createLogger("idempotency"),
   });
+
+  // Initialize and start Admin API server
+  const adminServer = new AdminServer({ logger: createLogger("admin") });
+  adminServer.start();
 
   // Initialize polling engine with logger
   const poller = new TaskPoller(server, config.contractId, {
@@ -171,6 +176,11 @@ async function main() {
 
   const pollingInterval = setInterval(async () => {
     try {
+      if (adminServer.isPollingPaused()) {
+        logger.info("Polling is currently paused by Admin API. Skipping cycle.");
+        return;
+      }
+
       logger.info("Starting new polling cycle");
 
       // Poll for new TaskRegistered events
@@ -184,15 +194,19 @@ async function main() {
       const dueTaskIds = await poller.pollDueTasks(taskIds);
 
       if (dueTaskIds.length > 0) {
-        const lockSnapshot = idempotencyGuard.getSnapshot();
-        logger.info("Found due tasks, enqueueing for execution", {
-          dueCount: dueTaskIds.length,
-        });
-        logger.info("Execution idempotency state", {
-          stateFile: lockSnapshot.stateFile,
-          activeLocks: lockSnapshot.lockCount,
-        });
-        await queue.enqueue(dueTaskIds, executeTask);
+        if (adminServer.isExecutionPaused()) {
+          logger.warn("Execution is paused by Admin API. Skipping enqueue.", { dueCount: dueTaskIds.length });
+        } else {
+          const lockSnapshot = idempotencyGuard.getSnapshot();
+          logger.info("Found due tasks, enqueueing for execution", {
+            dueCount: dueTaskIds.length,
+          });
+          logger.info("Execution idempotency state", {
+            stateFile: lockSnapshot.stateFile,
+            activeLocks: lockSnapshot.lockCount,
+          });
+          await queue.enqueue(dueTaskIds, executeTask);
+        }
       } else {
         logger.info("No tasks due for execution");
       }
@@ -209,6 +223,7 @@ async function main() {
       signal,
     });
     clearInterval(pollingInterval);
+    adminServer.stop();
     await queue.drain();
     logger.info("Graceful shutdown complete, exiting");
     process.exit(0);
@@ -221,10 +236,18 @@ async function main() {
   logger.info("Running initial poll");
   setTimeout(async () => {
     try {
+      if (adminServer.isPollingPaused()) {
+        logger.info("Polling is paused by Admin API. Skipping initial poll.");
+        return;
+      }
       const taskIds = registry.getTaskIds();
       const dueTaskIds = await poller.pollDueTasks(taskIds);
       if (dueTaskIds.length > 0) {
-        await queue.enqueue(dueTaskIds, executeTask);
+        if (adminServer.isExecutionPaused()) {
+          logger.warn("Execution is paused by Admin API. Skipping enqueue.", { dueCount: dueTaskIds.length });
+        } else {
+          await queue.enqueue(dueTaskIds, executeTask);
+        }
       }
     } catch (error) {
       logger.error("Error in initial poll", { error: error.message });
