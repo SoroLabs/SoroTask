@@ -74,6 +74,8 @@ async function main() {
   const poller = new TaskPoller(server, config.contractId, {
     maxConcurrentReads: process.env.MAX_CONCURRENT_READS,
     logger: createLogger("poller"),
+    simulationCacheTtl: process.env.SIMULATION_CACHE_TTL,
+    simulationCacheMaxSize: process.env.SIMULATION_CACHE_MAX_SIZE,
   });
   logger.info("Poller initialized", { contractId: config.contractId });
 
@@ -87,12 +89,14 @@ async function main() {
       attemptId: context?.attemptId || null,
     }),
   );
-  queue.on("task:success", (taskId) =>
-    queueLogger.info("Task executed successfully", { taskId }),
-  );
-  queue.on("task:failed", (taskId, err) =>
-    queueLogger.error("Task failed", { taskId, error: err.message }),
-  );
+  queue.on("task:success", (taskId) => {
+    queueLogger.info("Task executed successfully", { taskId });
+    poller.invalidateCache(taskId);
+  });
+  queue.on("task:failed", (taskId, err) => {
+    queueLogger.error("Task failed", { taskId, error: err.message });
+    poller.invalidateCache(taskId);
+  });
   queue.on("task:skipped", (taskId, context) =>
     queueLogger.info("Skipped duplicate execution attempt", {
       taskId,

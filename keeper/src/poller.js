@@ -1,6 +1,7 @@
 const { Contract, xdr, TransactionBuilder, BASE_FEE, Networks, scValToNative } = require('@stellar/stellar-sdk');
 const { createRateLimiter } = require('./concurrency');
 const { createLogger } = require('./logger');
+const { SimulationCache } = require('./simulationCache');
 
 /**
  * Production-grade polling engine for SoroTask Keeper.
@@ -57,6 +58,15 @@ class TaskPoller {
       cycleDurationMs: 0,
       errors: 0,
     };
+
+    // Cache for simulation results to avoid redundant RPC calls
+    this.simulationCache = new SimulationCache({
+      ttlSeconds: parseInt(options.simulationCacheTtl || '30', 10),
+      maxSize: parseInt(options.simulationCacheMaxSize || '1000', 10),
+    });
+
+    // Track cache stats for metrics
+    this.statsCacheHitRate = 0;
   }
 
   /**
@@ -166,17 +176,30 @@ class TaskPoller {
     }
   }
 
-  /**
-     * Check a single task to determine if it's due for execution.
-     *
-     * @param {number} taskId - The task ID to check
-     * @param {number} currentTimestamp - Current ledger timestamp
-     * @returns {Promise<{isDue: boolean, taskId: number, reason?: string}>}
-     */
+/**
+      * Check a single task to determine if it's due for execution.
+      *
+      * @param {number} taskId - The task ID to check
+      * @param {number} currentTimestamp - Current ledger timestamp
+      * @returns {Promise<{isDue: boolean, taskId: number, reason?: string}>}
+      */
   async checkTask(taskId, currentTimestamp, registry) {
     try {
-      // Read task configuration from contract using view call
-      const taskConfig = await this.getTaskConfig(taskId);
+      // Check cache first for task configuration
+      const cachedConfig = this.simulationCache.get(taskId);
+      let taskConfig;
+
+      if (cachedConfig) {
+        taskConfig = cachedConfig;
+      } else {
+        // Read task configuration from contract using view call
+        taskConfig = await this.getTaskConfig(taskId);
+
+        // Cache the result for future polls
+        if (taskConfig) {
+          this.simulationCache.set(taskId, taskConfig);
+        }
+      }
 
       if (!taskConfig) {
         this.logger.warn('Task not found (may have been deregistered)', { taskId });
@@ -414,6 +437,42 @@ class TaskPoller {
 
   getCycleInsights() {
     return { ...this.lastCycleInsights };
+  }
+
+  /**
+   * Invalidate cached simulation data for one or more tasks.
+   * Call this after a task is executed to ensure fresh data on next poll.
+   *
+   * @param {number|number[]} taskIds - Task ID(s) to invalidate
+   * @returns {number} Number of entries invalidated
+   */
+  invalidateCache(taskIds) {
+    const ids = Array.isArray(taskIds) ? taskIds : [taskIds];
+    return this.simulationCache.invalidateAll(ids);
+  }
+
+  /**
+   * Get simulation cache statistics.
+   *
+   * @returns {Object} Cache stats including hit rate
+   */
+  getCacheStats() {
+    return this.simulationCache.getStats();
+  }
+
+  /**
+   * Enable or disable simulation caching.
+   * Useful for debugging or specific scenarios.
+   *
+   * @param {boolean} enabled
+   */
+  setCacheEnabled(enabled) {
+    if (!enabled) {
+      this.simulationCache.clear();
+      this.logger.info('Simulation cache disabled and cleared');
+    } else {
+      this.logger.info('Simulation cache enabled');
+    }
   }
 }
 
