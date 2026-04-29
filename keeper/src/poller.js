@@ -1,6 +1,7 @@
 const { Contract, xdr, TransactionBuilder, BASE_FEE, Networks, scValToNative } = require('@stellar/stellar-sdk');
 const { createRateLimiter } = require('./concurrency');
 const { createLogger } = require('./logger');
+const { validateTaskPayload } = require('../../taskValidator');
 
 /**
  * Production-grade polling engine for SoroTask Keeper.
@@ -186,6 +187,13 @@ class TaskPoller {
       // Update registry with latest task details
       if (registry) {
         registry.updateTask(taskId, { ...taskConfig, status: taskConfig.gas_balance > 0 ? 'active' : 'low_gas' });
+      }
+
+      // Validate task payload size and shape
+      const validation = validateTaskPayload(taskConfig, taskConfig.args || []);
+      if (!validation.isValid) {
+        this.logger.error('Task rejected due to malformed payload', { taskId, errors: validation.errors.join(', ') });
+        return { isDue: false, taskId, reason: 'invalid_payload' };
       }
 
       // Check gas balance
