@@ -12,6 +12,7 @@ const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
 const { StartupValidator } = require("./src/validator");
+const { createDefaultFilterChain } = require("./src/taskFilter");
 
 // Create root logger for the main module
 const logger = createLogger("keeper");
@@ -70,10 +71,18 @@ async function main() {
     logger: createLogger("idempotency"),
   });
 
-  // Initialize polling engine with logger
+  // Build the pre-filter chain — eliminates non-actionable tasks before RPC calls.
+  // Filters run in order: null-guard → cached gas → cached timing → idempotency lock → circuit breaker.
+  const filterChain = createDefaultFilterChain({
+    idempotencyGuard,
+    logger: createLogger("filter"),
+  });
+
+  // Initialize polling engine with logger and filter chain
   const poller = new TaskPoller(server, config.contractId, {
     maxConcurrentReads: process.env.MAX_CONCURRENT_READS,
     logger: createLogger("poller"),
+    filterChain,
   });
   logger.info("Poller initialized", { contractId: config.contractId });
 
@@ -181,7 +190,8 @@ async function main() {
       logger.info("Checking tasks", { taskCount: taskIds.length });
 
       // Poll for due tasks
-      const dueTaskIds = await poller.pollDueTasks(taskIds);
+      // Pass registry so cached gas/timing filters can read previously fetched values
+      const dueTaskIds = await poller.pollDueTasks(taskIds, { registry, idempotencyGuard });
 
       if (dueTaskIds.length > 0) {
         const lockSnapshot = idempotencyGuard.getSnapshot();
@@ -222,7 +232,7 @@ async function main() {
   setTimeout(async () => {
     try {
       const taskIds = registry.getTaskIds();
-      const dueTaskIds = await poller.pollDueTasks(taskIds);
+      const dueTaskIds = await poller.pollDueTasks(taskIds, { registry, idempotencyGuard });
       if (dueTaskIds.length > 0) {
         await queue.enqueue(dueTaskIds, executeTask);
       }

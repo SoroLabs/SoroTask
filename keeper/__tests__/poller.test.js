@@ -35,11 +35,13 @@ describe('TaskPoller', () => {
         tasksChecked: 0,
         tasksDue: 0,
         tasksSkipped: 0,
+        tasksFiltered: 0,
         errors: 0,
       });
 
       expect(poller.getCycleInsights()).toEqual({
         backlogSize: 0,
+        filteredCount: 0,
         dueCount: 0,
         dueSoonCount: 0,
         minSecondsUntilDue: null,
@@ -47,6 +49,10 @@ describe('TaskPoller', () => {
         cycleDurationMs: 0,
         errors: 0,
       });
+    });
+
+    it('should store null for filterChain when none provided', () => {
+      expect(poller.filterChain).toBeNull();
     });
   });
 
@@ -269,5 +275,119 @@ describe('TaskPoller', () => {
       const result = poller.decodeTaskConfig(emptyVec);
       expect(result).toBeNull();
     });
+  });
+});
+
+// ─── Filter chain integration tests ──────────────────────────────────────────
+
+const { TaskFilterChain } = require('../src/taskFilter');
+
+describe('TaskPoller with FilterChain', () => {
+  let mockServer;
+  const contractId = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
+
+  beforeEach(() => {
+    mockServer = {
+      getLatestLedger: jest.fn().mockResolvedValue({ sequence: 1000 }),
+      getAccount: jest.fn(),
+      simulateTransaction: jest.fn(),
+    };
+  });
+
+  it('accepts a filterChain in constructor options', () => {
+    const chain = new TaskFilterChain();
+    const p = new TaskPoller(mockServer, contractId, { filterChain: chain });
+    expect(p.filterChain).toBe(chain);
+  });
+
+  it('ignores non-TaskFilterChain values', () => {
+    const p = new TaskPoller(mockServer, contractId, { filterChain: { fake: true } });
+    expect(p.filterChain).toBeNull();
+  });
+
+  it('checkTask is NOT called for tasks rejected by the filter chain', async () => {
+    // Reject task 2, pass task 1 and 3
+    const chain = new TaskFilterChain();
+    chain.addFilter('blockTwo', (id) =>
+      id === 2 ? { pass: false, reason: 'blocked' } : { pass: true, reason: 'ok' },
+    );
+
+    const p = new TaskPoller(mockServer, contractId, { filterChain: chain });
+    const checkTaskSpy = jest.spyOn(p, 'checkTask').mockResolvedValue({ isDue: false, taskId: 1 });
+
+    await p.pollDueTasks([1, 2, 3]);
+
+    // checkTask must only be called for tasks 1 and 3 — not 2
+    const calledWith = checkTaskSpy.mock.calls.map((c) => c[0]);
+    expect(calledWith).toContain(1);
+    expect(calledWith).toContain(3);
+    expect(calledWith).not.toContain(2);
+  });
+
+  it('stats.tasksFiltered is populated after filtering', async () => {
+    const chain = new TaskFilterChain();
+    chain.addFilter('blockAll', () => ({ pass: false, reason: 'blocked' }));
+
+    const p = new TaskPoller(mockServer, contractId, { filterChain: chain });
+    jest.spyOn(p, 'checkTask').mockResolvedValue({ isDue: false, taskId: 1 });
+
+    await p.pollDueTasks([1, 2, 3]);
+
+    expect(p.stats.tasksFiltered).toBe(3);
+  });
+
+  it('getCycleInsights().filteredCount reflects the pre-filter count', async () => {
+    const chain = new TaskFilterChain();
+    // Reject tasks 2 and 4
+    chain.addFilter('evenFilter', (id) =>
+      id % 2 === 0 ? { pass: false, reason: 'even' } : { pass: true, reason: 'ok' },
+    );
+
+    const p = new TaskPoller(mockServer, contractId, { filterChain: chain });
+    jest.spyOn(p, 'checkTask').mockResolvedValue({ isDue: false, taskId: 1 });
+
+    await p.pollDueTasks([1, 2, 3, 4]);
+
+    const insights = p.getCycleInsights();
+    expect(insights.filteredCount).toBe(2);
+    expect(insights.backlogSize).toBe(4);
+  });
+
+  it('getCycleInsights includes filteredCount:0 when no filter is attached', async () => {
+    const p = new TaskPoller(mockServer, contractId, {});
+    jest.spyOn(p, 'checkTask').mockResolvedValue({ isDue: true, taskId: 1 });
+
+    await p.pollDueTasks([1]);
+    expect(p.getCycleInsights().filteredCount).toBe(0);
+  });
+
+  it('does not drop valid tasks — eligible set reaches checkTask', async () => {
+    const chain = new TaskFilterChain();
+    chain.addFilter('passAll', () => ({ pass: true, reason: 'ok' }));
+
+    const p = new TaskPoller(mockServer, contractId, { filterChain: chain });
+    const spy = jest.spyOn(p, 'checkTask').mockResolvedValue({ isDue: true, taskId: 1 });
+
+    const due = await p.pollDueTasks([1, 2, 3]);
+
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(due.length).toBe(3);
+  });
+
+  it('returns due tasks only from eligible set', async () => {
+    const chain = new TaskFilterChain();
+    // Block task 3
+    chain.addFilter('blockThree', (id) =>
+      id === 3 ? { pass: false, reason: 'blocked' } : { pass: true, reason: 'ok' },
+    );
+
+    const p = new TaskPoller(mockServer, contractId, { filterChain: chain });
+    jest.spyOn(p, 'checkTask')
+      .mockResolvedValueOnce({ isDue: true,  taskId: 1 })
+      .mockResolvedValueOnce({ isDue: true,  taskId: 2 });
+
+    const due = await p.pollDueTasks([1, 2, 3]);
+    expect(due).toEqual([1, 2]);
+    expect(due).not.toContain(3);
   });
 });
