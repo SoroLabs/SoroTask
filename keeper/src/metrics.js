@@ -85,6 +85,9 @@ class Metrics {
   }
 
   reset() {
+    this.counters = {
+      tasksCheckedTotal: 0,
+      tasksDueTotal: 0,
       tasksExecutedTotal: 0,
       tasksFailedTotal: 0,
       throttledRequestsTotal: 0,

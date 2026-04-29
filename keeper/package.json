@@ -13,6 +13,7 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:coverage": "jest --coverage",
+    "test:chaos": "jest chaos.test.js",
     "lint": "eslint src/ __tests__/",
     "lint:fix": "eslint src/ __tests__/ --fix",
     "docker:build": "docker build -t sorotask-keeper .",
@@ -20,7 +21,10 @@
     "bench": "node benchmarks/poller.bench.js && node benchmarks/executor.bench.js",
     "bench:poller": "node benchmarks/poller.bench.js",
     "bench:executor": "node benchmarks/executor.bench.js",
-    "bench:compare": "node benchmarks/compare.js"
+    "bench:compare": "node benchmarks/compare.js",
+    "chaos-test": "node scripts/chaos-test.js run",
+    "chaos-test:list": "node scripts/chaos-test.js list",
+    "chaos-test:single": "node scripts/chaos-test.js single"
   },
   "keywords": [
     "soroban",

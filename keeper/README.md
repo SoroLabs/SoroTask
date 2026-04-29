@@ -11,6 +11,7 @@ See the centralized [Glossary](../GLOSSARY.md) for definitions of domain-specifi
 - [Setup Instructions](#setup-instructions)
 - [Dead-Letter Queue](#dead-letter-queue)
 - [Mock Soroban RPC](#mock-soroban-rpc-for-faster-local-testing)
+- [Chaos Testing](#chaos-testing)
 - [Docker Deployment](#docker-deployment)
 - [Troubleshooting](#troubleshooting)
 
@@ -353,6 +354,52 @@ Detailed usage, supported methods, and test examples are in [docs/mock-soroban-r
 
 - **Cause**: Application dependencies were not correctly or fully installed.
 - **Solution**: Ensure you ran `npm install` inside the `keeper/` directory correctly. Try clearing cache or removing `node_modules` (`rm -rf node_modules`) and running `npm install` again.
+
+## Chaos Testing
+
+The keeper includes a comprehensive chaos testing framework to validate resilience under realistic failure conditions. This helps ensure the keeper can handle network issues, RPC failures, and degraded performance.
+
+### Running Chaos Tests
+
+```bash
+# Run all chaos scenarios
+npm run chaos-test
+
+# Run specific scenarios
+npm run chaos-test -- --scenario=latency,ratelimit
+
+# List available scenarios
+npm run chaos-test:list
+
+# Run single scenario
+npm run chaos-test:single latency
+
+# Save report to file
+npm run chaos-test -- --output=json --file=chaos-report.json
+```
+
+### Available Scenarios
+
+1. **Latency Spikes** - Test timeout handling with random delays
+2. **Partial RPC Failure** - Test graceful degradation when some methods fail
+3. **Rate Limiting** - Test backoff behavior under throttling
+4. **Flaky Network** - Test circuit breaker recovery
+5. **Gradual Degradation** - Test adaptive behavior to worsening conditions
+6. **Complete Outage** - Test worst-case scenario handling
+
+### Integration with Tests
+
+Chaos tests are integrated into the Jest test suite:
+
+```bash
+# Run all tests including chaos tests
+npm test
+
+# Run only chaos tests
+npm test -- chaos.test.js
+```
+
+See [Chaos Testing Documentation](./docs/CHAOS_TESTING.md) for detailed information.
 
 ## Docker Deployment
 
