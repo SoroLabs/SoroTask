@@ -8,6 +8,7 @@ const { ExecutionQueue } = require("./src/queue");
 const TaskPoller = require("./src/poller");
 const TaskRegistry = require("./src/registry");
 const { createLogger } = require("./src/logger");
+const { newCycleId, newTraceId, bindLogger } = require("./src/traceContext");
 const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
@@ -107,6 +108,15 @@ async function main() {
   // Task executor function - calls contract.execute(keeper, task_id)
   // In dry-run mode, simulates the transaction without submitting it.
   const executeTask = async (taskId, context = {}) => {
+    // Bind a trace-scoped logger so every log line from this attempt carries
+    // cycleId + traceId without callers having to pass them manually.
+    const traceId = context.traceId || newTraceId(taskId);
+    const tlog = bindLogger(logger, {
+      cycleId: context.cycleId,
+      traceId,
+      taskId,
+    });
+
     const account = await server.getAccount(keypair.publicKey());
     const deps = {
       server,
@@ -117,9 +127,9 @@ async function main() {
     };
 
     if (DRY_RUN) {
+      tlog.info("dry-run: simulate");
       const result = await dryRunTask(taskId, deps);
-      logger.info("Dry-run result", {
-        taskId,
+      tlog.info("dry-run: result", {
         status: result.status,
         estimatedFee: result.simulation?.estimatedFee ?? null,
         error: result.error,
@@ -127,10 +137,11 @@ async function main() {
       return;
     }
 
+    tlog.info("execute: start");
     try {
       const retryResult = await executeTaskWithRetry(taskId, deps, {
         attemptId: context.attemptId,
-        logger,
+        logger: tlog,
         onRetry: (_error, _attempt, _delay, retryContext) => {
           idempotencyGuard.touchRetry(taskId, {
             lastError: retryContext?.message || null,
@@ -138,8 +149,7 @@ async function main() {
         },
       });
 
-      logger.info("Task execution completed", {
-        taskId,
+      tlog.info("execute: complete", {
         attemptId: context.attemptId || null,
         retries: retryResult.retries,
         attempts: retryResult.attempts,
@@ -147,12 +157,10 @@ async function main() {
         txHash: retryResult.result?.txHash || null,
       });
     } catch (error) {
-      logger.error("Failed to execute task", {
-        taskId,
+      tlog.error("execute: failed", {
         attemptId: context.attemptId || null,
         error: error.error?.message || error.message || String(error),
         classification: error.classification || null,
-        context: error.context || null,
       });
       throw error;
     }
@@ -170,36 +178,43 @@ async function main() {
   logger.info("Starting polling loop", { intervalMs: pollingIntervalMs });
 
   const pollingInterval = setInterval(async () => {
+    const cycleId = newCycleId();
+    const clog = bindLogger(logger, { cycleId });
     try {
-      logger.info("Starting new polling cycle");
+      clog.info("poll: start");
 
       // Poll for new TaskRegistered events
       await registry.poll();
 
       // Get list of all registered task IDs
       const taskIds = registry.getTaskIds();
-      logger.info("Checking tasks", { taskCount: taskIds.length });
+      clog.info("poll: checking tasks", { taskCount: taskIds.length });
 
       // Poll for due tasks
       const dueTaskIds = await poller.pollDueTasks(taskIds);
 
       if (dueTaskIds.length > 0) {
         const lockSnapshot = idempotencyGuard.getSnapshot();
-        logger.info("Found due tasks, enqueueing for execution", {
+        clog.info("poll: enqueueing due tasks", {
           dueCount: dueTaskIds.length,
-        });
-        logger.info("Execution idempotency state", {
-          stateFile: lockSnapshot.stateFile,
           activeLocks: lockSnapshot.lockCount,
         });
-        await queue.enqueue(dueTaskIds, executeTask);
+        // Attach cycleId + per-task traceId to each enqueued context
+        const tasksWithTrace = dueTaskIds.map((id) => ({
+          id,
+          context: { cycleId, traceId: newTraceId(id) },
+        }));
+        await queue.enqueue(
+          tasksWithTrace.map((t) => t.id),
+          (taskId, ctx) => executeTask(taskId, { ...ctx, cycleId, traceId: tasksWithTrace.find((t) => t.id === taskId)?.context.traceId }),
+        );
       } else {
-        logger.info("No tasks due for execution");
+        clog.info("poll: no tasks due");
       }
 
-      logger.info("Polling cycle complete");
+      clog.info("poll: complete");
     } catch (error) {
-      logger.error("Error in polling cycle", { error: error.message });
+      clog.error("poll: cycle error", { error: error.message });
     }
   }, pollingIntervalMs);
 
@@ -220,14 +235,19 @@ async function main() {
   // Run first poll immediately
   logger.info("Running initial poll");
   setTimeout(async () => {
+    const cycleId = newCycleId();
+    const clog = bindLogger(logger, { cycleId });
     try {
       const taskIds = registry.getTaskIds();
       const dueTaskIds = await poller.pollDueTasks(taskIds);
       if (dueTaskIds.length > 0) {
-        await queue.enqueue(dueTaskIds, executeTask);
+        await queue.enqueue(
+          dueTaskIds,
+          (taskId, ctx) => executeTask(taskId, { ...ctx, cycleId, traceId: newTraceId(taskId) }),
+        );
       }
     } catch (error) {
-      logger.error("Error in initial poll", { error: error.message });
+      clog.error("poll: initial poll error", { error: error.message });
     }
   }, 1000);
 }
