@@ -171,6 +171,11 @@ async function main() {
 
   const pollingInterval = setInterval(async () => {
     try {
+      if (isShuttingDown) {
+        logger.warn('Skipping polling cycle because shutdown is in progress');
+        return;
+      }
+
       logger.info("Starting new polling cycle");
 
       // Poll for new TaskRegistered events
@@ -203,24 +208,69 @@ async function main() {
     }
   }, pollingIntervalMs);
 
-  // Graceful shutdown handling
+  let isShuttingDown = false;
+  const shutdownTimeoutMs = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || '30000', 10);
+
   const shutdown = async (signal) => {
-    logger.info("Received shutdown signal, starting graceful shutdown", {
+    if (isShuttingDown) {
+      logger.warn('Shutdown already in progress, ignoring repeated signal', { signal });
+      return;
+    }
+
+    isShuttingDown = true;
+    logger.info('Received shutdown signal, starting graceful shutdown', {
       signal,
+      shutdownTimeoutMs,
     });
     clearInterval(pollingInterval);
-    await queue.drain();
-    logger.info("Graceful shutdown complete, exiting");
-    process.exit(0);
+
+    const gracefulShutdown = async () => {
+      await queue.shutdown();
+    };
+
+    try {
+      await Promise.race([
+        gracefulShutdown(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Shutdown timeout exceeded')), shutdownTimeoutMs),
+        ),
+      ]);
+      logger.info('Graceful shutdown complete, exiting', { signal });
+      process.exit(0);
+    } catch (error) {
+      logger.error('Graceful shutdown failed or timed out', {
+        signal,
+        error: error.message,
+      });
+      process.exit(1);
+    }
   };
 
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on('SIGTERM', () => {
+    if (isShuttingDown) {
+      logger.fatal('Second shutdown signal received, forcing exit', { signal: 'SIGTERM' });
+      process.exit(1);
+    }
+    shutdown('SIGTERM');
+  });
+
+  process.on('SIGINT', () => {
+    if (isShuttingDown) {
+      logger.fatal('Second shutdown signal received, forcing exit', { signal: 'SIGINT' });
+      process.exit(1);
+    }
+    shutdown('SIGINT');
+  });
 
   // Run first poll immediately
-  logger.info("Running initial poll");
+  logger.info('Running initial poll');
   setTimeout(async () => {
     try {
+      if (isShuttingDown) {
+        logger.warn('Skipping initial poll because shutdown is in progress');
+        return;
+      }
+
       const taskIds = registry.getTaskIds();
       const dueTaskIds = await poller.pollDueTasks(taskIds);
       if (dueTaskIds.length > 0) {
