@@ -1,6 +1,7 @@
 const http = require('http');
 const promClient = require('prom-client');
 const { Server } = require('socket.io');
+const { requireAdminAuth } = require('./auth');
 
 /**
  * Metrics store for tracking operational statistics.
@@ -85,16 +86,16 @@ class Metrics {
   }
 
   reset() {
-      tasksExecutedTotal: 0,
+    tasksExecutedTotal: 0,
       tasksFailedTotal: 0,
-      throttledRequestsTotal: 0,
+        throttledRequestsTotal: 0,
     };
     this.gauges = {
-      avgFeePaidXlm: 0,
-      lastCycleDurationMs: 0,
-      rpcCircuitState: 0,
-    };
-    this.feeSamples = [];
+  avgFeePaidXlm: 0,
+  lastCycleDurationMs: 0,
+  rpcCircuitState: 0,
+};
+this.feeSamples = [];
   }
 }
 
@@ -150,7 +151,7 @@ class MetricsServer {
       help: 'Total number of tasks that failed during execution',
       registers: [this.register],
     });
- 
+
     // Counter: Total requests throttled by rate limiter
     this.promThrottledRequests = new promClient.Counter({
       name: 'keeper_throttled_requests_total',
@@ -286,6 +287,9 @@ class MetricsServer {
   start() {
     this.server = http.createServer((req, res) => {
       // CORS headers for initial development
+      const protect = (handler) => {
+        return () => requireAdminAuth(req, res, handler);
+      };
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -298,12 +302,35 @@ class MetricsServer {
 
       if (req.url === '/health' || req.url === '/health/') {
         this.handleHealth(res);
+
       } else if (req.url === '/metrics' || req.url === '/metrics/') {
         this.handleMetrics(res);
+
       } else if (req.url === '/metrics/prometheus' || req.url === '/metrics/prometheus/') {
         this.handlePrometheusMetrics(res);
+
       } else if (req.url === '/metrics/forecast' || req.url === '/metrics/forecast/') {
         this.handleForecast(res);
+
+
+        // 🔐 PROTECTED ROUTES START HERE
+
+      } else if (req.url === '/admin/reset' && req.method === 'POST') {
+        protect(() => {
+          this.metrics.reset();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true }));
+        })();
+
+      } else if (req.url === '/admin/dead-letter') {
+        protect(() => this.handleDeadLetter(res))();
+
+      } else if (req.url.startsWith('/admin/dead-letter/')) {
+        protect(() => this.handleDeadLetterTask(req, res))();
+
+
+        // ❌ NOT FOUND
+
       } else {
         res.writeHead(404);
         res.end('Not Found');
