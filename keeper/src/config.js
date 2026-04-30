@@ -46,6 +46,13 @@ function loadConfig() {
     circuitRecoveryTimeoutMs: parseInteger(process.env.CIRCUIT_RECOVERY_TIMEOUT_MS, 30000),
     maxJitterSeconds: parseInteger(process.env.MAX_TASK_JITTER_SECONDS, 0),
     unacceptableLatenessSeconds: parseInteger(process.env.UNACCEPTABLE_LATENESS_SECONDS, 300),
+    // Retry budget configuration
+    globalRetryBudget: parseInteger(process.env.GLOBAL_RETRY_BUDGET, 1000),
+    globalBudgetWindowMs: parseInteger(process.env.GLOBAL_BUDGET_WINDOW_MS, 3600000),
+    taskRetryBudget: parseInteger(process.env.TASK_RETRY_BUDGET, 10),
+    taskBudgetWindowMs: parseInteger(process.env.TASK_BUDGET_WINDOW_MS, 3600000),
+    budgetCooldownMs: parseInteger(process.env.BUDGET_COOLDOWN_MS, 60000),
+    budgetWarningThreshold: parseFloat(process.env.BUDGET_WARNING_THRESHOLD) || 0.8,
     logLevel: process.env.LOG_LEVEL || 'info',
     nodeEnv: process.env.NODE_ENV || 'production',
     metricsPort: parseInteger(process.env.METRICS_PORT, 3000),

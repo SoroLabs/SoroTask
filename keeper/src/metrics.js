@@ -284,7 +284,55 @@ class MetricsServer {
       help: 'Number of tasks currently showing critical recurring drift',
       registers: [this.register],
     });
+
+    this.promBudgetConsumed = new promClient.Counter({
+      name: 'keeper_retry_budget_consumed_total',
+      help: 'Total number of retries consumed from budget',
+      labelNames: ['scope'],
+      registers: [this.register],
+    });
+    this.promBudgetExhausted = new promClient.Counter({
+      name: 'keeper_retry_budget_exhausted_total',
+      help: 'Total number of retry budget exhaustion events',
+      labelNames: ['scope', 'reason'],
+      registers: [this.register],
+    });
+    this.promBudgetGlobalAvailable = new promClient.Gauge({
+      name: 'keeper_retry_budget_global_available',
+      help: 'Global retry budget availability (0.0-1.0)',
+      registers: [this.register],
+    });
+    this.promBudgetGlobalUsed = new promClient.Gauge({
+      name: 'keeper_retry_budget_global_used',
+      help: 'Global retry budget consumed',
+      registers: [this.register],
+    });
+    this.promBudgetCooldown = new promClient.Gauge({
+      name: 'keeper_retry_budget_in_cooldown',
+      help: 'Whether retry budget is in cooldown (0=active, 1=cooldown)',
+      registers: [this.register],
+    });
+    this.promBudgetCooldownRemaining = new promClient.Gauge({
+      name: 'keeper_retry_budget_cooldown_remaining_ms',
+      help: 'Remaining cooldown time in milliseconds',
+      registers: [this.register],
+    });
+    this.promBudgetPressureLevel = new promClient.Gauge({
+      name: 'keeper_retry_budget_pressure_level',
+      help: 'Retry budget pressure level (0=low, 1=medium, 2=high, 3=critical)',
+      registers: [this.register],
+    });
+    this.promBudgetTaskCount = new promClient.Gauge({
+      name: 'keeper_retry_budget_task_count',
+      help: 'Number of tasks with tracked retry budgets',
+      registers: [this.register],
+    });
+
     promClient.collectDefaultMetrics({ register: this.register });
+  }
+
+  setRetryBudgetTracker(budgetTracker) {
+    this.retryBudgetTracker = budgetTracker;
   }
 
   syncPrometheusMetrics() {
@@ -326,6 +374,30 @@ class MetricsServer {
     this.promDriftTask.set(this.metrics.driftState.taskId || 0);
     this.promDriftWarningCount.set(this.metrics.driftState.warning || 0);
     this.promDriftCriticalCount.set(this.metrics.driftState.critical || 0);
+
+    if (this.retryBudgetTracker) {
+      const budgetStats = this.retryBudgetTracker.getStats();
+      this.promBudgetGlobalAvailable.set(budgetStats.global.available);
+      this.promBudgetGlobalUsed.set(budgetStats.global.used);
+      this.promBudgetCooldown.set(budgetStats.cooldownActive ? 1 : 0);
+      this.promBudgetCooldownRemaining.set(budgetStats.cooldownRemainingMs);
+      this.promBudgetTaskCount.set(budgetStats.taskCount);
+
+      const pressureMap = { low: 0, medium: 1, high: 2, critical: 3 };
+      this.promBudgetPressureLevel.set(pressureMap[budgetStats.pressure] || 0);
+    }
+  }
+
+  incrementBudgetConsumed(scope = 'global') {
+    if (this.promBudgetConsumed) {
+      this.promBudgetConsumed.inc({ scope });
+    }
+  }
+
+  incrementBudgetExhausted(scope = 'global', reason = 'limit') {
+    if (this.promBudgetExhausted) {
+      this.promBudgetExhausted.inc({ scope, reason });
+    }
   }
 
   start() {
@@ -374,10 +446,16 @@ class MetricsServer {
 
   handleHealth(res) {
     const status = this.metrics.getHealthStatus(this.healthStaleThreshold);
+    const healthData = {
+      ...status,
+      ...(this.retryBudgetTracker && {
+        retryBudget: this.retryBudgetTracker.getStats(),
+      }),
+    };
     res.writeHead(status.status === 'stale' ? 503 : 200, {
       'Content-Type': 'application/json',
     });
-    res.end(JSON.stringify(status, null, 2));
+    res.end(JSON.stringify(healthData, null, 2));
   }
 
   handleMetrics(res) {
@@ -396,6 +474,9 @@ class MetricsServer {
         trackedTasks: forecasterState.trackedTasks,
         totalHistoricalSamples: forecasterState.totalHistoricalSamples,
       },
+      ...(this.retryBudgetTracker && {
+        retryBudget: this.retryBudgetTracker.getStats(),
+      }),
     };
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -562,4 +643,3 @@ class MetricsServer {
 }
 
 module.exports = { Metrics, MetricsServer };
-
