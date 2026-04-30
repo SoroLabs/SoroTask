@@ -16,6 +16,16 @@ class TaskPoller {
     // Structured logger for poller module
     this.logger = options.logger || createLogger('poller');
     this.metricsServer = options.metricsServer;
+    this.historyManager = options.historyManager || null;
+    this.shardLabel = options.shardLabel || null;
+    this.driftWarningSeconds = parseInt(
+      options.driftWarningSeconds || process.env.DRIFT_WARNING_SECONDS || 60,
+      10,
+    );
+    this.driftCriticalSeconds = parseInt(
+      options.driftCriticalSeconds || process.env.DRIFT_CRITICAL_SECONDS || 300,
+      10,
+    );
 
     // Configuration with defaults
     this.maxConcurrentReads = parseInt(
@@ -98,7 +108,7 @@ class TaskPoller {
     try {
       // Fetch current ledger timestamp
       const ledgerInfo = await this.server.getLatestLedger();
-      const currentTimestamp = ledgerInfo.sequence; // Using sequence as timestamp proxy
+      const currentTimestamp = this.resolveLedgerTimestamp(ledgerInfo);
 
       // Note: In production, you'd want to use the actual ledger timestamp
       // which might require additional RPC calls or using ledger.timestamp from contract context
@@ -119,6 +129,10 @@ class TaskPoller {
 
       // Collect due task IDs from successful checks
       const dueTaskIds = [];
+      let warningDriftCount = 0;
+      let criticalDriftCount = 0;
+      let maxDriftSeconds = 0;
+      let maxDriftTaskId = null;
 
       results.forEach((result, index) => {
           const { isDue, taskId, reason, correlationId } = result.value;
@@ -132,6 +146,17 @@ class TaskPoller {
 
           if (Number.isFinite(result.value.secondsUntilDue)) {
             secondsUntilDueValues.push(result.value.secondsUntilDue);
+          }
+
+          if (result.value.driftSeverity === 'warning') {
+            warningDriftCount += 1;
+          } else if (result.value.driftSeverity === 'critical') {
+            criticalDriftCount += 1;
+          }
+
+          if ((result.value.driftSeconds || 0) > maxDriftSeconds) {
+            maxDriftSeconds = result.value.driftSeconds;
+            maxDriftTaskId = result.value.taskId;
           }
 
           this.stats.tasksChecked++;
@@ -159,6 +184,22 @@ class TaskPoller {
         errors: this.stats.errors,
       };
 
+      if (this.metricsServer) {
+        this.metricsServer.increment('tasksCheckedTotal', this.stats.tasksChecked);
+        this.metricsServer.updateHealth({
+          lastPollAt: new Date(),
+          rpcConnected: true,
+        });
+        this.metricsServer.updateDriftState({
+          warning: warningDriftCount,
+          critical: criticalDriftCount,
+          maxDriftSeconds,
+          taskId: maxDriftTaskId,
+          severity: criticalDriftCount > 0 ? 'critical' : (warningDriftCount > 0 ? 'warning' : 'none'),
+          observedAt: new Date().toISOString(),
+        });
+      }
+
       this.logPollSummary(duration, cycleLogger);
 
       return dueTaskIds;
@@ -166,6 +207,12 @@ class TaskPoller {
     } catch (error) {
       this.logger.error('Fatal error during polling cycle', { error: error.message, stack: error.stack });
       this.stats.errors++;
+      if (this.metricsServer) {
+        this.metricsServer.updateHealth({
+          lastPollAt: new Date(),
+          rpcConnected: false,
+        });
+      }
       return [];
     }
   }
@@ -208,6 +255,10 @@ class TaskPoller {
       // Calculate if task is due: last_run + interval <= currentTimestamp
       const nextRunTime = taskConfig.last_run + taskConfig.interval;
       const isDue = nextRunTime <= currentTimestamp;
+      const driftSeconds = Number.isFinite(nextRunTime)
+        ? Math.max(0, currentTimestamp - nextRunTime)
+        : 0;
+      const driftSeverity = this.getDriftSeverity(driftSeconds);
 
       if (isDue) {
         taskLogger.info('Task is due', {
@@ -216,6 +267,29 @@ class TaskPoller {
           interval: taskConfig.interval,
           nextRun: nextRunTime,
           current: currentTimestamp,
+          driftSeconds,
+          driftSeverity,
+        });
+      }
+
+      if (driftSeverity !== 'none' && this.historyManager) {
+        this.historyManager.recordDrift({
+          taskId,
+          expectedRunAt: nextRunTime,
+          observedAt: currentTimestamp,
+          driftSeconds,
+          severity: driftSeverity,
+          shardLabel: this.shardLabel,
+        });
+      }
+
+      if (registry) {
+        registry.updateTask(taskId, {
+          nextRunAt: nextRunTime,
+          observedAt: currentTimestamp,
+          driftSeconds,
+          driftSeverity,
+          scheduleStatus: isDue ? 'due' : 'waiting',
         });
       }
 
@@ -226,6 +300,8 @@ class TaskPoller {
         secondsUntilDue: Number.isFinite(nextRunTime)
           ? Math.max(0, nextRunTime - currentTimestamp)
           : null,
+        driftSeconds,
+        driftSeverity,
       };
 
     } catch (error) {
@@ -382,6 +458,47 @@ class TaskPoller {
       skipped: this.stats.tasksSkipped,
       errors: this.stats.errors,
     });
+  }
+
+  resolveLedgerTimestamp(ledgerInfo = {}) {
+    const candidates = [
+      ledgerInfo.closeTime,
+      ledgerInfo.closedAt,
+      ledgerInfo.closed_at,
+      ledgerInfo.ledgerCloseTime,
+      ledgerInfo.timestamp,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+        return candidate;
+      }
+      if (typeof candidate === 'string' && candidate) {
+        const parsedNumber = Number(candidate);
+        if (Number.isFinite(parsedNumber)) {
+          return parsedNumber;
+        }
+        const parsedDate = Date.parse(candidate);
+        if (Number.isFinite(parsedDate)) {
+          return Math.floor(parsedDate / 1000);
+        }
+      }
+    }
+
+    return Number(ledgerInfo.sequence || 0);
+  }
+
+  getDriftSeverity(driftSeconds) {
+    if (!Number.isFinite(driftSeconds) || driftSeconds <= 0) {
+      return 'none';
+    }
+    if (driftSeconds >= this.driftCriticalSeconds) {
+      return 'critical';
+    }
+    if (driftSeconds >= this.driftWarningSeconds) {
+      return 'warning';
+    }
+    return 'none';
   }
 
   /**

@@ -11,6 +11,9 @@ const { createLogger } = require("./src/logger");
 const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
+const { MetricsServer } = require("./src/metrics");
+const HistoryManager = require("./src/history");
+const { normalizeShardConfig, filterTasksForShard } = require("./src/sharding");
 const { StartupValidator } = require("./src/validator");
 
 // Create root logger for the main module
@@ -50,6 +53,47 @@ async function main() {
 
   const { keypair } = keeperData;
   const server = new Server(config.rpcUrl);
+  const historyManager = new HistoryManager({
+    logger: createLogger("history"),
+  });
+  const shardConfig = normalizeShardConfig({
+    shardIndex: config.shardIndex,
+    shardCount: config.shardCount,
+    shardLabel: config.shardLabel,
+  });
+  const controlState = {
+    paused: false,
+    reason: null,
+    changedAt: null,
+    actor: null,
+  };
+  const metricsServer = new MetricsServer(undefined, createLogger("metrics"), null, {
+    port: config.metricsPort,
+    healthStaleThreshold: config.healthStaleThresholdMs,
+    historyManager,
+    controlStateProvider: () => ({ ...controlState }),
+    controlActionHandler: async ({ paused, reason, actor }) => {
+      controlState.paused = Boolean(paused);
+      controlState.reason = paused ? (reason || "operator_requested_pause") : null;
+      controlState.changedAt = new Date().toISOString();
+      controlState.actor = actor || "api";
+      metricsServer.updateAdminState(controlState);
+      metricsServer.increment("adminStateChangesTotal", 1);
+      logger.warn(paused ? "Keeper paused by admin control" : "Keeper resumed by admin control", {
+        reason: controlState.reason,
+        actor: controlState.actor,
+      });
+      return { ...controlState };
+    },
+  });
+  metricsServer.updateShardState({
+    shardIndex: shardConfig.shardIndex,
+    shardCount: shardConfig.shardCount,
+    shardLabel: shardConfig.shardLabel,
+    ownedTasks: 0,
+    skippedTasks: 0,
+  });
+  metricsServer.start();
 
   // Perform startup validation to fail fast on configuration errors
   const validator = new StartupValidator(
@@ -74,12 +118,18 @@ async function main() {
   const poller = new TaskPoller(server, config.contractId, {
     maxConcurrentReads: process.env.MAX_CONCURRENT_READS,
     logger: createLogger("poller"),
+    metricsServer,
+    historyManager,
+    shardLabel: shardConfig.shardLabel,
+    driftWarningSeconds: config.driftWarningSeconds,
+    driftCriticalSeconds: config.driftCriticalSeconds,
   });
   logger.info("Poller initialized", { contractId: config.contractId });
 
   // Initialize execution queue
-  const queue = new ExecutionQueue(undefined, undefined, { idempotencyGuard });
+  const queue = new ExecutionQueue(undefined, metricsServer, { idempotencyGuard });
   const queueLogger = createLogger("queue");
+  await queue.initialize();
 
   queue.on("task:started", (taskId, context) =>
     queueLogger.info("Started execution", {
@@ -184,10 +234,31 @@ async function main() {
 
       // Get list of all registered task IDs
       const taskIds = registry.getTaskIds();
+      const shardSelection = filterTasksForShard(taskIds, shardConfig);
+      metricsServer.updateShardState({
+        shardIndex: shardSelection.shardIndex,
+        shardCount: shardSelection.shardCount,
+        shardLabel: shardSelection.shardLabel,
+        ownedTasks: shardSelection.ownedTaskIds.length,
+        skippedTasks: shardSelection.skippedTaskIds.length,
+      });
       logger.info("Checking tasks", { taskCount: taskIds.length });
 
+      if (controlState.paused) {
+        logger.warn("Keeper polling cycle skipped because admin pause is active", {
+          reason: controlState.reason,
+        });
+        metricsServer.updateHealth({
+          lastPollAt: new Date(),
+          rpcConnected: true,
+        });
+        return;
+      }
+
       // Poll for due tasks
-      const dueTaskIds = await poller.pollDueTasks(taskIds);
+      const dueTaskIds = await poller.pollDueTasks(shardSelection.ownedTaskIds, {
+        registry,
+      });
 
       if (dueTaskIds.length > 0) {
         const lockSnapshot = idempotencyGuard.getSnapshot();
@@ -223,6 +294,7 @@ async function main() {
     });
     clearInterval(pollingInterval);
     await queue.drain();
+    metricsServer.stop();
     logger.info("Graceful shutdown complete, exiting");
     process.exit(0);
   };
@@ -235,7 +307,10 @@ async function main() {
   setTimeout(async () => {
     try {
       const taskIds = registry.getTaskIds();
-      const dueTaskIds = await poller.pollDueTasks(taskIds);
+      const shardSelection = filterTasksForShard(taskIds, shardConfig);
+      const dueTaskIds = controlState.paused
+        ? []
+        : await poller.pollDueTasks(shardSelection.ownedTaskIds, { registry });
       if (dueTaskIds.length > 0) {
         const tasksToEnqueue = dueTaskIds.map(d => ({
           taskId: d.taskId,
