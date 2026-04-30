@@ -2,6 +2,7 @@ const { Contract, xdr, TransactionBuilder, BASE_FEE, Networks, scValToNative } =
 const { createRateLimiter } = require('./concurrency');
 const { createLogger } = require('./logger');
 const { SimulationCache } = require('./simulationCache');
+const crypto = require('crypto');
 
 /**
  * Production-grade polling engine for SoroTask Keeper.
@@ -16,6 +17,16 @@ class TaskPoller {
     // Structured logger for poller module
     this.logger = options.logger || createLogger('poller');
     this.metricsServer = options.metricsServer;
+    this.historyManager = options.historyManager || null;
+    this.shardLabel = options.shardLabel || null;
+    this.driftWarningSeconds = parseInt(
+      options.driftWarningSeconds || process.env.DRIFT_WARNING_SECONDS || 60,
+      10,
+    );
+    this.driftCriticalSeconds = parseInt(
+      options.driftCriticalSeconds || process.env.DRIFT_CRITICAL_SECONDS || 300,
+      10,
+    );
 
     // Configuration with defaults
     this.maxConcurrentReads = parseInt(
@@ -77,6 +88,9 @@ class TaskPoller {
      * @returns {Promise<number[]>} Array of task IDs that are due for execution
      */
   async pollDueTasks(taskIds, options = {}) {
+    const cycleId = crypto.randomBytes(4).toString('hex');
+    const cycleLogger = this.logger.childWithTrace(`cycle-${cycleId}`);
+    
     const startTime = Date.now();
     this.stats.lastPollTime = new Date().toISOString();
     this.stats.tasksChecked = 0;
@@ -104,19 +118,20 @@ class TaskPoller {
     try {
       // Fetch current ledger timestamp
       const ledgerInfo = await this.server.getLatestLedger();
-      const currentTimestamp = ledgerInfo.sequence; // Using sequence as timestamp proxy
+      const currentTimestamp = this.resolveLedgerTimestamp(ledgerInfo);
 
       // Note: In production, you'd want to use the actual ledger timestamp
       // which might require additional RPC calls or using ledger.timestamp from contract context
-      this.logger.info('Current ledger sequence', { sequence: currentTimestamp });
+      cycleLogger.info('Current ledger sequence', { sequence: currentTimestamp });
 
       // Process tasks in parallel with concurrency control
       const taskChecks = taskIds.map(taskId =>
         this.readLimit(async () => {
           const startedAt = Date.now();
-          const result = await this.checkTask(taskId, currentTimestamp);
+          const correlationId = `poll-${taskId}-${crypto.randomBytes(4).toString('hex')}`;
+          const result = await this.checkTask(taskId, currentTimestamp, options.registry, { correlationId });
           rpcLatencies.push(Date.now() - startedAt);
-          return result;
+          return { ...result, correlationId };
         }),
       );
 
@@ -124,13 +139,16 @@ class TaskPoller {
 
       // Collect due task IDs from successful checks
       const dueTaskIds = [];
+      let warningDriftCount = 0;
+      let criticalDriftCount = 0;
+      let maxDriftSeconds = 0;
+      let maxDriftTaskId = null;
 
       results.forEach((result, index) => {
-        if (result.status === 'fulfilled' && result.value) {
-          const { isDue, taskId, reason } = result.value;
+          const { isDue, taskId, reason, correlationId } = result.value;
 
           if (isDue) {
-            dueTaskIds.push(taskId);
+            dueTaskIds.push({ taskId, correlationId });
             this.stats.tasksDue++;
           } else if (reason === 'skipped') {
             this.stats.tasksSkipped++;
@@ -138,6 +156,17 @@ class TaskPoller {
 
           if (Number.isFinite(result.value.secondsUntilDue)) {
             secondsUntilDueValues.push(result.value.secondsUntilDue);
+          }
+
+          if (result.value.driftSeverity === 'warning') {
+            warningDriftCount += 1;
+          } else if (result.value.driftSeverity === 'critical') {
+            criticalDriftCount += 1;
+          }
+
+          if ((result.value.driftSeconds || 0) > maxDriftSeconds) {
+            maxDriftSeconds = result.value.driftSeconds;
+            maxDriftTaskId = result.value.taskId;
           }
 
           this.stats.tasksChecked++;
@@ -165,25 +194,54 @@ class TaskPoller {
         errors: this.stats.errors,
       };
 
-      this.logPollSummary(duration);
+      if (this.metricsServer) {
+        this.metricsServer.increment('tasksCheckedTotal', this.stats.tasksChecked);
+        this.metricsServer.updateHealth({
+          lastPollAt: new Date(),
+          rpcConnected: true,
+        });
+        this.metricsServer.updateDriftState({
+          warning: warningDriftCount,
+          critical: criticalDriftCount,
+          maxDriftSeconds,
+          taskId: maxDriftTaskId,
+          severity: criticalDriftCount > 0 ? 'critical' : (warningDriftCount > 0 ? 'warning' : 'none'),
+          observedAt: new Date().toISOString(),
+        });
+      }
+
+      this.logPollSummary(duration, cycleLogger);
 
       return dueTaskIds;
 
     } catch (error) {
       this.logger.error('Fatal error during polling cycle', { error: error.message, stack: error.stack });
       this.stats.errors++;
+      if (this.metricsServer) {
+        this.metricsServer.updateHealth({
+          lastPollAt: new Date(),
+          rpcConnected: false,
+        });
+      }
       return [];
     }
   }
 
-/**
-      * Check a single task to determine if it's due for execution.
-      *
-      * @param {number} taskId - The task ID to check
-      * @param {number} currentTimestamp - Current ledger timestamp
-      * @returns {Promise<{isDue: boolean, taskId: number, reason?: string}>}
-      */
-  async checkTask(taskId, currentTimestamp, registry) {
+  /**
+     * Check a single task to determine if it's due for execution.
+     *
+     * @param {number} taskId - The task ID to check
+     * @param {number} currentTimestamp - Current ledger timestamp
+     * @param {Object} [registry] - Optional task registry
+     * @param {Object} [options] - Additional options including correlationId
+     * @returns {Promise<{isDue: boolean, taskId: number, reason?: string, correlationId?: string}>}
+     */
+  async checkTask(taskId, currentTimestamp, registry, options = {}) {
+    const correlationId = options.correlationId;
+    const taskLogger = correlationId 
+      ? this.logger.childWithTrace(correlationId)
+      : this.logger;
+
     try {
       // Check cache first for task configuration
       const cachedConfig = this.simulationCache.get(taskId);
@@ -202,8 +260,8 @@ class TaskPoller {
       }
 
       if (!taskConfig) {
-        this.logger.warn('Task not found (may have been deregistered)', { taskId });
-        return { isDue: false, taskId, reason: 'not_found' };
+        taskLogger.warn('Task not found (may have been deregistered)', { taskId });
+        return { isDue: false, taskId, reason: 'not_found', correlationId };
       }
 
       // Update registry with latest task details
@@ -213,34 +271,64 @@ class TaskPoller {
 
       // Check gas balance
       if (taskConfig.gas_balance <= 0) {
-        this.logger.warn('Task has insufficient gas balance', { taskId, gasBalance: taskConfig.gas_balance });
-        return { isDue: false, taskId, reason: 'skipped' };
+        taskLogger.warn('Task has insufficient gas balance', { taskId, gasBalance: taskConfig.gas_balance });
+        return { isDue: false, taskId, reason: 'skipped', correlationId };
       }
 
       // Calculate if task is due: last_run + interval <= currentTimestamp
       const nextRunTime = taskConfig.last_run + taskConfig.interval;
       const isDue = nextRunTime <= currentTimestamp;
+      const driftSeconds = Number.isFinite(nextRunTime)
+        ? Math.max(0, currentTimestamp - nextRunTime)
+        : 0;
+      const driftSeverity = this.getDriftSeverity(driftSeconds);
 
       if (isDue) {
-        this.logger.info('Task is due', {
+        taskLogger.info('Task is due', {
           taskId,
           lastRun: taskConfig.last_run,
           interval: taskConfig.interval,
           nextRun: nextRunTime,
           current: currentTimestamp,
+          driftSeconds,
+          driftSeverity,
+        });
+      }
+
+      if (driftSeverity !== 'none' && this.historyManager) {
+        this.historyManager.recordDrift({
+          taskId,
+          expectedRunAt: nextRunTime,
+          observedAt: currentTimestamp,
+          driftSeconds,
+          severity: driftSeverity,
+          shardLabel: this.shardLabel,
+        });
+      }
+
+      if (registry) {
+        registry.updateTask(taskId, {
+          nextRunAt: nextRunTime,
+          observedAt: currentTimestamp,
+          driftSeconds,
+          driftSeverity,
+          scheduleStatus: isDue ? 'due' : 'waiting',
         });
       }
 
       return {
         isDue,
         taskId,
+        correlationId,
         secondsUntilDue: Number.isFinite(nextRunTime)
           ? Math.max(0, nextRunTime - currentTimestamp)
           : null,
+        driftSeconds,
+        driftSeverity,
       };
 
     } catch (error) {
-      this.logger.error('Error checking task', { taskId, error: error.message });
+      taskLogger.error('Error checking task', { taskId, error: error.message });
       throw error;
     }
   }
@@ -382,15 +470,58 @@ class TaskPoller {
    * Log a summary of the polling cycle.
    *
    * @param {number} duration - Duration of the poll in milliseconds
+   * @param {Object} [customLogger] - Optional logger to use
    */
-  logPollSummary(duration) {
-    this.logger.info('Poll complete', {
+  logPollSummary(duration, customLogger) {
+    const l = customLogger || this.logger;
+    l.info('Poll complete', {
       durationMs: duration,
       checked: this.stats.tasksChecked,
       due: this.stats.tasksDue,
       skipped: this.stats.tasksSkipped,
       errors: this.stats.errors,
     });
+  }
+
+  resolveLedgerTimestamp(ledgerInfo = {}) {
+    const candidates = [
+      ledgerInfo.closeTime,
+      ledgerInfo.closedAt,
+      ledgerInfo.closed_at,
+      ledgerInfo.ledgerCloseTime,
+      ledgerInfo.timestamp,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+        return candidate;
+      }
+      if (typeof candidate === 'string' && candidate) {
+        const parsedNumber = Number(candidate);
+        if (Number.isFinite(parsedNumber)) {
+          return parsedNumber;
+        }
+        const parsedDate = Date.parse(candidate);
+        if (Number.isFinite(parsedDate)) {
+          return Math.floor(parsedDate / 1000);
+        }
+      }
+    }
+
+    return Number(ledgerInfo.sequence || 0);
+  }
+
+  getDriftSeverity(driftSeconds) {
+    if (!Number.isFinite(driftSeconds) || driftSeconds <= 0) {
+      return 'none';
+    }
+    if (driftSeconds >= this.driftCriticalSeconds) {
+      return 'critical';
+    }
+    if (driftSeconds >= this.driftWarningSeconds) {
+      return 'warning';
+    }
+    return 'none';
   }
 
   /**
