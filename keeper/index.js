@@ -8,10 +8,12 @@ const { ExecutionQueue } = require("./src/queue");
 const TaskPoller = require("./src/poller");
 const TaskRegistry = require("./src/registry");
 const { createLogger } = require("./src/logger");
-const { newCycleId, newTraceId, bindLogger } = require("./src/traceContext");
 const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
+const { MetricsServer } = require("./src/metrics");
+const HistoryManager = require("./src/history");
+const { normalizeShardConfig, filterTasksForShard } = require("./src/sharding");
 const { StartupValidator } = require("./src/validator");
 
 // Create root logger for the main module
@@ -51,6 +53,47 @@ async function main() {
 
   const { keypair } = keeperData;
   const server = new Server(config.rpcUrl);
+  const historyManager = new HistoryManager({
+    logger: createLogger("history"),
+  });
+  const shardConfig = normalizeShardConfig({
+    shardIndex: config.shardIndex,
+    shardCount: config.shardCount,
+    shardLabel: config.shardLabel,
+  });
+  const controlState = {
+    paused: false,
+    reason: null,
+    changedAt: null,
+    actor: null,
+  };
+  const metricsServer = new MetricsServer(undefined, createLogger("metrics"), null, {
+    port: config.metricsPort,
+    healthStaleThreshold: config.healthStaleThresholdMs,
+    historyManager,
+    controlStateProvider: () => ({ ...controlState }),
+    controlActionHandler: async ({ paused, reason, actor }) => {
+      controlState.paused = Boolean(paused);
+      controlState.reason = paused ? (reason || "operator_requested_pause") : null;
+      controlState.changedAt = new Date().toISOString();
+      controlState.actor = actor || "api";
+      metricsServer.updateAdminState(controlState);
+      metricsServer.increment("adminStateChangesTotal", 1);
+      logger.warn(paused ? "Keeper paused by admin control" : "Keeper resumed by admin control", {
+        reason: controlState.reason,
+        actor: controlState.actor,
+      });
+      return { ...controlState };
+    },
+  });
+  metricsServer.updateShardState({
+    shardIndex: shardConfig.shardIndex,
+    shardCount: shardConfig.shardCount,
+    shardLabel: shardConfig.shardLabel,
+    ownedTasks: 0,
+    skippedTasks: 0,
+  });
+  metricsServer.start();
 
   // Perform startup validation to fail fast on configuration errors
   const validator = new StartupValidator(
@@ -75,12 +118,20 @@ async function main() {
   const poller = new TaskPoller(server, config.contractId, {
     maxConcurrentReads: process.env.MAX_CONCURRENT_READS,
     logger: createLogger("poller"),
+    simulationCacheTtl: process.env.SIMULATION_CACHE_TTL,
+    simulationCacheMaxSize: process.env.SIMULATION_CACHE_MAX_SIZE,
+    metricsServer,
+    historyManager,
+    shardLabel: shardConfig.shardLabel,
+    driftWarningSeconds: config.driftWarningSeconds,
+    driftCriticalSeconds: config.driftCriticalSeconds,
   });
   logger.info("Poller initialized", { contractId: config.contractId });
 
   // Initialize execution queue
-  const queue = new ExecutionQueue(undefined, undefined, { idempotencyGuard });
+  const queue = new ExecutionQueue(undefined, metricsServer, { idempotencyGuard });
   const queueLogger = createLogger("queue");
+  await queue.initialize();
 
   queue.on("task:started", (taskId, context) =>
     queueLogger.info("Started execution", {
@@ -88,12 +139,14 @@ async function main() {
       attemptId: context?.attemptId || null,
     }),
   );
-  queue.on("task:success", (taskId) =>
-    queueLogger.info("Task executed successfully", { taskId }),
-  );
-  queue.on("task:failed", (taskId, err) =>
-    queueLogger.error("Task failed", { taskId, error: err.message }),
-  );
+  queue.on("task:success", (taskId) => {
+    queueLogger.info("Task executed successfully", { taskId });
+    poller.invalidateCache(taskId);
+  });
+  queue.on("task:failed", (taskId, err) => {
+    queueLogger.error("Task failed", { taskId, error: err.message });
+    poller.invalidateCache(taskId);
+  });
   queue.on("task:skipped", (taskId, context) =>
     queueLogger.info("Skipped duplicate execution attempt", {
       taskId,
@@ -108,15 +161,9 @@ async function main() {
   // Task executor function - calls contract.execute(keeper, task_id)
   // In dry-run mode, simulates the transaction without submitting it.
   const executeTask = async (taskId, context = {}) => {
-    // Bind a trace-scoped logger so every log line from this attempt carries
-    // cycleId + traceId without callers having to pass them manually.
-    const traceId = context.traceId || newTraceId(taskId);
-    const tlog = bindLogger(logger, {
-      cycleId: context.cycleId,
-      traceId,
-      taskId,
-    });
-
+    const correlationId = context.correlationId || context.attemptId;
+    const taskLogger = correlationId ? logger.childWithTrace(correlationId) : logger;
+    
     const account = await server.getAccount(keypair.publicKey());
     const deps = {
       server,
@@ -127,9 +174,9 @@ async function main() {
     };
 
     if (DRY_RUN) {
-      tlog.info("dry-run: simulate");
       const result = await dryRunTask(taskId, deps);
-      tlog.info("dry-run: result", {
+      taskLogger.info("Dry-run result", {
+        taskId,
         status: result.status,
         estimatedFee: result.simulation?.estimatedFee ?? null,
         error: result.error,
@@ -137,11 +184,11 @@ async function main() {
       return;
     }
 
-    tlog.info("execute: start");
     try {
       const retryResult = await executeTaskWithRetry(taskId, deps, {
         attemptId: context.attemptId,
-        logger: tlog,
+        correlationId,
+        logger: taskLogger,
         onRetry: (_error, _attempt, _delay, retryContext) => {
           idempotencyGuard.touchRetry(taskId, {
             lastError: retryContext?.message || null,
@@ -149,18 +196,23 @@ async function main() {
         },
       });
 
-      tlog.info("execute: complete", {
+      taskLogger.info("Task execution completed", {
+        taskId,
         attemptId: context.attemptId || null,
+        correlationId,
         retries: retryResult.retries,
         attempts: retryResult.attempts,
         duplicate: Boolean(retryResult.duplicate),
         txHash: retryResult.result?.txHash || null,
       });
     } catch (error) {
-      tlog.error("execute: failed", {
+      taskLogger.error("Failed to execute task", {
+        taskId,
         attemptId: context.attemptId || null,
+        correlationId,
         error: error.error?.message || error.message || String(error),
         classification: error.classification || null,
+        context: error.context || null,
       });
       throw error;
     }
@@ -178,43 +230,64 @@ async function main() {
   logger.info("Starting polling loop", { intervalMs: pollingIntervalMs });
 
   const pollingInterval = setInterval(async () => {
-    const cycleId = newCycleId();
-    const clog = bindLogger(logger, { cycleId });
     try {
-      clog.info("poll: start");
+      logger.info("Starting new polling cycle");
 
       // Poll for new TaskRegistered events
       await registry.poll();
 
       // Get list of all registered task IDs
       const taskIds = registry.getTaskIds();
-      clog.info("poll: checking tasks", { taskCount: taskIds.length });
+      const shardSelection = filterTasksForShard(taskIds, shardConfig);
+      metricsServer.updateShardState({
+        shardIndex: shardSelection.shardIndex,
+        shardCount: shardSelection.shardCount,
+        shardLabel: shardSelection.shardLabel,
+        ownedTasks: shardSelection.ownedTaskIds.length,
+        skippedTasks: shardSelection.skippedTaskIds.length,
+      });
+      logger.info("Checking tasks", { taskCount: taskIds.length });
+
+      if (controlState.paused) {
+        logger.warn("Keeper polling cycle skipped because admin pause is active", {
+          reason: controlState.reason,
+        });
+        metricsServer.updateHealth({
+          lastPollAt: new Date(),
+          rpcConnected: true,
+        });
+        return;
+      }
 
       // Poll for due tasks
-      const dueTaskIds = await poller.pollDueTasks(taskIds);
+      const dueTaskIds = await poller.pollDueTasks(shardSelection.ownedTaskIds, {
+        registry,
+      });
 
       if (dueTaskIds.length > 0) {
         const lockSnapshot = idempotencyGuard.getSnapshot();
-        clog.info("poll: enqueueing due tasks", {
+        logger.info("Found due tasks, enqueueing for execution", {
           dueCount: dueTaskIds.length,
+        });
+        logger.info("Execution idempotency state", {
+          stateFile: lockSnapshot.stateFile,
           activeLocks: lockSnapshot.lockCount,
         });
-        // Attach cycleId + per-task traceId to each enqueued context
-        const tasksWithTrace = dueTaskIds.map((id) => ({
-          id,
-          context: { cycleId, traceId: newTraceId(id) },
+        
+        // Transform the dueTask results to pass correlation IDs to the queue
+        const tasksToEnqueue = dueTaskIds.map(d => ({
+          taskId: d.taskId,
+          context: { pollCorrelationId: d.correlationId }
         }));
-        await queue.enqueue(
-          tasksWithTrace.map((t) => t.id),
-          (taskId, ctx) => executeTask(taskId, { ...ctx, cycleId, traceId: tasksWithTrace.find((t) => t.id === taskId)?.context.traceId }),
-        );
+        
+        await queue.enqueue(tasksToEnqueue, executeTask);
       } else {
-        clog.info("poll: no tasks due");
+        logger.info("No tasks due for execution");
       }
 
-      clog.info("poll: complete");
+      logger.info("Polling cycle complete");
     } catch (error) {
-      clog.error("poll: cycle error", { error: error.message });
+      logger.error("Error in polling cycle", { error: error.message });
     }
   }, pollingIntervalMs);
 
@@ -225,6 +298,7 @@ async function main() {
     });
     clearInterval(pollingInterval);
     await queue.drain();
+    metricsServer.stop();
     logger.info("Graceful shutdown complete, exiting");
     process.exit(0);
   };
@@ -235,19 +309,21 @@ async function main() {
   // Run first poll immediately
   logger.info("Running initial poll");
   setTimeout(async () => {
-    const cycleId = newCycleId();
-    const clog = bindLogger(logger, { cycleId });
     try {
       const taskIds = registry.getTaskIds();
-      const dueTaskIds = await poller.pollDueTasks(taskIds);
+      const shardSelection = filterTasksForShard(taskIds, shardConfig);
+      const dueTaskIds = controlState.paused
+        ? []
+        : await poller.pollDueTasks(shardSelection.ownedTaskIds, { registry });
       if (dueTaskIds.length > 0) {
-        await queue.enqueue(
-          dueTaskIds,
-          (taskId, ctx) => executeTask(taskId, { ...ctx, cycleId, traceId: newTraceId(taskId) }),
-        );
+        const tasksToEnqueue = dueTaskIds.map(d => ({
+          taskId: d.taskId,
+          context: { pollCorrelationId: d.correlationId }
+        }));
+        await queue.enqueue(tasksToEnqueue, executeTask);
       }
     } catch (error) {
-      clog.error("poll: initial poll error", { error: error.message });
+      logger.error("Error in initial poll", { error: error.message });
     }
   }, 1000);
 }
