@@ -336,5 +336,6 @@ module.exports = {
   isDuplicateTransactionError,
   classifyError,
   extractErrorCode,
+  calculateDelay,
   ErrorClassification,
 };

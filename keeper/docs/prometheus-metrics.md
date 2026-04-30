@@ -10,6 +10,20 @@ GET /metrics/prometheus
 
 The metrics are exposed at `http://localhost:3000/metrics/prometheus` by default (port configurable via `METRICS_PORT` environment variable).
 
+Additional operational endpoints:
+
+```text
+GET  /health
+GET  /metrics
+GET  /metrics/forecast
+GET  /drift
+GET  /admin/keeper
+POST /admin/keeper/pause
+POST /admin/keeper/resume
+```
+
+The `/admin/keeper*` endpoints require `Authorization: Bearer <KEEPER_ADMIN_TOKEN>`.
+
 ## Exposed Metrics
 
 ### Task Execution Metrics
@@ -40,6 +54,24 @@ The metrics are exposed at `http://localhost:3000/metrics/prometheus` by default
 |-------------|------|-------------|
 | `keeper_uptime_seconds` | Gauge | Keeper service uptime in seconds since start |
 | `keeper_rpc_connected` | Gauge | RPC connection status (1 = connected, 0 = disconnected) |
+| `keeper_admin_paused` | Gauge | Whether the keeper is administratively paused (1 = paused, 0 = active) |
+| `keeper_rpc_circuit_state` | Gauge | RPC circuit breaker state (0 = CLOSED, 1 = HALF_OPEN, 2 = OPEN) |
+
+### Sharding Metrics
+
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `keeper_shard_owned_tasks` | Gauge | Number of tasks owned by this keeper shard |
+| `keeper_shard_skipped_tasks` | Gauge | Number of tasks skipped because they belong to another shard |
+
+### Recurring Drift Metrics
+
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `keeper_recurring_drift_severity` | Gauge | Highest observed drift severity (0 = none, 1 = warning, 2 = critical) |
+| `keeper_recurring_drift_task_id` | Gauge | Task id associated with the highest current drift |
+| `keeper_recurring_drift_warning_tasks` | Gauge | Number of tasks currently showing warning-level drift |
+| `keeper_recurring_drift_critical_tasks` | Gauge | Number of tasks currently showing critical drift |
 
 ### Default Process Metrics
 
@@ -60,6 +92,21 @@ Set the metrics server port via environment variable:
 
 ```bash
 METRICS_PORT=3000
+```
+
+Shard ownership is controlled with:
+
+```bash
+KEEPER_SHARD_INDEX=0
+KEEPER_SHARD_COUNT=3
+KEEPER_SHARD_LABEL=keeper-a
+```
+
+Recurring drift thresholds are configured in seconds:
+
+```bash
+DRIFT_WARNING_SECONDS=60
+DRIFT_CRITICAL_SECONDS=300
 ```
 
 ## Prometheus Configuration

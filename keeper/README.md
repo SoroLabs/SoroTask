@@ -70,6 +70,20 @@ LOG_LEVEL=info
 # Optional: lock expiration controls (milliseconds)
 # EXECUTION_LOCK_TTL_MS=120000
 # EXECUTION_COMPLETED_MARKER_TTL_MS=30000
+
+# Metrics / admin API
+METRICS_PORT=3000
+HEALTH_STALE_THRESHOLD_MS=60000
+# KEEPER_ADMIN_TOKEN=replace-with-strong-random-token
+
+# Stable work partitioning across keeper instances
+KEEPER_SHARD_INDEX=0
+KEEPER_SHARD_COUNT=1
+# KEEPER_SHARD_LABEL=keeper-a
+
+# Recurring schedule drift thresholds (seconds)
+DRIFT_WARNING_SECONDS=60
+DRIFT_CRITICAL_SECONDS=300
 ```
 
 ### Explanation of Variables:
@@ -89,6 +103,10 @@ LOG_LEVEL=info
 - **`KEEPER_STATE_DIR` / `IDEMPOTENCY_STATE_FILE`**: Location of persisted execution idempotency locks used to prevent duplicate submissions.
 - **`EXECUTION_LOCK_TTL_MS`**: How long an in-progress execution lock is considered valid before stale recovery allows new work.
 - **`EXECUTION_COMPLETED_MARKER_TTL_MS`**: Short-lived post-success marker to reduce accidental immediate duplicate submissions.
+- **`KEEPER_ADMIN_TOKEN`**: Bearer token required to call the keeper admin pause/resume API.
+- **`KEEPER_SHARD_INDEX` / `KEEPER_SHARD_COUNT`**: Stable shard assignment controls so multiple keeper instances can partition work without ambiguous ownership.
+- **`KEEPER_SHARD_LABEL`**: Optional human-readable shard identifier used in metrics and logs.
+- **`DRIFT_WARNING_SECONDS` / `DRIFT_CRITICAL_SECONDS`**: Thresholds for recurring execution drift classification.
 
 ### Dead-Letter Queue Configuration
 
