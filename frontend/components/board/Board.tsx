@@ -15,10 +15,9 @@ import {
   SortableContext,
   arrayMove,
   sortableKeyboardCoordinates,
-  useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
-import { CSS } from "@dnd-kit/utilities"
+import TaskCardWithSelection from "./TaskCardWithSelection"
 
 type Task = {
   id: string
@@ -165,7 +164,7 @@ function BoardColumn({
       >
         <div className="space-y-3">
           {tasks.length > 0 ? (
-            tasks.map((task) => <TaskCard key={task.id} task={task} />)
+            tasks.map((task) => <TaskCardWithSelection key={task.id} task={task} />)
           ) : (
             <div className="rounded-lg border border-dashed border-neutral-700 p-4 text-sm text-neutral-500">
               Drop task here
@@ -174,37 +173,5 @@ function BoardColumn({
         </div>
       </SortableContext>
     </div>
-  )
-}
-
-function TaskCard({ task }: { task: Task }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: task.id })
-
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-      }}
-      {...attributes}
-      {...listeners}
-      className={`w-full touch-none rounded-lg border p-3 text-left text-sm font-medium outline-none transition ${
-        isDragging
-          ? "border-blue-400 bg-blue-500/20 opacity-80"
-          : "border-neutral-700 bg-neutral-900 hover:border-neutral-500"
-      } focus-visible:ring-2 focus-visible:ring-blue-400`}
-      aria-label={`Move ${task.title}`}
-    >
-      {task.title}
-    </button>
   )
 }
