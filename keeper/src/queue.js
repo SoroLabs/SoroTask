@@ -5,6 +5,11 @@ const { RetryScheduler } = require('./retryScheduler');
 
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_WRITES_PER_SECOND = 5;
+const EventEmitter = require("events");
+const { createRateLimiter } = require("./concurrency");
+const { createLogger } = require("./logger");
+const { RetryScheduler } = require("./retryScheduler");
+const { acquireLock, releaseLock } = require("./lock");
 
 class ExecutionQueue extends EventEmitter {
   constructor(limit, metricsServer, options = {}) {
@@ -20,6 +25,10 @@ class ExecutionQueue extends EventEmitter {
     this.logger = (options && options.logger) || createLogger('queue');
     this.metricsServer = metricsServer;
     this.idempotencyGuard = (options && options.idempotencyGuard) || null;
+    this.logger = options.logger || createLogger('queue');
+    const schedulerCandidate = options && typeof options.scheduleRetry === 'function'
+      ? options
+      : options.retryScheduler;
 
     this.concurrencyLimit = parseInt(
       limit || process.env.MAX_CONCURRENT_EXECUTIONS || DEFAULT_CONCURRENCY,
@@ -42,6 +51,10 @@ class ExecutionQueue extends EventEmitter {
         }
       },
     });
+    this.metricsServer = metricsServer;
+    this.idempotencyGuard = options.idempotencyGuard || null;
+    this.retryScheduler = schedulerCandidate || new RetryScheduler();
+    this.distributedLockEnabled = options.distributedLockEnabled !== false;
 
     this.depth = 0;
     this.inFlight = 0;
@@ -82,11 +95,32 @@ class ExecutionQueue extends EventEmitter {
     const validTaskIds = taskIds.filter(
       (taskId) => !this.failedTasks.has(taskId) && !this.retryTaskIds.has(taskId),
     );
+  async initialize() {
+    if (this.retryScheduler?.initialize) {
+      await this.retryScheduler.initialize();
+    }
+  }
 
-    this.depth = validTaskIds.length;
+  getReadyRetries(limit = parseInt(process.env.MAX_RETRIES_PER_CYCLE || '2', 10)) {
+    const ready = this.retryScheduler?.getReadyRetries
+      ? this.retryScheduler.getReadyRetries()
+      : [];
+    const limited = ready.slice(0, Math.max(limit, 0));
+    limited.forEach((retry) => this.retryTaskIds.add(retry.taskId));
+    return limited;
+  }
+
+  async enqueue(tasksToEnqueue, executorFn, taskConfigMap = {}) {
+    const validTasks = (tasksToEnqueue || []).filter((task) => {
+      const taskId = typeof task === 'object' ? task.taskId : task;
+      return !this.failedTasks.has(taskId) && !this.retryTaskIds.has(taskId);
+    });
+
+    this.depth = validTasks.length;
 
     if (this.metricsServer) {
       this.metricsServer.increment('tasksDueTotal', validTaskIds.length);
+      this.metricsServer.increment("tasksDueTotal", validTasks.length);
     }
 
     const cycleStartTime = Date.now();
@@ -100,8 +134,17 @@ class ExecutionQueue extends EventEmitter {
         }
 
         let attemptContext = null;
+    const cyclePromises = validTasks.map((task) => {
+      return this.limit(async () => {
+        const taskId = typeof task === 'object' ? task.taskId : task;
+        const initialContext = typeof task === 'object' && task.context ? task.context : {};
+        let attemptContext = { ...initialContext };
+        let distributedLockToken = null;
+
         if (this.idempotencyGuard) {
           const lockResult = this.idempotencyGuard.acquire(taskId);
+          attemptContext.attemptId = lockResult.attemptId;
+
           if (!lockResult.acquired) {
             if (this.metricsServer) {
               this.metricsServer.increment('tasksSkippedIdempotencyTotal', 1);
@@ -109,10 +152,10 @@ class ExecutionQueue extends EventEmitter {
             this.emit('task:skipped', taskId, {
               reason: 'idempotency_lock',
               attemptId: lockResult.attemptId,
+              pollCorrelationId: attemptContext.pollCorrelationId,
             });
             return;
           }
-          attemptContext = { attemptId: lockResult.attemptId };
         }
 
         this.inFlight++;
@@ -130,8 +173,24 @@ class ExecutionQueue extends EventEmitter {
             ? this.retryScheduler.getRetryMetadata(taskId)
             : null;
         const currentAttempt = retryMetadata?.currentAttempt || 0;
+        let taskConfig = null;
+        if (taskConfigMap && taskConfigMap[taskId]) {
+          taskConfig = taskConfigMap[taskId];
+        }
 
         try {
+          if (this.distributedLockEnabled) {
+            const lockTtl = parseInt(process.env.LOCK_TTL_MS || '60000', 10);
+            distributedLockToken = await acquireLock(taskId, lockTtl);
+            if (!distributedLockToken) {
+              this.logger.info('Skipping task due to distributed lock contention', {
+                taskId,
+              });
+              this.emit('task:skipped', taskId, { reason: 'distributed_lock' });
+              return;
+            }
+          }
+
           if (attemptContext) {
             await executorFn(taskId, attemptContext);
           } else {
@@ -140,6 +199,8 @@ class ExecutionQueue extends EventEmitter {
 
           this.completed++;
           if (this.retryScheduler && typeof this.retryScheduler.completeRetry === 'function') {
+          // Remove from retry queue if it was there
+          if (this.retryScheduler?.completeRetry) {
             await this.retryScheduler.completeRetry(taskId, true);
           }
 
@@ -162,6 +223,19 @@ class ExecutionQueue extends EventEmitter {
           let retryResult = null;
           if (this.retryScheduler && typeof this.retryScheduler.scheduleRetry === 'function') {
             retryResult = await this.retryScheduler.scheduleRetry({
+          this.emit("task:success", taskId, attemptContext);
+        } catch (error) {
+          this.failedCount++;
+          this.failedTasks.add(taskId);
+
+          // Schedule retry for retryable errors
+          const retryMetadata = this.retryScheduler?.getRetryMetadata
+            ? this.retryScheduler.getRetryMetadata(taskId)
+            : null;
+          const currentAttempt = retryMetadata?.currentAttempt || 0;
+
+          if (this.retryScheduler?.scheduleRetry) {
+            await this.retryScheduler.scheduleRetry({
               taskId,
               error,
               currentAttempt,
@@ -178,6 +252,19 @@ class ExecutionQueue extends EventEmitter {
               attemptId: attemptContext?.attemptId,
               lastError: error.message,
             });
+          }
+          this.emit("task:failed", taskId, error, attemptContext);
+        } finally {
+          // Attempt to release the lock if we hold it
+          try {
+            if (distributedLockToken) {
+              const released = await releaseLock(taskId, distributedLockToken);
+              if (!released) {
+                this.logger.warn('Lock release failed (token mismatch or expired)', { taskId });
+              }
+            }
+          } catch (err) {
+            this.logger.error('Error releasing lock', { taskId, error: err.message });
           }
 
           this.emit('task:failed', taskId, error, {
@@ -331,6 +418,13 @@ class ExecutionQueue extends EventEmitter {
       pending: this.depth,
       inFlight: this.inFlight,
     });
+  /**
+   * Get retry queue statistics
+   */
+  getRetryStatistics() {
+    return this.retryScheduler?.getStatistics
+      ? this.retryScheduler.getStatistics()
+      : {};
   }
 
   async shutdown() {
@@ -362,6 +456,9 @@ class ExecutionQueue extends EventEmitter {
     }
 
     return this.retryScheduler.getStatistics();
+    if (this.retryScheduler?.shutdown) {
+      await this.retryScheduler.shutdown();
+    }
   }
 }
 
