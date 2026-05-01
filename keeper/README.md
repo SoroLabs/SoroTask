@@ -11,6 +11,7 @@ See the centralized [Glossary](../GLOSSARY.md) for definitions of domain-specifi
 - [Setup Instructions](#setup-instructions)
 - [Dead-Letter Queue](#dead-letter-queue)
 - [Mock Soroban RPC](#mock-soroban-rpc-for-faster-local-testing)
+- [Chaos Testing](#chaos-testing)
 - [Docker Deployment](#docker-deployment)
 - [Troubleshooting](#troubleshooting)
 
@@ -70,6 +71,20 @@ LOG_LEVEL=info
 # Optional: lock expiration controls (milliseconds)
 # EXECUTION_LOCK_TTL_MS=120000
 # EXECUTION_COMPLETED_MARKER_TTL_MS=30000
+
+# Metrics / admin API
+METRICS_PORT=3000
+HEALTH_STALE_THRESHOLD_MS=60000
+# KEEPER_ADMIN_TOKEN=replace-with-strong-random-token
+
+# Stable work partitioning across keeper instances
+KEEPER_SHARD_INDEX=0
+KEEPER_SHARD_COUNT=1
+# KEEPER_SHARD_LABEL=keeper-a
+
+# Recurring schedule drift thresholds (seconds)
+DRIFT_WARNING_SECONDS=60
+DRIFT_CRITICAL_SECONDS=300
 ```
 
 ### Explanation of Variables:
@@ -89,6 +104,10 @@ LOG_LEVEL=info
 - **`KEEPER_STATE_DIR` / `IDEMPOTENCY_STATE_FILE`**: Location of persisted execution idempotency locks used to prevent duplicate submissions.
 - **`EXECUTION_LOCK_TTL_MS`**: How long an in-progress execution lock is considered valid before stale recovery allows new work.
 - **`EXECUTION_COMPLETED_MARKER_TTL_MS`**: Short-lived post-success marker to reduce accidental immediate duplicate submissions.
+- **`KEEPER_ADMIN_TOKEN`**: Bearer token required to call the keeper admin pause/resume API.
+- **`KEEPER_SHARD_INDEX` / `KEEPER_SHARD_COUNT`**: Stable shard assignment controls so multiple keeper instances can partition work without ambiguous ownership.
+- **`KEEPER_SHARD_LABEL`**: Optional human-readable shard identifier used in metrics and logs.
+- **`DRIFT_WARNING_SECONDS` / `DRIFT_CRITICAL_SECONDS`**: Thresholds for recurring execution drift classification.
 
 ### Dead-Letter Queue Configuration
 
@@ -353,6 +372,52 @@ Detailed usage, supported methods, and test examples are in [docs/mock-soroban-r
 
 - **Cause**: Application dependencies were not correctly or fully installed.
 - **Solution**: Ensure you ran `npm install` inside the `keeper/` directory correctly. Try clearing cache or removing `node_modules` (`rm -rf node_modules`) and running `npm install` again.
+
+## Chaos Testing
+
+The keeper includes a comprehensive chaos testing framework to validate resilience under realistic failure conditions. This helps ensure the keeper can handle network issues, RPC failures, and degraded performance.
+
+### Running Chaos Tests
+
+```bash
+# Run all chaos scenarios
+npm run chaos-test
+
+# Run specific scenarios
+npm run chaos-test -- --scenario=latency,ratelimit
+
+# List available scenarios
+npm run chaos-test:list
+
+# Run single scenario
+npm run chaos-test:single latency
+
+# Save report to file
+npm run chaos-test -- --output=json --file=chaos-report.json
+```
+
+### Available Scenarios
+
+1. **Latency Spikes** - Test timeout handling with random delays
+2. **Partial RPC Failure** - Test graceful degradation when some methods fail
+3. **Rate Limiting** - Test backoff behavior under throttling
+4. **Flaky Network** - Test circuit breaker recovery
+5. **Gradual Degradation** - Test adaptive behavior to worsening conditions
+6. **Complete Outage** - Test worst-case scenario handling
+
+### Integration with Tests
+
+Chaos tests are integrated into the Jest test suite:
+
+```bash
+# Run all tests including chaos tests
+npm test
+
+# Run only chaos tests
+npm test -- chaos.test.js
+```
+
+See [Chaos Testing Documentation](./docs/CHAOS_TESTING.md) for detailed information.
 
 ## Docker Deployment
 
