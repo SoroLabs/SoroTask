@@ -1,10 +1,11 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const nextJest = require('next/jest')
 
-const createJestConfig = async () => {
-  const nextConfig = await nextJest({
-    dir: './',
-  })
+// next/jest returns a function that wraps your Jest config with Next.js defaults.
+// The wrapper itself is synchronous in Next.js 16 — no need for async/await.
+const createJestConfig = nextJest({
+  dir: './',
+})
 
   return nextConfig({
     coverageProvider: 'v8',
@@ -44,4 +45,4 @@ const createJestConfig = async () => {
   })
 }
 
-module.exports = createJestConfig()
+module.exports = createJestConfig(customConfig)
