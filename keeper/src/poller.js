@@ -199,6 +199,7 @@ class TaskPoller {
       let maxDriftTaskId = null;
 
       results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
           const { isDue, taskId, reason, correlationId } = result.value;
 
           if (isDue) {

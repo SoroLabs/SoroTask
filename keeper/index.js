@@ -158,10 +158,6 @@ async function main() {
     shutdownManager.failTask(taskId, err);
     poller.invalidateCache(taskId);
   });
-  queue.on("task:failed", (taskId, err) => {
-    queueLogger.error("Task failed", { taskId, error: err.message });
-    poller.invalidateCache(taskId);
-  });
   queue.on("task:skipped", (taskId, context) =>
     queueLogger.info("Skipped duplicate execution attempt", {
       taskId,
