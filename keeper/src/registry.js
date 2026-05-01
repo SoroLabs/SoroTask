@@ -74,6 +74,22 @@ class TaskRegistry {
   }
 
   /**
+   * Return the list of known task IDs that belong to the specified shard.
+   * Uses simple modulo partitioning: taskId % totalShards === shardId.
+   * 
+   * @param {number} shardId - The current shard index (0-indexed)
+   * @param {number} totalShards - Total number of shards
+   * @returns {number[]}
+   */
+  getTaskIdsForShard(shardId, totalShards) {
+    if (totalShards <= 1) return this.getTaskIds();
+    
+    return Array.from(this.taskIds)
+      .filter(id => id % totalShards === shardId)
+      .sort((a, b) => a - b);
+  }
+
+  /**
    * Get all tasks with their current details and status.
    * @returns {Object[]}
    */

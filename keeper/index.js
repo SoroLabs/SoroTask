@@ -328,7 +328,11 @@ async function main() {
 
   // Polling loop
   const pollingIntervalMs = config.pollIntervalMs;
-  logger.info("Starting polling loop", { intervalMs: pollingIntervalMs });
+  logger.info("Starting polling loop", { 
+    intervalMs: pollingIntervalMs,
+    shardId: config.shardId,
+    totalShards: config.totalShards
+  });
 
   const pollingInterval = setInterval(async () => {
     // Don't accept new work during shutdown
