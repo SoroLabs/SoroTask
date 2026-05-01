@@ -20,7 +20,17 @@ pub enum Error {
     CircularDependency = 10,
     DependencyBlocked = 11,
     AlreadyInitialized = 12,
+    // Payload validation errors
+    ArgsTooMany = 13,
+    ArgsTooLarge = 14,
+    InvalidPayload = 15,
 }
+
+/// Maximum number of arguments allowed in a task payload
+const MAX_ARGS_COUNT: u32 = 32;
+
+/// Maximum serialized size of arguments in bytes (approx 4KB limit for Soroban)
+const MAX_ARGS_SIZE_BYTES: u32 = 4096;
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -125,6 +135,26 @@ pub struct SoroTaskContract;
 
 #[contractimpl]
 impl SoroTaskContract {
+    /// Validates task payload arguments for size and structure.
+    /// Returns Ok(()) if valid, or an error code if validation fails.
+    fn validate_args(args: &Vec<Val>) -> Result<(), Error> {
+        let args_count = args.len();
+        
+        // Validate argument count
+        if args_count > MAX_ARGS_COUNT {
+            return Err(Error::ArgsTooMany);
+        }
+        
+        // Estimate serialized size (each Val is at least 8 bytes + overhead)
+        // This is a conservative estimate since Val representation varies
+        let estimated_size = args_count * 64; // 64 bytes per Val as upper bound
+        if estimated_size > MAX_ARGS_SIZE_BYTES {
+            return Err(Error::ArgsTooLarge);
+        }
+        
+        Ok(())
+    }
+
     /// Registers a new task in the marketplace.
     /// Returns the unique sequential ID of the registered task.
     pub fn register(env: Env, mut config: TaskConfig) -> u64 {
@@ -134,6 +164,11 @@ impl SoroTaskContract {
         // Validate the task interval
         if config.interval == 0 {
             panic_with_error!(&env, Error::InvalidInterval);
+        }
+
+        // Validate payload arguments before storage
+        if let Err(e) = Self::validate_args(&config.args) {
+            panic_with_error!(&env, e);
         }
 
         config.is_active = true;
