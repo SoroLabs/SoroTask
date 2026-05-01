@@ -1,0 +1,160 @@
+
+> keeper@1.0.0 test
+> jest __tests__/poller.test.js
+
+{"level":"info","timestamp":"2026-04-29T05:08:45.620Z","service":"keeper","pid":91254,"module":"poller","message":"No tasks to check"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.626Z","service":"keeper","pid":91254,"module":"poller","message":"No tasks to check"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.631Z","service":"keeper","pid":91254,"module":"poller","sequence":1000,"message":"Current ledger sequence"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.632Z","service":"keeper","pid":91254,"module":"poller","durationMs":2,"checked":3,"due":0,"smoothed":0,"late":0,"skipped":0,"errors":0,"message":"Poll complete"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.635Z","service":"keeper","pid":91254,"module":"poller","sequence":1000,"message":"Current ledger sequence"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.636Z","service":"keeper","pid":91254,"module":"poller","durationMs":1,"checked":3,"due":2,"smoothed":0,"late":0,"skipped":0,"errors":0,"message":"Poll complete"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.641Z","service":"keeper","pid":91254,"module":"poller","sequence":1000,"message":"Current ledger sequence"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.642Z","service":"keeper","pid":91254,"module":"poller","durationMs":1,"checked":2,"due":1,"smoothed":0,"late":0,"skipped":1,"errors":0,"message":"Poll complete"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.646Z","service":"keeper","pid":91254,"module":"poller","sequence":1000,"message":"Current ledger sequence"}
+{"level":"error","timestamp":"2026-04-29T05:08:45.647Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"error":"Network error","message":"Error checking task"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.647Z","service":"keeper","pid":91254,"module":"poller","durationMs":1,"checked":1,"due":1,"smoothed":0,"late":0,"skipped":0,"errors":1,"message":"Poll complete"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.651Z","service":"keeper","pid":91254,"module":"poller","sequence":1000,"message":"Current ledger sequence"}
+{"level":"error","timestamp":"2026-04-29T05:08:45.656Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"error":"must specify source account for the transaction","message":"Error checking task"}
+{"level":"error","timestamp":"2026-04-29T05:08:45.657Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"error":"must specify source account for the transaction","message":"Error checking task"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.657Z","service":"keeper","pid":91254,"module":"poller","durationMs":6,"checked":0,"due":0,"smoothed":0,"late":0,"skipped":0,"errors":1,"message":"Poll complete"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.659Z","service":"keeper","pid":91254,"module":"poller","sequence":1000,"message":"Current ledger sequence"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.660Z","service":"keeper","pid":91254,"module":"poller","durationMs":1,"checked":2,"due":1,"smoothed":0,"late":0,"skipped":0,"errors":0,"message":"Poll complete"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.662Z","service":"keeper","pid":91254,"module":"poller","sequence":1000,"message":"Current ledger sequence"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.663Z","service":"keeper","pid":91254,"module":"poller","durationMs":1,"checked":3,"due":2,"smoothed":1,"late":1,"skipped":0,"errors":0,"message":"Poll complete"}
+{"level":"warn","timestamp":"2026-04-29T05:08:45.665Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"message":"Task not found (may have been deregistered)"}
+{"level":"warn","timestamp":"2026-04-29T05:08:45.667Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"gasBalance":0,"message":"Task has insufficient gas balance"}
+{"level":"warn","timestamp":"2026-04-29T05:08:45.668Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"gasBalance":-10,"message":"Task has insufficient gas balance"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.669Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"lastRun":500,"interval":400,"nextRun":900,"jitterApplied":0,"effectiveNextRun":900,"current":1000,"latenessSeconds":100,"message":"Task is due"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.672Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"lastRun":500,"interval":500,"nextRun":1000,"jitterApplied":0,"effectiveNextRun":1000,"current":1000,"latenessSeconds":0,"message":"Task is due"}
+{"level":"warn","timestamp":"2026-04-29T05:08:45.679Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"latenessSeconds":490,"nextRunTime":1000,"effectiveNextRunTime":1010,"currentTimestamp":1500,"interval":500,"message":"Task is unacceptably late"}
+{"level":"info","timestamp":"2026-04-29T05:08:45.679Z","service":"keeper","pid":91254,"module":"poller","taskId":1,"lastRun":500,"interval":500,"nextRun":1000,"jitterApplied":10,"effectiveNextRun":1010,"current":1500,"latenessSeconds":490,"message":"Task is due"}
+FAIL __tests__/poller.test.js
+  TaskPoller
+    constructor
+      ✓ should initialize with default values (19 ms)
+      ✓ should use custom maxConcurrentReads (3 ms)
+      ✕ should initialize stats (11 ms)
+    pollDueTasks
+      ✓ should return empty array when no task IDs provided (5 ms)
+      ✓ should return empty array when taskIds is null (4 ms)
+      ✓ should check all provided task IDs (5 ms)
+      ✓ should return due task IDs (3 ms)
+      ✓ should count skipped tasks (6 ms)
+      ✓ should handle errors gracefully (5 ms)
+      ✓ should update lastPollTime (9 ms)
+      ✓ should expose cycle insights for scheduler decisions (3 ms)
+      load smoothing metrics
+        ✓ should aggregate tasksSmoothed and unacceptablyLate statistics (3 ms)
+    checkTask
+      ✓ should return not due when task not found (2 ms)
+      ✓ should skip task with zero gas balance (1 ms)
+      ✓ should skip task with negative gas balance (1 ms)
+      ✓ should return due when last_run + interval <= currentTimestamp (1 ms)
+      ✓ should return not due when last_run + interval > currentTimestamp (1 ms)
+      ✓ should handle edge case when exactly at boundary (2 ms)
+      load smoothing (jitter)
+        ✕ should apply deterministic jitter and return jitter_smoothed when inside window (5 ms)
+        ✕ should detect unacceptable lateness (2 ms)
+    getStats
+      ✓ should return a copy of stats (1 ms)
+    decodeTaskConfig
+      ✓ should return null for void ScVal (1 ms)
+      ✓ should return null for empty vec (1 ms)
+
+  ● TaskPoller › constructor › should initialize stats
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 2
+
+    @@ -2,6 +2,8 @@
+        "errors": 0,
+        "lastPollTime": null,
+        "tasksChecked": 0,
+        "tasksDue": 0,
+        "tasksSkipped": 0,
+    +   "tasksSmoothed": 0,
+    +   "unacceptablyLate": 0,
+      }
+
+      31 |
+      32 |     it('should initialize stats', () => {
+    > 33 |       expect(poller.stats).toEqual({
+         |                            ^
+      34 |         lastPollTime: null,
+      35 |         tasksChecked: 0,
+      36 |         tasksDue: 0,
+
+      at Object.toEqual (__tests__/poller.test.js:33:28)
+
+  ● TaskPoller › checkTask › load smoothing (jitter) › should apply deterministic jitter and return jitter_smoothed when inside window
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  - 1
+    + Received  + 1
+
+      Object {
+    -   "isDue": true,
+    +   "isDue": false,
+        "isUnacceptablyLate": false,
+        "lateness": 0,
+        "taskId": 1,
+      }
+
+      293 |         // At timestamp 1009, effectively due
+      294 |         const result3 = await poller.checkTask(1, 1009);
+    > 295 |         expect(result3).toMatchObject({
+          |                         ^
+      296 |           isDue: true,
+      297 |           taskId: 1,
+      298 |           lateness: 0,
+
+      at Object.toMatchObject (__tests__/poller.test.js:295:25)
+
+  ● TaskPoller › checkTask › load smoothing (jitter) › should detect unacceptable lateness
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  - 1
+    + Received  + 1
+
+      Object {
+        "isDue": true,
+        "isUnacceptablyLate": true,
+    -   "lateness": 491,
+    +   "lateness": 490,
+        "taskId": 1,
+      }
+
+      312 |
+      313 |         const result = await poller.checkTask(1, 1500);
+    > 314 |         expect(result).toMatchObject({
+          |                        ^
+      315 |           isDue: true,
+      316 |           taskId: 1,
+      317 |           lateness: 491,
+
+      at Object.toMatchObject (__tests__/poller.test.js:314:24)
+
+----------------|---------|----------|---------|---------|-----------------------------------------------
+File            | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s                             
+----------------|---------|----------|---------|---------|-----------------------------------------------
+All files       |   31.69 |    24.55 |   36.04 |   32.14 |                                               
+ concurrency.js |   60.78 |    34.61 |    62.5 |      62 | 29,37,41-61,66-68,95-97,114                   
+ logger.js      |   75.75 |       40 |   66.66 |   75.75 | 81,131,146-186                                
+ poller.js      |    68.2 |    64.35 |   82.35 |   67.83 | 46-47,182-184,207,318-332,337,364-416,447-466 
+ queue.js       |       0 |        0 |       0 |       0 | 1-289                                         
+ registry.js    |       0 |        0 |       0 |       0 | 1-217                                         
+ retry.js       |       0 |        0 |       0 |       0 | 4-332                                         
+----------------|---------|----------|---------|---------|-----------------------------------------------
+Jest: "global" coverage threshold for statements (80%) not met: 31.69%
+Jest: "global" coverage threshold for branches (80%) not met: 24.55%
+Jest: "global" coverage threshold for lines (80%) not met: 32.14%
+Jest: "global" coverage threshold for functions (80%) not met: 36.04%
+Test Suites: 1 failed, 1 total
+Tests:       3 failed, 20 passed, 23 total
+Snapshots:   0 total
+Time:        2.934 s
+Ran all test suites matching __tests__/poller.test.js.

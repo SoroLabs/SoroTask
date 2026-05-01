@@ -147,6 +147,43 @@ function createLogger(module) {
     },
     // Expose the raw pino logger for advanced use cases
     raw: child,
+    // Create a child logger with a correlation ID
+    childWithTrace: (correlationId) => {
+      const traceChild = child.child({ correlationId });
+      return createTracedLogger(traceChild, module);
+    },
+  };
+}
+
+/**
+ * Helper to wrap a pino child logger with the same interface as createLogger
+ * @private
+ */
+function createTracedLogger(child, module) {
+  return {
+    trace: (msg, meta = {}) => {
+      child.trace(meta, msg);
+    },
+    debug: (msg, meta = {}) => {
+      child.debug(meta, msg);
+    },
+    info: (msg, meta = {}) => {
+      child.info(meta, msg);
+    },
+    warn: (msg, meta = {}) => {
+      child.warn(meta, msg);
+    },
+    error: (msg, meta = {}) => {
+      child.error(meta, msg);
+    },
+    fatal: (msg, meta = {}) => {
+      child.fatal(meta, msg);
+    },
+    raw: child,
+    childWithTrace: (correlationId) => {
+      const traceChild = child.child({ correlationId });
+      return createTracedLogger(traceChild, module);
+    },
   };
 }
 
