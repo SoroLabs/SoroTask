@@ -20,28 +20,28 @@ afterAll(() => {
 jest.mock('next/router', () => ({
   useRouter() {
     return {
-      route: '/',
-      pathname: '/',
-      query: {},
-      asPath: '/',
       push: jest.fn(),
       replace: jest.fn(),
-      reload: jest.fn(),
+      refresh: jest.fn(),
       back: jest.fn(),
       forward: jest.fn(),
       prefetch: jest.fn(),
-      beforePopState: jest.fn(),
-      events: {
-        on: jest.fn(),
-        off: jest.fn(),
-        emit: jest.fn(),
-      },
-      isFallback: false,
     }
   },
+  usePathname() {
+    return '/'
+  },
+  useSearchParams() {
+    return new URLSearchParams()
+  },
+  useParams() {
+    return {}
+  },
+  redirect: jest.fn(),
+  notFound: jest.fn(),
 }))
 
-// Mock Next.js Image component
+// Mock Next.js Image component to avoid next/image optimisation in tests.
 jest.mock('next/image', () => ({
   __esModule: true,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars

@@ -9,6 +9,9 @@ class HistoryManager {
   constructor(options = {}) {
     this.logger = options.logger || createLogger('history');
     this._ensureDataDir();
+    this.maxDriftRecordsPerTask = options.maxDriftRecordsPerTask || 20;
+    this.recentDriftByTask = new Map();
+    this.writeQueue = Promise.resolve();
   }
 
   /**
@@ -32,15 +35,61 @@ class HistoryManager {
 
     const line = JSON.stringify(entry) + '\n';
 
-    // Non-blocking write
-    fs.appendFile(HISTORY_FILE, line, (err) => {
-      if (err) {
-        this.logger.error('Failed to persist execution history', { 
-          taskId: record.taskId, 
-          error: err.message 
+    this.writeQueue = this.writeQueue
+      .then(() => fs.promises.appendFile(HISTORY_FILE, line))
+      .catch((err) => {
+        this.logger.error('Failed to persist execution history', {
+          taskId: record.taskId,
+          error: err.message,
         });
-      }
+      });
+  }
+
+  recordDrift(record) {
+    const taskId = Number(record.taskId);
+    const entry = {
+      timestamp: new Date().toISOString(),
+      taskId,
+      expectedRunAt: record.expectedRunAt,
+      observedAt: record.observedAt,
+      driftSeconds: record.driftSeconds,
+      severity: record.severity,
+      shardLabel: record.shardLabel || null,
+    };
+
+    const existing = this.recentDriftByTask.get(taskId) || [];
+    existing.push(entry);
+    while (existing.length > this.maxDriftRecordsPerTask) {
+      existing.shift();
+    }
+    this.recentDriftByTask.set(taskId, existing);
+
+    this.record({
+      kind: 'schedule_drift',
+      ...entry,
     });
+
+    return entry;
+  }
+
+  getRecentDrift(taskId, limit = 5) {
+    const entries = this.recentDriftByTask.get(Number(taskId)) || [];
+    return entries.slice(-limit).reverse();
+  }
+
+  getDriftSnapshot(limit = 20) {
+    return Array.from(this.recentDriftByTask.entries())
+      .map(([taskId, entries]) => ({
+        taskId,
+        latest: entries[entries.length - 1],
+        samples: entries.length,
+      }))
+      .sort((left, right) => {
+        const leftDrift = left.latest?.driftSeconds || 0;
+        const rightDrift = right.latest?.driftSeconds || 0;
+        return rightDrift - leftDrift;
+      })
+      .slice(0, limit);
   }
 
   /**
@@ -50,6 +99,7 @@ class HistoryManager {
    */
   async getRecent(limit = 100) {
     try {
+      await this.writeQueue;
       if (!fs.existsSync(HISTORY_FILE)) return [];
 
       const content = await fs.promises.readFile(HISTORY_FILE, 'utf-8');

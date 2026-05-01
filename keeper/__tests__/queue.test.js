@@ -255,6 +255,15 @@ describe("ExecutionQueue", () => {
 
       expect(completedTasks.length).toBeGreaterThanOrEqual(1);
     });
+
+    it('should stop accepting new tasks after shutdown', async () => {
+      const executorFn = jest.fn().mockResolvedValue(undefined);
+      await queue.shutdown();
+
+      await queue.enqueue([1, 2], executorFn);
+
+      expect(executorFn).not.toHaveBeenCalled();
+    });
   });
 
   describe("metrics integration", () => {

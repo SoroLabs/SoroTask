@@ -18,9 +18,11 @@ const logger = createLogger("executor");
  * Poll getTransaction() until SUCCESS or FAILED, or max attempts reached.
  * @param {SorobanRpc.Server} server
  * @param {string} txHash
+ * @param {Object} [options] - Options including logger
  * @returns {Promise<{status: string, feePaid: number}>}
  */
-async function pollTransaction(server, txHash) {
+async function pollTransaction(server, txHash, options = {}) {
+  const pollLogger = options.logger || logger;
   for (let i = 0; i < POLL_ATTEMPTS; i++) {
     const response = await server.getTransaction(txHash);
 
@@ -82,8 +84,9 @@ function normalizeSubmissionError(error, fallbackCode) {
 
 async function executeTaskOnce(
   taskId,
-  { server, keypair, account, contractId, networkPassphrase },
+  { server, keypair, account, contractId, networkPassphrase, correlationId, logger: customLogger },
 ) {
+  const taskLogger = customLogger || logger;
   const contract = new Contract(contractId);
   const taskIdScVal = xdr.ScVal.scvU64(
     xdr.Uint64.fromString(taskId.toString()),
@@ -99,6 +102,7 @@ async function executeTaskOnce(
 
   let simResult;
   try {
+    taskLogger.debug("Simulating task execution", { taskId, correlationId });
     simResult = await server.simulateTransaction(tx);
   } catch (error) {
     throw normalizeSubmissionError(error, "NETWORK_ERROR");
@@ -115,16 +119,18 @@ async function executeTaskOnce(
 
   let sendResult;
   try {
+    taskLogger.debug("Submitting transaction", { taskId, correlationId });
     sendResult = await server.sendTransaction(preparedTx);
   } catch (error) {
     throw normalizeSubmissionError(error, "NETWORK_ERROR");
   }
 
   const txHash = sendResult.hash || null;
-  logger.info("Transaction submitted", {
+  taskLogger.info("Transaction submitted", {
     taskId,
     txHash,
     status: sendResult.status,
+    correlationId,
   });
 
   if (sendResult.status === "ERROR") {
@@ -142,7 +148,7 @@ async function executeTaskOnce(
     );
   }
 
-  const { status, feePaid } = await pollTransaction(server, sendResult.hash);
+  const { status, feePaid } = await pollTransaction(server, sendResult.hash, { logger: taskLogger });
   if (status === "FAILED") {
     throw Object.assign(new Error("Transaction reached FAILED status"), {
       code: "TX_FAILED",
@@ -171,8 +177,9 @@ async function executeTaskOnce(
  */
 async function executeTask(
   taskId,
-  { server, keypair, account, contractId, networkPassphrase },
+  { server, keypair, account, contractId, networkPassphrase, correlationId },
 ) {
+  const taskLogger = correlationId ? logger.childWithTrace(correlationId) : logger;
   /** @type {{taskId, txHash: string|null, status: string, feePaid: number, error: string|null}} */
   const result = {
     taskId,
@@ -189,16 +196,19 @@ async function executeTask(
       account,
       contractId,
       networkPassphrase,
+      correlationId,
+      logger: taskLogger,
     });
     result.txHash = executionResult.txHash;
     result.status = executionResult.status;
     result.feePaid = executionResult.feePaid;
 
-    logger.info("Transaction finalised", {
+    taskLogger.info("Transaction finalised", {
       taskId,
       txHash: result.txHash,
-      status,
-      feePaid,
+      status: result.status,
+      feePaid: result.feePaid,
+      correlationId,
     });
   } catch (err) {
     result.status = "FAILED";
@@ -207,6 +217,7 @@ async function executeTask(
       taskId,
       txHash: result.txHash,
       error: result.error,
+      correlationId,
     });
   }
 
@@ -222,7 +233,8 @@ async function executeTask(
  * @returns {Promise<object>}
  */
 async function executeTaskWithRetry(taskId, deps, options = {}) {
-  const executionLogger = options.logger || logger;
+  const correlationId = options.correlationId || options.attemptId;
+  const executionLogger = (options.logger || logger).childWithTrace(correlationId);
   const attemptId = options.attemptId || null;
 
   const retryResult = await withRetry(
@@ -233,6 +245,8 @@ async function executeTaskWithRetry(taskId, deps, options = {}) {
       return executeTaskOnce(taskId, {
         ...deps,
         account: freshAccount,
+        correlationId,
+        logger: executionLogger,
       });
     },
     {
