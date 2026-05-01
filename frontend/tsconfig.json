@@ -1,6 +1,9 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
+    // TypeScript 6 defaults: target is now es2025, module is esnext, strict is true.
+    // We set these explicitly so behavior is stable regardless of TS version defaults.
+    "target": "ES2022",
+    // dom.iterable is now included in dom as of TypeScript 6 — kept for clarity but redundant.
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
