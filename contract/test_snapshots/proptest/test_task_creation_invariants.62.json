@@ -27,6 +27,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "blocked_by"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "creator"
                       },
                       "val": {
@@ -46,7 +54,7 @@
                         "symbol": "gas_balance"
                       },
                       "val": {
-                        "i128": "469883"
+                        "i128": "1129445"
                       }
                     },
                     {
@@ -54,7 +62,7 @@
                         "symbol": "interval"
                       },
                       "val": {
-                        "u64": "87917319"
+                        "u64": "21759145"
                       }
                     },
                     {
@@ -126,6 +134,34 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "ActiveTasks"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "vec": [
+                  {
+                    "u64": "1"
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Counter"
                   }
                 ]
@@ -170,6 +206,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "blocked_by"
+                    },
+                    "val": {
+                      "vec": []
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "creator"
                     },
                     "val": {
@@ -189,7 +233,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "469883"
+                      "i128": "1129445"
                     }
                   },
                   {
@@ -197,7 +241,7 @@
                       "symbol": "interval"
                     },
                     "val": {
-                      "u64": "87917319"
+                      "u64": "21759145"
                     }
                   },
                   {

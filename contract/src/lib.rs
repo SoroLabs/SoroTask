@@ -20,7 +20,17 @@ pub enum Error {
     CircularDependency = 10,
     DependencyBlocked = 11,
     AlreadyInitialized = 12,
+    // Payload validation errors
+    ArgsTooMany = 13,
+    ArgsTooLarge = 14,
+    InvalidPayload = 15,
 }
+
+/// Maximum number of arguments allowed in a task payload
+const MAX_ARGS_COUNT: u32 = 32;
+
+/// Maximum serialized size of arguments in bytes (approx 4KB limit for Soroban)
+const MAX_ARGS_SIZE_BYTES: u32 = 4096;
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -125,8 +135,55 @@ pub struct SoroTaskContract;
 
 #[contractimpl]
 impl SoroTaskContract {
+    /// Validates task payload arguments for size and structure.
+    /// Returns Ok(()) if valid, or an error code if validation fails.
+    fn validate_args(args: &Vec<Val>) -> Result<(), Error> {
+        let args_count = args.len();
+        
+        // Validate argument count
+        if args_count > MAX_ARGS_COUNT {
+            return Err(Error::ArgsTooMany);
+        }
+        
+        // Estimate serialized size (each Val is at least 8 bytes + overhead)
+        // This is a conservative estimate since Val representation varies
+        let estimated_size = args_count * 64; // 64 bytes per Val as upper bound
+        if estimated_size > MAX_ARGS_SIZE_BYTES {
+            return Err(Error::ArgsTooLarge);
+        }
+        
+        Ok(())
+    }
+
     /// Registers a new task in the marketplace.
     /// Returns the unique sequential ID of the registered task.
+    ///
+    // ID ALLOCATION ASSUMPTIONS:
+    // - IDs are sequential integers starting from 1.
+    //   The counter is stored under DataKey::Counter and begins at 0
+    //   (unwrap_or(0)); the first register() call increments it to 1 and
+    //   returns 1.
+    // - No gaps occur under normal registration.
+    //   Each successful register() call increments the counter by exactly 1
+    //   before returning, so consecutive successful calls yield n, n+1, n+2, …
+    // - Concurrent registrations are serialized by the Soroban runtime.
+    //   Soroban executes one transaction at a time per ledger; there is no
+    //   shared-memory concurrency. Each transaction reads, increments, and
+    //   writes DataKey::Counter atomically within its own transaction context.
+    //   Two transactions in the same ledger are ordered by the protocol and
+    //   cannot interleave their storage reads/writes.
+    // - Downstream systems MUST NOT assume:
+    //   * That a cancelled task's ID will be reused — cancelled tasks are
+    //     removed from storage but the counter is never decremented.
+    //   * That IDs are contiguous after a failed (panicking) registration —
+    //     a panic rolls back the entire transaction including the counter
+    //     increment, so the counter does NOT advance on failure; the next
+    //     successful registration will receive the next value as if the
+    //     failure never happened.
+    //   * That the counter value equals the number of live tasks — tasks can
+    //     be cancelled, leaving gaps in the ID space.
+    //   * That IDs are stable across contract re-deployments — a fresh
+    //     deployment resets DataKey::Counter to 0.
     pub fn register(env: Env, mut config: TaskConfig) -> u64 {
         // Ensure the creator has authorized the registration
         config.creator.require_auth();
@@ -134,6 +191,11 @@ impl SoroTaskContract {
         // Validate the task interval
         if config.interval == 0 {
             panic_with_error!(&env, Error::InvalidInterval);
+        }
+
+        // Validate payload arguments before storage
+        if let Err(e) = Self::validate_args(&config.args) {
+            panic_with_error!(&env, e);
         }
 
         config.is_active = true;
@@ -1590,6 +1652,158 @@ mod tests {
                 Error::DependencyNotFound as u32
             )))
         );
+    }
+
+    // ── ID Allocation Consistency Tests ──────────────────────────────────────
+
+    /// Assumption: IDs are sequential integers starting from 1.
+    /// Why it matters: downstream systems (indexer, keeper lookup, analytics)
+    /// use the returned ID as the canonical key for every subsequent operation.
+    /// If the first ID were 0 or some other value, off-by-one bugs would
+    /// silently corrupt lookups.
+    #[test]
+    fn test_id_allocation_first_task_gets_id_one() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let target = env.register_contract(None, MockTarget);
+        let task_id = client.register(&base_config(&env, target));
+
+        assert_eq!(task_id, 1, "first registered task must receive ID 1");
+    }
+
+    /// Assumption: consecutive registrations increment the ID by exactly 1.
+    /// Why it matters: the keeper's paginated monitor and the indexer both
+    /// iterate over ID ranges; a gap or skip would cause tasks to be silently
+    /// missed during monitoring.
+    #[test]
+    fn test_id_allocation_sequential_increment() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let target = env.register_contract(None, MockTarget);
+        let id1 = client.register(&base_config(&env, target.clone()));
+        let id2 = client.register(&base_config(&env, target.clone()));
+        let id3 = client.register(&base_config(&env, target));
+
+        assert_eq!(id1, 1);
+        assert_eq!(id2, id1 + 1, "second ID must be first + 1");
+        assert_eq!(id3, id2 + 1, "third ID must be second + 1");
+    }
+
+    /// Assumption: registering a task with identical parameters twice creates
+    /// two distinct tasks with distinct IDs (no deduplication).
+    /// Why it matters: the contract has no duplicate-detection logic; callers
+    /// must not assume idempotency. Downstream systems must treat each returned
+    /// ID as a unique task even when the config is identical.
+    #[test]
+    fn test_id_allocation_duplicate_config_gets_new_id() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let target = env.register_contract(None, MockTarget);
+        let cfg = base_config(&env, target);
+
+        let id1 = client.register(&cfg);
+        let id2 = client.register(&cfg);
+
+        assert_ne!(id1, id2, "identical configs must produce distinct IDs");
+        assert_eq!(id2, id1 + 1, "second registration must increment counter");
+
+        // Both tasks must be independently retrievable
+        assert!(client.get_task(&id1).is_some());
+        assert!(client.get_task(&id2).is_some());
+    }
+
+    /// Assumption: Soroban's single-transaction-at-a-time model prevents
+    /// duplicate IDs. Two registrations submitted in sequence each receive a
+    /// unique, strictly increasing ID.
+    /// Why it matters: if two keepers or users register tasks "simultaneously"
+    /// (in adjacent ledgers or the same ledger), both must receive unique IDs.
+    /// Duplicate IDs would cause one task to overwrite the other in storage.
+    #[test]
+    fn test_id_allocation_no_duplicates_sequential_registrations() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let target = env.register_contract(None, MockTarget);
+
+        // Simulate two registrations as close together as possible (same env,
+        // back-to-back calls). Soroban serialises all calls within a test env
+        // so this is the closest approximation to concurrent registration.
+        let id_a = client.register(&base_config(&env, target.clone()));
+        let id_b = client.register(&base_config(&env, target));
+
+        assert_ne!(id_a, id_b, "concurrent-style registrations must not share an ID");
+        assert_eq!(id_b, id_a + 1, "IDs must be strictly sequential");
+    }
+
+    /// Assumption: a failed registration (invalid interval → panic) does NOT
+    /// advance the counter, so the next successful registration receives the
+    /// value that would have been assigned had the failure never occurred.
+    /// Why it matters: if a failed call consumed an ID, the sequence would
+    /// contain gaps. Downstream range-based scans would skip valid tasks or
+    /// waste RPC calls on non-existent IDs.
+    #[test]
+    fn test_id_allocation_failed_registration_does_not_skip_id() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let target = env.register_contract(None, MockTarget);
+
+        // Register one valid task first
+        let id_before = client.register(&base_config(&env, target.clone()));
+        assert_eq!(id_before, 1);
+
+        // Attempt a registration that will fail (interval = 0 is invalid)
+        let mut bad_cfg = base_config(&env, target.clone());
+        bad_cfg.interval = 0;
+        let result = client.try_register(&bad_cfg);
+        assert!(result.is_err(), "registration with interval=0 must fail");
+
+        // The next valid registration must receive id_before + 1, not id_before + 2
+        let id_after = client.register(&base_config(&env, target));
+        assert_eq!(
+            id_after,
+            id_before + 1,
+            "failed registration must not consume an ID"
+        );
+    }
+
+    /// Assumption: every ID returned by register() can be looked up via
+    /// get_task() and returns the correct task configuration.
+    /// Why it matters: the keeper and indexer rely on get_task(id) to fetch
+    /// task details before execution. If any allocated ID is not retrievable,
+    /// the task is effectively lost.
+    #[test]
+    fn test_id_allocation_all_ids_are_retrievable() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let target = env.register_contract(None, MockTarget);
+        let n: u32 = 5;
+        let mut registered_ids = soroban_sdk::Vec::new(&env);
+
+        for _ in 0..n {
+            let task_id = client.register(&base_config(&env, target.clone()));
+            registered_ids.push_back(task_id);
+        }
+
+        assert_eq!(registered_ids.len(), n, "must have registered exactly {n} tasks");
+
+        for i in 0..registered_ids.len() {
+            let task_id = registered_ids.get(i).unwrap();
+            let task = client.get_task(&task_id);
+            assert!(
+                task.is_some(),
+                "task with ID {task_id} must be retrievable after registration"
+            );
+            assert_eq!(
+                task.unwrap().target,
+                target,
+                "retrieved task must match the registered config"
+            );
+        }
     }
 }
 

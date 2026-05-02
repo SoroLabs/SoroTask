@@ -5,15 +5,30 @@ const { createLogger } = require('./logger');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const TASKS_FILE = path.join(DATA_DIR, 'tasks.json');
+const SNAPSHOT_VERSION = 1;
+
+const EVENT_TOPICS = {
+  TaskRegistered: 'AAAADwAAAA5UYXNrUmVnaXN0ZXJlZAAA',
+  TaskPaused: 'AAAADwAAAApUYXNrUGF1c2VkAAA=',
+  TaskResumed: 'AAAADwAAAAtUYXNrUmVzdW1lZAA=',
+  KeeperPaid: 'AAAADwAAAApLZWVwZXJQYWlkAAA=',
+  GasDeposited: 'AAAADwAAAAxHYXNEZXBvc2l0ZWQ=',
+  GasWithdrawn: 'AAAADwAAAAxHYXNXaXRoZHJhd24=',
+  TaskCancelled: 'AAAADwAAAA1UYXNrQ2FuY2VsbGVkAAAA',
+  DependencyAdded: 'AAAADwAAAA9EZXBlbmRlbmN5QWRkZWQA',
+  DependencyRemoved: 'AAAADwAAABFEZXBlbmRlbmN5UmVtb3ZlZAAAAA==',
+};
 
 class TaskRegistry {
   constructor(server, contractId, options = {}) {
     this.server = server;
     this.contractId = contractId;
     this.taskIds = new Set();
-    this.tasks = new Map(); // Store taskId -> taskDetails (including status, logs)
+    this.tasks = new Map(); // Store taskId -> TaskConfig
     this.lastSeenLedger = options.startLedger || 0;
+    this.snapshotVersion = SNAPSHOT_VERSION;
     this.logger = options.logger || createLogger('registry');
+    this.staleThreshold = options.staleThreshold || 100000; // ~1 week of ledgers
     this._ensureDataDir();
     this._loadFromDisk();
   }
@@ -24,6 +39,20 @@ class TaskRegistry {
      */
   async init() {
     this.logger.info('Initializing task registry');
+    
+    // Check if snapshot is too old or version mismatch
+    const latestLedger = await this.server.getLatestLedger();
+    if (this.lastSeenLedger > 0 && (latestLedger.sequence - this.lastSeenLedger) > this.staleThreshold) {
+      this.logger.warn('Snapshot is too stale, triggering full refresh', {
+        lastSeen: this.lastSeenLedger,
+        current: latestLedger.sequence,
+        threshold: this.staleThreshold
+      });
+      this.lastSeenLedger = 0;
+      this.tasks.clear();
+      this.taskIds.clear();
+    }
+
     await this._fetchEvents();
     this.logger.info('Registry initialized', { taskCount: this.taskIds.size });
   }
@@ -42,6 +71,22 @@ class TaskRegistry {
      */
   getTaskIds() {
     return Array.from(this.taskIds).sort((a, b) => a - b);
+  }
+
+  /**
+   * Return the list of known task IDs that belong to the specified shard.
+   * Uses simple modulo partitioning: taskId % totalShards === shardId.
+   * 
+   * @param {number} shardId - The current shard index (0-indexed)
+   * @param {number} totalShards - Total number of shards
+   * @returns {number[]}
+   */
+  getTaskIdsForShard(shardId, totalShards) {
+    if (totalShards <= 1) return this.getTaskIds();
+    
+    return Array.from(this.taskIds)
+      .filter(id => id % totalShards === shardId)
+      .sort((a, b) => a - b);
   }
 
   /**
@@ -71,11 +116,12 @@ class TaskRegistry {
 
   async _fetchEvents() {
     try {
-      // We need a valid startLedger. If we don't have one, grab the latest.
+      const info = await this.server.getLatestLedger();
+      const currentLedger = info.sequence;
+
       if (!this.lastSeenLedger) {
-        const info = await this.server.getLatestLedger();
         // Look back a reasonable window (default ~1 hour on testnet ≈ 720 ledgers)
-        this.lastSeenLedger = Math.max(info.sequence - 720, 0);
+        this.lastSeenLedger = Math.max(currentLedger - 720, 0);
       }
 
       const contractId = this.contractId;
@@ -84,6 +130,11 @@ class TaskRegistry {
       let cursor = undefined;
       let hasMore = true;
 
+      const topics = [
+        Object.values(EVENT_TOPICS),
+        ['*']
+      ];
+
       while (hasMore) {
         const params = {
           startLedger: cursor ? undefined : this.lastSeenLedger,
@@ -91,9 +142,7 @@ class TaskRegistry {
             {
               type: 'contract',
               contractIds: [contractId],
-              topics: [
-                ['AAAADwAAAA9UYXNrUmVnaXN0ZXJlZAA=', '*'],  // Symbol("TaskRegistered"), *
-              ],
+              topics: topics,
             },
           ],
           limit: 100,
@@ -113,14 +162,9 @@ class TaskRegistry {
 
         for (const event of response.events) {
           try {
-            const taskId = this._extractTaskId(event);
-            if (taskId !== null && !this.taskIds.has(taskId)) {
-              this.taskIds.add(taskId);
-              this.updateTask(taskId, { id: taskId, status: 'registered', registeredAt: event.ledgerCloseAt });
-              this.logger.info('Discovered task ID', { taskId });
-            }
+            this._processEvent(event);
           } catch (err) {
-            this.logger.warn('Failed to decode event', { error: err.message });
+            this.logger.warn('Failed to process event', { error: err.message, eventId: event.id });
           }
 
           // Track the latest ledger we've processed
@@ -129,7 +173,6 @@ class TaskRegistry {
           }
         }
 
-        // If we got fewer events than the limit, we're done
         if (response.events.length < 100) {
           hasMore = false;
         } else {
@@ -139,8 +182,94 @@ class TaskRegistry {
 
       this._saveToDisk();
     } catch (err) {
-      // Don't crash on transient RPC errors — just log and keep going
       this.logger.error('Error fetching events', { error: err.message });
+    }
+  }
+
+  _processEvent(event) {
+    const { scValToNative } = require('@stellar/stellar-sdk');
+    const topics = event.topic.map(t => scValToNative(xdr.ScVal.fromXDR(t, 'base64')));
+    const eventType = topics[0];
+    
+    // Most events have taskId as the 3rd topic (index 2) in v1
+    let taskId;
+    if (topics[1] === 'v1') {
+      taskId = Number(topics[2]);
+    } else {
+      // Fallback for legacy or different format
+      taskId = Number(topics[1]);
+    }
+
+    if (isNaN(taskId)) return;
+
+    const eventData = event.value ? scValToNative(xdr.ScVal.fromXDR(event.value, 'base64')) : null;
+    const ledgerTimestamp = Math.floor(new Date(event.ledgerCloseAt).getTime() / 1000);
+
+    const task = this.tasks.get(taskId) || { id: taskId, blocked_by: [] };
+
+    switch (eventType) {
+      case 'TaskRegistered':
+        // If we only have the event, we might not have the full config yet.
+        // But we mark it as registered.
+        this.taskIds.add(taskId);
+        this.updateTask(taskId, { 
+          id: taskId, 
+          status: 'registered', 
+          registeredAt: event.ledgerCloseAt,
+          is_active: true,
+          last_run: 0
+        });
+        break;
+
+      case 'TaskPaused':
+        this.updateTask(taskId, { is_active: false, status: 'paused' });
+        break;
+
+      case 'TaskResumed':
+        this.updateTask(taskId, { is_active: true, status: 'active' });
+        break;
+
+      case 'KeeperPaid':
+        // eventData is [keeper, fee]
+        const fee = eventData ? Number(eventData[1]) : 100;
+        this.updateTask(taskId, { 
+          last_run: ledgerTimestamp,
+          gas_balance: (task.gas_balance || 0) - fee,
+          status: 'active'
+        });
+        break;
+
+      case 'GasDeposited':
+        // eventData is [from, amount]
+        const depositAmount = eventData ? Number(eventData[1]) : 0;
+        this.updateTask(taskId, { gas_balance: (task.gas_balance || 0) + depositAmount });
+        break;
+
+      case 'GasWithdrawn':
+        // eventData is [from, amount]
+        const withdrawAmount = eventData ? Number(eventData[1]) : 0;
+        this.updateTask(taskId, { gas_balance: (task.gas_balance || 0) - withdrawAmount });
+        break;
+
+      case 'TaskCancelled':
+        this.tasks.delete(taskId);
+        this.taskIds.delete(taskId);
+        break;
+
+      case 'DependencyAdded':
+        // eventData is depends_on_task_id
+        const depId = Number(eventData);
+        const currentDeps = task.blocked_by || [];
+        if (!currentDeps.includes(depId)) {
+          this.updateTask(taskId, { blocked_by: [...currentDeps, depId] });
+        }
+        break;
+
+      case 'DependencyRemoved':
+        // eventData is depends_on_task_id
+        const remId = Number(eventData);
+        this.updateTask(taskId, { blocked_by: (task.blocked_by || []).filter(id => id !== remId) });
+        break;
     }
   }
 
@@ -181,6 +310,12 @@ class TaskRegistry {
     try {
       if (fs.existsSync(TASKS_FILE)) {
         const data = JSON.parse(fs.readFileSync(TASKS_FILE, 'utf-8'));
+        if (data.version && data.version !== SNAPSHOT_VERSION) {
+          this.logger.warn('Snapshot version mismatch, full refresh may be needed', {
+            fileVersion: data.version,
+            currentVersion: SNAPSHOT_VERSION
+          });
+        }
         if (Array.isArray(data.taskIds)) {
           data.taskIds.forEach(id => this.taskIds.add(id));
         }
@@ -202,6 +337,7 @@ class TaskRegistry {
   _saveToDisk() {
     try {
       const data = {
+        version: SNAPSHOT_VERSION,
         taskIds: Array.from(this.taskIds).sort((a, b) => a - b),
         tasks: Object.fromEntries(this.tasks),
         lastSeenLedger: this.lastSeenLedger,
