@@ -274,6 +274,19 @@ class TaskPoller {
 
       this.logPollSummary(duration, cycleLogger);
 
+      // Report insights to metrics server
+      if (this.metricsServer) {
+        this.metricsServer.updateHealth({
+          lastPollAt: new Date(startTime),
+          rpcConnected: this.stats.errors === 0 || dueTaskIds.length > 0 || results.some(r => r.status === 'fulfilled'),
+          backlogSize: taskIds.length,
+        });
+        
+        this.metricsServer.record('lastCycleDurationMs', duration);
+        this.metricsServer.increment('tasksCheckedTotal', this.stats.tasksChecked);
+        this.metricsServer.increment('tasksDueTotal', this.stats.tasksDue);
+      }
+
       return dueTaskIds;
 
     } catch (error) {

@@ -485,6 +485,25 @@ docker compose down
 docker compose up -d --build
 ```
 
+## Health & Operational Status
+
+The keeper provides a rich health endpoint at `/health` that exposes detailed operational states. This allows operators to distinguish between normal operation, temporary degradation, and total failure.
+
+### Health States
+
+| State | Description | HTTP Status | Recommended Action |
+|-------|-------------|-------------|--------------------|
+| `ok` | Normal operation. | 200 | No action required. |
+| `degraded_rpc` | Partial RPC failure (Circuit Breaker is HALF_OPEN). | 200 | Monitor RPC connectivity; investigate network/provider stability. |
+| `degraded_backlog` | High retry backlog pressure (>50 tasks). | 200 | Consider increasing `MAX_CONCURRENT_EXECUTIONS` or scale keeper instances. |
+| `stale` | Polling activity has stopped or delayed beyond threshold. | 503 | Investigate if the main polling loop is hung. Sidecar will restart service. |
+| `failing` | Total failure: RPC disconnected or Circuit Breaker is OPEN. | 503 | Check network connection, RPC endpoint availability, and credentials. |
+
+### Monitoring
+
+- **Health Check Sidecar**: Use the included `health-check-sidecar.sh` to automatically restart the keeper on `503` errors.
+- **Prometheus**: Scrape `/metrics/prometheus` for real-time alerting on `keeper_rpc_connected` and `keeper_backlog_size`.
+
 ---
 
 ## Need Help?

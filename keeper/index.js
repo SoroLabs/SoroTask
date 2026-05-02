@@ -15,6 +15,8 @@ const { MetricsServer } = require("./src/metrics");
 const HistoryManager = require("./src/history");
 const { normalizeShardConfig, filterTasksForShard } = require("./src/sharding");
 const { StartupValidator } = require("./src/validator");
+const { MetricsServer } = require("./src/metrics");
+const { GasMonitor } = require("./src/gasMonitor");
 const { GracefulShutdownManager } = require("./src/gracefulShutdown");
 const { createDefaultFilterChain } = require("./src/taskFilter");
 
@@ -116,6 +118,20 @@ async function main() {
     logger: createLogger("idempotency"),
   });
 
+  // Initialize monitoring components
+  const gasMonitor = new GasMonitor(createLogger("gasMonitor"));
+  const metricsServer = new MetricsServer(gasMonitor, createLogger("metrics"));
+  metricsServer.start();
+
+  // Initialize polling engine with logger and metrics
+  const poller = new TaskPoller(server, config.contractId, {
+    maxConcurrentReads: process.env.MAX_CONCURRENT_READS,
+    logger: createLogger("poller"),
+    metricsServer,
+  });
+  logger.info("Poller initialized", { contractId: config.contractId });
+
+  // Initialize execution queue with metrics
   // Build the pre-filter chain — eliminates non-actionable tasks before RPC calls.
   // Filters run in order: null-guard → cached gas → cached timing → idempotency lock → circuit breaker.
   const filterChain = createDefaultFilterChain({
