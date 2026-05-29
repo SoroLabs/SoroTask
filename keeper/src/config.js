@@ -14,6 +14,16 @@ function parseBoolean(value, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+function parseList(value) {
+  if (!value) {
+    return [];
+  }
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function loadConfig() {
   const required = [
     'SOROBAN_RPC_URL',
@@ -29,6 +39,11 @@ function loadConfig() {
     throw new Error(
       `Missing required environment variables: ${missing.join(', ')}`,
     );
+  }
+
+  const p2pEnabled = parseBoolean(process.env.P2P_ENABLED, false);
+  if (p2pEnabled && !process.env.P2P_SHARED_SECRET) {
+    throw new Error('P2P_SHARED_SECRET is required when P2P_ENABLED=true');
   }
 
   return {
@@ -64,6 +79,19 @@ function loadConfig() {
     driftWarningSeconds: parseInteger(process.env.DRIFT_WARNING_SECONDS, 60),
     driftCriticalSeconds: parseInteger(process.env.DRIFT_CRITICAL_SECONDS, 300),
     metricsResetOnStart: parseBoolean(process.env.METRICS_RESET_ON_START, false),
+    p2p: {
+      enabled: p2pEnabled,
+      nodeId: process.env.P2P_NODE_ID || null,
+      publicUrl: process.env.P2P_PUBLIC_URL || null,
+      listenHost: process.env.P2P_LISTEN_HOST || '0.0.0.0',
+      listenPort: parseInteger(process.env.P2P_LISTEN_PORT, 0),
+      sharedSecret: process.env.P2P_SHARED_SECRET || null,
+      bootstrapPeers: parseList(process.env.P2P_BOOTSTRAP_PEERS),
+      heartbeatIntervalMs: parseInteger(process.env.P2P_HEARTBEAT_INTERVAL_MS, 10000),
+      stalePeerMs: parseInteger(process.env.P2P_STALE_PEER_MS, 45000),
+      authWindowMs: parseInteger(process.env.P2P_AUTH_WINDOW_MS, 30000),
+      connectTimeoutMs: parseInteger(process.env.P2P_CONNECT_TIMEOUT_MS, 5000),
+    },
   };
 }
 
