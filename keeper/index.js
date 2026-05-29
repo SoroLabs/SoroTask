@@ -17,6 +17,8 @@ const { normalizeShardConfig, filterTasksForShard } = require("./src/sharding");
 const { StartupValidator } = require("./src/validator");
 const { GracefulShutdownManager } = require("./src/gracefulShutdown");
 const { createDefaultFilterChain } = require("./src/taskFilter");
+const { WebhookAuthProtocol, InMemoryReplayStore } = require("./src/webhookAuth");
+const { WebhookTriggerHandler } = require("./src/webhookTrigger");
 
 // Create root logger for the main module
 const logger = createLogger("keeper");
@@ -95,6 +97,7 @@ async function main() {
     ownedTasks: 0,
     skippedTasks: 0,
   });
+
   metricsServer.start();
 
   // Perform startup validation to fail fast on configuration errors
@@ -228,6 +231,41 @@ async function main() {
       throw error;
     }
   };
+
+  // Initialize webhook authentication and handler if enabled
+  if (config.inboundWebhooks.enabled) {
+    logger.info("Initializing inbound webhook handler");
+    
+    const webhookAuthProtocol = new WebhookAuthProtocol({
+      enabled: true,
+      secrets: config.inboundWebhooks.secret,
+      defaultKeyId: config.inboundWebhooks.defaultKeyId,
+      toleranceMs: config.inboundWebhooks.toleranceMs,
+      replayTtlMs: config.inboundWebhooks.replayTtlMs,
+      maxBodyBytes: config.inboundWebhooks.maxBodyBytes,
+      replayStore: new InMemoryReplayStore(),
+    });
+    
+    const webhookTriggerHandler = new WebhookTriggerHandler({
+      authProtocol: webhookAuthProtocol,
+      enqueueTask: async (taskId, context) => {
+        // Enqueue the task through the execution queue
+        return queue.enqueue(
+          [{ taskId, context }],
+          executeTask
+        );
+      },
+      path: config.inboundWebhooks.path,
+      logger: createLogger("webhook-trigger"),
+      metrics: metricsServer,
+    });
+
+    metricsServer.setWebhookHandler(webhookTriggerHandler, config.inboundWebhooks.path);
+    logger.info("Webhook handler initialized", {
+      path: config.inboundWebhooks.path,
+      defaultKeyId: config.inboundWebhooks.defaultKeyId,
+    });
+  }
 
   // Initialize event-driven task registry
   const registry = new TaskRegistry(server, config.contractId, {

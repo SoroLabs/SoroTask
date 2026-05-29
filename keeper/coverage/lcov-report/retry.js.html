@@ -37,9 +37,9 @@
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>13/13</span>
+                <span class='fraction'>0/13</span>
             </div>
         
             
@@ -61,7 +61,7 @@
             </div>
         </template>
     </div>
-    <div class='status-line high'></div>
+    <div class='status-line low'></div>
     <pre><table class="coverage">
 <tr><td class="line-count quiet"><a name='L1'></a><a href='#L1'>1</a>
 <a name='L2'></a><a href='#L2'>2</a>
@@ -403,10 +403,11 @@
 <a name='L338'></a><a href='#L338'>338</a>
 <a name='L339'></a><a href='#L339'>339</a>
 <a name='L340'></a><a href='#L340'>340</a>
-<a name='L341'></a><a href='#L341'>341</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L341'></a><a href='#L341'>341</a>
+<a name='L342'></a><a href='#L342'>342</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -599,7 +600,6 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -719,7 +719,6 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -727,7 +726,6 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">7x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -738,6 +736,7 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -946,12 +945,12 @@ const DEFAULT_OPTIONS = <span class="cstat-no" title="statement not covered" >{<
 async function <span class="fstat-no" title="function not covered" >withRetry(</span>fn, options = <span class="branch-0 cbranch-no" title="branch not covered" >{})</span> {
   const opts = <span class="cstat-no" title="statement not covered" >{ ...DEFAULT_OPTIONS, ...options };</span>
   let lastError;
-  let attempt = 0;
+  let attempt = <span class="cstat-no" title="statement not covered" >0;</span>
 &nbsp;
-  while (attempt &lt;= opts.maxRetries) {
-    try {
-      const result = await fn();
-      return {
+<span class="cstat-no" title="statement not covered" >  while (attempt &lt;= opts.maxRetries) {</span>
+<span class="cstat-no" title="statement not covered" >    try {</span>
+      const result = <span class="cstat-no" title="statement not covered" >await fn();</span>
+<span class="cstat-no" title="statement not covered" >      return {</span>
         success: true,
         result,
         attempts: attempt + 1,
@@ -970,7 +969,7 @@ async function <span class="fstat-no" title="function not covered" >withRetry(</
 <span class="cstat-no" title="statement not covered" >        if (opts.onDuplicate) {</span>
 <span class="cstat-no" title="statement not covered" >          opts.onDuplicate(context);</span>
         }
-        return {
+<span class="cstat-no" title="statement not covered" >        return {</span>
           success: true,
           result: null,
           attempts: attempt + 1,
@@ -1011,7 +1010,7 @@ async function <span class="fstat-no" title="function not covered" >withRetry(</
 <span class="cstat-no" title="statement not covered" >        if (opts.onMaxRetries) {</span>
 <span class="cstat-no" title="statement not covered" >          opts.onMaxRetries(error, attempt + 1, context);</span>
         }
-        throw {
+<span class="cstat-no" title="statement not covered" >        throw {</span>
           success: false,
           error,
           attempts: attempt + 1,
@@ -1084,6 +1083,7 @@ function <span class="fstat-no" title="function not covered" >isDuplicateTransac
   isDuplicateTransactionError,
   classifyError,
   extractErrorCode,
+  calculateDelay,
   ErrorClassification,
 };
 &nbsp;</pre></td></tr></table></pre>
@@ -1093,7 +1093,7 @@ function <span class="fstat-no" title="function not covered" >isDuplicateTransac
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-04-29T05:10:17.735Z
+                at 2026-05-29T15:42:32.535Z
             </div>
         <script src="prettify.js"></script>
         <script>

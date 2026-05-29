@@ -31,6 +31,14 @@ function loadConfig() {
     );
   }
 
+  const inboundWebhooksEnabled = parseBoolean(process.env.INBOUND_WEBHOOKS_ENABLED, false);
+  const inboundWebhookSecrets = process.env.INBOUND_WEBHOOK_SECRETS
+    || process.env.INBOUND_WEBHOOK_SECRET
+    || '';
+  if (inboundWebhooksEnabled && !inboundWebhookSecrets) {
+    throw new Error('INBOUND_WEBHOOK_SECRET or INBOUND_WEBHOOK_SECRETS is required when INBOUND_WEBHOOKS_ENABLED=true');
+  }
+
   return {
     rpcUrl: process.env.SOROBAN_RPC_URL,
     networkPassphrase: process.env.NETWORK_PASSPHRASE,
@@ -64,6 +72,15 @@ function loadConfig() {
     driftWarningSeconds: parseInteger(process.env.DRIFT_WARNING_SECONDS, 60),
     driftCriticalSeconds: parseInteger(process.env.DRIFT_CRITICAL_SECONDS, 300),
     metricsResetOnStart: parseBoolean(process.env.METRICS_RESET_ON_START, false),
+    inboundWebhooks: {
+      enabled: inboundWebhooksEnabled,
+      path: process.env.INBOUND_WEBHOOK_PATH || '/webhooks/task-executions',
+      secret: inboundWebhookSecrets,
+      defaultKeyId: process.env.INBOUND_WEBHOOK_DEFAULT_KEY_ID || 'primary',
+      toleranceMs: parseInteger(process.env.INBOUND_WEBHOOK_TOLERANCE_MS, 300000),
+      replayTtlMs: parseInteger(process.env.INBOUND_WEBHOOK_REPLAY_TTL_MS, 600000),
+      maxBodyBytes: parseInteger(process.env.INBOUND_WEBHOOK_MAX_BODY_BYTES, 1048576),
+    },
   };
 }
 
