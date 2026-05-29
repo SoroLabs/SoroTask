@@ -434,16 +434,15 @@ class MetricsServer {
   }
 
   start() {
-    this.server = http.createServer((req, res) => {
-      // CORS headers for initial development
-      const protect = (handler) => {
-        return () => requireAdminAuth(req, res, handler);
-      };
     if (this.server) {
       return;
     }
 
     this.server = http.createServer(async (req, res) => {
+      const protect = (handler) => {
+        return () => requireAdminAuth(req, res, handler);
+      };
+
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -518,6 +517,7 @@ class MetricsServer {
     const status = this.metrics.getHealthStatus(this.healthStaleThreshold);
     const healthData = {
       ...status,
+      p2p: this.getP2PState(),
       ...(this.retryBudgetTracker && {
         retryBudget: this.retryBudgetTracker.getStats(),
       }),
@@ -544,6 +544,7 @@ class MetricsServer {
         trackedTasks: forecasterState.trackedTasks,
         totalHistoricalSamples: forecasterState.totalHistoricalSamples,
       },
+      p2p: this.getP2PState(),
       ...(this.retryBudgetTracker && {
         retryBudget: this.retryBudgetTracker.getStats(),
       }),
@@ -551,6 +552,18 @@ class MetricsServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(metricsData, null, 2));
+  }
+
+  getP2PState() {
+    if (typeof this.p2pStateProvider !== 'function') {
+      return { enabled: false };
+    }
+    try {
+      return this.p2pStateProvider();
+    } catch (error) {
+      this.logger.error('Error reading P2P state', { error: error.message });
+      return { enabled: true, status: 'error' };
+    }
   }
 
   handleForecast(res) {
