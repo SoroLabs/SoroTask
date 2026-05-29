@@ -9,6 +9,7 @@ See the centralized [Glossary](../GLOSSARY.md) for definitions of domain-specifi
 - [Prerequisites](#prerequisites)
 - [Environment Variables](#environment-variables)
 - [Setup Instructions](#setup-instructions)
+- [P2P Keeper Discovery](#p2p-keeper-discovery)
 - [Dead-Letter Queue](#dead-letter-queue)
 - [Mock Soroban RPC](#mock-soroban-rpc-for-faster-local-testing)
 - [Chaos Testing](#chaos-testing)
@@ -82,6 +83,14 @@ KEEPER_SHARD_INDEX=0
 KEEPER_SHARD_COUNT=1
 # KEEPER_SHARD_LABEL=keeper-a
 
+# Optional P2P discovery/load-sharing layer
+P2P_ENABLED=false
+# P2P_SHARED_SECRET=replace-with-strong-random-secret
+# P2P_PUBLIC_URL=http://127.0.0.1:4100
+P2P_LISTEN_HOST=0.0.0.0
+P2P_LISTEN_PORT=4100
+# P2P_BOOTSTRAP_PEERS=http://keeper-b.example.com:4100,http://keeper-c.example.com:4100
+
 # Recurring schedule drift thresholds (seconds)
 DRIFT_WARNING_SECONDS=60
 DRIFT_CRITICAL_SECONDS=300
@@ -107,7 +116,15 @@ DRIFT_CRITICAL_SECONDS=300
 - **`KEEPER_ADMIN_TOKEN`**: Bearer token required to call the keeper admin pause/resume API.
 - **`KEEPER_SHARD_INDEX` / `KEEPER_SHARD_COUNT`**: Stable shard assignment controls so multiple keeper instances can partition work without ambiguous ownership.
 - **`KEEPER_SHARD_LABEL`**: Optional human-readable shard identifier used in metrics and logs.
+- **`P2P_ENABLED` / `P2P_SHARED_SECRET`**: Enables signed peer discovery and load-aware ownership. See [P2P Keeper Discovery](./docs/p2p-keeper-discovery.md).
+- **`P2P_PUBLIC_URL` / `P2P_BOOTSTRAP_PEERS`**: Advertised peer URL and initial peer list used to join the keeper mesh.
 - **`DRIFT_WARNING_SECONDS` / `DRIFT_CRITICAL_SECONDS`**: Thresholds for recurring execution drift classification.
+
+## P2P Keeper Discovery
+
+The optional P2P layer lets keepers discover each other, advertise load, and split ownership with load-aware rendezvous hashing. It is disabled by default; when disabled or unhealthy, the keeper falls back to configured shard ownership.
+
+See [P2P Keeper Discovery](./docs/p2p-keeper-discovery.md) for setup, security review notes, health fields, and failure behavior.
 
 ### Dead-Letter Queue Configuration
 

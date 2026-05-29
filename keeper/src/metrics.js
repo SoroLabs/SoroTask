@@ -44,6 +44,9 @@ class Metrics {
       resolverTimeoutsTotal: 0,
       resolverFailuresTotal: 0,
       adminStateChangesTotal: 0,
+      webhookAcceptedTotal: 0,
+      webhookRejectedTotal: 0,
+      webhookReplayRejectedTotal: 0,
     };
     this.gauges = {
       avgFeePaidXlm: 0,
@@ -138,18 +141,6 @@ class Metrics {
   }
 }
 
-  reset() {
-    tasksExecutedTotal: 0,
-      tasksFailedTotal: 0,
-        throttledRequestsTotal: 0,
-    };
-    this.gauges = {
-  avgFeePaidXlm: 0,
-  lastCycleDurationMs: 0,
-  rpcCircuitState: 0,
-};
-this.feeSamples = [];
-  }
 function createDefaultGasMonitor() {
   return {
     getLowGasCount: () => 0,
@@ -182,6 +173,8 @@ class MetricsServer {
     this.controlStateProvider = options.controlStateProvider || null;
     this.controlActionHandler = options.controlActionHandler || null;
     this.historyManager = options.historyManager || null;
+    this.webhookHandler = options.webhookHandler || null;
+    this.webhookPath = options.webhookPath || '/webhooks/task-executions';
     this.register = new promClient.Registry();
     this.initPrometheusMetrics();
   }
@@ -196,6 +189,11 @@ class MetricsServer {
 
   setControlActionHandler(handler) {
     this.controlActionHandler = handler;
+  }
+
+  setWebhookHandler(handler, path = this.webhookPath) {
+    this.webhookHandler = handler;
+    this.webhookPath = path;
   }
 
   initPrometheusMetrics() {
@@ -383,6 +381,9 @@ class MetricsServer {
     this.promThrottledRequests.inc({ limiter_name: 'poller-reads' }, 0);
     this.promThrottledRequests.inc({ limiter_name: 'execution-writes' }, 0);
     this.promAdminStateChanges.inc(0);
+    this.promWebhookAccepted.inc(0);
+    this.promWebhookRejected.inc({ reason: 'none' }, 0);
+    this.promWebhookReplayRejected.inc(0);
 
     this.promAvgFee.set(this.metrics.gauges.avgFeePaidXlm);
     this.promCycleDuration.set(this.metrics.gauges.lastCycleDurationMs);
@@ -445,16 +446,15 @@ class MetricsServer {
   }
 
   start() {
-    this.server = http.createServer((req, res) => {
-      // CORS headers for initial development
-      const protect = (handler) => {
-        return () => requireAdminAuth(req, res, handler);
-      };
     if (this.server) {
       return;
     }
 
     this.server = http.createServer(async (req, res) => {
+      const protect = (handler) => {
+        return () => requireAdminAuth(req, res, handler);
+      };
+
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -494,6 +494,9 @@ class MetricsServer {
       } else if (req.url.startsWith('/admin/dead-letter/')) {
         protect(() => this.handleDeadLetterTask(req, res))();
 
+      } else if (url.pathname === this.webhookPath && this.webhookHandler) {
+        // Webhook requests (unauthenticated - auth handled by webhook handler)
+        this.webhookHandler.handle(req, res);
 
         // ❌ NOT FOUND
 
@@ -526,6 +529,7 @@ class MetricsServer {
     const status = this.metrics.getHealthStatus(this.healthStaleThreshold);
     const healthData = {
       ...status,
+      p2p: this.getP2PState(),
       ...(this.retryBudgetTracker && {
         retryBudget: this.retryBudgetTracker.getStats(),
       }),
@@ -552,6 +556,7 @@ class MetricsServer {
         trackedTasks: forecasterState.trackedTasks,
         totalHistoricalSamples: forecasterState.totalHistoricalSamples,
       },
+      p2p: this.getP2PState(),
       ...(this.retryBudgetTracker && {
         retryBudget: this.retryBudgetTracker.getStats(),
       }),
@@ -559,6 +564,18 @@ class MetricsServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(metricsData, null, 2));
+  }
+
+  getP2PState() {
+    if (typeof this.p2pStateProvider !== 'function') {
+      return { enabled: false };
+    }
+    try {
+      return this.p2pStateProvider();
+    } catch (error) {
+      this.logger.error('Error reading P2P state', { error: error.message });
+      return { enabled: true, status: 'error' };
+    }
   }
 
   handleForecast(res) {
