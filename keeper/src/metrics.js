@@ -40,6 +40,9 @@ class Metrics {
       throttledRequestsTotal: 0,
       retriesExecutedTotal: 0,
       retriesFailedTotal: 0,
+      resolverChecksTotal: 0,
+      resolverTimeoutsTotal: 0,
+      resolverFailuresTotal: 0,
       adminStateChangesTotal: 0,
     };
     this.gauges = {
@@ -47,6 +50,7 @@ class Metrics {
       lastCycleDurationMs: 0,
       lastRetryCycleDurationMs: 0,
       rpcCircuitState: 0,
+      lastResolverDurationMs: 0,
     };
     this.feeSamples = [];
   }
@@ -228,6 +232,26 @@ class MetricsServer {
       help: 'Total number of keeper admin state changes',
       registers: [this.register],
     });
+    this.promResolverChecks = new promClient.Counter({
+      name: 'keeper_resolver_checks_total',
+      help: 'Total number of resolver checks executed by the keeper',
+      registers: [this.register],
+    });
+    this.promResolverTimeouts = new promClient.Counter({
+      name: 'keeper_resolver_timeouts_total',
+      help: 'Total number of resolver checks that timed out',
+      registers: [this.register],
+    });
+    this.promResolverFailures = new promClient.Counter({
+      name: 'keeper_resolver_failures_total',
+      help: 'Total number of resolver checks that failed',
+      registers: [this.register],
+    });
+    this.promResolverDuration = new promClient.Gauge({
+      name: 'keeper_last_resolver_duration_ms',
+      help: 'Duration of the last resolver check in milliseconds',
+      registers: [this.register],
+    });
     this.promAvgFee = new promClient.Gauge({
       name: 'keeper_avg_fee_paid_xlm',
       help: 'Average transaction fee paid in XLM (rolling average)',
@@ -368,6 +392,10 @@ class MetricsServer {
     this.promRpcConnected.set(this.metrics.rpcConnected ? 1 : 0);
     this.promRpcCircuitState.set(this.metrics.gauges.rpcCircuitState);
     this.promAdminPaused.set(this.metrics.adminState.paused ? 1 : 0);
+    this.promResolverChecks.inc(0);
+    this.promResolverTimeouts.inc(0);
+    this.promResolverFailures.inc(0);
+    this.promResolverDuration.set(this.metrics.gauges.lastResolverDurationMs);
     this.promShardOwnedTasks.set(
       {
         shard_label: String(this.metrics.shardState.shardLabel),

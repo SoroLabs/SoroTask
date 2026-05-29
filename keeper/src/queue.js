@@ -314,6 +314,10 @@ class ExecutionQueue extends EventEmitter {
     return summary;
   }
 
+  async drain(options = {}) {
+    return this.gracefulShutdown(options);
+  }
+
   getInFlightStatus() {
     return {
       inFlight: this.inFlight,

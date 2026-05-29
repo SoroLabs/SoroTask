@@ -53,6 +53,18 @@ describe('Keeper Integration Tests', () => {
       }));
     }
 
+    const targetValue = taskConfig.target || 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
+    mapEntries.push(new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('target'),
+      val: xdr.ScVal.scvString(targetValue),
+    }));
+
+    const functionValue = taskConfig.function || 'run_task';
+    mapEntries.push(new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('function'),
+      val: xdr.ScVal.scvString(functionValue),
+    }));
+
     return xdr.ScVal.scvVec([xdr.ScVal.scvMap(mapEntries)]);
   }
 
@@ -121,7 +133,7 @@ describe('Keeper Integration Tests', () => {
       // Poll for due tasks
       const dueTaskIds = await poller.pollDueTasks(registry.getTaskIds());
 
-      expect(dueTaskIds).toEqual([1]);
+      expect(dueTaskIds.map((item) => item.taskId)).toEqual([1]);
       expect(poller.stats.tasksDue).toBe(1);
       expect(poller.stats.tasksChecked).toBe(2);
 
@@ -200,7 +212,7 @@ describe('Keeper Integration Tests', () => {
       });
 
       dueTaskIds = await poller.pollDueTasks(registry.getTaskIds());
-      expect(dueTaskIds).toEqual([1]);
+      expect(dueTaskIds.map((item) => item.taskId)).toEqual([1]);
     });
   });
 
@@ -234,7 +246,7 @@ describe('Keeper Integration Tests', () => {
 
       const dueTaskIds = await poller.pollDueTasks(registry.getTaskIds());
 
-      expect(dueTaskIds).toEqual([2]);
+      expect(dueTaskIds.map((item) => item.taskId)).toEqual([2]);
       expect(poller.stats.errors).toBe(1);
       expect(poller.stats.tasksDue).toBe(1);
     });

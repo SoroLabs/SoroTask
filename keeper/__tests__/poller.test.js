@@ -100,7 +100,7 @@ describe('TaskPoller', () => {
 
       const result = await poller.pollDueTasks(taskIds);
 
-      expect(result).toEqual([1, 3]);
+      expect(result.map((item) => item.taskId)).toEqual([1, 3]);
       expect(poller.stats.tasksDue).toBe(2);
     });
 
@@ -126,7 +126,7 @@ describe('TaskPoller', () => {
 
       const result = await poller.pollDueTasks(taskIds);
 
-      expect(result).toEqual([2]);
+      expect(result.map((item) => item.taskId)).toEqual([2]);
       expect(poller.stats.errors).toBe(1);
       expect(poller.stats.tasksDue).toBe(1);
     });
@@ -168,7 +168,7 @@ describe('TaskPoller', () => {
 
         const result = await poller.pollDueTasks([1, 2, 3]);
 
-        expect(result).toEqual([2, 3]);
+        expect(result.map((item) => item.taskId)).toEqual([2, 3]);
         expect(poller.stats.tasksSmoothed).toBe(1);
         expect(poller.stats.unacceptablyLate).toBe(1);
         expect(poller.stats.tasksDue).toBe(2);
@@ -194,6 +194,9 @@ describe('TaskPoller', () => {
         last_run: 500,
         interval: 100,
         gas_balance: 0,
+        target: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+        function: 'run_task',
+        args: [],
       });
 
       const result = await poller.checkTask(1, 1000);
@@ -210,6 +213,9 @@ describe('TaskPoller', () => {
         last_run: 500,
         interval: 100,
         gas_balance: -10,
+        target: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+        function: 'run_task',
+        args: [],
       });
 
       const result = await poller.checkTask(1, 1000);
@@ -226,6 +232,9 @@ describe('TaskPoller', () => {
         last_run: 500,
         interval: 400,
         gas_balance: 1000,
+        target: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+        function: 'run_task',
+        args: [],
       });
 
       const result = await poller.checkTask(1, 1000);
@@ -237,11 +246,37 @@ describe('TaskPoller', () => {
       });
     });
 
+    it('should skip a task when the configured resolver declines execution', async () => {
+      poller.resolverManager = {
+        resolve: jest.fn().mockResolvedValue({ isReady: false, reason: 'resolver_false' }),
+      };
+      jest.spyOn(poller, 'getTaskConfig').mockResolvedValue({
+        last_run: 500,
+        interval: 400,
+        gas_balance: 1000,
+        resolver: 'simple-resolver',
+        target: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+        function: 'run_task',
+        args: [],
+      });
+
+      const result = await poller.checkTask(1, 1000);
+
+      expect(result).toMatchObject({
+        isDue: false,
+        taskId: 1,
+        reason: 'resolver_false',
+      });
+    });
+
     it('should return not due when last_run + interval > currentTimestamp', async () => {
       jest.spyOn(poller, 'getTaskConfig').mockResolvedValue({
         last_run: 800,
         interval: 300,
         gas_balance: 1000,
+        target: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+        function: 'run_task',
+        args: [],
       });
 
       const result = await poller.checkTask(1, 1000);
@@ -258,6 +293,9 @@ describe('TaskPoller', () => {
         last_run: 500,
         interval: 500,
         gas_balance: 1000,
+        target: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+        function: 'run_task',
+        args: [],
       });
 
       const result = await poller.checkTask(1, 1000);
@@ -280,6 +318,9 @@ describe('TaskPoller', () => {
           last_run: 500,
           interval: 500, // nextRunTime = 1000
           gas_balance: 1000,
+          target: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+          function: 'run_task',
+          args: [],
         });
 
         // For taskId=1, jitter = (1 * 2654435761) % 11 = 10
@@ -313,6 +354,9 @@ describe('TaskPoller', () => {
           last_run: 500,
           interval: 500, // nextRunTime = 1000
           gas_balance: 1000,
+          target: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+          function: 'run_task',
+          args: [],
         });
 
         // For taskId=1, jitter = 10. effectiveNextRunTime = 1010
@@ -470,7 +514,7 @@ describe('TaskPoller with FilterChain', () => {
       .mockResolvedValueOnce({ isDue: true,  taskId: 2 });
 
     const due = await p.pollDueTasks([1, 2, 3]);
-    expect(due).toEqual([1, 2]);
-    expect(due).not.toContain(3);
+    expect(due.map((item) => item.taskId)).toEqual([1, 2]);
+    expect(due.map((item) => item.taskId)).not.toContain(3);
   });
 });

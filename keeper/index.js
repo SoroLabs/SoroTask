@@ -12,6 +12,7 @@ const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
 const { MetricsServer } = require("./src/metrics");
+const { ResolverManager } = require("./src/resolverManager");
 const HistoryManager = require("./src/history");
 const { normalizeShardConfig, filterTasksForShard } = require("./src/sharding");
 const { StartupValidator } = require("./src/validator");
@@ -97,6 +98,19 @@ async function main() {
   });
   metricsServer.start();
 
+  const resolverManager = new ResolverManager({
+    logger: createLogger('resolver'),
+    timeoutMs: config.resolverTimeoutMs,
+    maxConcurrent: config.resolverMaxConcurrent,
+    metricsServer,
+  });
+
+  await resolverManager.loadPlugins(config.resolverPluginConfigPath, {
+    server,
+    config,
+    logger: createLogger('resolver'),
+  });
+
   // Perform startup validation to fail fast on configuration errors
   const validator = new StartupValidator(
     server,
@@ -132,6 +146,7 @@ async function main() {
     simulationCacheMaxSize: process.env.SIMULATION_CACHE_MAX_SIZE,
     metricsServer,
     historyManager,
+    resolverManager,
     shardLabel: shardConfig.shardLabel,
     driftWarningSeconds: config.driftWarningSeconds,
     driftCriticalSeconds: config.driftCriticalSeconds,
@@ -293,6 +308,13 @@ async function main() {
     // Server doesn't have explicit close, but we log it
   });
 
+  shutdownManager.registerResource('resolver-manager', async () => {
+    logger.info('Shutting down resolver manager');
+    if (resolverManager && typeof resolverManager.destroy === 'function') {
+      await resolverManager.destroy();
+    }
+  });
+
   // Register idempotency guard persistence
   shutdownManager.registerResource("idempotency-guard", async () => {
     logger.info("Finalizing idempotency state");
@@ -391,18 +413,15 @@ async function main() {
         });
 
         // Track tasks before enqueueing
-        dueTaskIds.forEach((taskId) =>
-          shutdownManager.trackTask(taskId)
+        dueTaskIds.forEach((d) =>
+          shutdownManager.trackTask(d.taskId)
         );
 
-        await queue.enqueue(dueTaskIds, executeTask);
-        
-        // Transform the dueTask results to pass correlation IDs to the queue
-        const tasksToEnqueue = dueTaskIds.map(d => ({
+        const tasksToEnqueue = dueTaskIds.map((d) => ({
           taskId: d.taskId,
-          context: { pollCorrelationId: d.correlationId }
+          context: { pollCorrelationId: d.correlationId },
         }));
-        
+
         await queue.enqueue(tasksToEnqueue, executeTask);
       } else {
         logger.info("No tasks due for execution");

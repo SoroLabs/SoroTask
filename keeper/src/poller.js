@@ -25,6 +25,7 @@ class TaskPoller {
       : null;
     this.metricsServer = options.metricsServer;
     this.historyManager = options.historyManager || null;
+    this.resolverManager = options.resolverManager || null;
     this.shardLabel = options.shardLabel || null;
     this.driftWarningSeconds = parseInt(
       options.driftWarningSeconds || process.env.DRIFT_WARNING_SECONDS || 60,
@@ -110,7 +111,9 @@ class TaskPoller {
      */
   async pollDueTasks(taskIds, options = {}) {
     const cycleId = crypto.randomBytes(4).toString('hex');
-    const cycleLogger = this.logger.childWithTrace(`cycle-${cycleId}`);
+const cycleLogger = typeof this.logger.childWithTrace === 'function'
+        ? this.logger.childWithTrace(`cycle-${cycleId}`)
+        : this.logger;
     
     const startTime = Date.now();
     this.stats.lastPollTime = new Date().toISOString();
@@ -300,7 +303,7 @@ class TaskPoller {
      */
   async checkTask(taskId, currentTimestamp, registry, options = {}) {
     const correlationId = options.correlationId;
-    const taskLogger = correlationId 
+const taskLogger = correlationId && typeof this.logger.childWithTrace === 'function'
       ? this.logger.childWithTrace(correlationId)
       : this.logger;
 
@@ -391,7 +394,37 @@ class TaskPoller {
           driftSeconds,
           driftSeverity,
         });
-      } else if (isStrictlyDue) {
+      }
+
+      if (isDue && taskConfig.resolver && this.resolverManager) {
+        const resolverResult = await this.resolverManager.resolve(taskId, String(taskConfig.resolver), taskConfig);
+        if (resolverResult && resolverResult.isReady === false) {
+          taskLogger.info('Task skipped by resolver check', {
+            taskId,
+            resolver: taskConfig.resolver,
+            reason: resolverResult.reason || 'resolver_false',
+          });
+
+          return {
+            isDue: false,
+            taskId,
+            reason: resolverResult.reason || 'resolver_false',
+            correlationId,
+            secondsUntilDue: 0,
+            driftSeconds,
+            driftSeverity,
+          };
+        }
+      }
+
+      if (isDue && taskConfig.resolver && !this.resolverManager) {
+        taskLogger.debug('Resolver configured but no resolver manager is available. Execution will rely on on-chain gating.', {
+          taskId,
+          resolver: taskConfig.resolver,
+        });
+      }
+
+      if (!isDue && isStrictlyDue) {
         reason = 'jitter_smoothed';
         this.logger.debug('Task execution smoothed by jitter', {
           taskId,
