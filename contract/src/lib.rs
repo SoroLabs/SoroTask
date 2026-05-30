@@ -1,4 +1,12 @@
 #![no_std]
+
+// Proxy pattern modules for upgradable contract architecture
+pub mod proxy;
+pub mod implementation;
+pub mod delegator;
+#[cfg(test)]
+mod proxy_test;
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, IntoVal,
     Symbol, Val, Vec,
