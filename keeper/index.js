@@ -96,6 +96,7 @@ async function main() {
     ownedTasks: 0,
     skippedTasks: 0,
   });
+
   metricsServer.start();
 
   // Perform startup validation to fail fast on configuration errors
@@ -252,12 +253,72 @@ async function main() {
     }
   };
 
+  // Initialize webhook authentication and handler if enabled
+  if (config.inboundWebhooks.enabled) {
+    logger.info("Initializing inbound webhook handler");
+    
+    const webhookAuthProtocol = new WebhookAuthProtocol({
+      enabled: true,
+      secrets: config.inboundWebhooks.secret,
+      defaultKeyId: config.inboundWebhooks.defaultKeyId,
+      toleranceMs: config.inboundWebhooks.toleranceMs,
+      replayTtlMs: config.inboundWebhooks.replayTtlMs,
+      maxBodyBytes: config.inboundWebhooks.maxBodyBytes,
+      replayStore: new InMemoryReplayStore(),
+    });
+    
+    const webhookTriggerHandler = new WebhookTriggerHandler({
+      authProtocol: webhookAuthProtocol,
+      enqueueTask: async (taskId, context) => {
+        // Enqueue the task through the execution queue
+        return queue.enqueue(
+          [{ taskId, context }],
+          executeTask
+        );
+      },
+      path: config.inboundWebhooks.path,
+      logger: createLogger("webhook-trigger"),
+      metrics: metricsServer,
+    });
+
+    metricsServer.setWebhookHandler(webhookTriggerHandler, config.inboundWebhooks.path);
+    logger.info("Webhook handler initialized", {
+      path: config.inboundWebhooks.path,
+      defaultKeyId: config.inboundWebhooks.defaultKeyId,
+    });
+  }
+
   // Initialize event-driven task registry
   const registry = new TaskRegistry(server, config.contractId, {
     startLedger: parseInt(process.env.START_LEDGER || "0", 10),
     logger: createLogger("registry"),
   });
   await registry.init();
+
+  const p2pNetwork = new KeeperP2PNetwork({
+    ...config.p2p,
+    nodeId: config.p2p.nodeId || keypair.publicKey(),
+    logger: createLogger("p2p"),
+    loadProvider: () => {
+      const queueStatus = queue.getInFlightStatus();
+      return {
+        capacity: queue.concurrencyLimit,
+        inFlight: queueStatus.inFlight,
+        queueDepth: queueStatus.depth,
+        taskCount: registry.getTaskIds().length,
+        paused: controlState.paused,
+        dryRun: DRY_RUN,
+      };
+    },
+  });
+  metricsServer.setP2PStateProvider(() => p2pNetwork.getStateSnapshot());
+  try {
+    await p2pNetwork.start();
+  } catch (error) {
+    logger.error("P2P network failed to start; falling back to local shard ownership", {
+      error: error.message,
+    });
+  }
 
   // Initialize graceful shutdown manager
   const shutdownManager = new GracefulShutdownManager({
@@ -310,6 +371,11 @@ async function main() {
     }
   });
 
+  shutdownManager.registerResource("p2p-network", async () => {
+    logger.info("Stopping P2P network");
+    await p2pNetwork.stop();
+  });
+
   // Register server cleanup
   shutdownManager.registerResource("rpc-server", async () => {
     logger.info("Closing RPC server connection");
@@ -345,6 +411,19 @@ async function main() {
     logger.warn("Force shutdown initiated - remaining tasks will be cancelled");
   });
 
+  const selectTaskOwnership = (taskIds) => {
+    if (p2pNetwork.isHealthy()) {
+      const p2pSelection = p2pNetwork.selectOwnedTasks(taskIds);
+      logger.info("P2P ownership selected tasks", {
+        peerCount: p2pSelection.nodes.length - 1,
+        ownedTasks: p2pSelection.ownedTaskIds.length,
+        skippedTasks: p2pSelection.skippedTaskIds.length,
+      });
+      return p2pSelection;
+    }
+    return filterTasksForShard(taskIds, shardConfig);
+  };
+
   // Polling loop
   const pollingIntervalMs = config.pollIntervalMs;
   logger.info("Starting polling loop", { 
@@ -375,7 +454,7 @@ async function main() {
 
       // Get list of all registered task IDs
       const taskIds = registry.getTaskIds();
-      const shardSelection = filterTasksForShard(taskIds, shardConfig);
+      const shardSelection = selectTaskOwnership(taskIds);
       metricsServer.updateShardState({
         shardIndex: shardSelection.shardIndex,
         shardCount: shardSelection.shardCount,
@@ -497,7 +576,7 @@ async function main() {
       }
 
       const taskIds = registry.getTaskIds();
-      const shardSelection = filterTasksForShard(taskIds, shardConfig);
+      const shardSelection = selectTaskOwnership(taskIds);
       const dueTaskIds = controlState.paused
         ? []
         : await poller.pollDueTasks(shardSelection.ownedTaskIds, {
