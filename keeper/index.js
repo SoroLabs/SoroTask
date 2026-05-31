@@ -17,6 +17,7 @@ const { normalizeShardConfig, filterTasksForShard } = require("./src/sharding");
 const { StartupValidator } = require("./src/validator");
 const { GracefulShutdownManager } = require("./src/gracefulShutdown");
 const { createDefaultFilterChain } = require("./src/taskFilter");
+const { ResolverRuntime } = require("./src/resolverRuntime");
 
 // Create root logger for the main module
 const logger = createLogger("keeper");
@@ -116,6 +117,26 @@ async function main() {
     logger: createLogger("idempotency"),
   });
 
+  let resolverRuntime = null;
+  if (config.resolverFunctionsConfig) {
+    try {
+      resolverRuntime = ResolverRuntime.fromConfigFile(config.resolverFunctionsConfig, {
+        logger: createLogger("resolver-runtime"),
+        defaultTimeoutMs: config.resolverDefaultTimeoutMs,
+      });
+      logger.info("Resolver runtime initialized", {
+        resolverCount: resolverRuntime.list().length,
+        configPath: config.resolverFunctionsConfig,
+      });
+    } catch (error) {
+      logger.fatal("Failed to initialize resolver runtime", {
+        configPath: config.resolverFunctionsConfig,
+        error: error.message,
+      });
+      process.exit(1);
+    }
+  }
+
   // Build the pre-filter chain — eliminates non-actionable tasks before RPC calls.
   // Filters run in order: null-guard → cached gas → cached timing → idempotency lock → circuit breaker.
   const filterChain = createDefaultFilterChain({
@@ -132,6 +153,8 @@ async function main() {
     simulationCacheMaxSize: process.env.SIMULATION_CACHE_MAX_SIZE,
     metricsServer,
     historyManager,
+    resolverRuntime,
+    resolverFailureMode: config.resolverFailureMode,
     shardLabel: shardConfig.shardLabel,
     driftWarningSeconds: config.driftWarningSeconds,
     driftCriticalSeconds: config.driftCriticalSeconds,
@@ -172,7 +195,7 @@ async function main() {
   // Task executor function - calls contract.execute(keeper, task_id)
   // In dry-run mode, simulates the transaction without submitting it.
   const executeTask = async (taskId, context = {}) => {
-    const correlationId = context.correlationId || context.attemptId;
+    const correlationId = context.correlationId || context.pollCorrelationId || context.attemptId;
     const taskLogger = correlationId ? logger.childWithTrace(correlationId) : logger;
     
     const account = await server.getAccount(keypair.publicKey());
@@ -378,6 +401,7 @@ async function main() {
       const dueTaskIds = await poller.pollDueTasks(shardSelection.ownedTaskIds, {
         registry,
         idempotencyGuard,
+        includeContext: true,
       });
 
       if (dueTaskIds.length > 0) {
@@ -390,20 +414,11 @@ async function main() {
           activeLocks: lockSnapshot.lockCount,
         });
 
-        // Track tasks before enqueueing
-        dueTaskIds.forEach((taskId) =>
-          shutdownManager.trackTask(taskId)
+        dueTaskIds.forEach((task) =>
+          shutdownManager.trackTask(typeof task === "object" ? task.taskId : task)
         );
 
         await queue.enqueue(dueTaskIds, executeTask);
-        
-        // Transform the dueTask results to pass correlation IDs to the queue
-        const tasksToEnqueue = dueTaskIds.map(d => ({
-          taskId: d.taskId,
-          context: { pollCorrelationId: d.correlationId }
-        }));
-        
-        await queue.enqueue(tasksToEnqueue, executeTask);
       } else {
         logger.info("No tasks due for execution");
       }
@@ -485,13 +500,13 @@ async function main() {
       const shardSelection = filterTasksForShard(taskIds, shardConfig);
       const dueTaskIds = controlState.paused
         ? []
-        : await poller.pollDueTasks(shardSelection.ownedTaskIds, { registry, idempotencyGuard });
+        : await poller.pollDueTasks(shardSelection.ownedTaskIds, {
+          registry,
+          idempotencyGuard,
+          includeContext: true,
+        });
       if (dueTaskIds.length > 0) {
-        const tasksToEnqueue = dueTaskIds.map(d => ({
-          taskId: d.taskId,
-          context: { pollCorrelationId: d.correlationId }
-        }));
-        await queue.enqueue(tasksToEnqueue, executeTask);
+        await queue.enqueue(dueTaskIds, executeTask);
       }
     } catch (error) {
       logger.error("Error in initial poll", { error: error.message });

@@ -10,6 +10,7 @@ See the centralized [Glossary](../GLOSSARY.md) for definitions of domain-specifi
 - [Environment Variables](#environment-variables)
 - [Setup Instructions](#setup-instructions)
 - [Dead-Letter Queue](#dead-letter-queue)
+- [Serverless Resolvers](#serverless-resolvers)
 - [Mock Soroban RPC](#mock-soroban-rpc-for-faster-local-testing)
 - [Chaos Testing](#chaos-testing)
 - [Docker Deployment](#docker-deployment)
@@ -85,6 +86,11 @@ KEEPER_SHARD_COUNT=1
 # Recurring schedule drift thresholds (seconds)
 DRIFT_WARNING_SECONDS=60
 DRIFT_CRITICAL_SECONDS=300
+
+# Optional serverless resolver runtime
+# RESOLVER_FUNCTIONS_CONFIG=./resolvers.json
+RESOLVER_DEFAULT_TIMEOUT_MS=250
+RESOLVER_FAILURE_MODE=skip
 ```
 
 ### Explanation of Variables:
@@ -108,6 +114,15 @@ DRIFT_CRITICAL_SECONDS=300
 - **`KEEPER_SHARD_INDEX` / `KEEPER_SHARD_COUNT`**: Stable shard assignment controls so multiple keeper instances can partition work without ambiguous ownership.
 - **`KEEPER_SHARD_LABEL`**: Optional human-readable shard identifier used in metrics and logs.
 - **`DRIFT_WARNING_SECONDS` / `DRIFT_CRITICAL_SECONDS`**: Thresholds for recurring execution drift classification.
+- **`RESOLVER_FUNCTIONS_CONFIG`**: Optional JSON file mapping task resolver IDs to sandboxed JS/WASM functions.
+- **`RESOLVER_DEFAULT_TIMEOUT_MS`**: Default per-invocation resolver timeout.
+- **`RESOLVER_FAILURE_MODE`**: `skip` fails closed on resolver errors; `allow` fails open for controlled migrations.
+
+## Serverless Resolvers
+
+The keeper can evaluate custom JavaScript or WASM resolver logic before enqueueing a due task. Resolvers run after interval and gas checks, inside a bounded runtime with static capability checks, payload size limits, and per-call timeouts. Tasks without resolver IDs are unchanged.
+
+See [Serverless Resolver Runtime](./docs/serverless-resolvers.md) for configuration, authoring examples, and the security model.
 
 ### Dead-Letter Queue Configuration
 

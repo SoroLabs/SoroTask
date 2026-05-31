@@ -64,6 +64,9 @@ function loadConfig() {
     driftWarningSeconds: parseInteger(process.env.DRIFT_WARNING_SECONDS, 60),
     driftCriticalSeconds: parseInteger(process.env.DRIFT_CRITICAL_SECONDS, 300),
     metricsResetOnStart: parseBoolean(process.env.METRICS_RESET_ON_START, false),
+    resolverFunctionsConfig: process.env.RESOLVER_FUNCTIONS_CONFIG || null,
+    resolverDefaultTimeoutMs: parseInteger(process.env.RESOLVER_DEFAULT_TIMEOUT_MS, 250),
+    resolverFailureMode: process.env.RESOLVER_FAILURE_MODE || 'skip',
   };
 }
 

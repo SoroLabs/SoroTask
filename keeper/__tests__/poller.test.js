@@ -1,3 +1,38 @@
+jest.mock('@stellar/stellar-sdk', () => {
+  const buildScVal = (name, vec = []) => ({
+    switch: () => ({ name }),
+    vec: () => vec,
+  });
+
+  return {
+    Contract: jest.fn().mockImplementation(() => ({
+      call: jest.fn(),
+    })),
+    xdr: {
+      ScVal: {
+        scvVoid: () => buildScVal('scvVoid'),
+        scvVec: (vec) => buildScVal('scvVec', vec),
+        scvU64: jest.fn(),
+      },
+      Uint64: {
+        fromString: (value) => value,
+      },
+    },
+    TransactionBuilder: jest.fn().mockImplementation(() => ({
+      addOperation() { return this; },
+      setTimeout() { return this; },
+      build() { return {}; },
+    })),
+    BASE_FEE: '100',
+    Networks: { FUTURENET: 'FUTURENET' },
+    scValToNative: jest.fn(),
+  };
+});
+
+jest.mock('../../taskValidator', () => ({
+  validateTaskPayload: jest.fn(() => ({ isValid: true, errors: [] })),
+}));
+
 const TaskPoller = require('../src/poller');
 
 describe('TaskPoller', () => {
@@ -102,6 +137,36 @@ describe('TaskPoller', () => {
 
       expect(result).toEqual([1, 3]);
       expect(poller.stats.tasksDue).toBe(2);
+    });
+
+    it('should return due task context when requested', async () => {
+      jest.spyOn(poller, 'checkTask').mockResolvedValue({
+        isDue: true,
+        taskId: 7,
+        correlationId: 'poll-7',
+        resolver: {
+          resolverId: 'custom',
+          isReady: true,
+          runtime: 'javascript',
+        },
+      });
+
+      const result = await poller.pollDueTasks([7], { includeContext: true });
+
+      expect(result).toEqual([
+        expect.objectContaining({
+          taskId: 7,
+          correlationId: expect.stringMatching(/^poll-7-/),
+          context: expect.objectContaining({
+            pollCorrelationId: expect.stringMatching(/^poll-7-/),
+            resolver: {
+              resolverId: 'custom',
+              isReady: true,
+              runtime: 'javascript',
+            },
+          }),
+        }),
+      ]);
     });
 
     it('should count skipped tasks', async () => {
@@ -234,6 +299,82 @@ describe('TaskPoller', () => {
         isDue: true,
         taskId: 1,
         secondsUntilDue: 0,
+      });
+    });
+
+    it('uses a configured resolver as a final readiness gate', async () => {
+      const resolverRuntime = {
+        evaluate: jest.fn().mockResolvedValue({
+          isReady: false,
+          reason: 'external-condition-not-met',
+          runtime: 'javascript',
+          durationMs: 5,
+        }),
+      };
+      const gatedPoller = new TaskPoller(mockServer, contractId, {
+        maxConcurrentReads: 5,
+        resolverRuntime,
+      });
+
+      jest.spyOn(gatedPoller, 'getTaskConfig').mockResolvedValue({
+        last_run: 500,
+        interval: 400,
+        gas_balance: 1000,
+        resolver: 'external-check',
+      });
+
+      const result = await gatedPoller.checkTask(10, 1000);
+
+      expect(resolverRuntime.evaluate).toHaveBeenCalledWith('external-check', {
+        taskId: 10,
+        currentTimestamp: 1000,
+        taskConfig: {
+          last_run: 500,
+          interval: 400,
+          gas_balance: 1000,
+          resolver: 'external-check',
+        },
+      }, {
+        correlationId: undefined,
+      });
+      expect(result).toMatchObject({
+        isDue: false,
+        taskId: 10,
+        reason: 'resolver_not_ready',
+        resolver: {
+          resolverId: 'external-check',
+          isReady: false,
+          reason: 'external-condition-not-met',
+        },
+      });
+    });
+
+    it('fails closed when resolver execution fails', async () => {
+      const resolverRuntime = {
+        evaluate: jest.fn().mockRejectedValue(Object.assign(new Error('boom'), { code: 'TIMEOUT' })),
+      };
+      const gatedPoller = new TaskPoller(mockServer, contractId, {
+        maxConcurrentReads: 5,
+        resolverRuntime,
+      });
+
+      jest.spyOn(gatedPoller, 'getTaskConfig').mockResolvedValue({
+        last_run: 500,
+        interval: 400,
+        gas_balance: 1000,
+        resolver: 'slow-check',
+      });
+
+      const result = await gatedPoller.checkTask(10, 1000);
+
+      expect(result).toMatchObject({
+        isDue: false,
+        reason: 'resolver_error',
+        resolver: {
+          resolverId: 'slow-check',
+          isReady: false,
+          code: 'TIMEOUT',
+        },
       });
     });
 

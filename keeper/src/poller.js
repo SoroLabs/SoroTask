@@ -25,6 +25,8 @@ class TaskPoller {
       : null;
     this.metricsServer = options.metricsServer;
     this.historyManager = options.historyManager || null;
+    this.resolverRuntime = options.resolverRuntime || null;
+    this.resolverFailureMode = options.resolverFailureMode || process.env.RESOLVER_FAILURE_MODE || 'skip';
     this.shardLabel = options.shardLabel || null;
     this.driftWarningSeconds = parseInt(
       options.driftWarningSeconds || process.env.DRIFT_WARNING_SECONDS || 60,
@@ -194,6 +196,7 @@ class TaskPoller {
 
       // Collect due task IDs from successful checks
       const dueTaskIds = [];
+      const includeContext = options.includeContext === true;
       let warningDriftCount = 0;
       let criticalDriftCount = 0;
       let maxDriftSeconds = 0;
@@ -204,7 +207,11 @@ class TaskPoller {
           const { isDue, taskId, reason, correlationId } = result.value;
 
           if (isDue) {
-            dueTaskIds.push({ taskId, correlationId });
+            dueTaskIds.push(
+              includeContext
+                ? this.formatDueTask(result.value)
+                : taskId,
+            );
             this.stats.tasksDue++;
             if (result.value.isUnacceptablyLate) {
               this.stats.unacceptablyLate++;
@@ -289,6 +296,22 @@ class TaskPoller {
     }
   }
 
+  formatDueTask(result) {
+    const context = {
+      pollCorrelationId: result.correlationId,
+    };
+
+    if (result.resolver) {
+      context.resolver = result.resolver;
+    }
+
+    return {
+      taskId: result.taskId,
+      correlationId: result.correlationId,
+      context,
+    };
+  }
+
   /**
      * Check a single task to determine if it's due for execution.
      *
@@ -352,7 +375,7 @@ class TaskPoller {
       }
 
       const effectiveNextRunTime = nextRunTime + jitter;
-      const isDue = effectiveNextRunTime <= currentTimestamp;
+      let isDue = effectiveNextRunTime <= currentTimestamp;
       const isStrictlyDue = nextRunTime <= currentTimestamp;
 
       let reason = null;
@@ -425,6 +448,25 @@ class TaskPoller {
         });
       }
 
+      let resolver = null;
+      if (isDue) {
+        resolver = await this.evaluateResolverGate(taskId, taskConfig, currentTimestamp, { correlationId, taskLogger });
+        if (resolver && !resolver.isReady) {
+          isDue = false;
+          reason = resolver.reason === 'error'
+            ? 'resolver_error'
+            : 'resolver_not_ready';
+
+          if (registry) {
+            registry.updateTask(taskId, {
+              scheduleStatus: 'resolver_blocked',
+              resolverId: resolver.resolverId,
+              resolverReason: resolver.reason || null,
+            });
+          }
+        }
+      }
+
       return {
         isDue,
         taskId,
@@ -437,11 +479,106 @@ class TaskPoller {
           : null,
         driftSeconds,
         driftSeverity,
+        resolver,
       };
 
     } catch (error) {
       taskLogger.error('Error checking task', { taskId, error: error.message });
       throw error;
+    }
+  }
+
+  getResolverId(taskConfig) {
+    const resolver = taskConfig && taskConfig.resolver;
+    if (!resolver) {
+      return null;
+    }
+
+    if (typeof resolver === 'string') {
+      return resolver.trim() || null;
+    }
+
+    if (typeof resolver === 'object') {
+      return resolver.id || resolver.name || resolver.resolver || null;
+    }
+
+    return null;
+  }
+
+  async evaluateResolverGate(taskId, taskConfig, currentTimestamp, options = {}) {
+    const resolverId = this.getResolverId(taskConfig);
+    if (!resolverId) {
+      return null;
+    }
+
+    const taskLogger = options.taskLogger || this.logger;
+
+    if (!this.resolverRuntime) {
+      taskLogger.warn('Task declares resolver but no resolver runtime is configured', {
+        taskId,
+        resolverId,
+      });
+      return null;
+    }
+
+    try {
+      const result = await this.resolverRuntime.evaluate(resolverId, {
+        taskId,
+        currentTimestamp,
+        taskConfig,
+      }, {
+        correlationId: options.correlationId,
+      });
+
+      if (!result.isReady) {
+        taskLogger.info('Resolver skipped task execution', {
+          taskId,
+          resolverId,
+          reason: result.reason || null,
+          durationMs: result.durationMs,
+        });
+      } else {
+        taskLogger.info('Resolver accepted task execution', {
+          taskId,
+          resolverId,
+          durationMs: result.durationMs,
+        });
+      }
+
+      return {
+        resolverId,
+        isReady: result.isReady,
+        reason: result.reason || null,
+        args: result.args || [],
+        metadata: result.metadata || null,
+        runtime: result.runtime,
+        durationMs: result.durationMs,
+      };
+    } catch (error) {
+      taskLogger.error('Resolver execution failed', {
+        taskId,
+        resolverId,
+        code: error.code || 'UNKNOWN',
+        error: error.message,
+      });
+
+      if (this.resolverFailureMode === 'allow') {
+        return {
+          resolverId,
+          isReady: true,
+          reason: 'fallback_allow',
+          error: error.message,
+          code: error.code || 'UNKNOWN',
+        };
+      }
+
+      return {
+        resolverId,
+        isReady: false,
+        reason: 'error',
+        error: error.message,
+        code: error.code || 'UNKNOWN',
+      };
     }
   }
 
