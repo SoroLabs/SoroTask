@@ -482,6 +482,42 @@ pub struct ZkCondition {
     pub is_verified: bool,
 }
 
+/// Keeper reputation tracking structure
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct KeeperReputation {
+    /// Address of the keeper
+    pub address: Address,
+    /// Current reputation score (0-1000 scale)
+    pub score: u64,
+    /// Total number of task executions attempted
+    pub execution_count: u64,
+    /// Number of successful task executions
+    pub success_count: u64,
+    /// Number of failed task executions
+    pub failure_count: u64,
+    /// Timestamp of last reputation update
+    pub last_updated: u64,
+    /// Optional notes about reputation history
+    pub notes: Vec<u8>,
+}
+
+/// Keeper reputation history record
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct KeeperReputationHistory {
+    /// Address of the keeper
+    pub address: Address,
+    /// Reputation score at this point in time
+    pub score: u64,
+    /// Timestamp of this reputation snapshot
+    pub timestamp: u64,
+    /// Reason for reputation change
+    pub reason: Vec<u8>,
+    /// Previous score before change
+    pub previous_score: u64,
+}
+
 #[contracttype]
 pub enum DataKey {
     Task(u64),
@@ -526,6 +562,8 @@ pub enum DataKey {
     RoleAssignmentCounter,
     PermissionGrantCounter,
     DelegationCounter,
+    KeeperReputation(Address),
+    KeeperReputationCounter,
 }
 
 fn get_active_task_ids(env: &Env) -> Vec<u64> {
@@ -643,6 +681,43 @@ fn enter_security_guard(env: &Env) {
 
 fn exit_security_guard(env: &Env) {
     env.storage().instance().remove(&DataKey::ReentrancyLock);
+}
+
+fn get_keeper_reputation(env: &Env, address: &Address) -> Option<KeeperReputation> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::KeeperReputation(address.clone()))
+}
+
+fn set_keeper_reputation(env: &Env, address: &Address, reputation: &KeeperReputation) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::KeeperReputation(address.clone()), reputation);
+}
+
+fn get_keeper_reputation_counter(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::KeeperReputationCounter)
+        .unwrap_or(0)
+}
+
+fn set_keeper_reputation_counter(env: &Env, counter: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::KeeperReputationCounter, &counter);
+}
+
+fn get_keeper_reputation_history(env: &Env, address: &Address) -> Option<KeeperReputationHistory> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::KeeperReputation(address.clone()))
+}
+
+fn set_keeper_reputation_history(env: &Env, address: &Address, history: &KeeperReputationHistory) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::KeeperReputation(address.clone()), history);
 }
 
 fn get_role_assignment(env: &Env, address: &Address) -> Option<RoleAssignment> {
@@ -4386,6 +4461,171 @@ mod tests {
                 delegatee.clone(),
             ),
             caller,
+        );
+        
+        exit_security_guard(&env);
+    }
+
+    /// Initializes keeper reputation tracking for a new keeper.
+    /// Only admin or addresses with AdminAccess permission can initialize keeper reputation.
+    pub fn initialize_keeper_reputation(env: Env, keeper_address: Address) {
+        enter_security_guard(&env);
+        
+        // Check if caller has admin access
+        let caller = Address::current(&env);
+        let admin_address: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminAddress);
+        
+        if let Some(admin) = admin_address {
+            if caller != admin {
+                // Check if caller has AdminAccess permission
+                let permission_grant = get_permission_grant(&env, &caller);
+                if let Some(grant) = permission_grant {
+                    let mut has_admin_access = false;
+                    for perm in grant.permissions.iter() {
+                        if *perm == Permission::AdminAccess {
+                            has_admin_access = true;
+                            break;
+                        }
+                    }
+                    if !has_admin_access {
+                        panic_with_error!(&env, Error::Unauthorized);
+                    }
+                } else {
+                    panic_with_error!(&env, Error::Unauthorized);
+                }
+            }
+        }
+        
+        // Create initial reputation record
+        let reputation = KeeperReputation {
+            address: keeper_address.clone(),
+            score: 1000, // Start with maximum reputation
+            execution_count: 0,
+            success_count: 0,
+            failure_count: 0,
+            last_updated: env.ledger().timestamp(),
+            notes: Vec::new(&env),
+        };
+        
+        // Store reputation
+        set_keeper_reputation(&env, &keeper_address, &reputation);
+        
+        // Emit KeeperReputationInitialized event
+        env.events().publish(
+            (
+                Symbol::new(&env, "KeeperReputationInitialized"),
+                Symbol::new(&env, "v1"),
+                keeper_address.clone(),
+            ),
+            (caller, 1000),
+        );
+        
+        exit_security_guard(&env);
+    }
+
+    /// Updates keeper reputation based on execution results.
+    /// Called by keepers after task execution to update their reputation.
+    pub fn update_keeper_reputation(env: Env, keeper_address: Address, success: bool) {
+        enter_security_guard(&env);
+        
+        // Get current reputation
+        let mut reputation = get_keeper_reputation(&env, &keeper_address)
+            .expect("Keeper reputation not initialized");
+        
+        // Update counts
+        reputation.execution_count += 1;
+        if success {
+            reputation.success_count += 1;
+        } else {
+            reputation.failure_count += 1;
+        }
+        
+        // Calculate new reputation score
+        // Simple formula: base_score * (success_rate + 0.5) where success_rate is 0-1
+        let success_rate = if reputation.execution_count > 0 {
+            reputation.success_count as f64 / reputation.execution_count as f64
+        } else {
+            1.0
+        };
+        
+        // Score calculation: 1000 * (success_rate + 0.5) capped at 1000
+        let new_score = ((success_rate + 0.5) * 1000.0) as u64;
+        reputation.score = new_score.min(1000);
+        
+        reputation.last_updated = env.ledger().timestamp();
+        
+        // Store updated reputation
+        set_keeper_reputation(&env, &keeper_address, &reputation);
+        
+        // Record history
+        let history = KeeperReputationHistory {
+            address: keeper_address.clone(),
+            score: reputation.score,
+            timestamp: env.ledger().timestamp(),
+            reason: if success { Vec::from_array(&env, b"Task execution successful") } else { Vec::from_array(&env, b"Task execution failed") },
+            previous_score: reputation.score - (if success { 0 } else { 1 }),
+        };
+        
+        // Store history (using same DataKey for simplicity, could be separate)
+        set_keeper_reputation_history(&env, &keeper_address, &history);
+        
+        // Emit KeeperReputationUpdated event
+        env.events().publish(
+            (
+                Symbol::new(&env, "KeeperReputationUpdated"),
+                Symbol::new(&env, "v1"),
+                keeper_address.clone(),
+            ),
+            (reputation.score, success),
+        );
+        
+        exit_security_guard(&env);
+    }
+
+    /// Records keeper execution result for reputation tracking.
+    /// This function is called by the contract when a keeper executes a task.
+    pub fn record_keeper_execution_result(env: Env, keeper_address: Address, task_id: u64, success: bool) {
+        enter_security_guard(&env);
+        
+        // Get current reputation
+        let mut reputation = get_keeper_reputation(&env, &keeper_address)
+            .expect("Keeper reputation not initialized");
+        
+        // Update counts
+        reputation.execution_count += 1;
+        if success {
+            reputation.success_count += 1;
+        } else {
+            reputation.failure_count += 1;
+        }
+        
+        // Calculate new reputation score
+        let success_rate = if reputation.execution_count > 0 {
+            reputation.success_count as f64 / reputation.execution_count as f64
+        } else {
+            1.0
+        };
+        
+        // Score calculation: 1000 * (success_rate + 0.5) capped at 1000
+        let new_score = ((success_rate + 0.5) * 1000.0) as u64;
+        reputation.score = new_score.min(1000);
+        
+        reputation.last_updated = env.ledger().timestamp();
+        
+        // Store updated reputation
+        set_keeper_reputation(&env, &keeper_address, &reputation);
+        
+        // Emit KeeperExecutionRecorded event
+        env.events().publish(
+            (
+                Symbol::new(&env, "KeeperExecutionRecorded"),
+                Symbol::new(&env, "v1"),
+                keeper_address.clone(),
+            ),
+            (task_id, success, reputation.score),
         );
         
         exit_security_guard(&env);
