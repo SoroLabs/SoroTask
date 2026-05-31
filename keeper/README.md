@@ -8,6 +8,7 @@ See the centralized [Glossary](../GLOSSARY.md) for definitions of domain-specifi
 
 - [Prerequisites](#prerequisites)
 - [Environment Variables](#environment-variables)
+- [RPC Load Balancer Configuration](#rpc-load-balancer-configuration)
 - [Setup Instructions](#setup-instructions)
 - [P2P Keeper Discovery](#p2p-keeper-discovery)
 - [Dead-Letter Queue](#dead-letter-queue)
@@ -119,6 +120,39 @@ DRIFT_CRITICAL_SECONDS=300
 - **`P2P_ENABLED` / `P2P_SHARED_SECRET`**: Enables signed peer discovery and load-aware ownership. See [P2P Keeper Discovery](./docs/p2p-keeper-discovery.md).
 - **`P2P_PUBLIC_URL` / `P2P_BOOTSTRAP_PEERS`**: Advertised peer URL and initial peer list used to join the keeper mesh.
 - **`DRIFT_WARNING_SECONDS` / `DRIFT_CRITICAL_SECONDS`**: Thresholds for recurring execution drift classification.
+
+## RPC Load Balancer Configuration
+
+The keeper supports a custom load balancer for Soroban RPC nodes to improve reliability, performance, and scalability. This enables distributing RPC requests across multiple Soroban RPC endpoints with health monitoring, automatic failover, and load distribution.
+
+### Environment Variables for RPC Load Balancing
+
+To enable the RPC load balancer, configure the following environment variables in your `.env` file:
+
+```env
+# RPC Load Balancer Configuration
+RPC_ENDPOINTS="https://rpc1.soroban.network,https://rpc2.soroban.network,https://rpc3.soroban.network"
+RPC_ENDPOINT_WEIGHTS="3,2,1"
+RPC_HEALTH_CHECK_INTERVAL_MS=30000
+RPC_HEALTH_CHECK_TIMEOUT_MS=5000
+RPC_LOAD_BALANCING_STRATEGY=weighted_round_robin
+```
+
+### Explanation of RPC Load Balancer Variables:
+
+- **`RPC_ENDPOINTS`**: Comma-separated list of RPC URLs to distribute requests across (e.g., "https://rpc1.example.com,https://rpc2.example.com")
+- **`RPC_ENDPOINT_WEIGHTS`**: Optional comma-separated weights for weighted round-robin distribution (e.g., "2,1" - first endpoint gets twice as many requests as second)
+- **`RPC_HEALTH_CHECK_INTERVAL_MS`**: Interval in milliseconds between health checks (default: 30000ms = 30 seconds)
+- **`RPC_HEALTH_CHECK_TIMEOUT_MS`**: Timeout in milliseconds for health check requests (default: 5000ms = 5 seconds)
+- **`RPC_LOAD_BALANCING_STRATEGY`**: Load balancing algorithm to use ("round_robin", "least_connections", or "weighted_round_robin")
+
+### Configuration Notes:
+
+- When using the load balancer, the `SOROBAN_RPC_URL` environment variable is ignored
+- The load balancer automatically handles failover when endpoints become unhealthy
+- Health monitoring uses `getNetwork()` and `getLatestLedger()` calls to verify RPC endpoint availability
+- Metrics for the load balancer are exposed via the standard `/metrics/prometheus` endpoint
+- The load balancer is backward compatible - if only one RPC endpoint is configured, it operates in single-server mode
 
 ## P2P Keeper Discovery
 

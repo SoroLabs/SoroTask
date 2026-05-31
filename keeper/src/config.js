@@ -82,6 +82,13 @@ function loadConfig() {
     driftWarningSeconds: parseInteger(process.env.DRIFT_WARNING_SECONDS, 60),
     driftCriticalSeconds: parseInteger(process.env.DRIFT_CRITICAL_SECONDS, 300),
     metricsResetOnStart: parseBoolean(process.env.METRICS_RESET_ON_START, false),
+    // RPC Load Balancer Configuration
+    rpcEndpoints: process.env.RPC_ENDPOINTS || null,
+    rpcEndpointWeights: process.env.RPC_ENDPOINT_WEIGHTS || null,
+    rpcHealthCheckIntervalMs: parseInteger(process.env.RPC_HEALTH_CHECK_INTERVAL_MS, 30000),
+    rpcHealthCheckTimeoutMs: parseInteger(process.env.RPC_HEALTH_CHECK_TIMEOUT_MS, 5000),
+    rpcLoadBalancingStrategy: process.env.RPC_LOAD_BALANCING_STRATEGY || 'weighted_round_robin',
+    // Inbound Webhooks
     inboundWebhooks: {
       enabled: inboundWebhooksEnabled,
       path: process.env.INBOUND_WEBHOOK_PATH || '/webhooks/task-executions',

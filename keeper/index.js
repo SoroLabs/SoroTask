@@ -56,7 +56,10 @@ async function main() {
   }
 
   const { keypair } = keeperData;
-  const server = new Server(config.rpcUrl);
+  
+  // Load balanced RPC server creation
+  const { createRpc } = require("./src/rpc");
+  const server = await createRpc(config, createLogger("rpc"));
   const historyManager = new HistoryManager({
     logger: createLogger("history"),
   });
