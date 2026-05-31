@@ -210,6 +210,78 @@ pub struct StateChannelSettlement {
     pub settlement_fee: i128,
 }
 
+/// Role enumeration for granular access control
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Role {
+    Admin,
+    Keeper,
+    Delegate,
+    Viewer,
+    Auditor,
+}
+
+/// Permission enumeration for fine-grained access control
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Permission {
+    TaskCreate,
+    TaskExecute,
+    TaskManage,
+    PortfolioManage,
+    GovernanceVote,
+    GovernancePropose,
+    KeeperRegister,
+    KeeperDelegated,
+    AdminAccess,
+}
+
+/// Role assignment for an address
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RoleAssignment {
+    /// Address that has been assigned a role
+    pub address: Address,
+    /// The role assigned to this address
+    pub role: Role,
+    /// Timestamp when the role was assigned
+    pub assigned_at: u64,
+    /// Optional expiration timestamp (0 for no expiration)
+    pub expires_at: u64,
+}
+
+/// Permission grant for specific permissions
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PermissionGrant {
+    /// Address that has been granted permissions
+    pub address: Address,
+    /// List of permissions granted
+    pub permissions: Vec<Permission>,
+    /// Timestamp when permissions were granted
+    pub granted_at: u64,
+    /// Optional expiration timestamp (0 for no expiration)
+    pub expires_at: u64,
+}
+
+/// Delegation record for permission delegation
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Delegation {
+    /// Address that delegated permissions
+    pub delegator: Address,
+    /// Address that received delegated permissions
+    pub delegatee: Address,
+    /// List of permissions delegated
+    pub permissions: Vec<Permission>,
+    /// Timestamp when delegation was created
+    pub created_at: u64,
+    /// Expiration timestamp for delegation
+    pub expires_at: u64,
+    /// Whether delegation is revocable
+    pub is_revocable: bool,
+}
+
 /// Merkle proof for task condition verification
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -448,6 +520,12 @@ pub enum DataKey {
     StateChannelSettlementCounter,
     MerkleProofs(u64),
     MerkleProofCounter,
+    RoleAssignments(Address),
+    PermissionGrants(Address),
+    Delegations(Address),
+    RoleAssignmentCounter,
+    PermissionGrantCounter,
+    DelegationCounter,
 }
 
 fn get_active_task_ids(env: &Env) -> Vec<u64> {
@@ -565,6 +643,81 @@ fn enter_security_guard(env: &Env) {
 
 fn exit_security_guard(env: &Env) {
     env.storage().instance().remove(&DataKey::ReentrancyLock);
+}
+
+fn get_role_assignment(env: &Env, address: &Address) -> Option<RoleAssignment> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RoleAssignments(address.clone()))
+}
+
+fn set_role_assignment(env: &Env, address: &Address, assignment: &RoleAssignment) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::RoleAssignments(address.clone()), assignment);
+}
+
+fn get_role_assignment_counter(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RoleAssignmentCounter)
+        .unwrap_or(0)
+}
+
+fn set_role_assignment_counter(env: &Env, counter: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::RoleAssignmentCounter, &counter);
+}
+
+fn get_permission_grant(env: &Env, address: &Address) -> Option<PermissionGrant> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::PermissionGrants(address.clone()))
+}
+
+fn set_permission_grant(env: &Env, address: &Address, grant: &PermissionGrant) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::PermissionGrants(address.clone()), grant);
+}
+
+fn get_permission_grant_counter(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::PermissionGrantCounter)
+        .unwrap_or(0)
+}
+
+fn set_permission_grant_counter(env: &Env, counter: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::PermissionGrantCounter, &counter);
+}
+
+fn get_delegation(env: &Env, address: &Address) -> Option<Delegation> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Delegations(address.clone()))
+}
+
+fn set_delegation(env: &Env, address: &Address, delegation: &Delegation) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Delegations(address.clone()), delegation);
+}
+
+fn get_delegation_counter(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DelegationCounter)
+        .unwrap_or(0)
+}
+
+fn set_delegation_counter(env: &Env, counter: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::DelegationCounter, &counter);
 }
 
 #[contracttype]
@@ -3899,6 +4052,343 @@ mod tests {
             ),
             updated.creator.clone(),
         );
+    }
+
+    /// Assigns a role to an address.
+    /// Only admin or addresses with AdminAccess permission can assign roles.
+    pub fn assign_role(env: Env, address: Address, role: Role) {
+        enter_security_guard(&env);
+        
+        // Check if caller has admin access
+        let caller = Address::current(&env);
+        let admin_address: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminAddress);
+        
+        if let Some(admin) = admin_address {
+            if caller != admin {
+                // Check if caller has AdminAccess permission
+                let permission_grant = get_permission_grant(&env, &caller);
+                if let Some(grant) = permission_grant {
+                    let mut has_admin_access = false;
+                    for perm in grant.permissions.iter() {
+                        if *perm == Permission::AdminAccess {
+                            has_admin_access = true;
+                            break;
+                        }
+                    }
+                    if !has_admin_access {
+                        panic_with_error!(&env, Error::Unauthorized);
+                    }
+                } else {
+                    panic_with_error!(&env, Error::Unauthorized);
+                }
+            }
+        }
+        
+        // Create role assignment
+        let assignment = RoleAssignment {
+            address: address.clone(),
+            role,
+            assigned_at: env.ledger().timestamp(),
+            expires_at: 0, // No expiration by default
+        };
+        
+        // Store role assignment
+        set_role_assignment(&env, &address, &assignment);
+        
+        // Emit RoleAssigned event
+        env.events().publish(
+            (
+                Symbol::new(&env, "RoleAssigned"),
+                Symbol::new(&env, "v1"),
+                address.clone(),
+            ),
+            (caller, role),
+        );
+        
+        exit_security_guard(&env);
+    }
+
+    /// Revokes a role from an address.
+    /// Only admin or addresses with AdminAccess permission can revoke roles.
+    pub fn revoke_role(env: Env, address: Address) {
+        enter_security_guard(&env);
+        
+        // Check if caller has admin access
+        let caller = Address::current(&env);
+        let admin_address: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminAddress);
+        
+        if let Some(admin) = admin_address {
+            if caller != admin {
+                // Check if caller has AdminAccess permission
+                let permission_grant = get_permission_grant(&env, &caller);
+                if let Some(grant) = permission_grant {
+                    let mut has_admin_access = false;
+                    for perm in grant.permissions.iter() {
+                        if *perm == Permission::AdminAccess {
+                            has_admin_access = true;
+                            break;
+                        }
+                    }
+                    if !has_admin_access {
+                        panic_with_error!(&env, Error::Unauthorized);
+                    }
+                } else {
+                    panic_with_error!(&env, Error::Unauthorized);
+                }
+            }
+        }
+        
+        // Remove role assignment
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RoleAssignments(address.clone()));
+        
+        // Emit RoleRevoked event
+        env.events().publish(
+            (
+                Symbol::new(&env, "RoleRevoked"),
+                Symbol::new(&env, "v1"),
+                address.clone(),
+            ),
+            caller,
+        );
+        
+        exit_security_guard(&env);
+    }
+
+    /// Grants specific permissions to an address.
+    /// Only admin or addresses with AdminAccess permission can grant permissions.
+    pub fn grant_permission(env: Env, address: Address, permissions: Vec<Permission>) {
+        enter_security_guard(&env);
+        
+        // Check if caller has admin access
+        let caller = Address::current(&env);
+        let admin_address: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminAddress);
+        
+        if let Some(admin) = admin_address {
+            if caller != admin {
+                // Check if caller has AdminAccess permission
+                let permission_grant = get_permission_grant(&env, &caller);
+                if let Some(grant) = permission_grant {
+                    let mut has_admin_access = false;
+                    for perm in grant.permissions.iter() {
+                        if *perm == Permission::AdminAccess {
+                            has_admin_access = true;
+                            break;
+                        }
+                    }
+                    if !has_admin_access {
+                        panic_with_error!(&env, Error::Unauthorized);
+                    }
+                } else {
+                    panic_with_error!(&env, Error::Unauthorized);
+                }
+            }
+        }
+        
+        // Get existing permission grant
+        let mut grant = get_permission_grant(&env, &address).unwrap_or_else(|| PermissionGrant {
+            address: address.clone(),
+            permissions: Vec::new(&env),
+            granted_at: 0,
+            expires_at: 0,
+        });
+        
+        // Add new permissions
+        for perm in permissions.iter() {
+            let mut already_exists = false;
+            for existing_perm in grant.permissions.iter() {
+                if *existing_perm == *perm {
+                    already_exists = true;
+                    break;
+                }
+            }
+            if !already_exists {
+                grant.permissions.push_back(*perm);
+            }
+        }
+        
+        grant.granted_at = env.ledger().timestamp();
+        
+        // Store permission grant
+        set_permission_grant(&env, &address, &grant);
+        
+        // Emit PermissionGranted event
+        env.events().publish(
+            (
+                Symbol::new(&env, "PermissionGranted"),
+                Symbol::new(&env, "v1"),
+                address.clone(),
+            ),
+            (caller, grant.permissions),
+        );
+        
+        exit_security_guard(&env);
+    }
+
+    /// Revokes specific permissions from an address.
+    /// Only admin or addresses with AdminAccess permission can revoke permissions.
+    pub fn revoke_permission(env: Env, address: Address, permissions: Vec<Permission>) {
+        enter_security_guard(&env);
+        
+        // Check if caller has admin access
+        let caller = Address::current(&env);
+        let admin_address: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminAddress);
+        
+        if let Some(admin) = admin_address {
+            if caller != admin {
+                // Check if caller has AdminAccess permission
+                let permission_grant = get_permission_grant(&env, &caller);
+                if let Some(grant) = permission_grant {
+                    let mut has_admin_access = false;
+                    for perm in grant.permissions.iter() {
+                        if *perm == Permission::AdminAccess {
+                            has_admin_access = true;
+                            break;
+                        }
+                    }
+                    if !has_admin_access {
+                        panic_with_error!(&env, Error::Unauthorized);
+                    }
+                } else {
+                    panic_with_error!(&env, Error::Unauthorized);
+                }
+            }
+        }
+        
+        // Get existing permission grant
+        let mut grant = get_permission_grant(&env, &address).expect("Permission grant not found");
+        
+        // Remove specified permissions
+        let mut new_permissions = Vec::new(&env);
+        for existing_perm in grant.permissions.iter() {
+            let mut should_remove = false;
+            for perm_to_remove in permissions.iter() {
+                if *existing_perm == *perm_to_remove {
+                    should_remove = true;
+                    break;
+                }
+            }
+            if !should_remove {
+                new_permissions.push_back(*existing_perm);
+            }
+        }
+        
+        grant.permissions = new_permissions;
+        
+        // Store permission grant
+        set_permission_grant(&env, &address, &grant);
+        
+        // Emit PermissionRevoked event
+        env.events().publish(
+            (
+                Symbol::new(&env, "PermissionRevoked"),
+                Symbol::new(&env, "v1"),
+                address.clone(),
+            ),
+            (caller, grant.permissions),
+        );
+        
+        exit_security_guard(&env);
+    }
+
+    /// Delegates specific permissions to another address.
+    /// Only addresses with the permissions being delegated can delegate them.
+    pub fn delegate_permission(env: Env, delegatee: Address, permissions: Vec<Permission>) {
+        enter_security_guard(&env);
+        
+        // Check if caller has the permissions being delegated
+        let caller = Address::current(&env);
+        let permission_grant = get_permission_grant(&env, &caller);
+        
+        if let Some(grant) = permission_grant {
+            for perm in permissions.iter() {
+                let mut has_permission = false;
+                for existing_perm in grant.permissions.iter() {
+                    if *existing_perm == *perm {
+                        has_permission = true;
+                        break;
+                    }
+                }
+                if !has_permission {
+                    panic_with_error!(&env, Error::Unauthorized);
+                }
+            }
+        } else {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        
+        // Create delegation
+        let delegation = Delegation {
+            delegator: caller.clone(),
+            delegatee: delegatee.clone(),
+            permissions: permissions.clone(),
+            created_at: env.ledger().timestamp(),
+            expires_at: env.ledger().timestamp() + 3600 * 24 * 30, // 30 days default
+            is_revocable: true,
+        };
+        
+        // Store delegation
+        set_delegation(&env, &delegatee, &delegation);
+        
+        // Emit PermissionDelegated event
+        env.events().publish(
+            (
+                Symbol::new(&env, "PermissionDelegated"),
+                Symbol::new(&env, "v1"),
+                delegatee.clone(),
+            ),
+            (caller, permissions),
+        );
+        
+        exit_security_guard(&env);
+    }
+
+    /// Revokes a delegation of permissions.
+    /// Only the original delegator can revoke their delegation.
+    pub fn revoke_delegation(env: Env, delegatee: Address) {
+        enter_security_guard(&env);
+        
+        // Check if caller is the original delegator
+        let caller = Address::current(&env);
+        let delegation = get_delegation(&env, &delegatee);
+        
+        if let Some(delegation) = delegation {
+            if delegation.delegator != caller {
+                panic_with_error!(&env, Error::Unauthorized);
+            }
+        } else {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        
+        // Remove delegation
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Delegations(delegatee.clone()));
+        
+        // Emit DelegationRevoked event
+        env.events().publish(
+            (
+                Symbol::new(&env, "DelegationRevoked"),
+                Symbol::new(&env, "v1"),
+                delegatee.clone(),
+            ),
+            caller,
+        );
+        
+        exit_security_guard(&env);
     }
     // ── Tests ─────────────────────────────────────────────────────────────────
 
