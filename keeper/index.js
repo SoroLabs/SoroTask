@@ -12,6 +12,7 @@ const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
 const { MetricsServer } = require("./src/metrics");
+const { GasMonitor } = require("./src/gasMonitor");
 const HistoryManager = require("./src/history");
 const { normalizeShardConfig, filterTasksForShard } = require("./src/sharding");
 const { StartupValidator } = require("./src/validator");
@@ -74,7 +75,7 @@ async function main() {
     changedAt: null,
     actor: null,
   };
-  const metricsServer = new MetricsServer(undefined, createLogger("metrics"), null, {
+  const metricsServer = new MetricsServer(gasMonitor, createLogger("metrics"), null, {
     port: config.metricsPort,
     healthStaleThreshold: config.healthStaleThresholdMs,
     historyManager,
@@ -121,6 +122,8 @@ async function main() {
   const idempotencyGuard = new ExecutionIdempotencyGuard({
     logger: createLogger("idempotency"),
   });
+
+  const gasMonitor = new GasMonitor(createLogger("gasMonitor"));
 
   // Build the pre-filter chain — eliminates non-actionable tasks before RPC calls.
   // Filters run in order: null-guard → cached gas → cached timing → idempotency lock → circuit breaker.
@@ -202,6 +205,12 @@ async function main() {
     }
 
     try {
+      const dynamicFeeMultiplier = gasMonitor && typeof gasMonitor.getDynamicFeeMultiplier === 'function'
+        ? gasMonitor.getDynamicFeeMultiplier()
+        : 1;
+      deps.dynamicFeeMultiplier = dynamicFeeMultiplier;
+      deps.gasMonitor = gasMonitor;
+
       const retryResult = await executeTaskWithRetry(taskId, deps, {
         attemptId: context.attemptId,
         correlationId,

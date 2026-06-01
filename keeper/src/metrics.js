@@ -147,11 +147,19 @@ function createDefaultGasMonitor() {
       forecastingEnabled: false,
       forecastSafetyBuffer: 0,
       forecastAggregationWindow: 0,
+      dynamicFeeMultiplier: 1,
     }),
     getForecasterState: () => ({
       trackedTasks: 0,
       totalHistoricalSamples: 0,
+      priceState: {
+        shortTermAverage: 0,
+        longTermAverage: 0,
+        trend: 0,
+        multiplier: 1,
+      },
     }),
+    getDynamicFeeMultiplier: () => 1,
   };
 }
 
