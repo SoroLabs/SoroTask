@@ -19,6 +19,7 @@ This indexer subscribes to events emitted by the SoroTask Soroban contract and s
 - Uses SQLite for local storage with deduplication
 - Implements cursor-based polling to avoid reprocessing events
 - Handles chain reprocessing safely with INSERT OR IGNORE
+- Reconciles indexed task rows against on-chain task state and classifies drift
 - Graceful shutdown with database connection cleanup
 - Configurable polling interval
 
@@ -91,6 +92,24 @@ The indexer maps each event type to specific database operations:
 - KeeperPaid → Execution recorded
 - GasDeposited → Balance increased
 - GasWithdrawn → Balance decreased
+
+## Reconciliation
+
+Run full reconciliation on demand:
+
+```bash
+node src/index.js --reconcile
+```
+
+Run reconciliation for one task:
+
+```bash
+node src/index.js --reconcile --task-id 42
+```
+
+The reconciliation workflow treats the contract as the source of truth for task fields. It compares creator, target, function, arguments, resolver, interval, last run, gas balance, whitelist, active status, and dependency blockers. Mismatches are classified by likely cause, such as missed lifecycle event, missed balance event, scheduler update drift, or replay gaps.
+
+Non-destructive repairs upsert indexed rows from chain state. Rows that exist in the index but cannot be fetched from the contract are removed only through the existing explicit reconciliation path and logged with a destructive repair plan so maintainers can review the cause.
 
 ## Deduplication & Re-indexing
 

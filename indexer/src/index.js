@@ -1,5 +1,10 @@
 const { SorobanRpc, xdr, scValToNative, nativeToScVal, Address, Contract } = require("@stellar/stellar-sdk");
 const sqlite3 = require("sqlite3").verbose();
+const {
+  buildRepairPlan,
+  compareTaskState,
+  mapOnChainTask,
+} = require("./reconciliation");
 
 // Configuration
 const RPC_URL = "https://soroban-testnet.stellar.org"; // Change as needed
@@ -245,50 +250,37 @@ async function reconcileTask(taskId) {
           else resolve();
         });
       });
-      await logReconciliation(taskId, "removed", { reason: "Task no longer exists on chain" });
+      const comparison = compareTaskState(indexedTask, null);
+      await logReconciliation(taskId, "removed", {
+        reason: "Task no longer exists on chain",
+        comparison,
+        repairPlan: buildRepairPlan(comparison),
+      });
     } else {
       console.log(`[Reconciliation] Task ${taskId} not found on chain or in index`);
     }
     return;
   }
 
-  // Convert on-chain task to our model
-  const taskToUpsert = {
-    task_id: taskId,
-    creator: onChainTask.creator,
-    target: onChainTask.target,
-    function: onChainTask.function,
-    args_json: JSON.stringify(onChainTask.args || []),
-    resolver: onChainTask.resolver || null,
-    interval: Number(onChainTask.interval),
-    last_run: Number(onChainTask.last_run),
-    gas_balance: onChainTask.gas_balance.toString(),
-    whitelist_json: JSON.stringify(onChainTask.whitelist || []),
-    is_active: onChainTask.is_active,
-    blocked_by_json: JSON.stringify(onChainTask.blocked_by || [])
-  };
+  const taskToUpsert = mapOnChainTask(taskId, onChainTask);
 
   // Compare with indexed task
   let status = "unchanged";
   let details = {};
+  const comparison = compareTaskState(indexedTask, taskToUpsert);
+  const repairPlan = buildRepairPlan(comparison);
 
   if (!indexedTask) {
     status = "added";
-    details = { reason: "New task discovered on chain" };
+    details = { reason: "New task discovered on chain", comparison, repairPlan };
   } else {
-    // Check for mismatches
-    const mismatches = [];
-    if (indexedTask.creator !== taskToUpsert.creator) mismatches.push("creator");
-    if (indexedTask.target !== taskToUpsert.target) mismatches.push("target");
-    if (indexedTask.function !== taskToUpsert.function) mismatches.push("function");
-    if (indexedTask.interval !== taskToUpsert.interval) mismatches.push("interval");
-    if (indexedTask.last_run !== taskToUpsert.last_run) mismatches.push("last_run");
-    if (indexedTask.gas_balance !== taskToUpsert.gas_balance) mismatches.push("gas_balance");
-    if (indexedTask.is_active !== taskToUpsert.is_active) mismatches.push("is_active");
-
-    if (mismatches.length > 0) {
+    if (comparison.status === "drift") {
       status = "repaired";
-      details = { mismatches };
+      details = {
+        mismatches: comparison.mismatches,
+        likelyCause: comparison.likelyCause,
+        repairPlan,
+      };
     }
   }
 
