@@ -13,8 +13,9 @@ stellar network add --rpc-url "$RPC_URL" --network-passphrase "$NETWORK_PASSPHRA
 echo "Generating and funding identities..."
 for name in deployer keeper creator; do
   stellar keys generate --network local "$name" || true
+  address="$(stellar keys public-key "$name")"
   for attempt in 1 2 3 4 5; do
-    if stellar keys fund "$name" --network local; then
+    if curl -fsS "http://localhost:8000/friendbot?addr=$address" > /dev/null; then
       break
     fi
     if [ "$attempt" -eq 5 ]; then
