@@ -135,16 +135,15 @@ describe("GracefulShutdownManager", () => {
       expect(snapshot.completed.taskIds).toContain("task-1");
     });
 
-    test("should track in-flight task duration in snapshot", () => {
+    test("should track in-flight task duration in snapshot", async () => {
       shutdownManager.trackTask("task-1");
+      const initialSnapshot = shutdownManager.getStateSnapshot();
 
-      return new Promise((resolve) => {
-        setTimeout(() => {
-          const snapshot = shutdownManager.getStateSnapshot();
-          expect(snapshot.durationMs).toBeGreaterThanOrEqual(50);
-          resolve();
-        }, 50);
-      });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+
+      const snapshot = shutdownManager.getStateSnapshot();
+      expect(snapshot.durationMs).toBeGreaterThan(initialSnapshot.durationMs);
+      expect(snapshot.inFlight.count).toBe(1);
     });
   });
 

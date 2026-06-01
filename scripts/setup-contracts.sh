@@ -3,14 +3,7 @@ set -e
 
 # Configuration
 RPC_URL="http://localhost:8000/soroban/rpc"
-NETWORK_PASSPHRASE="$(curl -s -X POST -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":"1","method":"getNetwork"}' \
-  "$RPC_URL" | python3 -c 'import json, sys; result = json.load(sys.stdin).get("result", {}); print(result.get("networkPassphrase") or result.get("passphrase") or "")')"
-
-if [ -z "$NETWORK_PASSPHRASE" ]; then
-  echo "Unable to determine network passphrase from $RPC_URL"
-  exit 1
-fi
+NETWORK_PASSPHRASE="Standalone Network ; February 2017"
 
 # 1. Setup Network in CLI
 echo "Configuring stellar-cli network..."

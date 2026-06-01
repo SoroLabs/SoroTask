@@ -27,7 +27,7 @@ MAX_RETRIES=30
 RETRY_COUNT=0
 until curl -s -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":"1","method":"getNetwork"}' \
-  http://localhost:$RPC_PORT/soroban/rpc > /dev/null; do
+  http://localhost:$RPC_PORT/soroban/rpc | grep -q '"result"'; do
     RETRY_COUNT=$((RETRY_COUNT + 1))
     if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
         echo "Error: Soroban RPC failed to start after $MAX_RETRIES attempts."
