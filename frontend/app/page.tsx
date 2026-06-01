@@ -10,7 +10,11 @@ export default function Home() {
     interval: '',
     gasBalance: '',
     dueDate: '',
-    parsedDueDate: undefined as Date | undefined
+    parsedDueDate: undefined as Date | undefined,
+    // VRF-related fields
+    useVrf: false,
+    vrfCallbackFunction: '',
+    vrfCallbackArgs: ''
   });
 
   const handleDateChange = (value: string, parsedDate?: Date) => {
@@ -147,6 +151,41 @@ export default function Home() {
                     className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm" 
                   />
                 </div>
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    id="use-vrf"
+                    checked={taskData.useVrf}
+                    onChange={(e) => setTaskData(prev => ({ ...prev, useVrf: e.target.checked }))}
+                    className="h-4 w-4 text-blue-600 border-neutral-600 rounded focus:ring-blue-500"
+                  />
+                  <label htmlFor="use-vrf" className="ml-2 block text-sm font-medium text-neutral-400">
+                    Use Verifiable Random Function (VRF)
+                  </label>
+                </div>
+                {taskData.useVrf && (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-neutral-400 mb-1">VRF Callback Function</label>
+                      <input 
+                        type="text" 
+                        placeholder="fulfillRandomness" 
+                        value={taskData.vrfCallbackFunction}
+                        onChange={(e) => setTaskData(prev => ({ ...prev, vrfCallbackFunction: e.target.value }))}
+                        className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm" 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-neutral-400 mb-1">VRF Callback Arguments (JSON)</label>
+                      <textarea 
+                        placeholder='{"randomNumber": "$RANDOM"}'
+                        value={taskData.vrfCallbackArgs}
+                        onChange={(e) => setTaskData(prev => ({ ...prev, vrfCallbackArgs: e.target.value }))}
+                        className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm h-24" 
+                      />
+                    </div>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-neutral-400 mb-1">Interval (seconds)</label>
