@@ -1,428 +1,120 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback, useRef, FormEvent } from "react";
 import DateInput from "./components/DateInput";
+import ZKProofVerification from "./components/ZKProofVerification";
 
-export default function Home() {
-  const [taskData, setTaskData] = useState({
-    contractAddress: '',
-    functionName: '',
-    interval: '',
-    gasBalance: '',
-    dueDate: '',
-    parsedDueDate: undefined as Date | undefined,
-    // VRF-related fields
-    useVrf: false,
-    vrfCallbackFunction: '',
-    vrfCallbackArgs: ''
-  });
+export interface Task {
+  id: number;
+  contractAddress: string;
+  functionName: string;
+  interval: number;
+  gasBalance: number;
+  status: "active" | "paused";
+  zkVerified?: boolean;
+  zkConditionHash?: string;
+}
 
-  const handleDateChange = (value: string, parsedDate?: Date) => {
-    setTaskData(prev => ({
-      ...prev,
-      dueDate: value,
-      parsedDueDate: parsedDate
-    }));
-  };
+export interface LogEntry {
+  id: string;
+  taskId: number;
+  target: string;
+  keeper: string;
+  status: "success" | "failed" | "pending";
+  timestamp: string;
+}
+
+const MOCK_LOGS: LogEntry[] = [
+  {
+    id: "log-1",
+    taskId: 1024,
+    target: "CC...A12B",
+    keeper: "GA...99X",
+    status: "success",
+    timestamp: "2 mins ago",
+  },
+];
+
+interface EditTaskDialogProps {
+  task: Task;
+  onSave: (updated: Task) => void;
+  onClose: () => void;
+}
+
+function EditTaskDialog({ task, onSave, onClose }: EditTaskDialogProps) {
+  const [contractAddress, setContractAddress] = useState(task.contractAddress);
+  const [functionName, setFunctionName] = useState(task.functionName);
+  const [interval, setIntervalVal] = useState(task.interval.toString());
+  const [gasBalance, setGasBalance] = useState(task.gasBalance.toString());
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('Task submitted:', taskData);
-    // Handle task submission logic here
-  };
-
-  const onReset = () => {
-    if (confirmDiscard()) setForm(EMPTY_FORM);
+    onSave({
+      ...task,
+      contractAddress,
+      functionName,
+      interval: Number(interval) || task.interval,
+      gasBalance: Number(gasBalance) || task.gasBalance,
+    });
   };
 
   return (
-    /* Backdrop – clicking outside closes the dialog */
     <div
-      className="dialog-backdrop"
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      {/* Dialog container with role="dialog" and focus trap */}
       <div
-        ref={trapRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="edit-dialog-title"
-        aria-describedby="edit-dialog-desc"
-        onKeyDown={handleKeyDown}
-        className="bg-neutral-900 border border-neutral-700 rounded-xl p-6 w-full max-w-md shadow-2xl space-y-4"
+        className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4"
       >
         <h2 id="edit-dialog-title" className="text-lg font-bold text-neutral-100">
           Edit Task #{task.id}
         </h2>
-        <p id="edit-dialog-desc" className="sr-only">
-          Update the details of automation task {task.id}. Press Escape to cancel.
-        </p>
 
-        <form onSubmit={handleSubmit} noValidate className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label
               htmlFor="edit-contract"
-              className="block text-sm font-medium text-neutral-400 mb-1"
+              className="block text-xs font-medium text-neutral-400 mb-1"
             >
               Target Contract Address
             </label>
             <input
               id="edit-contract"
               type="text"
-              value={form.contractAddress}
-              onChange={(e) => setForm({ ...form, contractAddress: e.target.value })}
+              value={contractAddress}
+              onChange={(e) => setContractAddress(e.target.value)}
               required
-              autoComplete="off"
-              className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm text-neutral-100"
+              className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2.5 outline-none focus:border-blue-500 font-mono text-sm text-neutral-100"
             />
           </div>
 
-      <main className="container mx-auto px-6 py-12">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-8">
           <div>
-            <h2 className="text-3xl font-bold">Your Keeper Dashboard</h2>
-            <p className="text-neutral-400">Create, manage, and reorder recurring tasks with instant feedback.</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={syncTasks}
-              className="rounded-lg border border-neutral-700/80 bg-neutral-800/80 px-4 py-2 text-sm text-neutral-200 transition hover:border-neutral-500"
+            <label
+              htmlFor="edit-function"
+              className="block text-xs font-medium text-neutral-400 mb-1"
             >
-              {isLoading ? 'Refreshing…' : 'Refresh tasks'}
-            </button>
-            <div className="text-sm text-neutral-400">{activeTaskCount} active tasks</div>
-          </div>
-        </div>
-
-        {globalError ? (
-          <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 mb-6">
-            {globalError}
-          </div>
-        ) : null}
-
-        <div className="grid grid-cols-1 gap-12 xl:grid-cols-[1.1fr_1fr]">
-          <section className="space-y-6">
-            <h2 className="text-2xl font-bold">Create Automation Task</h2>
-            <form onSubmit={handleSubmit} className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 space-y-4 shadow-xl">
-              <div>
-                <label className="block text-sm font-medium text-neutral-400 mb-1">Target Contract Address</label>
-                <input 
-                  type="text" 
-                  placeholder="C..." 
-                  value={taskData.contractAddress}
-                  onChange={(e) => setTaskData(prev => ({ ...prev, contractAddress: e.target.value }))}
-                  className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm" 
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-neutral-400 mb-1">Function Name</label>
-                <input 
-                  type="text" 
-                  placeholder="harvest_yield" 
-                  value={taskData.functionName}
-                  onChange={(e) => setTaskData(prev => ({ ...prev, functionName: e.target.value }))}
-                  className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm" 
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-neutral-400 mb-1">Interval (seconds)</label>
-                  <input 
-                    type="number" 
-                    placeholder="3600" 
-                    value={taskData.interval}
-                    onChange={(e) => setTaskData(prev => ({ ...prev, interval: e.target.value }))}
-                    className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm" 
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-neutral-400 mb-1">Gas Balance (XLM)</label>
-                  <input 
-                    type="number" 
-                    placeholder="10" 
-                    value={taskData.gasBalance}
-                    onChange={(e) => setTaskData(prev => ({ ...prev, gasBalance: e.target.value }))}
-                    className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm" 
-                  />
-                </div>
-                <div className="flex items-center">
-                  <input
-                    type="checkbox"
-                    id="use-vrf"
-                    checked={taskData.useVrf}
-                    onChange={(e) => setTaskData(prev => ({ ...prev, useVrf: e.target.checked }))}
-                    className="h-4 w-4 text-blue-600 border-neutral-600 rounded focus:ring-blue-500"
-                  />
-                  <label htmlFor="use-vrf" className="ml-2 block text-sm font-medium text-neutral-400">
-                    Use Verifiable Random Function (VRF)
-                  </label>
-                </div>
-                {taskData.useVrf && (
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-neutral-400 mb-1">VRF Callback Function</label>
-                      <input 
-                        type="text" 
-                        placeholder="fulfillRandomness" 
-                        value={taskData.vrfCallbackFunction}
-                        onChange={(e) => setTaskData(prev => ({ ...prev, vrfCallbackFunction: e.target.value }))}
-                        className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm" 
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-neutral-400 mb-1">VRF Callback Arguments (JSON)</label>
-                      <textarea 
-                        placeholder='{"randomNumber": "$RANDOM"}'
-                        value={taskData.vrfCallbackArgs}
-                        onChange={(e) => setTaskData(prev => ({ ...prev, vrfCallbackArgs: e.target.value }))}
-                        className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm h-24" 
-                      />
-                    </div>
-                  </div>
-                )}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-400 mb-1">Interval (seconds)</label>
-                    <input type="number" placeholder="3600" className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm touch-manipulation" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-400 mb-1">Gas Balance (XLM)</label>
-                    <input type="number" placeholder="10" className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm touch-manipulation" />
-                  </div>
-                </div>
-                <button className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-3 rounded-lg transition-colors mt-2 shadow-lg shadow-blue-600/20 touch-manipulation">
-                  Register Task
-                </button>
-              </div>
-              
-              {/* Natural Language Due Date Input */}
-              <DateInput
-                value={taskData.dueDate}
-                onChange={handleDateChange}
-                label="Due Date"
-                required={false}
-                className="mt-4"
-              />
-              
-              <button 
-                type="submit"
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-3 rounded-lg transition-colors mt-2 shadow-lg shadow-blue-600/20"
-              >
-                Register Task
-              </button>
-            </form>
-          </section>
-
-          <section className="space-y-6">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-2xl font-bold">Your Tasks</h3>
-              <span className="rounded-full border border-neutral-700/70 bg-neutral-950/60 px-3 py-1 text-xs text-neutral-300">
-                {tasks.length} total
-              </span>
-            </div>
-            <div className="overflow-hidden rounded-3xl border border-neutral-700/50 bg-neutral-900/80 shadow-xl">
-              <table className="min-w-full text-left text-sm text-neutral-200">
-                <thead className="border-b border-neutral-800 bg-neutral-950/90 text-neutral-300">
-                  <tr>
-                    <th className="px-5 py-4">Task</th>
-                    <th className="px-5 py-4">Interval</th>
-                    <th className="px-5 py-4">Balance</th>
-                    <th className="px-5 py-4">Status</th>
-                    <th className="px-5 py-4">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-800 bg-neutral-900">
-                  {isLoading ? (
-                    <tr>
-                      <td colSpan={5} className="px-5 py-8 text-center text-neutral-400">
-                        Loading tasks…
-                      </td>
-                    </tr>
-                  ) : tasks.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-5 py-8 text-center text-neutral-500">
-                        No tasks registered yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    tasks.map((task, index) => {
-                      const status = taskStatus[task.id]
-                      const isPending = status?.pending ?? false
-                      const errorText = status?.error
-                      const isEditing = editingTaskId === task.id
-
-                      return (
-                        <tr
-                          key={task.id}
-                          className={isPending ? 'bg-blue-500/10' : 'hover:bg-neutral-800/50 transition-colors'}
-                        >
-                          <td className="px-5 py-4">
-                            <div className="font-medium text-white">{task.func}</div>
-                            <div className="mt-1 text-xs text-neutral-400 font-mono">{task.target}</div>
-                          </td>
-                          <td className="px-5 py-4">
-                            {isEditing ? (
-                              <input
-                                value={editDraft.interval}
-                                onChange={(event) => setEditDraft((current) => ({ ...current, interval: event.target.value }))}
-                                type="number"
-                                className="w-full rounded-lg border border-neutral-700/70 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
-                              />
-                            ) : (
-                              <span className="font-mono text-neutral-300">{task.interval}s</span>
-                            )}
-                          </td>
-                          <td className="px-5 py-4">
-                            {isEditing ? (
-                              <input
-                                value={editDraft.balance}
-                                onChange={(event) => setEditDraft((current) => ({ ...current, balance: event.target.value }))}
-                                type="number"
-                                className="w-full rounded-lg border border-neutral-700/70 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
-                              />
-                            ) : (
-                              <span className="font-mono text-neutral-300">{task.balance} XLM</span>
-                            )}
-                          </td>
-                          <td className="px-5 py-4">
-                            <span
-                              className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
-                                isPending
-                                  ? 'bg-blue-500/15 text-blue-200 ring-1 ring-blue-500/25'
-                                  : 'bg-green-500/10 text-green-300 ring-1 ring-green-500/25'
-                              }`}
-                            >
-                              {isPending ? 'Pending' : 'Active'}
-                            </span>
-                            {errorText ? (
-                              <div className="mt-2 text-xs text-red-300">{errorText}</div>
-                            ) : null}
-                          </td>
-                          <td className="px-5 py-4 space-y-2">
-                            {isEditing ? (
-                              <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => applyEdit(task)}
-                                  disabled={isPending}
-                                  className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-blue-500 disabled:opacity-60"
-                                >
-                                  Save
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setEditingTaskId(null)}
-                                  className="rounded-lg border border-neutral-700 px-3 py-2 text-xs text-neutral-200 transition hover:border-neutral-500"
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => buildDraft(task)}
-                                  disabled={isPending}
-                                  className="rounded-lg border border-neutral-700 px-3 py-2 text-xs text-neutral-200 transition hover:border-neutral-500"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteTask(task.id)}
-                                  disabled={isPending}
-                                  className="rounded-lg border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-200 transition hover:bg-red-500/20 disabled:opacity-60"
-                                >
-                                  Delete
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleMoveTask(task.id, -1)}
-                                  disabled={isPending || index === 0}
-                                  className="rounded-lg border border-neutral-700 px-3 py-2 text-xs text-neutral-200 transition hover:border-neutral-500 disabled:opacity-40"
-                                >
-                                  Up
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleMoveTask(task.id, 1)}
-                                  disabled={isPending || index === tasks.length - 1}
-                                  className="rounded-lg border border-neutral-700 px-3 py-2 text-xs text-neutral-200 transition hover:border-neutral-500 disabled:opacity-40"
-                                >
-                                  Down
-                                </button>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </div>
-
-        <section className="mt-16 space-y-6">
-          <h3 className="text-2xl font-bold">Execution Logs</h3>
-          <div className="overflow-hidden rounded-xl border border-neutral-700/50 shadow-xl">
-            <table className="w-full text-left text-sm text-neutral-400">
-              <thead className="bg-neutral-800 text-neutral-200">
-                <tr>
-                  <th className="px-6 py-4">Task ID</th>
-                  <th className="px-6 py-4">Target</th>
-                  <th className="px-6 py-4">Keeper</th>
-                  <th className="px-6 py-4">Status</th>
-                  <th className="px-6 py-4">Timestamp</th>
-                </tr>
-              </thead>
-
-              <tbody className="divide-y divide-neutral-800 bg-neutral-900/50">
-                <tr className="hover:bg-neutral-800/50 transition-colors">
-                  <td className="px-6 py-4 font-mono text-neutral-300">
-                    #1024
-                  </td>
-                  <td className="px-6 py-4 font-mono">CC...A12B</td>
-                  <td className="px-6 py-4 font-mono">GA...99X</td>
-                  <td className="px-6 py-4">
-                    <TransactionStatus status="success" compact />
-                  </td>
-                  <td className="px-6 py-4">
-                    <a href={`${STELLAR_EXPERT_BASE}/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2`}
-                      target="_blank" rel="noopener noreferrer"
-                      className="font-mono text-blue-400 hover:text-blue-300 underline transition-colors">
-                      a1b2c3d4…a1b2
-                    </a>
-                  </td>
-                  <td className="px-6 py-4">2 mins ago</td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <button className="p-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-yellow-500 transition-colors border border-neutral-700" title="Pause">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                      </button>
-                      <button className="p-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-red-500 transition-colors border border-neutral-700" title="Delete">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <div ref={logsEndRef} />
+              Function Name
+            </label>
+            <input
+              id="edit-function"
+              type="text"
+              value={functionName}
+              onChange={(e) => setFunctionName(e.target.value)}
+              required
+              className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2.5 outline-none focus:border-blue-500 font-mono text-sm text-neutral-100"
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label
                 htmlFor="edit-interval"
-                className="block text-sm font-medium text-neutral-400 mb-1"
+                className="block text-xs font-medium text-neutral-400 mb-1"
               >
                 Interval (seconds)
               </label>
@@ -430,16 +122,16 @@ export default function Home() {
                 id="edit-interval"
                 type="number"
                 min={1}
-                value={form.interval}
-                onChange={(e) => setForm({ ...form, interval: Number(e.target.value) })}
+                value={interval}
+                onChange={(e) => setIntervalVal(e.target.value)}
                 required
-                className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm text-neutral-100"
+                className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2.5 outline-none focus:border-blue-500 font-mono text-sm text-neutral-100"
               />
             </div>
             <div>
               <label
                 htmlFor="edit-gas"
-                className="block text-sm font-medium text-neutral-400 mb-1"
+                className="block text-xs font-medium text-neutral-400 mb-1"
               >
                 Gas Balance (XLM)
               </label>
@@ -447,10 +139,10 @@ export default function Home() {
                 id="edit-gas"
                 type="number"
                 min={0}
-                value={form.gasBalance}
-                onChange={(e) => setForm({ ...form, gasBalance: Number(e.target.value) })}
+                value={gasBalance}
+                onChange={(e) => setGasBalance(e.target.value)}
                 required
-                className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm text-neutral-100"
+                className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2.5 outline-none focus:border-blue-500 font-mono text-sm text-neutral-100"
               />
             </div>
           </div>
@@ -458,14 +150,14 @@ export default function Home() {
           <div className="flex gap-3 pt-2">
             <button
               type="submit"
-              className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 rounded-lg transition-colors"
+              className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-lg transition-colors text-sm"
             >
               Save Changes
             </button>
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 bg-neutral-700 hover:bg-neutral-600 text-neutral-100 font-medium py-2 rounded-lg transition-colors"
+              className="flex-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-medium py-2.5 rounded-lg transition-colors text-sm"
             >
               Cancel
             </button>
@@ -473,7 +165,7 @@ export default function Home() {
         </form>
       </div>
     </div>
-  )
+  );
 }
 
 /* ─── Task Card (Your Tasks) ─────────────────────────────────────────── */
@@ -506,18 +198,32 @@ function TaskCard({ task, onEdit, onToggle, onDelete }: TaskCardProps) {
           </p>
         </div>
 
-        {/* Status badge */}
-        <span
-          role="status"
-          aria-label={`Task status: ${task.status}`}
-          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-            isPaused
-              ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
-              : "bg-green-500/10 text-green-400 border-green-500/20"
-          }`}
-        >
-          {isPaused ? "Paused" : "Active"}
-        </span>
+        {/* Badges container */}
+        <div className="flex flex-col items-end gap-1.5">
+          {/* Status badge */}
+          <span
+            role="status"
+            aria-label={`Task status: ${task.status}`}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+              isPaused
+                ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
+                : "bg-green-500/10 text-green-400 border-green-500/20"
+            }`}
+          >
+            {isPaused ? "Paused" : "Active"}
+          </span>
+
+          {/* ZK verification status badge */}
+          {task.zkVerified && (
+            <span
+              role="status"
+              aria-label="Task secured with Zero-Knowledge proof"
+              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-violet-500/10 text-violet-300 border border-violet-500/20 shadow-sm shadow-violet-500/5 animate-pulse"
+            >
+              🛡️ ZK Protected
+            </span>
+          )}
+        </div>
       </div>
 
       <dl className="flex gap-4 text-xs text-neutral-500">
@@ -580,9 +286,39 @@ function LiveRegion({ message }: { message: string }) {
 /* ─── Main Page ──────────────────────────────────────────────────────── */
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [logs] = useState<LogEntry[]>(MOCK_LOGS);
+  const [logs, setLogs] = useState<LogEntry[]>(MOCK_LOGS);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [announcement, setAnnouncement] = useState("");
+
+  const [isWalletConnected, setIsWalletConnected] = useState(false);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+
+  /* Helper to announce screen-reader messages */
+  const announce = useCallback((msg: string) => {
+    setAnnouncement("");
+    // Defer to guarantee the aria-live region fires even for identical strings
+    requestAnimationFrame(() => setAnnouncement(msg));
+  }, []);
+
+  const handleConnectWallet = useCallback(() => {
+    if (isWalletConnected) {
+      setIsWalletConnected(false);
+      setWalletAddress(null);
+      announce("Wallet disconnected.");
+    } else {
+      setIsWalletConnected(true);
+      setWalletAddress("GA32V4M6P7Z8Q9X1Y2Z3A4B5C6D7E8F9G0H1I2J3");
+      announce("Wallet connected successfully.");
+    }
+  }, [isWalletConnected, announce]);
+
+  const handleZkVerified = useCallback((taskId: number, conditionHash: string) => {
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId ? { ...t, zkVerified: true, zkConditionHash: conditionHash } : t
+      )
+    );
+  }, []);
 
   /* ── Create-task form state ── */
   const [contractAddress, setContractAddress] = useState("");
@@ -592,13 +328,6 @@ export default function Home() {
   const [formError, setFormError] = useState("");
 
   const nextId = useRef(1);
-
-  /* Helper to announce screen-reader messages */
-  const announce = useCallback((msg: string) => {
-    setAnnouncement("");
-    // Defer to guarantee the aria-live region fires even for identical strings
-    requestAnimationFrame(() => setAnnouncement(msg));
-  }, []);
 
   /* ── Register task ── */
   const handleRegister = useCallback(
@@ -710,10 +439,11 @@ export default function Home() {
 
             <button
               id="connect-wallet-btn"
-              aria-label="Connect your Stellar wallet"
-              className="bg-neutral-100 text-neutral-900 px-4 py-2 rounded-md font-medium hover:bg-neutral-200 transition-colors"
+              onClick={handleConnectWallet}
+              aria-label={isWalletConnected ? `Disconnect wallet ${walletAddress?.slice(0, 6)}...` : "Connect your Stellar wallet"}
+              className="bg-neutral-100 text-neutral-900 px-4 py-2 rounded-md font-medium hover:bg-neutral-200 transition-colors text-sm"
             >
-              Connect Wallet
+              {isWalletConnected ? `${walletAddress?.slice(0, 6)}...${walletAddress?.slice(-4)}` : "Connect Wallet"}
             </button>
           </div>
         </header>
@@ -878,6 +608,34 @@ export default function Home() {
               )}
             </section>
           </div>
+
+          {/* ── Zero-Knowledge Proof Verification Section ── */}
+          <section className="mt-16">
+            <ZKProofVerification
+              tasks={tasks.map((t) => ({
+                id: t.id,
+                contractAddress: t.contractAddress,
+                functionName: t.functionName,
+                interval: t.interval,
+                gasBalance: t.gasBalance,
+                status: t.status,
+              }))}
+              walletConnected={isWalletConnected}
+              walletAddress={walletAddress}
+              onZkVerified={handleZkVerified}
+              onAddLog={(log) => {
+                const newLog: LogEntry = {
+                  id: `log-${Math.random().toString(36).substring(2, 6)}`,
+                  taskId: Number(log.taskId.replace("#", "")),
+                  target: log.target,
+                  keeper: log.keeper,
+                  status: log.status,
+                  timestamp: log.timestamp,
+                };
+                setLogs((prev) => [newLog, ...prev]);
+              }}
+            />
+          </section>
 
           {/* ── Execution Logs ── */}
           <section aria-labelledby="exec-logs-heading" className="mt-16">

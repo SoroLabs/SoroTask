@@ -250,20 +250,20 @@ export function CommandPalette() {
                       <button
                         key={cmd.id}
                         aria-selected={isSelected}
-                        className={\`flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium transition-colors w-full text-left \${
+                        className={`flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium transition-colors w-full text-left ${
                           isSelected
                             ? "bg-blue-600/10 text-blue-400"
                             : "text-neutral-300 hover:bg-neutral-800/60"
-                        }\`}
+                        }`}
                         onClick={() => {
                           cmd.perform();
                           setIsOpen(false);
                         }}
                         onMouseMove={() => setSelectedIndex(itemIndex)}
                       >
-                        <div className={\`flex items-center justify-center \${
+                        <div className={`flex items-center justify-center ${
                           isSelected ? "text-blue-400" : "text-neutral-500"
-                        }\`}>
+                        }`}>
                           {cmd.icon}
                         </div>
                         <span className="flex-1">{cmd.title}</span>
