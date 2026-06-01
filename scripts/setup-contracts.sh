@@ -12,10 +12,17 @@ stellar network add --rpc-url "$RPC_URL" --network-passphrase "$NETWORK_PASSPHRA
 # 2. Generate and Fund Identities
 echo "Generating and funding identities..."
 for name in deployer keeper creator; do
-  stellar keys generate --network local $name || true
-  # Funding is usually automatic with --network local if quickstart is running,
-  # but we can try to fund again just in case.
-  # stellar keys fund $name --network local || true
+  stellar keys generate --network local "$name" || true
+  for attempt in 1 2 3 4 5; do
+    if stellar keys fund "$name" --network local; then
+      break
+    fi
+    if [ "$attempt" -eq 5 ]; then
+      echo "Failed to fund $name after $attempt attempts"
+      exit 1
+    fi
+    sleep 5
+  done
 done
 
 # 3. Build Contracts
