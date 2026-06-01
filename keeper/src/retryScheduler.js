@@ -31,6 +31,16 @@ class RetryScheduler {
   }
 
   /**
+   * Attach an SloMetrics instance for retry delay instrumentation.
+   * Call this after construction when SloMetrics is available.
+   *
+   * @param {import('./sloMetrics')} sloMetrics
+   */
+  setSloMetrics(sloMetrics) {
+    this.sloMetrics = sloMetrics;
+  }
+
+  /**
    * Initialize the retry scheduler
    * Loads persisted retry metadata from disk
    */
@@ -193,6 +203,14 @@ class RetryScheduler {
     // Record budget consumption
     if (this.budgetTracker) {
       this.budgetTracker.recordRetry(taskId);
+    }
+
+    // Record retry delay SLO metric
+    if (this.sloMetrics) {
+      this.sloMetrics.recordRetryDelay({
+        delayMs,
+        attempt: retryMetadata.currentAttempt,
+      });
     }
 
     // Persist to disk

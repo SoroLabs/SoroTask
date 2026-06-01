@@ -5,6 +5,7 @@ const {
   compareTaskState,
   mapOnChainTask,
 } = require("./reconciliation");
+const { runStaleTaskCleanup } = require("./staleTasks");
 
 // Configuration
 const RPC_URL = "https://soroban-testnet.stellar.org"; // Change as needed
@@ -12,6 +13,7 @@ const CONTRACT_ID = "YOUR_CONTRACT_ID"; // Replace with actual contract ID
 const DB_FILE = "./indexer.db";
 const POLL_INTERVAL_MS = 6000; // 6 seconds
 const RECONCILE_INTERVAL_MS = 300000; // 5 minutes
+const STALE_CLEANUP_INTERVAL_MS = 86400000; // 24 hours
 
 // Initialize RPC server
 const rpc = new SorobanRpc.Server(RPC_URL);
@@ -375,6 +377,18 @@ function handleCLI() {
     }
     return true;
   }
+
+  if (args.includes('--cleanup-stale')) {
+    const dryRun = !args.includes('--apply');
+    runStaleTaskCleanup(db, { dryRun }).then((summary) => {
+      console.log(`[Cleanup] Stale task cleanup complete: ${JSON.stringify(summary)}`);
+      process.exit(0);
+    }).catch(err => {
+      console.error(err);
+      process.exit(1);
+    });
+    return true;
+  }
   
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`
@@ -384,11 +398,16 @@ Usage:
   node index.js                    Start the indexer
   node index.js --reconcile        Run full reconciliation
   node index.js -r -t <task-id>   Reconcile a specific task
+  node index.js --cleanup-stale    Preview stale indexed task cleanup
+  node index.js --cleanup-stale --apply
+                                    Archive and delete stale indexed tasks
   node index.js --help             Show this help message
 
 Options:
   -r, --reconcile    Run reconciliation
   -t, --task-id      Specify task ID for reconciliation
+  --cleanup-stale    Detect stale indexed tasks and log the planned cleanup
+  --apply            Apply stale cleanup; without this flag cleanup is dry-run only
   -h, --help         Show help
     `);
     process.exit(0);
@@ -408,6 +427,15 @@ if (!handleCLI()) {
   // Start periodic reconciliation
   console.log("Starting periodic reconciliation (every 5 minutes)...");
   setInterval(reconcileAll, RECONCILE_INTERVAL_MS);
+
+  console.log("Starting stale task cleanup dry-run (every 24 hours)...");
+  setInterval(() => {
+    runStaleTaskCleanup(db, { dryRun: true }).then((summary) => {
+      console.log(`[Cleanup] Stale task cleanup dry-run: ${JSON.stringify(summary)}`);
+    }).catch((err) => {
+      console.error("[Cleanup] Error running stale task cleanup:", err.message);
+    });
+  }, STALE_CLEANUP_INTERVAL_MS);
 }
 
 // Graceful shutdown
