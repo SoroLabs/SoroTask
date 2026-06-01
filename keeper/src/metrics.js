@@ -6,6 +6,7 @@ const { URL } = require('url');
 const { createLogger } = require('./logger');
 const { ApiGateway } = require('./apiGateway');
 const { FailurePredictor, KeeperReputationScorer } = require('./insights');
+const SloMetrics = require('./sloMetrics');
 
 class Metrics {
   constructor() {
@@ -191,6 +192,21 @@ class MetricsServer {
       logger: createLogger('reputation-scorer'),
     });
     this.register = new promClient.Registry();
+
+    // SLO metrics — injectable for testing; shares main registry by default so
+    // SLO histograms/counters appear at /metrics/prometheus without extra merging.
+    this.sloMetrics = options.sloMetrics || new SloMetrics({
+      register: this.register,
+      freshnessTargetSeconds: options.sloFreshnessTargetSeconds,
+      freshnessWarningSeconds: options.sloFreshnessWarningSeconds,
+      freshnessCriticalSeconds: options.sloFreshnessCriticalSeconds,
+      latenessTargetSeconds: options.sloLatenessTargetSeconds,
+      latenessWarningSeconds: options.sloLatenessWarningSeconds,
+      latenessCriticalSeconds: options.sloLatenessCriticalSeconds,
+      sloTarget: options.sloTarget,
+      errorBudgetWindowSize: options.sloErrorBudgetWindowSize,
+    });
+
     this.initPrometheusMetrics();
   }
 
@@ -531,6 +547,9 @@ class MetricsServer {
       } else if (req.url === '/metrics/reputation' || req.url === '/metrics/reputation/') {
         this.handleReputation(res);
 
+      } else if (req.url === '/metrics/slo' || req.url === '/metrics/slo/') {
+        this.handleSloMetrics(res);
+
       } else if (req.url === '/admin/billing' || req.url === '/admin/billing/') {
         protect(() => this.handleBilling(res))();
 
@@ -693,6 +712,19 @@ class MetricsServer {
         currency: 'request-units',
       },
     }, null, 2));
+  }
+
+  /**
+   * GET /metrics/slo — SLO snapshot in JSON.
+   *
+   * Returns poll freshness status, error budget consumption, lateness SLI data,
+   * configured SLO targets, and documented known measurement limitations.
+   * This endpoint is unauthenticated (read-only, no sensitive data).
+   */
+  handleSloMetrics(res) {
+    const snapshot = this.sloMetrics.getSnapshot();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(snapshot, null, 2));
   }
 
   handleDrift(res) {

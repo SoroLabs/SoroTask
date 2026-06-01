@@ -14,6 +14,7 @@ module.exports = {
     "src/queue.js",
     "src/registry.js",
     "src/retry.js",
+    "src/sloMetrics.js",
   ],
   coverageThreshold: {
     global: {

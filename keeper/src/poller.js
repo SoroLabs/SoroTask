@@ -24,6 +24,10 @@ class TaskPoller {
       ? options.filterChain
       : null;
     this.metricsServer = options.metricsServer;
+    // SLO metrics — accept direct injection (tests) or pull from metricsServer
+    this.sloMetrics = options.sloMetrics
+      || (options.metricsServer && options.metricsServer.sloMetrics)
+      || null;
     this.historyManager = options.historyManager || null;
     this.shardLabel = options.shardLabel || null;
     this.driftWarningSeconds = parseInt(
@@ -272,6 +276,27 @@ class TaskPoller {
         });
       }
 
+      // ── SLO instrumentation ──────────────────────────────────────────────
+      if (this.sloMetrics) {
+        // Record per-task lateness for every due task detected this cycle
+        results.forEach(result => {
+          if (result.status === 'fulfilled' && result.value.isDue) {
+            this.sloMetrics.recordTaskLateness({
+              lateness: result.value.lateness,
+              driftSeverity: result.value.driftSeverity,
+              isUnacceptablyLate: result.value.isUnacceptablyLate,
+            });
+          }
+        });
+
+        this.sloMetrics.recordPollCycle({
+          success: true,
+          durationMs: duration,
+          taskCount: taskIds.length,
+          dueCount: dueTaskIds.length,
+        });
+      }
+
       this.logPollSummary(duration, cycleLogger);
 
       return dueTaskIds;
@@ -283,6 +308,14 @@ class TaskPoller {
         this.metricsServer.updateHealth({
           lastPollAt: new Date(),
           rpcConnected: false,
+        });
+      }
+      if (this.sloMetrics) {
+        this.sloMetrics.recordPollCycle({
+          success: false,
+          durationMs: Date.now() - startTime,
+          taskCount: taskIds.length,
+          dueCount: 0,
         });
       }
       return [];
