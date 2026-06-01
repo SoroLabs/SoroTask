@@ -4,6 +4,7 @@ set -e
 # Configuration
 RPC_URL="http://localhost:8000/soroban/rpc"
 NETWORK_PASSPHRASE="Standalone Network ; February 2017"
+MAX_FUNDING_ATTEMPTS=30
 
 # 1. Setup Network in CLI
 echo "Configuring stellar-cli network..."
@@ -14,14 +15,14 @@ echo "Generating and funding identities..."
 for name in deployer keeper creator; do
   stellar keys generate --network local "$name" || true
   address="$(stellar keys public-key "$name")"
-  for attempt in 1 2 3 4 5; do
-    if curl -fsS "http://localhost:8000/friendbot?addr=$address" > /dev/null; then
-      break
-    fi
-    if [ "$attempt" -eq 5 ]; then
+  attempt=1
+  until curl -fsS "http://localhost:8000/friendbot?addr=$address" > /dev/null; do
+    if [ "$attempt" -ge "$MAX_FUNDING_ATTEMPTS" ]; then
       echo "Failed to fund $name after $attempt attempts"
       exit 1
     fi
+    echo "Friendbot not ready for $name yet ($attempt/$MAX_FUNDING_ATTEMPTS); retrying..."
+    attempt=$((attempt + 1))
     sleep 5
   done
 done
