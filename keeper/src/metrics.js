@@ -19,6 +19,13 @@ class Metrics {
       ownedTasks: 0,
       skippedTasks: 0,
     };
+    this.dbShardState = {
+      dbShardCount: 1,
+      dbShardLabel: 'postgres-shard-0',
+      dbShardStrategy: 'fixed',
+      activeUsers: 0,
+      pendingTasks: 0,
+    };
     this.driftState = {
       warning: 0,
       critical: 0,
@@ -103,6 +110,10 @@ class Metrics {
     this.shardState = { ...this.shardState, ...state };
   }
 
+  updateDbShardState(state = {}) {
+    this.dbShardState = { ...this.dbShardState, ...state };
+  }
+
   updateDriftState(state = {}) {
     this.driftState = { ...this.driftState, ...state };
   }
@@ -113,6 +124,7 @@ class Metrics {
       ...this.gauges,
       admin: { ...this.adminState },
       shard: { ...this.shardState },
+      dbShard: { ...this.dbShardState },
       drift: { ...this.driftState },
     };
   }
@@ -294,6 +306,26 @@ class MetricsServer {
       labelNames: ['shard_label', 'shard_index'],
       registers: [this.register],
     });
+    this.promDbShardCount = new promClient.Gauge({
+      name: 'keeper_db_shard_count',
+      help: 'Number of Postgres database shards currently active',
+      registers: [this.register],
+    });
+    this.promDbShardActiveUsers = new promClient.Gauge({
+      name: 'keeper_db_shard_active_users',
+      help: 'Active user load used for Postgres shard scaling',
+      registers: [this.register],
+    });
+    this.promDbShardPendingTasks = new promClient.Gauge({
+      name: 'keeper_db_shard_pending_tasks',
+      help: 'Pending task volume used for Postgres shard scaling',
+      registers: [this.register],
+    });
+    this.promDbShardStrategy = new promClient.Gauge({
+      name: 'keeper_db_shard_strategy',
+      help: 'Current Postgres shard scaling mode (0 = fixed, 1 = auto)',
+      registers: [this.register],
+    });
     this.promDriftSeverity = new promClient.Gauge({
       name: 'keeper_recurring_drift_severity',
       help: 'Highest currently observed recurring drift severity (0 = none, 1 = warning, 2 = critical)',
@@ -407,6 +439,10 @@ class MetricsServer {
     this.promDriftTask.set(this.metrics.driftState.taskId || 0);
     this.promDriftWarningCount.set(this.metrics.driftState.warning || 0);
     this.promDriftCriticalCount.set(this.metrics.driftState.critical || 0);
+    this.promDbShardCount.set(this.metrics.dbShardState.dbShardCount);
+    this.promDbShardActiveUsers.set(this.metrics.dbShardState.activeUsers);
+    this.promDbShardPendingTasks.set(this.metrics.dbShardState.pendingTasks);
+    this.promDbShardStrategy.set(this.metrics.dbShardState.dbShardStrategy === 'auto' ? 1 : 0);
 
     if (this.retryBudgetTracker) {
       const budgetStats = this.retryBudgetTracker.getStats();
@@ -706,6 +742,10 @@ class MetricsServer {
 
   updateShardState(state) {
     this.metrics.updateShardState(state);
+  }
+
+  updateDbShardState(state) {
+    this.metrics.updateDbShardState(state);
   }
 
   updateDriftState(state) {
