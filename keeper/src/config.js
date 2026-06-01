@@ -94,6 +94,11 @@ function loadConfig() {
     apiGatewayDefaultCapacity: parseInteger(process.env.API_GATEWAY_DEFAULT_CAPACITY, 120),
     apiGatewayDefaultRefillPerSecond: parseFloat(process.env.API_GATEWAY_DEFAULT_REFILL_PER_SECOND) || 2,
     apiGatewayDefaultBillingUnits: parseInteger(process.env.API_GATEWAY_DEFAULT_BILLING_UNITS, 1),
+    // Snapshot configuration
+    snapshotEnabled: parseBoolean(process.env.SNAPSHOT_ENABLED, true),
+    snapshotStaleLedgers: parseInteger(process.env.SNAPSHOT_STALE_LEDGERS, 100000),
+    snapshotStaleWallMs: parseInteger(process.env.SNAPSHOT_STALE_WALL_MS, 0),
+    snapshotDir: process.env.SNAPSHOT_DIR || null,
     // Inbound Webhooks
     inboundWebhooks: {
       enabled: inboundWebhooksEnabled,
