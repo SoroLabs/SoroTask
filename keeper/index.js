@@ -75,6 +75,8 @@ async function main() {
     changedAt: null,
     actor: null,
   };
+
+  const gasMonitor = new GasMonitor(createLogger("gasMonitor"));
   const metricsServer = new MetricsServer(gasMonitor, createLogger("metrics"), null, {
     port: config.metricsPort,
     healthStaleThreshold: config.healthStaleThresholdMs,
@@ -122,8 +124,6 @@ async function main() {
   const idempotencyGuard = new ExecutionIdempotencyGuard({
     logger: createLogger("idempotency"),
   });
-
-  const gasMonitor = new GasMonitor(createLogger("gasMonitor"));
 
   // Build the pre-filter chain — eliminates non-actionable tasks before RPC calls.
   // Filters run in order: null-guard → cached gas → cached timing → idempotency lock → circuit breaker.
