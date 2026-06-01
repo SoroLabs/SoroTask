@@ -3,7 +3,14 @@ set -e
 
 # Configuration
 RPC_URL="http://localhost:8000/soroban/rpc"
-NETWORK_PASSPHRASE="Local Sandbox Stellar Network ; September 2018"
+NETWORK_PASSPHRASE="$(curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"getNetwork"}' \
+  "$RPC_URL" | python3 -c 'import json, sys; result = json.load(sys.stdin).get("result", {}); print(result.get("networkPassphrase") or result.get("passphrase") or "")')"
+
+if [ -z "$NETWORK_PASSPHRASE" ]; then
+  echo "Unable to determine network passphrase from $RPC_URL"
+  exit 1
+fi
 
 # 1. Setup Network in CLI
 echo "Configuring stellar-cli network..."
@@ -20,9 +27,9 @@ done
 
 # 3. Build Contracts
 echo "Building contracts..."
-(cd contract && cargo build --target wasm32-unknown-unknown --release)
+(cd contract && cargo build --target wasm32v1-none --release)
 
-WASM_PATH="contract/target/wasm32-unknown-unknown/release/soro_task_contract.wasm"
+WASM_PATH="contract/target/wasm32v1-none/release/soro_task_contract.wasm"
 
 # 4. Deploy Main Contract
 echo "Deploying SoroTask contract..."

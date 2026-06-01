@@ -18,7 +18,7 @@ jobs:
       - name: Setup Modern Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
 
       - name: Install stellar-cli
         uses: stellar/stellar-cli@v23.0.1
