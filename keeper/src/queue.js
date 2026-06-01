@@ -15,12 +15,23 @@ class ExecutionQueue extends EventEmitter {
   constructor(limit, metricsServer, options = {}) {
     super();
 
-    this.logger = options.logger || createLogger('queue');
+    const legacyRetryScheduler =
+      options
+      && typeof options === 'object'
+      && !Object.prototype.hasOwnProperty.call(options, 'retryScheduler')
+      && !Object.prototype.hasOwnProperty.call(options, 'idempotencyGuard')
+      && typeof options.scheduleRetry === 'function';
+
+    const normalizedOptions = legacyRetryScheduler
+      ? { retryScheduler: options, distributedLockEnabled: false }
+      : options;
+
+    this.logger = normalizedOptions.logger || createLogger('queue');
     this.metricsServer = metricsServer;
-    this.idempotencyGuard = options.idempotencyGuard || null;
+    this.idempotencyGuard = normalizedOptions.idempotencyGuard || null;
     
     // Initialize retry scheduler
-    const schedulerCandidate = options.retryScheduler;
+    const schedulerCandidate = normalizedOptions.retryScheduler;
     const hasRetrySchedulerInterface =
       schedulerCandidate && 
       typeof schedulerCandidate.scheduleRetry === 'function' && 
@@ -28,7 +39,7 @@ class ExecutionQueue extends EventEmitter {
 
     this.retryScheduler = hasRetrySchedulerInterface
       ? schedulerCandidate
-      : new RetryScheduler(options.retryScheduler);
+      : new RetryScheduler(normalizedOptions.retryScheduler);
 
     this.concurrencyLimit = parseInt(
       limit || process.env.MAX_CONCURRENT_EXECUTIONS || DEFAULT_CONCURRENCY,
@@ -36,7 +47,7 @@ class ExecutionQueue extends EventEmitter {
     );
 
     this.maxWritesPerSecond = parseInt(
-      options.maxWritesPerSecond || process.env.MAX_WRITES_PER_SECOND || DEFAULT_WRITES_PER_SECOND,
+      normalizedOptions.maxWritesPerSecond || process.env.MAX_WRITES_PER_SECOND || DEFAULT_WRITES_PER_SECOND,
       10,
     );
 
@@ -52,7 +63,7 @@ class ExecutionQueue extends EventEmitter {
       },
     });
 
-    this.distributedLockEnabled = options.distributedLockEnabled !== false;
+    this.distributedLockEnabled = normalizedOptions.distributedLockEnabled !== false;
 
     this.depth = 0;
     this.inFlight = 0;
@@ -111,10 +122,6 @@ class ExecutionQueue extends EventEmitter {
     const cycleStartTime = Date.now();
     const cyclePromises = validTasks.map((task) => {
       return this.limit(async () => {
-        if (this.shuttingDown) {
-          return;
-        }
-
         const taskId = typeof task === 'object' ? task.taskId : task;
         const initialContext = (typeof task === 'object' && task.context) ? task.context : {};
         let attemptContext = { ...initialContext };
@@ -140,7 +147,8 @@ class ExecutionQueue extends EventEmitter {
         this.inFlight++;
         this.depth = Math.max(this.depth - 1, 0);
 
-        this.emit('task:started', taskId, attemptContext);
+        const hasContext = Object.keys(attemptContext).length > 0;
+        this.emitTaskEvent('task:started', taskId, hasContext ? attemptContext : null);
 
         const taskConfig = taskConfigMap[taskId] || null;
 
@@ -155,7 +163,11 @@ class ExecutionQueue extends EventEmitter {
             }
           }
 
-          await executorFn(taskId, attemptContext);
+          if (hasContext) {
+            await executorFn(taskId, attemptContext);
+          } else {
+            await executorFn(taskId);
+          }
 
           this.completed++;
           
@@ -173,7 +185,7 @@ class ExecutionQueue extends EventEmitter {
             });
           }
 
-          this.emit('task:success', taskId, attemptContext);
+          this.emitTaskEvent('task:success', taskId, hasContext ? attemptContext : null);
         } catch (error) {
           this.failedCount++;
           this.failedTasks.add(taskId);
@@ -243,6 +255,68 @@ class ExecutionQueue extends EventEmitter {
       this.failedCount = 0;
       this.retryTaskIds.clear();
     }
+  }
+
+  emitTaskEvent(eventName, taskId, context) {
+    if (context) {
+      this.emit(eventName, taskId, context);
+      return;
+    }
+    this.emit(eventName, taskId);
+  }
+
+  async enqueueRetries(retryTasks, executorFn) {
+    const tasks = retryTasks || [];
+    if (tasks.length === 0) {
+      return;
+    }
+
+    const cycleStartTime = Date.now();
+    const cyclePromises = tasks.map((retryTask) => this.limit(async () => {
+      const taskId = retryTask.taskId;
+      this.retryTaskIds.add(taskId);
+      this.emit('retry:started', taskId, retryTask);
+
+      try {
+        await executorFn(taskId);
+
+        if (this.retryScheduler && typeof this.retryScheduler.completeRetry === 'function') {
+          await this.retryScheduler.completeRetry(taskId, true);
+        }
+
+        this.emit('retry:success', taskId, retryTask);
+      } catch (error) {
+        let completion = {};
+        if (this.retryScheduler && typeof this.retryScheduler.completeRetry === 'function') {
+          completion = await this.retryScheduler.completeRetry(taskId, false);
+        }
+
+        this.emit('retry:failed', taskId, error, retryTask, completion || {});
+      } finally {
+        this.retryTaskIds.delete(taskId);
+      }
+    }));
+
+    this.activePromises.push(...cyclePromises);
+    await Promise.allSettled(cyclePromises);
+
+    const cycleDuration = Date.now() - cycleStartTime;
+    if (this.metricsServer && typeof this.metricsServer.record === 'function') {
+      this.metricsServer.record('lastRetryCycleDurationMs', cycleDuration);
+    }
+
+    this.emit('retry:cycle:complete', {
+      attempted: tasks.length,
+      durationMs: cycleDuration,
+    });
+
+    this.activePromises = this.activePromises.filter(
+      (promise) => !cyclePromises.includes(promise),
+    );
+  }
+
+  async drain(options = {}) {
+    return this.gracefulShutdown(options);
   }
 
   /**

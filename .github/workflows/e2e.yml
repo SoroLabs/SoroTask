@@ -21,9 +21,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Install stellar-cli
-        uses: stellar/setup-stellar-cli@v1
-        with:
-          version: 21.6.0
+        uses: stellar/stellar-cli@v23.0.1
 
       - name: Setup Node.js
         uses: actions/setup-node@v6

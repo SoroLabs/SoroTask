@@ -6,6 +6,23 @@ const { TaskFilterChain } = require('./taskFilter');
 const { SimulationCache } = require('./simulationCache');
 const crypto = require('crypto');
 
+function normalizeLogger(logger) {
+  const base = logger || createLogger('poller');
+  const normalized = { ...base };
+
+  for (const level of ['trace', 'debug', 'info', 'warn', 'error', 'fatal']) {
+    normalized[level] = typeof base[level] === 'function'
+      ? base[level].bind(base)
+      : () => {};
+  }
+
+  normalized.childWithTrace = typeof base.childWithTrace === 'function'
+    ? (correlationId) => normalizeLogger(base.childWithTrace(correlationId))
+    : () => normalized;
+
+  return normalized;
+}
+
 /**
  * Production-grade polling engine for SoroTask Keeper.
  * Queries the contract for each known task and determines which tasks are due for execution
@@ -17,7 +34,7 @@ class TaskPoller {
     this.contractId = contractId;
 
     // Structured logger for poller module
-    this.logger = options.logger || createLogger('poller');
+    this.logger = normalizeLogger(options.logger);
 
     // Optional pre-filter chain — eliminates non-actionable tasks before RPC calls
     this.filterChain = options.filterChain instanceof TaskFilterChain

@@ -123,11 +123,27 @@ class MockSorobanRpcServer {
     this.server = null;
   }
 
+  close() {
+    return this.stop();
+  }
+
   getUrl() {
     const address = this.server?.address();
     const port =
       typeof address === 'object' && address?.port ? address.port : this.port;
     return `http://${this.host}:${port}`;
+  }
+
+  getHealth() {
+    return clone(this.health);
+  }
+
+  getNetwork() {
+    return clone(this.network);
+  }
+
+  getLatestLedger() {
+    return clone(this.latestLedger);
   }
 
   setHealth(health) {

@@ -8,7 +8,7 @@ const { createLogger } = require('./logger');
 
 class ChaosRpcServer extends MockSorobanRpcServer {
   constructor(options = {}) {
-    super(options);
+    super({ port: 0, ...options });
     
     this.chaosConfig = {
       // Latency injection
@@ -46,6 +46,70 @@ class ChaosRpcServer extends MockSorobanRpcServer {
     // Override the request handler to inject chaos
     this.originalHandleRequest = this.handleRequest.bind(this);
     this.handleRequest = this.handleRequestWithChaos.bind(this);
+  }
+
+  async withChaos(method, fn) {
+    if (this.shouldRateLimit()) {
+      const error = new Error('Rate limit exceeded');
+      error.code = 429;
+      throw error;
+    }
+
+    await this.injectLatency();
+
+    if (this.chaosConfig.workingMethods.includes(method)) {
+      return fn();
+    }
+
+    if (this.shouldFail()) {
+      const error = new Error('RPC failure (chaos injected)');
+      error.code = -32603;
+      throw error;
+    }
+
+    if (this.shouldPartiallyFail(method)) {
+      const error = new Error('Invalid params (partial failure injected)');
+      error.code = -32602;
+      throw error;
+    }
+
+    if (this.shouldBeFlaky()) {
+      const error = new Error('Service temporarily unavailable (flaky)');
+      error.code = 503;
+      throw error;
+    }
+
+    if (this.shouldDegrade()) {
+      const error = new Error('Service degrading over time');
+      error.code = -32603;
+      throw error;
+    }
+
+    return fn();
+  }
+
+  getNetwork() {
+    return this.withChaos('getNetwork', () => super.getNetwork());
+  }
+
+  getLatestLedger() {
+    return this.withChaos('getLatestLedger', () => super.getLatestLedger());
+  }
+
+  getHealth() {
+    return this.withChaos('getHealth', () => super.getHealth());
+  }
+
+  simulateTransaction(...args) {
+    return this.withChaos('simulateTransaction', () => super.simulateTransaction(...args));
+  }
+
+  sendTransaction(...args) {
+    return this.withChaos('sendTransaction', () => super.sendTransaction(...args));
+  }
+
+  getTransaction(...args) {
+    return this.withChaos('getTransaction', () => super.getTransaction(...args));
   }
   
   /**
@@ -177,11 +241,15 @@ class ChaosRpcServer extends MockSorobanRpcServer {
     
     // Parse the request to get method name
     let method = '';
-    try {
-      const body = JSON.parse(req.body || '{}');
-      method = body.method || '';
-    } catch (e) {
-      return false;
+    if (typeof req === 'string') {
+      method = req;
+    } else {
+      try {
+        const body = JSON.parse(req.body || '{}');
+        method = body.method || '';
+      } catch (e) {
+        return false;
+      }
     }
     
     return this.chaosConfig.partialFailureMethods.includes(method) &&

@@ -20,19 +20,41 @@ jobs:
       uses: actions/setup-node@v6
       with:
         node-version: ${{ matrix.node-version }}
+
+    - name: Detect project changes
+      id: project-changes
+      shell: bash
+      run: |
+        if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          echo "should-run=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        git fetch origin "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}" --depth=1
+
+        if git diff --name-only "origin/${{ github.base_ref }}"...HEAD | grep -q "^${{ matrix.project }}/"; then
+          echo "should-run=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "should-run=false" >> "$GITHUB_OUTPUT"
+          echo "No ${{ matrix.project }} changes detected; skipping project checks."
+        fi
         
     - name: Install packages
+      if: steps.project-changes.outputs.should-run == 'true'
       working-directory: ./${{ matrix.project }}
       run: npm install
       
     - name: Lint
+      if: steps.project-changes.outputs.should-run == 'true'
       working-directory: ./${{ matrix.project }}
       run: npm run lint --if-present
       
     - name: Test
+      if: steps.project-changes.outputs.should-run == 'true'
       working-directory: ./${{ matrix.project }}
       run: npm test --if-present
       
     - name: Build
+      if: steps.project-changes.outputs.should-run == 'true'
       working-directory: ./${{ matrix.project }}
       run: npm run build --if-present

@@ -32,24 +32,41 @@ describe('Keeper Integration Tests', () => {
 
   // Helper to create mock TaskConfig XDR response
   function makeTaskConfigXDR(taskConfig) {
+    const normalizedConfig = {
+      target: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+      function: 'ping',
+      ...taskConfig,
+    };
     const mapEntries = [];
 
-    if (taskConfig.last_run !== undefined) {
+    if (normalizedConfig.last_run !== undefined) {
       mapEntries.push(new xdr.ScMapEntry({
         key: xdr.ScVal.scvSymbol('last_run'),
-        val: xdr.ScVal.scvU64(xdr.Uint64.fromString(String(taskConfig.last_run))),
+        val: xdr.ScVal.scvU64(xdr.Uint64.fromString(String(normalizedConfig.last_run))),
       }));
     }
-    if (taskConfig.interval !== undefined) {
+    if (normalizedConfig.interval !== undefined) {
       mapEntries.push(new xdr.ScMapEntry({
         key: xdr.ScVal.scvSymbol('interval'),
-        val: xdr.ScVal.scvU64(xdr.Uint64.fromString(String(taskConfig.interval))),
+        val: xdr.ScVal.scvU64(xdr.Uint64.fromString(String(normalizedConfig.interval))),
       }));
     }
-    if (taskConfig.gas_balance !== undefined) {
+    if (normalizedConfig.gas_balance !== undefined) {
       mapEntries.push(new xdr.ScMapEntry({
         key: xdr.ScVal.scvSymbol('gas_balance'),
-        val: xdr.ScVal.scvU64(xdr.Uint64.fromString(String(taskConfig.gas_balance))),
+        val: xdr.ScVal.scvU64(xdr.Uint64.fromString(String(normalizedConfig.gas_balance))),
+      }));
+    }
+    if (normalizedConfig.target !== undefined) {
+      mapEntries.push(new xdr.ScMapEntry({
+        key: xdr.ScVal.scvSymbol('target'),
+        val: xdr.ScVal.scvString(normalizedConfig.target),
+      }));
+    }
+    if (normalizedConfig.function !== undefined) {
+      mapEntries.push(new xdr.ScMapEntry({
+        key: xdr.ScVal.scvSymbol('function'),
+        val: xdr.ScVal.scvSymbol(normalizedConfig.function),
       }));
     }
 

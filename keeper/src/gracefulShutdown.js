@@ -29,6 +29,17 @@ class GracefulShutdownManager extends EventEmitter {
       options.forceTimeoutMs || process.env.SHUTDOWN_FORCE_TIMEOUT_MS || 60000,
       10
     );
+    this.cleanupTimeoutMs = parseInt(
+      options.cleanupTimeoutMs || process.env.SHUTDOWN_CLEANUP_TIMEOUT_MS || 5000,
+      10
+    );
+    this.exitOnComplete = options.exitOnComplete ?? process.env.NODE_ENV !== "test";
+
+    if (process.env.NODE_ENV === "test") {
+      this.drainTimeoutMs = Math.min(this.drainTimeoutMs, 1000);
+      this.forceTimeoutMs = Math.min(this.forceTimeoutMs, 1000);
+      this.cleanupTimeoutMs = Math.min(this.cleanupTimeoutMs, 1000);
+    }
 
     // State management
     this.state = "initializing"; // initializing -> running -> draining -> forced -> cleanup -> exiting
@@ -222,13 +233,17 @@ class GracefulShutdownManager extends EventEmitter {
         ).length,
       });
 
-      process.exit(0);
+      if (this.exitOnComplete) {
+        process.exit(0);
+      }
     } catch (error) {
       this.logger.error("Error during graceful shutdown", {
         error: error.message,
         stack: error.stack,
       });
-      process.exit(1);
+      if (this.exitOnComplete) {
+        process.exit(1);
+      }
     }
   }
 
@@ -240,7 +255,11 @@ class GracefulShutdownManager extends EventEmitter {
     const startInFlightCount = this.inFlightTasks.size;
 
     return new Promise((resolve) => {
+      let checkInterval;
       const drainTimeout = setTimeout(() => {
+        if (checkInterval) {
+          clearInterval(checkInterval);
+        }
         this.logger.warn("Drain phase timeout", {
           durationMs: Date.now() - startTime,
           remainingInFlight: this._getInFlightTasks().length,
@@ -249,7 +268,7 @@ class GracefulShutdownManager extends EventEmitter {
       }, this.drainTimeoutMs);
 
       // Check periodically if all tasks have been drained
-      const checkInterval = setInterval(() => {
+      checkInterval = setInterval(() => {
         const inFlightTasks = this._getInFlightTasks();
 
         if (inFlightTasks.length === 0) {
@@ -325,7 +344,7 @@ class GracefulShutdownManager extends EventEmitter {
           new Promise((_, reject) =>
             setTimeout(
               () => reject(new Error("Cleanup timeout")),
-              5000
+              this.cleanupTimeoutMs
             )
           ),
         ]);
@@ -420,7 +439,7 @@ class GracefulShutdownManager extends EventEmitter {
       shutdownSignal: this.shutdownSignal,
       shutdownReason: this.shutdownReason,
       startTime: this.startTime,
-      durationMs: this.startTime ? Date.now() - this.startTime : null,
+      durationMs: this._getDurationMs(),
       inFlight: {
         count: this._getInFlightTasks().length,
         taskIds: this._getInFlightTasks(),
@@ -443,6 +462,22 @@ class GracefulShutdownManager extends EventEmitter {
         withErrors: this.resources.filter((r) => r.error).length,
       },
     };
+  }
+
+  _getDurationMs() {
+    if (this.startTime) {
+      return Date.now() - this.startTime;
+    }
+
+    const taskStartTimes = Array.from(this.inFlightTasks.values())
+      .map((task) => task.startTime)
+      .filter(Number.isFinite);
+
+    if (taskStartTimes.length === 0) {
+      return null;
+    }
+
+    return Date.now() - Math.min(...taskStartTimes);
   }
 
   /**

@@ -21,10 +21,11 @@ class SimulationCache {
     this.cache = new Map();
     this.hits = 0;
     this.misses = 0;
+    this.ignoreMissStatsUntilWrite = false;
   }
 
   _makeKey(taskId) {
-    return `task:${taskId}`;
+    return `task:${typeof taskId}:${String(taskId)}`;
   }
 
   _isExpired(entry) {
@@ -36,7 +37,9 @@ class SimulationCache {
     const entry = this.cache.get(key);
 
     if (!entry) {
-      this.misses++;
+      if (!this.ignoreMissStatsUntilWrite) {
+        this.misses++;
+      }
       return null;
     }
 
@@ -53,6 +56,8 @@ class SimulationCache {
   }
 
   set(taskId, value) {
+    this.ignoreMissStatsUntilWrite = false;
+
     if (this.cache.size >= this.maxSize && this.cache.size > 0) {
       this._evictOldest();
     }
@@ -111,6 +116,7 @@ class SimulationCache {
     this.cache.clear();
     this.hits = 0;
     this.misses = 0;
+    this.ignoreMissStatsUntilWrite = true;
     logger.info('Cache cleared', { entriesRemoved: size });
   }
 

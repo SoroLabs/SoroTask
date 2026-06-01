@@ -282,7 +282,8 @@ describe("GracefulShutdownManager", () => {
       const cleanup = jest.fn(
         () =>
           new Promise((resolve) => {
-            setTimeout(resolve, 10000); // Never resolves within timeout
+            const timeout = setTimeout(resolve, 10000); // Never resolves within timeout
+            timeout.unref?.();
           })
       );
 

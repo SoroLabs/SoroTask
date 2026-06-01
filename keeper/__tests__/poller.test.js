@@ -615,3 +615,96 @@ describe('TaskPoller with FilterChain', () => {
     expect(due).not.toContain(3);
   });
 });
+
+describe('TaskPoller branch behavior', () => {
+  let mockServer;
+  const contractId = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
+
+  beforeEach(() => {
+    mockServer = {
+      getLatestLedger: jest.fn().mockResolvedValue({ sequence: 1000 }),
+      getAccount: jest.fn(),
+      simulateTransaction: jest.fn(),
+    };
+  });
+
+  it('normalizes partial logger implementations', () => {
+    const partialLogger = { info: jest.fn() };
+    const p = new TaskPoller(mockServer, contractId, { logger: partialLogger });
+
+    expect(() => {
+      p.logger.trace('trace');
+      p.logger.debug('debug');
+      p.logger.warn('warn');
+      p.logger.error('error');
+      p.logger.fatal('fatal');
+      p.logger.childWithTrace('trace-id').info('child');
+    }).not.toThrow();
+    expect(partialLogger.info).toHaveBeenCalledWith('child');
+  });
+
+  it('resolves ledger timestamps from numeric, numeric string, date string, and sequence fallback values', () => {
+    const p = new TaskPoller(mockServer, contractId);
+
+    expect(p.resolveLedgerTimestamp({ closeTime: 1234 })).toBe(1234);
+    expect(p.resolveLedgerTimestamp({ closedAt: '5678' })).toBe(5678);
+    expect(p.resolveLedgerTimestamp({ closed_at: '2026-05-31T08:00:00Z' }))
+      .toBe(Math.floor(Date.parse('2026-05-31T08:00:00Z') / 1000));
+    expect(p.resolveLedgerTimestamp({ closeTime: Number.NaN, closedAt: 'not-a-date', sequence: 42 })).toBe(42);
+    expect(p.resolveLedgerTimestamp({})).toBe(0);
+  });
+
+  it('checks gas forecasts across absent, warning, safe, and error paths', () => {
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    const p = new TaskPoller(mockServer, contractId, { logger });
+
+    expect(p.checkForecast(1, { gas_balance: 100 }, null)).toBeNull();
+
+    const highRiskForecast = {
+      confidence: 'high',
+      isUnderfunded: true,
+      estimatedCost: 200,
+      recommendedBalance: 300,
+    };
+    expect(p.checkForecast(1, { gas_balance: 100 }, {
+      getForecast: jest.fn().mockReturnValue(highRiskForecast),
+    })).toBe(highRiskForecast);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Task forecast: High-risk underfunded execution',
+      expect.objectContaining({ taskId: 1, estimatedCost: 200 }),
+    );
+
+    const safeForecast = { confidence: 'low', isUnderfunded: false };
+    expect(p.checkForecast(2, { gas_balance: 500 }, {
+      getForecast: jest.fn().mockReturnValue(safeForecast),
+    })).toBe(safeForecast);
+
+    expect(p.checkForecast(3, { gas_balance: 1 }, {
+      getForecast: jest.fn(() => {
+        throw new Error('forecast unavailable');
+      }),
+    })).toBeNull();
+    expect(logger.debug).toHaveBeenCalledWith(
+      'Error checking forecast',
+      expect.objectContaining({ taskId: 3, error: 'forecast unavailable' }),
+    );
+  });
+
+  it('invalidates scalar and array cache keys and toggles cache state', () => {
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    const p = new TaskPoller(mockServer, contractId, { logger });
+
+    p.simulationCache.set(1, { value: 'one' });
+    p.simulationCache.set(2, { value: 'two' });
+
+    expect(p.invalidateCache(1)).toBe(1);
+    expect(p.invalidateCache([1, 2])).toBe(1);
+
+    p.setCacheEnabled(false);
+    p.setCacheEnabled(true);
+
+    expect(logger.info).toHaveBeenCalledWith('Simulation cache disabled and cleared');
+    expect(logger.info).toHaveBeenCalledWith('Simulation cache enabled');
+    expect(p.getCacheStats()).toMatchObject({ size: 0 });
+  });
+});

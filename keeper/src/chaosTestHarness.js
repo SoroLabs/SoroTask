@@ -195,7 +195,7 @@ class ChaosTestHarness {
     // Stop chaos server
     if (chaosServer && typeof chaosServer.close === 'function') {
       try {
-        chaosServer.close();
+        await chaosServer.close();
         this.logger.info('Chaos RPC server stopped');
       } catch (error) {
         this.logger.error('Error stopping chaos server', { error: error.message });

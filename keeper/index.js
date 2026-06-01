@@ -17,6 +17,9 @@ const { normalizeShardConfig, filterTasksForShard } = require("./src/sharding");
 const { StartupValidator } = require("./src/validator");
 const { GracefulShutdownManager } = require("./src/gracefulShutdown");
 const { createDefaultFilterChain } = require("./src/taskFilter");
+const { WebhookAuthProtocol, InMemoryReplayStore } = require("./src/webhookAuth");
+const { WebhookTriggerHandler } = require("./src/webhookTrigger");
+const { KeeperP2PNetwork } = require("./src/p2pNetwork");
 const { ResolverRuntime } = require("./src/resolverRuntime");
 
 // Create root logger for the main module

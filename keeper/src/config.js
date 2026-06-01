@@ -41,6 +41,11 @@ function loadConfig() {
     );
   }
 
+  const p2pEnabled = parseBoolean(process.env.P2P_ENABLED, false);
+  if (p2pEnabled && !process.env.P2P_SHARED_SECRET) {
+    throw new Error('P2P_SHARED_SECRET is required when P2P_ENABLED=true');
+  }
+
   const inboundWebhooksEnabled = parseBoolean(process.env.INBOUND_WEBHOOKS_ENABLED, false);
   const inboundWebhookSecrets = process.env.INBOUND_WEBHOOK_SECRETS
     || process.env.INBOUND_WEBHOOK_SECRET
@@ -82,6 +87,28 @@ function loadConfig() {
     driftWarningSeconds: parseInteger(process.env.DRIFT_WARNING_SECONDS, 60),
     driftCriticalSeconds: parseInteger(process.env.DRIFT_CRITICAL_SECONDS, 300),
     metricsResetOnStart: parseBoolean(process.env.METRICS_RESET_ON_START, false),
+    p2p: {
+      enabled: p2pEnabled,
+      nodeId: process.env.P2P_NODE_ID || null,
+      publicUrl: process.env.P2P_PUBLIC_URL || null,
+      listenHost: process.env.P2P_LISTEN_HOST || '0.0.0.0',
+      listenPort: parseInteger(process.env.P2P_LISTEN_PORT, 0),
+      sharedSecret: process.env.P2P_SHARED_SECRET || null,
+      bootstrapPeers: parseList(process.env.P2P_BOOTSTRAP_PEERS),
+      heartbeatIntervalMs: parseInteger(process.env.P2P_HEARTBEAT_INTERVAL_MS, 10000),
+      stalePeerMs: parseInteger(process.env.P2P_STALE_PEER_MS, 45000),
+      authWindowMs: parseInteger(process.env.P2P_AUTH_WINDOW_MS, 30000),
+      connectTimeoutMs: parseInteger(process.env.P2P_CONNECT_TIMEOUT_MS, 5000),
+    },
+    inboundWebhooks: {
+      enabled: inboundWebhooksEnabled,
+      path: process.env.INBOUND_WEBHOOK_PATH || '/webhooks/task-executions',
+      secret: inboundWebhookSecrets,
+      defaultKeyId: process.env.INBOUND_WEBHOOK_DEFAULT_KEY_ID || 'primary',
+      toleranceMs: parseInteger(process.env.INBOUND_WEBHOOK_TOLERANCE_MS, 300000),
+      replayTtlMs: parseInteger(process.env.INBOUND_WEBHOOK_REPLAY_TTL_MS, 600000),
+      maxBodyBytes: parseInteger(process.env.INBOUND_WEBHOOK_MAX_BODY_BYTES, 1048576),
+    },
     resolverFunctionsConfig: process.env.RESOLVER_FUNCTIONS_CONFIG || null,
     resolverDefaultTimeoutMs: parseInteger(process.env.RESOLVER_DEFAULT_TIMEOUT_MS, 250),
     resolverFailureMode: process.env.RESOLVER_FAILURE_MODE || 'skip',
