@@ -19,6 +19,7 @@ This indexer subscribes to events emitted by the SoroTask Soroban contract and s
 - Uses SQLite for local storage with deduplication
 - Implements cursor-based polling to avoid reprocessing events
 - Handles chain reprocessing safely with INSERT OR IGNORE
+- Detects stale indexed task records and supports archive-before-delete cleanup
 - Graceful shutdown with database connection cleanup
 - Configurable polling interval
 
@@ -42,12 +43,32 @@ Edit `src/index.js` to configure:
 node src/index.js
 ```
 
+Run a reviewable stale-task cleanup preview:
+
+```bash
+node src/index.js --cleanup-stale
+```
+
+Apply cleanup after reviewing the dry-run logs:
+
+```bash
+node src/index.js --cleanup-stale --apply
+```
+
 The indexer will:
 1. Connect to the Soroban RPC
 2. Create/open the SQLite database
 3. Begin polling for new events
 4. Store each unique event in the database
 5. Continue until interrupted (Ctrl+C)
+
+## Stale Task Cleanup
+
+The cleanup workflow treats indexed task rows as stale when they have missing timestamps, old reconciliation timestamps, or inactive rows that are past the grace period. By default, cleanup is a dry run: it writes planned actions to `stale_cleanup_logs` and leaves `tasks` unchanged.
+
+When run with `--apply`, each cleaned task is copied to `archived_tasks` with the cleanup reasons before it is deleted from `tasks`. This preserves enough history for debugging while keeping read models from accumulating misleading records.
+
+Operators should run `--cleanup-stale` first, review `stale_cleanup_logs`, and only then rerun with `--apply`.
 
 ## Database Schema
 
