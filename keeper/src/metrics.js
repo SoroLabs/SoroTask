@@ -4,6 +4,8 @@ const { Server } = require('socket.io');
 const { requireAdminAuth } = require('./auth');
 const { URL } = require('url');
 const { createLogger } = require('./logger');
+const { ApiGateway } = require('./apiGateway');
+const { FailurePredictor, KeeperReputationScorer } = require('./insights');
 
 class Metrics {
   constructor() {
@@ -171,6 +173,23 @@ class MetricsServer {
     this.historyManager = options.historyManager || null;
     this.webhookHandler = options.webhookHandler || null;
     this.webhookPath = options.webhookPath || '/webhooks/task-executions';
+    this.p2pStateProvider = options.p2pStateProvider || null;
+    this.streamHub = options.streamHub || null;
+    this.apiGateway = options.apiGateway || new ApiGateway({
+      defaultCapacity: options.defaultGatewayCapacity,
+      defaultRefillPerSecond: options.defaultGatewayRefillPerSecond,
+      defaultBillingUnits: options.defaultGatewayBillingUnits,
+    });
+    this.failurePredictor = options.failurePredictor || new FailurePredictor({
+      historyManager: this.historyManager,
+      deadLetterQueue: this.deadLetterQueue,
+      retryBudget: options.retryBudgetTracker || null,
+      logger: createLogger('failure-predictor'),
+    });
+    this.reputationScorer = options.reputationScorer || new KeeperReputationScorer({
+      historyManager: this.historyManager,
+      logger: createLogger('reputation-scorer'),
+    });
     this.register = new promClient.Registry();
     this.initPrometheusMetrics();
   }
@@ -190,6 +209,26 @@ class MetricsServer {
   setWebhookHandler(handler, path = this.webhookPath) {
     this.webhookHandler = handler;
     this.webhookPath = path;
+  }
+
+  setP2PStateProvider(provider) {
+    this.p2pStateProvider = provider;
+  }
+
+  setStreamHub(streamHub) {
+    this.streamHub = streamHub;
+  }
+
+  setApiGateway(apiGateway) {
+    this.apiGateway = apiGateway;
+  }
+
+  setFailurePredictor(failurePredictor) {
+    this.failurePredictor = failurePredictor;
+  }
+
+  setReputationScorer(reputationScorer) {
+    this.reputationScorer = reputationScorer;
   }
 
   initPrometheusMetrics() {
@@ -454,6 +493,26 @@ class MetricsServer {
       }
 
       const url = new URL(req.url, `http://127.0.0.1:${this.port}`);
+      const routePath = url.pathname;
+
+      if (this.apiGateway && routePath !== '/health' && routePath !== '/health/') {
+        const gatewayDecision = this.apiGateway.evaluate(req, routePath);
+        if (!gatewayDecision.allowed) {
+          this.increment('throttledRequestsTotal', { name: 'api-gateway' });
+          res.writeHead(429, {
+            'Content-Type': 'application/json',
+            'Retry-After': Math.ceil((gatewayDecision.retryAfterMs || 1000) / 1000),
+          });
+          res.end(JSON.stringify({
+            error: 'Too Many Requests',
+            route: routePath,
+            retryAfterMs: gatewayDecision.retryAfterMs,
+            policy: gatewayDecision.policy,
+          }, null, 2));
+          return;
+        }
+      }
+
       if (url.pathname === '/health' || url.pathname === '/health/') {
         this.handleHealth(res);
 
@@ -465,6 +524,15 @@ class MetricsServer {
 
       } else if (req.url === '/metrics/forecast' || req.url === '/metrics/forecast/') {
         this.handleForecast(res);
+
+      } else if (req.url === '/metrics/failure-risk' || req.url === '/metrics/failure-risk/') {
+        this.handleFailureRisk(res);
+
+      } else if (req.url === '/metrics/reputation' || req.url === '/metrics/reputation/') {
+        this.handleReputation(res);
+
+      } else if (req.url === '/admin/billing' || req.url === '/admin/billing/') {
+        protect(() => this.handleBilling(res))();
 
 
         // 🔐 PROTECTED ROUTES START HERE
@@ -487,13 +555,6 @@ class MetricsServer {
         this.webhookHandler.handle(req, res);
 
         // ❌ NOT FOUND
-
-      } else if (url.pathname === '/metrics' || url.pathname === '/metrics/') {
-        this.handleMetrics(res);
-      } else if (url.pathname === '/metrics/prometheus' || url.pathname === '/metrics/prometheus/') {
-        await this.handlePrometheusMetrics(res);
-      } else if (url.pathname === '/metrics/forecast' || url.pathname === '/metrics/forecast/') {
-        this.handleForecast(res);
       } else if (url.pathname === '/drift' || url.pathname === '/drift/') {
         this.handleDrift(res);
       } else if (url.pathname === '/admin/keeper' || url.pathname === '/admin/keeper/') {
@@ -510,6 +571,11 @@ class MetricsServer {
 
     this.server.listen(this.port, () => {
       this.logger.info(`Metrics server running on port ${this.port}`);
+      if (this.streamHub && typeof this.streamHub.start === 'function') {
+        this.streamHub.start(this.server).catch((error) => {
+          this.logger.error('Failed to start realtime stream hub', { error: error.message });
+        });
+      }
     });
   }
 
@@ -570,6 +636,63 @@ class MetricsServer {
     const forecastData = this.gasMonitor.getForecasterState();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(forecastData, null, 2));
+  }
+
+  handleFailureRisk(res) {
+    const tasks = this.historyManager?.getRecentExecutions
+      ? this.historyManager.getRecentExecutions(25)
+      : [];
+    const taskIds = [...new Set(tasks.map((entry) => entry.taskId).filter((taskId) => taskId != null))];
+    const predictions = this.failurePredictor?.predictBatch
+      ? this.failurePredictor.predictBatch(taskIds)
+      : { predictions: [], highestRisk: null, averageRiskScore: 0 };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ...predictions,
+      sampleCount: tasks.length,
+    }, null, 2));
+  }
+
+  handleReputation(res) {
+    const queueStatus = this.retryBudgetTracker?.getStats
+      ? this.retryBudgetTracker.getStats()
+      : null;
+    const score = this.reputationScorer?.scoreKeeper
+      ? this.reputationScorer.scoreKeeper({
+        uptimeSeconds: Math.floor((Date.now() - this.metrics.startTime) / 1000),
+        expectedUptimeSeconds: Math.max(1, Math.floor((Date.now() - this.metrics.startTime) / 1000)),
+        completedTasks: this.metrics.counters.tasksExecutedTotal,
+        expectedTasks: Math.max(1, this.metrics.counters.tasksExecutedTotal + this.metrics.counters.tasksFailedTotal),
+        stakeAmount: queueStatus?.global?.used || 0,
+        maxStakeAmount: Math.max(1, queueStatus?.global?.limit || 1),
+        missedHeartbeats: this.metrics.driftState.critical || 0,
+      })
+      : { reputationScore: 0, reputationTier: 'low', signals: {}, evidence: {} };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ...score,
+      admin: { ...this.metrics.adminState },
+    }, null, 2));
+  }
+
+  handleBilling(res) {
+    const usage = this.apiGateway?.getUsageSummary ? this.apiGateway.getUsageSummary() : {
+      totalRequests: 0,
+      totalThrottled: 0,
+      totalBilledUnits: 0,
+      routes: {},
+    };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ...usage,
+      pricing: {
+        billingUnit: 1,
+        currency: 'request-units',
+      },
+    }, null, 2));
   }
 
   handleDrift(res) {
@@ -714,6 +837,18 @@ class MetricsServer {
 
   updateAdminState(state) {
     this.metrics.updateAdminState(state);
+  }
+
+  publishTaskEvent(kind, taskId, context = {}) {
+    if (this.streamHub && typeof this.streamHub.publishTaskEvent === 'function') {
+      this.streamHub.publishTaskEvent(kind, taskId, context);
+    }
+  }
+
+  publishEvent(type, payload = {}, options = {}) {
+    if (this.streamHub && typeof this.streamHub.publish === 'function') {
+      this.streamHub.publish(type, payload, options);
+    }
   }
 
   stop() {
