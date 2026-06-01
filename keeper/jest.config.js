@@ -15,6 +15,7 @@ module.exports = {
     "src/registry.js",
     "src/retry.js",
     "src/taskSnapshot.js",
+    "src/sloMetrics.js",
   ],
   coverageThreshold: {
     global: {

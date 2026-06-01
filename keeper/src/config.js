@@ -88,6 +88,16 @@ function loadConfig() {
     rpcHealthCheckIntervalMs: parseInteger(process.env.RPC_HEALTH_CHECK_INTERVAL_MS, 30000),
     rpcHealthCheckTimeoutMs: parseInteger(process.env.RPC_HEALTH_CHECK_TIMEOUT_MS, 5000),
     rpcLoadBalancingStrategy: process.env.RPC_LOAD_BALANCING_STRATEGY || 'weighted_round_robin',
+    // Read batching configuration
+    // batchReadsEnabled: when true, pollDueTasks coalesces per-task getLedgerEntries
+    //   calls into bulk reads, reducing RPC round-trips from O(n) to O(n/batchSize).
+    //   Set to false when the RPC endpoint does not support getLedgerEntries,
+    //   or when debugging individual task reads is required.
+    batchReadsEnabled: parseBoolean(process.env.BATCH_READS_ENABLED, false),
+    batchWindowMs: parseInteger(process.env.BATCH_WINDOW_MS, 10),
+    readBatchSize: parseInteger(process.env.READ_BATCH_SIZE, 50),
+    batchConcurrency: parseInteger(process.env.BATCH_CONCURRENCY, 2),
+    batchRps: parseInteger(process.env.BATCH_RPS, 10),
     realtimeStreamEnabled: parseBoolean(process.env.REALTIME_STREAM_ENABLED, true),
     realtimeStreamNamespace: process.env.REALTIME_STREAM_NAMESPACE || '/stream',
     apiGatewayEnabled: parseBoolean(process.env.API_GATEWAY_ENABLED, true),
