@@ -24,7 +24,7 @@ fn setup() -> (Env, SoroTaskContractClient<'static>) {
     (env, client)
 }
 
-fn base_config(env: &Env, target: Address) -> TaskConfig { yield_strategy: None,
+fn base_config(env: &Env, target: Address) -> TaskConfig {
     TaskConfig { yield_strategy: None,
         creator: Address::generate(env),
         target,

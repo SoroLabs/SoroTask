@@ -4,7 +4,7 @@ pub mod events;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, IntoVal,
-    Symbol, Val, Vec, Bytes,
+    Symbol, Val, Vec, Bytes, BytesN,
 };
 
 #[contracterror]
@@ -47,6 +47,8 @@ pub enum Error {
     OracleInvalidResponse = 30,
     OracleTimeout = 31,
     OracleUnsupportedProvider = 32,
+    UpgradeNotInitialized = 33,
+    InvalidUpgradeVersion = 34,
 }
 
 /// Maximum number of arguments allowed in a task payload
@@ -63,7 +65,7 @@ const MAX_BATCH_SIZE: u32 = 100;
 
 #[contracttype]
 #[derive(Clone, Debug)]
-pub struct TaskConfig { yield_strategy: None,
+pub struct TaskConfig {
     pub creator: Address,
     pub target: Address,
     pub function: Symbol,
@@ -550,6 +552,25 @@ pub struct KeeperReputationHistory {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxyConfig {
+    pub admin: Address,
+    pub version: u32,
+    pub implementation_hash: Option<BytesN<32>>,
+    pub upgrade_count: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeRecord {
+    pub previous_version: u32,
+    pub new_version: u32,
+    pub implementation_hash: BytesN<32>,
+    pub upgraded_by: Address,
+    pub upgraded_at: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     Task(u64),
     Counter,
@@ -599,6 +620,8 @@ pub enum DataKey {
     DelegationCounter,
     KeeperReputation(Address),
     KeeperReputationCounter,
+    ProxyConfig,
+    UpgradeRecord(u64),
 }
 
 fn get_active_task_ids(env: &Env) -> Vec<u64> {
@@ -828,6 +851,28 @@ fn set_delegation_counter(env: &Env, counter: u64) {
     env.storage()
         .persistent()
         .set(&DataKey::DelegationCounter, &counter);
+}
+
+fn read_proxy_config(env: &Env) -> Option<ProxyConfig> {
+    env.storage().instance().get(&DataKey::ProxyConfig)
+}
+
+fn set_proxy_config(env: &Env, config: &ProxyConfig) {
+    env.storage().instance().set(&DataKey::ProxyConfig, config);
+}
+
+fn require_proxy_admin(env: &Env, caller: &Address) -> ProxyConfig {
+    caller.require_auth();
+
+    let config = read_proxy_config(env).unwrap_or_else(|| {
+        panic_with_error!(env, Error::UpgradeNotInitialized);
+    });
+
+    if config.admin != *caller {
+        panic_with_error!(env, Error::Unauthorized);
+    }
+
+    config
 }
 
 #[contracttype]
@@ -2222,6 +2267,130 @@ impl SoroTaskContract {
             token,
         );
         exit_security_guard(&env);
+    }
+
+    /// Initializes the contract for Soroban-native proxy upgrades.
+    pub fn init_proxy(env: Env, admin: Address, token: Address, version: u32) {
+        enter_security_guard(&env);
+        admin.require_auth();
+
+        if env.storage().instance().has(&DataKey::Token)
+            || env.storage().instance().has(&DataKey::ProxyConfig)
+        {
+            panic_with_error!(&env, Error::AlreadyInitialized);
+        }
+
+        if version == 0 {
+            panic_with_error!(&env, Error::InvalidUpgradeVersion);
+        }
+
+        let config = ProxyConfig {
+            admin: admin.clone(),
+            version,
+            implementation_hash: None,
+            upgrade_count: 0,
+        };
+
+        env.storage().instance().set(&DataKey::Token, &token);
+        env.storage().instance().set(&DataKey::AdminAddress, &admin);
+        set_proxy_config(&env, &config);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "ProxyInitialized"),
+                Symbol::new(&env, "v1"),
+            ),
+            (admin, token, version),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Transfers upgrade authority to a new transparent proxy admin.
+    pub fn transfer_proxy_admin(env: Env, admin: Address, new_admin: Address) {
+        enter_security_guard(&env);
+
+        let mut config = require_proxy_admin(&env, &admin);
+        config.admin = new_admin.clone();
+
+        set_proxy_config(&env, &config);
+        env.storage()
+            .instance()
+            .set(&DataKey::AdminAddress, &new_admin);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "ProxyAdminChanged"),
+                Symbol::new(&env, "v1"),
+            ),
+            (admin, new_admin),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Replaces this contract instance's logic while retaining its ID and state.
+    pub fn upgrade_contract(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+        expected_version: u32,
+        new_version: u32,
+    ) {
+        enter_security_guard(&env);
+
+        let mut config = require_proxy_admin(&env, &admin);
+
+        if config.version != expected_version || new_version <= config.version {
+            panic_with_error!(&env, Error::InvalidUpgradeVersion);
+        }
+
+        let upgrade_id = config.upgrade_count + 1;
+        let record = UpgradeRecord {
+            previous_version: config.version,
+            new_version,
+            implementation_hash: new_wasm_hash.clone(),
+            upgraded_by: admin.clone(),
+            upgraded_at: env.ledger().timestamp(),
+        };
+
+        config.version = new_version;
+        config.implementation_hash = Some(new_wasm_hash.clone());
+        config.upgrade_count = upgrade_id;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeRecord(upgrade_id), &record);
+        set_proxy_config(&env, &config);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "ContractUpgraded"),
+                Symbol::new(&env, "v1"),
+                upgrade_id,
+            ),
+            record,
+        );
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        exit_security_guard(&env);
+    }
+
+    pub fn get_proxy_config(env: Env) -> Option<ProxyConfig> {
+        read_proxy_config(&env)
+    }
+
+    pub fn get_proxy_admin(env: Env) -> Option<Address> {
+        read_proxy_config(&env).map(|config| config.admin)
+    }
+
+    pub fn get_contract_version(env: Env) -> Option<u32> {
+        read_proxy_config(&env).map(|config| config.version)
+    }
+
+    pub fn get_upgrade_record(env: Env, upgrade_id: u64) -> Option<UpgradeRecord> {
+        env.storage().instance().get(&DataKey::UpgradeRecord(upgrade_id))
     }
 
     /// Deposits gas tokens to a task's balance.
@@ -3835,7 +4004,7 @@ mod tests {
     use soroban_sdk::{
         contract, contractimpl,
         testutils::{Address as _, Events, Ledger as _},
-        vec, Env, FromVal, IntoVal,
+        vec, BytesN, Env, FromVal, IntoVal,
     };
 
     // ── Mock Contracts ───────────────────────────────────────────────────────
@@ -3929,6 +4098,111 @@ mod tests {
 
     fn set_timestamp(env: &Env, ts: u64) {
         env.ledger().with_mut(|l| l.timestamp = ts);
+    }
+
+    #[test]
+    fn test_init_proxy_sets_admin_token_and_version() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        client.init_proxy(&admin, &token, &1);
+
+        let config = client.get_proxy_config().expect("proxy config should exist");
+        assert_eq!(config.admin, admin.clone());
+        assert_eq!(config.version, 1);
+        assert_eq!(config.implementation_hash, None);
+        assert_eq!(config.upgrade_count, 0);
+        assert_eq!(client.get_proxy_admin(), Some(admin));
+        assert_eq!(client.get_contract_version(), Some(1));
+    }
+
+    #[test]
+    fn test_legacy_init_leaves_upgrade_layer_disabled() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        client.init(&Address::generate(&env));
+
+        assert!(client.get_proxy_config().is_none());
+        assert!(client.get_proxy_admin().is_none());
+        assert!(client.get_contract_version().is_none());
+    }
+
+    #[test]
+    fn test_init_proxy_rejects_zero_version() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let result = client.try_init_proxy(
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &0,
+        );
+
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::InvalidUpgradeVersion as u32
+            )))
+        );
+    }
+
+    #[test]
+    fn test_transfer_proxy_admin_updates_upgrade_authority() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+
+        client.init_proxy(&admin, &Address::generate(&env), &1);
+        client.transfer_proxy_admin(&admin, &new_admin);
+
+        let config = client.get_proxy_config().unwrap();
+        assert_eq!(config.admin, new_admin.clone());
+        assert_eq!(client.get_proxy_admin(), Some(new_admin));
+    }
+
+    #[test]
+    fn test_upgrade_contract_rejects_wrong_admin() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let admin = Address::generate(&env);
+        let wrong_admin = Address::generate(&env);
+        let wasm_hash = BytesN::from_array(&env, &[7; 32]);
+
+        client.init_proxy(&admin, &Address::generate(&env), &1);
+        let result = client.try_upgrade_contract(&wrong_admin, &wasm_hash, &1, &2);
+
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::Unauthorized as u32
+            )))
+        );
+    }
+
+    #[test]
+    fn test_upgrade_contract_rejects_stale_version() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let admin = Address::generate(&env);
+        let wasm_hash = BytesN::from_array(&env, &[9; 32]);
+
+        client.init_proxy(&admin, &Address::generate(&env), &2);
+        let result = client.try_upgrade_contract(&admin, &wasm_hash, &1, &3);
+
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::InvalidUpgradeVersion as u32
+            )))
+        );
     }
 
     #[allow(dead_code)]

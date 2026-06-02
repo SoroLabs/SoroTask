@@ -83,7 +83,7 @@ mod test_combinations {
         (env, client)
     }
 
-    fn base(env: &Env, target: Address) -> TaskConfig { yield_strategy: None,
+    fn base(env: &Env, target: Address) -> TaskConfig {
         TaskConfig { yield_strategy: None,
             creator: Address::generate(env),
             target,
