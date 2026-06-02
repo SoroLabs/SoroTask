@@ -8,6 +8,7 @@ const {
 } = require("@stellar/stellar-sdk");
 const { withRetry, ErrorClassification } = require("./retry.js");
 const { createLogger } = require("./logger.js");
+const { createStructuredError, fromError } = require("./structuredErrors.js");
 
 const POLL_ATTEMPTS = 30;
 const POLL_INTERVAL_MS = 2000;
@@ -51,35 +52,41 @@ async function pollTransaction(server, txHash, options = {}) {
   return { status: "TIMEOUT", feePaid: 0 };
 }
 
-function normalizeSubmissionError(error, fallbackCode) {
+function normalizeSubmissionError(error, fallbackCode, correlationId) {
   if (!error) {
-    return Object.assign(new Error("Unknown submission failure"), {
+    return createStructuredError({
       code: fallbackCode || "UNKNOWN",
+      message: "Unknown submission failure",
+      correlationId,
     });
   }
 
-  if (error.code) {
+  if (error.isStructuredError) {
     return error;
   }
 
   const message = error.message || String(error);
   const lower = message.toLowerCase();
+  let code = error.code || error.errorCode || fallbackCode || "UNKNOWN";
 
   if (lower.includes("duplicate") || lower.includes("already in ledger")) {
-    return Object.assign(new Error(message), { code: "DUPLICATE_TRANSACTION" });
-  }
-  if (lower.includes("timeout") || lower.includes("timed out")) {
-    return Object.assign(new Error(message), { code: "TIMEOUT_ERROR" });
-  }
-  if (
+    code = "DUPLICATE_TRANSACTION";
+  } else if (lower.includes("timeout") || lower.includes("timed out")) {
+    code = "TIMEOUT_ERROR";
+  } else if (
     lower.includes("network") ||
     lower.includes("fetch failed") ||
     lower.includes("socket hang up")
   ) {
-    return Object.assign(new Error(message), { code: "NETWORK_ERROR" });
+    code = "NETWORK_ERROR";
   }
 
-  return Object.assign(new Error(message), { code: fallbackCode || "UNKNOWN" });
+  return createStructuredError({
+    code,
+    message,
+    correlationId,
+    cause: error instanceof Error ? error : undefined,
+  });
 }
 
 async function executeTaskOnce(
@@ -107,12 +114,14 @@ async function executeTaskOnce(
     taskLogger.debug("Simulating task execution", { taskId, correlationId });
     simResult = await server.simulateTransaction(tx);
   } catch (error) {
-    throw normalizeSubmissionError(error, "NETWORK_ERROR");
+    throw normalizeSubmissionError(error, "NETWORK_ERROR", correlationId);
   }
 
   if (SorobanRpc.Api.isSimulationError(simResult)) {
-    throw Object.assign(new Error(`Simulation failed: ${simResult.error}`), {
+    throw createStructuredError({
       code: "SIMULATION_FAILED",
+      message: `Simulation failed: ${simResult.error}`,
+      correlationId,
     });
   }
 
@@ -124,7 +133,7 @@ async function executeTaskOnce(
     taskLogger.debug("Submitting transaction", { taskId, correlationId });
     sendResult = await server.sendTransaction(preparedTx);
   } catch (error) {
-    throw normalizeSubmissionError(error, "NETWORK_ERROR");
+    throw normalizeSubmissionError(error, "NETWORK_ERROR", correlationId);
   }
 
   const txHash = sendResult.hash || null;
@@ -142,23 +151,31 @@ async function executeTaskOnce(
         "Transaction submission error",
     );
     throw normalizeSubmissionError(
-      Object.assign(new Error(`Send failed: ${sendError}`), {
+      createStructuredError({
         code: /duplicate|already in ledger/i.test(sendError)
           ? "DUPLICATE_TRANSACTION"
           : "INVALID_TRANSACTION",
+        message: `Send failed: ${sendError}`,
+        correlationId,
       }),
+      undefined,
+      correlationId,
     );
   }
 
   const { status, feePaid } = await pollTransaction(server, sendResult.hash, { logger: taskLogger });
   if (status === "FAILED") {
-    throw Object.assign(new Error("Transaction reached FAILED status"), {
+    throw createStructuredError({
       code: "TX_FAILED",
+      message: "Transaction reached FAILED status",
+      correlationId,
     });
   }
   if (status === "TIMEOUT") {
-    throw Object.assign(new Error("Transaction polling timed out"), {
+    throw createStructuredError({
       code: "TIMEOUT_ERROR",
+      message: "Transaction polling timed out",
+      correlationId,
     });
   }
 
@@ -218,12 +235,17 @@ async function executeTask(
       correlationId,
     });
   } catch (err) {
+    const structured = fromError(err, { correlationId });
     result.status = "FAILED";
-    result.error = err.message || String(err);
+    result.error = structured.message;
+    result.errorCode = structured.code;
+    result.errorCategory = structured.category;
     logger.error("executeTask failed", {
       taskId,
       txHash: result.txHash,
-      error: result.error,
+      errorCode: structured.code,
+      errorCategory: structured.category,
+      error: structured.message,
       correlationId,
     });
   }

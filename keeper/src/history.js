@@ -10,7 +10,9 @@ class HistoryManager {
     this.logger = options.logger || createLogger('history');
     this._ensureDataDir();
     this.maxDriftRecordsPerTask = options.maxDriftRecordsPerTask || 20;
+    this.maxRecentExecutions = options.maxRecentExecutions || 200;
     this.recentDriftByTask = new Map();
+    this.recentExecutions = [];
     this.writeQueue = Promise.resolve();
   }
 
@@ -32,6 +34,11 @@ class HistoryManager {
       timestamp: new Date().toISOString(),
       ...record,
     };
+
+    this.recentExecutions.push(entry);
+    if (this.recentExecutions.length > this.maxRecentExecutions) {
+      this.recentExecutions.shift();
+    }
 
     const line = JSON.stringify(entry) + '\n';
 
@@ -90,6 +97,38 @@ class HistoryManager {
         return rightDrift - leftDrift;
       })
       .slice(0, limit);
+  }
+
+  getRecentExecutions(limit = 50) {
+    return this.recentExecutions.slice(-limit).reverse();
+  }
+
+  getExecutionSummary(taskId = null) {
+    const records = this.recentExecutions.filter((entry) => {
+      if (taskId == null) {
+        return true;
+      }
+      return String(entry.taskId) === String(taskId);
+    });
+
+    const successCount = records.filter((entry) => entry.status === 'SUCCESS').length;
+    const failureCount = records.filter((entry) => entry.status === 'FAILED' || entry.status === 'ERROR').length;
+    const totalFeePaid = records.reduce((sum, entry) => sum + (Number(entry.feePaid) || 0), 0);
+    const sampleCount = records.length;
+    const failureRate = sampleCount > 0 ? failureCount / sampleCount : 0;
+    const successRate = sampleCount > 0 ? successCount / sampleCount : 0;
+    const averageFeePaid = sampleCount > 0 ? totalFeePaid / sampleCount : 0;
+
+    return {
+      taskId: taskId == null ? null : String(taskId),
+      sampleCount,
+      successCount,
+      failureCount,
+      successRate,
+      failureRate,
+      averageFeePaid,
+      recentExecutions: records.slice(-10).reverse(),
+    };
   }
 
   /**

@@ -4,6 +4,7 @@ const { createLogger } = require('./logger');
 const { validateTaskPayload } = require('../../taskValidator');
 const { TaskFilterChain } = require('./taskFilter');
 const { SimulationCache } = require('./simulationCache');
+const { ReadBatcher } = require('./readBatcher');
 const crypto = require('crypto');
 
 /**
@@ -24,6 +25,10 @@ class TaskPoller {
       ? options.filterChain
       : null;
     this.metricsServer = options.metricsServer;
+    // SLO metrics — accept direct injection (tests) or pull from metricsServer
+    this.sloMetrics = options.sloMetrics
+      || (options.metricsServer && options.metricsServer.sloMetrics)
+      || null;
     this.historyManager = options.historyManager || null;
     this.shardLabel = options.shardLabel || null;
     this.driftWarningSeconds = parseInt(
@@ -99,6 +104,30 @@ class TaskPoller {
 
     // Track cache stats for metrics
     this.statsCacheHitRate = 0;
+
+    // Optional read batcher — coalesces per-task reads into bulk getLedgerEntries
+    // calls, reducing RPC round-trips from O(n) to O(ceil(n/batchSize)).
+    // Enabled when options.batcher is provided OR when options.batchReadsEnabled
+    // is true (in which case this constructor creates one internally).
+    if (options.batcher instanceof ReadBatcher) {
+      this.batcher = options.batcher;
+    } else if (options.batchReadsEnabled || process.env.BATCH_READS_ENABLED === 'true') {
+      this.batcher = new ReadBatcher(
+        this.server,
+        this.contractId,
+        scVal => this.decodeTaskConfig(scVal),
+        {
+          batchWindowMs: parseInt(options.batchWindowMs || process.env.BATCH_WINDOW_MS || '10', 10),
+          maxBatchSize: parseInt(options.readBatchSize || process.env.READ_BATCH_SIZE || '50', 10),
+          batchConcurrency: parseInt(options.batchConcurrency || process.env.BATCH_CONCURRENCY || '2', 10),
+          batchRps: parseInt(options.batchRps || process.env.BATCH_RPS || '10', 10),
+          logger: this.logger,
+          metricsServer: this.metricsServer,
+        },
+      );
+    } else {
+      this.batcher = null;
+    }
   }
 
   /**
@@ -180,11 +209,41 @@ class TaskPoller {
       // Pass registry so checkTask can hydrate the cache (gas_balance, last_run, interval)
       // which enables cachedGasFilter and cachedTimingFilter to fire on subsequent cycles.
       const registry = (options && options.registry) || null;
+
+      // ── Batched read path ───────────────────────────────────────────────────
+      // When a ReadBatcher is configured, pre-fetch all candidate configs in
+      // ceil(n/batchSize) getLedgerEntries calls instead of n simulateTransaction
+      // calls.  The pre-loaded config is passed into checkTask to skip the per-task
+      // RPC call.  Tasks missing from the batch response (null) are still passed
+      // through — checkTask treats them as "not found" and returns isDue:false.
+      let preloadedConfigs = null;
+      if (this.batcher && candidateIds.length > 0) {
+        try {
+          preloadedConfigs = await this.batcher.readMany(candidateIds);
+          cycleLogger.debug('Batch pre-fetch complete', {
+            requested: candidateIds.length,
+            resolved: preloadedConfigs.size,
+          });
+        } catch (batchErr) {
+          // Non-fatal: fall back to per-task simulation reads for this cycle
+          this.logger.warn('Batch pre-fetch failed — falling back to per-task reads', {
+            error: batchErr.message || String(batchErr),
+          });
+          preloadedConfigs = null;
+        }
+      }
+
       const taskChecks = candidateIds.map(taskId =>
         this.readLimit(async () => {
           const startedAt = Date.now();
           const correlationId = `poll-${taskId}-${crypto.randomBytes(4).toString('hex')}`;
-          const result = await this.checkTask(taskId, currentTimestamp, registry, { correlationId });
+          const preloaded = preloadedConfigs ? preloadedConfigs.get(Number(taskId)) : undefined;
+          const result = await this.checkTask(
+            taskId,
+            currentTimestamp,
+            registry,
+            { correlationId, preloadedConfig: preloaded },
+          );
           rpcLatencies.push(Date.now() - startedAt);
           return { ...result, correlationId };
         }),
@@ -272,6 +331,27 @@ class TaskPoller {
         });
       }
 
+      // ── SLO instrumentation ──────────────────────────────────────────────
+      if (this.sloMetrics) {
+        // Record per-task lateness for every due task detected this cycle
+        results.forEach(result => {
+          if (result.status === 'fulfilled' && result.value.isDue) {
+            this.sloMetrics.recordTaskLateness({
+              lateness: result.value.lateness,
+              driftSeverity: result.value.driftSeverity,
+              isUnacceptablyLate: result.value.isUnacceptablyLate,
+            });
+          }
+        });
+
+        this.sloMetrics.recordPollCycle({
+          success: true,
+          durationMs: duration,
+          taskCount: taskIds.length,
+          dueCount: dueTaskIds.length,
+        });
+      }
+
       this.logPollSummary(duration, cycleLogger);
 
       return dueTaskIds;
@@ -283,6 +363,14 @@ class TaskPoller {
         this.metricsServer.updateHealth({
           lastPollAt: new Date(),
           rpcConnected: false,
+        });
+      }
+      if (this.sloMetrics) {
+        this.sloMetrics.recordPollCycle({
+          success: false,
+          durationMs: Date.now() - startTime,
+          taskCount: taskIds.length,
+          dueCount: 0,
         });
       }
       return [];
@@ -311,8 +399,15 @@ class TaskPoller {
 
       if (cachedConfig) {
         taskConfig = cachedConfig;
+      } else if (options.preloadedConfig !== undefined) {
+        // Use config pre-fetched by ReadBatcher — no extra RPC call needed.
+        // preloadedConfig is null when the task was not found in the batch response.
+        taskConfig = options.preloadedConfig || null;
+        if (taskConfig) {
+          this.simulationCache.set(taskId, taskConfig);
+        }
       } else {
-        // Read task configuration from contract using view call
+        // Read task configuration from contract using view call (per-task fallback)
         taskConfig = await this.getTaskConfig(taskId);
 
         // Cache the result for future polls
@@ -586,6 +681,7 @@ class TaskPoller {
    */
   logPollSummary(duration, customLogger) {
     const l = customLogger || this.logger;
+    const batcherStats = this.batcher ? this.batcher.getStats() : null;
     l.info('Poll complete', {
       durationMs: duration,
       backlog: this.stats.tasksChecked + this.stats.tasksFiltered,
@@ -596,7 +692,26 @@ class TaskPoller {
       late: this.stats.unacceptablyLate,
       skipped: this.stats.tasksSkipped,
       errors: this.stats.errors,
+      ...(batcherStats && {
+        batcher: {
+          batches: batcherStats.totalBatches,
+          savedRpcCalls: batcherStats.savedRpcCalls,
+          avgBatchSize: batcherStats.avgBatchSize,
+          avgLatencyMs: batcherStats.avgBatchLatencyMs,
+          errors: batcherStats.batchErrors,
+        },
+      }),
     });
+  }
+
+  /**
+   * Get read batcher performance statistics.
+   * Returns null when batching is not enabled.
+   *
+   * @returns {Object|null}
+   */
+  getBatcherStats() {
+    return this.batcher ? this.batcher.getStats() : null;
   }
 
   resolveLedgerTimestamp(ledgerInfo = {}) {

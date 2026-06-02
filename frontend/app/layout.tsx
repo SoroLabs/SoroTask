@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { CommandPalette } from "@/components/CommandPalette";
+import { AppProviders } from "@/app/components/AppProviders";
 
 export const metadata: Metadata = {
   title: "SoroTask Frontend Performance Monitoring",
@@ -30,11 +31,11 @@ export default function RootLayout({
         {/* eslint-disable-next-line @next/next/no-sync-scripts */}
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        <CommandPalette />
-        {children}
+      <body className="antialiased">
+        <AppProviders>
+          <CommandPalette />
+          {children}
+        </AppProviders>
       </body>
     </html>
   );

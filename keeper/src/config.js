@@ -79,15 +79,45 @@ function loadConfig() {
     shardIndex: parseInteger(process.env.KEEPER_SHARD_INDEX, 0),
     shardCount: parseInteger(process.env.KEEPER_SHARD_COUNT, 1),
     shardLabel: process.env.KEEPER_SHARD_LABEL || null,
+    shardId: parseInteger(process.env.KEEPER_SHARD_INDEX, 0),
+    totalShards: parseInteger(process.env.KEEPER_SHARD_COUNT, 1),
     driftWarningSeconds: parseInteger(process.env.DRIFT_WARNING_SECONDS, 60),
     driftCriticalSeconds: parseInteger(process.env.DRIFT_CRITICAL_SECONDS, 300),
     metricsResetOnStart: parseBoolean(process.env.METRICS_RESET_ON_START, false),
+    dbShardBaseCount: parseInteger(process.env.DB_SHARD_BASE_COUNT, 1),
+    dbShardMaxCount: parseInteger(process.env.DB_SHARD_MAX_COUNT, 8),
+    dbShardScaleUpThreshold: parseFloat(process.env.DB_SHARD_SCALE_UP_THRESHOLD) || 0.75,
+    dbShardScaleDownThreshold: parseFloat(process.env.DB_SHARD_SCALE_DOWN_THRESHOLD) || 0.45,
+    dbShardUserCapacity: parseInteger(process.env.DB_SHARD_USER_CAPACITY, 1000),
+    dbShardTaskCapacity: parseInteger(process.env.DB_SHARD_TASK_CAPACITY, 5000),
+    dbShardAutoScaling: parseBoolean(process.env.DB_SHARD_AUTO_SCALING, true),
     // RPC Load Balancer Configuration
     rpcEndpoints: process.env.RPC_ENDPOINTS || null,
     rpcEndpointWeights: process.env.RPC_ENDPOINT_WEIGHTS || null,
     rpcHealthCheckIntervalMs: parseInteger(process.env.RPC_HEALTH_CHECK_INTERVAL_MS, 30000),
     rpcHealthCheckTimeoutMs: parseInteger(process.env.RPC_HEALTH_CHECK_TIMEOUT_MS, 5000),
     rpcLoadBalancingStrategy: process.env.RPC_LOAD_BALANCING_STRATEGY || 'weighted_round_robin',
+    // Read batching configuration
+    // batchReadsEnabled: when true, pollDueTasks coalesces per-task getLedgerEntries
+    //   calls into bulk reads, reducing RPC round-trips from O(n) to O(n/batchSize).
+    //   Set to false when the RPC endpoint does not support getLedgerEntries,
+    //   or when debugging individual task reads is required.
+    batchReadsEnabled: parseBoolean(process.env.BATCH_READS_ENABLED, false),
+    batchWindowMs: parseInteger(process.env.BATCH_WINDOW_MS, 10),
+    readBatchSize: parseInteger(process.env.READ_BATCH_SIZE, 50),
+    batchConcurrency: parseInteger(process.env.BATCH_CONCURRENCY, 2),
+    batchRps: parseInteger(process.env.BATCH_RPS, 10),
+    realtimeStreamEnabled: parseBoolean(process.env.REALTIME_STREAM_ENABLED, true),
+    realtimeStreamNamespace: process.env.REALTIME_STREAM_NAMESPACE || '/stream',
+    apiGatewayEnabled: parseBoolean(process.env.API_GATEWAY_ENABLED, true),
+    apiGatewayDefaultCapacity: parseInteger(process.env.API_GATEWAY_DEFAULT_CAPACITY, 120),
+    apiGatewayDefaultRefillPerSecond: parseFloat(process.env.API_GATEWAY_DEFAULT_REFILL_PER_SECOND) || 2,
+    apiGatewayDefaultBillingUnits: parseInteger(process.env.API_GATEWAY_DEFAULT_BILLING_UNITS, 1),
+    // Snapshot configuration
+    snapshotEnabled: parseBoolean(process.env.SNAPSHOT_ENABLED, true),
+    snapshotStaleLedgers: parseInteger(process.env.SNAPSHOT_STALE_LEDGERS, 100000),
+    snapshotStaleWallMs: parseInteger(process.env.SNAPSHOT_STALE_WALL_MS, 0),
+    snapshotDir: process.env.SNAPSHOT_DIR || null,
     // Inbound Webhooks
     inboundWebhooks: {
       enabled: inboundWebhooksEnabled,
