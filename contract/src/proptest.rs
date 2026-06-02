@@ -41,7 +41,7 @@ proptest! {
         let creator = Address::generate(&env);
         let target = Address::generate(&env);
 
-        let config = TaskConfig {
+        let config = TaskConfig { yield_strategy: None,
             creator: creator.clone(),
             target: target.clone(),
             function: Symbol::new(&env, "ping"),
@@ -74,7 +74,7 @@ proptest! {
         let creator = Address::generate(&env);
         let target = Address::generate(&env);
 
-        let config = TaskConfig {
+        let config = TaskConfig { yield_strategy: None,
             creator: creator.clone(),
             target: target.clone(),
             function: Symbol::new(&env, "ping"),
@@ -128,7 +128,7 @@ proptest! {
         let target = Address::generate(&env);
 
         let initial_balance = 5_000i128;
-        let config = TaskConfig {
+        let config = TaskConfig { yield_strategy: None,
             creator: creator.clone(),
             target: target.clone(),
             function: Symbol::new(&env, "ping"),

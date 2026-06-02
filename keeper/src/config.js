@@ -84,6 +84,8 @@ function loadConfig() {
     shardIndex: parseInteger(process.env.KEEPER_SHARD_INDEX, 0),
     shardCount: parseInteger(process.env.KEEPER_SHARD_COUNT, 1),
     shardLabel: process.env.KEEPER_SHARD_LABEL || null,
+    shardId: parseInteger(process.env.KEEPER_SHARD_INDEX, 0),
+    totalShards: parseInteger(process.env.KEEPER_SHARD_COUNT, 1),
     driftWarningSeconds: parseInteger(process.env.DRIFT_WARNING_SECONDS, 60),
     driftCriticalSeconds: parseInteger(process.env.DRIFT_CRITICAL_SECONDS, 300),
     metricsResetOnStart: parseBoolean(process.env.METRICS_RESET_ON_START, false),
@@ -122,6 +124,11 @@ function loadConfig() {
     apiGatewayDefaultCapacity: parseInteger(process.env.API_GATEWAY_DEFAULT_CAPACITY, 120),
     apiGatewayDefaultRefillPerSecond: parseFloat(process.env.API_GATEWAY_DEFAULT_REFILL_PER_SECOND) || 2,
     apiGatewayDefaultBillingUnits: parseInteger(process.env.API_GATEWAY_DEFAULT_BILLING_UNITS, 1),
+    // Snapshot configuration
+    snapshotEnabled: parseBoolean(process.env.SNAPSHOT_ENABLED, true),
+    snapshotStaleLedgers: parseInteger(process.env.SNAPSHOT_STALE_LEDGERS, 100000),
+    snapshotStaleWallMs: parseInteger(process.env.SNAPSHOT_STALE_WALL_MS, 0),
+    snapshotDir: process.env.SNAPSHOT_DIR || null,
     // Inbound Webhooks
     inboundWebhooks: {
       enabled: inboundWebhooksEnabled,

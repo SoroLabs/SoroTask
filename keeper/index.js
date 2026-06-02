@@ -17,6 +17,7 @@ const { StreamHub } = require("./src/streamHub");
 const { ApiGateway } = require("./src/apiGateway");
 const { FailurePredictor, KeeperReputationScorer } = require("./src/insights");
 const { normalizeShardConfig, filterTasksForShard } = require("./src/sharding");
+const { PostgresShardManager } = require("./src/postgresShardManager");
 const { StartupValidator } = require("./src/validator");
 const { GracefulShutdownManager } = require("./src/gracefulShutdown");
 const { createDefaultFilterChain } = require("./src/taskFilter");
@@ -134,6 +135,20 @@ async function main() {
   });
 
   metricsServer.start();
+
+  const dbShardManager = new PostgresShardManager({
+    baseCount: config.dbShardBaseCount,
+    maxCount: config.dbShardMaxCount,
+    scaleUpThreshold: config.dbShardScaleUpThreshold,
+    scaleDownThreshold: config.dbShardScaleDownThreshold,
+    userCapacityPerShard: config.dbShardUserCapacity,
+    taskCapacityPerShard: config.dbShardTaskCapacity,
+    enableAutoScaling: config.dbShardAutoScaling,
+  }, createLogger("db-shard"));
+  metricsServer.updateDbShardState(dbShardManager.refresh({
+    activeUsers: 0,
+    pendingTasks: 0,
+  }));
 
   // Perform startup validation to fail fast on configuration errors
   const validator = new StartupValidator(
@@ -552,6 +567,11 @@ async function main() {
 
       // Get list of all registered task IDs
       const taskIds = registry.getTaskIds();
+      const dbShardState = dbShardManager.refresh({
+        activeUsers: queue.getInFlightStatus().inFlight,
+        pendingTasks: taskIds.length,
+      });
+      metricsServer.updateDbShardState(dbShardState);
       const shardSelection = selectTaskOwnership(taskIds);
       metricsServer.updateShardState({
         shardIndex: shardSelection.shardIndex,

@@ -6,6 +6,7 @@ const { URL } = require('url');
 const { createLogger } = require('./logger');
 const { ApiGateway } = require('./apiGateway');
 const { FailurePredictor, KeeperReputationScorer } = require('./insights');
+const SloMetrics = require('./sloMetrics');
 
 class Metrics {
   constructor() {
@@ -20,6 +21,13 @@ class Metrics {
       shardLabel: 'shard-0',
       ownedTasks: 0,
       skippedTasks: 0,
+    };
+    this.dbShardState = {
+      dbShardCount: 1,
+      dbShardLabel: 'postgres-shard-0',
+      dbShardStrategy: 'fixed',
+      activeUsers: 0,
+      pendingTasks: 0,
     };
     this.driftState = {
       warning: 0,
@@ -105,6 +113,10 @@ class Metrics {
     this.shardState = { ...this.shardState, ...state };
   }
 
+  updateDbShardState(state = {}) {
+    this.dbShardState = { ...this.dbShardState, ...state };
+  }
+
   updateDriftState(state = {}) {
     this.driftState = { ...this.driftState, ...state };
   }
@@ -115,6 +127,7 @@ class Metrics {
       ...this.gauges,
       admin: { ...this.adminState },
       shard: { ...this.shardState },
+      dbShard: { ...this.dbShardState },
       drift: { ...this.driftState },
     };
   }
@@ -191,6 +204,21 @@ class MetricsServer {
       logger: createLogger('reputation-scorer'),
     });
     this.register = new promClient.Registry();
+
+    // SLO metrics — injectable for testing; shares main registry by default so
+    // SLO histograms/counters appear at /metrics/prometheus without extra merging.
+    this.sloMetrics = options.sloMetrics || new SloMetrics({
+      register: this.register,
+      freshnessTargetSeconds: options.sloFreshnessTargetSeconds,
+      freshnessWarningSeconds: options.sloFreshnessWarningSeconds,
+      freshnessCriticalSeconds: options.sloFreshnessCriticalSeconds,
+      latenessTargetSeconds: options.sloLatenessTargetSeconds,
+      latenessWarningSeconds: options.sloLatenessWarningSeconds,
+      latenessCriticalSeconds: options.sloLatenessCriticalSeconds,
+      sloTarget: options.sloTarget,
+      errorBudgetWindowSize: options.sloErrorBudgetWindowSize,
+    });
+
     this.initPrometheusMetrics();
   }
 
@@ -333,6 +361,26 @@ class MetricsServer {
       labelNames: ['shard_label', 'shard_index'],
       registers: [this.register],
     });
+    this.promDbShardCount = new promClient.Gauge({
+      name: 'keeper_db_shard_count',
+      help: 'Number of Postgres database shards currently active',
+      registers: [this.register],
+    });
+    this.promDbShardActiveUsers = new promClient.Gauge({
+      name: 'keeper_db_shard_active_users',
+      help: 'Active user load used for Postgres shard scaling',
+      registers: [this.register],
+    });
+    this.promDbShardPendingTasks = new promClient.Gauge({
+      name: 'keeper_db_shard_pending_tasks',
+      help: 'Pending task volume used for Postgres shard scaling',
+      registers: [this.register],
+    });
+    this.promDbShardStrategy = new promClient.Gauge({
+      name: 'keeper_db_shard_strategy',
+      help: 'Current Postgres shard scaling mode (0 = fixed, 1 = auto)',
+      registers: [this.register],
+    });
     this.promDriftSeverity = new promClient.Gauge({
       name: 'keeper_recurring_drift_severity',
       help: 'Highest currently observed recurring drift severity (0 = none, 1 = warning, 2 = critical)',
@@ -446,6 +494,10 @@ class MetricsServer {
     this.promDriftTask.set(this.metrics.driftState.taskId || 0);
     this.promDriftWarningCount.set(this.metrics.driftState.warning || 0);
     this.promDriftCriticalCount.set(this.metrics.driftState.critical || 0);
+    this.promDbShardCount.set(this.metrics.dbShardState.dbShardCount);
+    this.promDbShardActiveUsers.set(this.metrics.dbShardState.activeUsers);
+    this.promDbShardPendingTasks.set(this.metrics.dbShardState.pendingTasks);
+    this.promDbShardStrategy.set(this.metrics.dbShardState.dbShardStrategy === 'auto' ? 1 : 0);
 
     if (this.retryBudgetTracker) {
       const budgetStats = this.retryBudgetTracker.getStats();
@@ -530,6 +582,9 @@ class MetricsServer {
 
       } else if (req.url === '/metrics/reputation' || req.url === '/metrics/reputation/') {
         this.handleReputation(res);
+
+      } else if (req.url === '/metrics/slo' || req.url === '/metrics/slo/') {
+        this.handleSloMetrics(res);
 
       } else if (req.url === '/admin/billing' || req.url === '/admin/billing/') {
         protect(() => this.handleBilling(res))();
@@ -695,6 +750,19 @@ class MetricsServer {
     }, null, 2));
   }
 
+  /**
+   * GET /metrics/slo — SLO snapshot in JSON.
+   *
+   * Returns poll freshness status, error budget consumption, lateness SLI data,
+   * configured SLO targets, and documented known measurement limitations.
+   * This endpoint is unauthenticated (read-only, no sensitive data).
+   */
+  handleSloMetrics(res) {
+    const snapshot = this.sloMetrics.getSnapshot();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(snapshot, null, 2));
+  }
+
   handleDrift(res) {
     const payload = {
       summary: this.metrics.driftState,
@@ -829,6 +897,10 @@ class MetricsServer {
 
   updateShardState(state) {
     this.metrics.updateShardState(state);
+  }
+
+  updateDbShardState(state) {
+    this.metrics.updateDbShardState(state);
   }
 
   updateDriftState(state) {
