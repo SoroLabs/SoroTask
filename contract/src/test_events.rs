@@ -1,10 +1,7 @@
 #![cfg(test)]
 
 use crate::events::{EventLogger, StateChangeType};
-use soroban_sdk::{
-    testutils::{Address as _, Events as _},
-    Address, Env, Symbol, Val, Vec,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, Symbol, Val, Vec};
 
 #[test]
 fn test_log_state_change() {

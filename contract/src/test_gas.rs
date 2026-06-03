@@ -4,7 +4,7 @@ use crate::{SoroTaskContract, SoroTaskContractClient, TaskConfig};
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Ledger},
-    vec, Address, Env, Symbol, Vec,
+    Address, Env, Symbol, Vec,
 };
 
 #[contract]
@@ -42,14 +42,14 @@ fn base_config(env: &Env, target: Address) -> TaskConfig {
     }
 }
 
-fn track_gas<F>(env: &Env, name: &str, operation: F)
+fn track_gas<F>(env: &Env, _name: &str, operation: F)
 where
     F: FnOnce(),
 {
     env.cost_estimate().budget().reset_tracker();
     operation();
-    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
-    let mem = env.cost_estimate().budget().memory_bytes_cost();
+    let _cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let _mem = env.cost_estimate().budget().memory_bytes_cost();
     // Note: println not available in wasm tests
     // Gas tracking available when running with cargo test -- --nocapture
 }

@@ -1,4 +1,16 @@
 #![no_std]
+#![allow(dead_code)]
+#![allow(deprecated)]
+#![allow(
+    clippy::clone_on_copy,
+    clippy::collapsible_if,
+    clippy::len_zero,
+    clippy::module_inception,
+    clippy::needless_borrows_for_generic_args,
+    clippy::too_many_arguments,
+    clippy::unnecessary_cast,
+    clippy::unnecessary_lazy_evaluations
+)]
 
 pub mod events;
 
@@ -45,13 +57,13 @@ pub enum Error {
     InsufficientStake = 29,
     InvalidSlashAmount = 30,
     // Oracle-related errors
-    OracleNotSet = 28,
-    OracleRequestFailed = 29,
-    OracleInvalidResponse = 30,
-    OracleTimeout = 31,
-    OracleUnsupportedProvider = 32,
-    UpgradeNotInitialized = 33,
-    InvalidUpgradeVersion = 34,
+    OracleNotSet = 31,
+    OracleRequestFailed = 32,
+    OracleInvalidResponse = 33,
+    OracleTimeout = 34,
+    OracleUnsupportedProvider = 35,
+    UpgradeNotInitialized = 36,
+    InvalidUpgradeVersion = 37,
 }
 
 /// Maximum number of arguments allowed in a task payload
@@ -1087,7 +1099,7 @@ impl SoroTaskContract {
         enter_security_guard(&env);
 
         // Check if VRF oracle is configured
-        let oracle_address: Address = env
+        let _oracle_address: Address = env
             .storage()
             .instance()
             .get(&DataKey::VrfOracleAddress)
@@ -1575,7 +1587,7 @@ impl SoroTaskContract {
     pub fn pause_portfolio(env: Env, portfolio_id: u64) {
         enter_security_guard(&env);
         let portfolio_key = DataKey::Portfolio(portfolio_id);
-        let mut portfolio: Portfolio = env
+        let portfolio: Portfolio = env
             .storage()
             .persistent()
             .get(&portfolio_key)
@@ -1606,7 +1618,7 @@ impl SoroTaskContract {
     pub fn resume_portfolio(env: Env, portfolio_id: u64) {
         enter_security_guard(&env);
         let portfolio_key = DataKey::Portfolio(portfolio_id);
-        let mut portfolio: Portfolio = env
+        let portfolio: Portfolio = env
             .storage()
             .persistent()
             .get(&portfolio_key)
@@ -1637,7 +1649,7 @@ impl SoroTaskContract {
     pub fn fund_portfolio(env: Env, portfolio_id: u64, amount: i128) {
         enter_security_guard(&env);
         let portfolio_key = DataKey::Portfolio(portfolio_id);
-        let mut portfolio: Portfolio = env
+        let portfolio: Portfolio = env
             .storage()
             .persistent()
             .get(&portfolio_key)
@@ -1669,7 +1681,7 @@ impl SoroTaskContract {
     pub fn execute_portfolio_tasks(env: Env, portfolio_id: u64) {
         enter_security_guard(&env);
         let portfolio_key = DataKey::Portfolio(portfolio_id);
-        let mut portfolio: Portfolio = env
+        let portfolio: Portfolio = env
             .storage()
             .persistent()
             .get(&portfolio_key)
@@ -2136,9 +2148,7 @@ impl SoroTaskContract {
         // The VRF response interface is:  check_vrf_condition(random_number: i128) -> bool
         let should_execute_vrf = {
             // Check if there are any pending VRF requests for this task
-            let mut vrf_request_found = false;
             let mut vrf_response_found = false;
-            let mut vrf_response: Option<VrfResponse> = None;
 
             // Look for VRF requests for this task
             // We'll use a simple approach: check request counter and iterate through requests
@@ -2158,15 +2168,14 @@ impl SoroTaskContract {
                         if vrf_request.task_id == task_id
                             && vrf_request.status == VrfRequestStatus::Fulfilled
                         {
-                            vrf_request_found = true;
                             // Check if response exists
-                            if let Some(response) = env
+                            if env
                                 .storage()
                                 .persistent()
                                 .get::<DataKey, VrfResponse>(&DataKey::VrfResponses(i))
+                                .is_some()
                             {
                                 vrf_response_found = true;
-                                vrf_response = Some(response);
                                 break;
                             }
                         }
@@ -2952,7 +2961,7 @@ impl SoroTaskContract {
             // Add complexity bonus for target contract interaction
             let target_complexity_bonus = 20; // Fixed bonus for cross-contract calls
 
-            fee = base_fee + args_size + target_complexity_bonus;
+            let calculated_fee = base_fee + args_size + target_complexity_bonus;
 
             // Apply fee model specific logic
             match tokenomics_config.fee_model {
@@ -2962,17 +2971,17 @@ impl SoroTaskContract {
                 FeeModel::Percentage => {
                     // Calculate percentage-based fee
                     let percentage = 10; // 10% fee
-                    fee = (base_fee + args_size + target_complexity_bonus) * percentage / 100;
+                    fee = calculated_fee * percentage / 100;
                 }
                 FeeModel::Dynamic => {
                     // Dynamic fee based on network conditions
                     // Base fee + complexity multiplier + network congestion factor + keeper availability factor
 
                     // Get network metrics
-                    let mut network_metrics = Self::get_network_metrics(env);
+                    let network_metrics = Self::get_network_metrics(env);
 
                     // Get keeper metrics
-                    let mut keeper_metrics = Self::get_keeper_metrics(env);
+                    let keeper_metrics = Self::get_keeper_metrics(env);
 
                     // Calculate network congestion factor (0-200%) based on recent activity
                     // Higher congestion = higher fees
@@ -2984,10 +2993,8 @@ impl SoroTaskContract {
                         Self::calculate_keeper_availability_factor(&keeper_metrics);
 
                     // Apply factors to base fee
-                    fee = (base_fee + args_size + target_complexity_bonus) * congestion_factor
-                        / 100
-                        * keeper_availability_factor
-                        / 100;
+                    fee =
+                        calculated_fee * congestion_factor / 100 * keeper_availability_factor / 100;
                 }
             }
 
@@ -3861,7 +3868,7 @@ impl SoroTaskContract {
 
         if let Some(permission_grant) = get_permission_grant(env, caller) {
             for perm in permission_grant.permissions.iter() {
-                if *perm == Permission::AdminAccess {
+                if perm == Permission::AdminAccess {
                     return true;
                 }
             }
@@ -3874,7 +3881,7 @@ impl SoroTaskContract {
         env: &Env,
         keeper_address: &Address,
         amount: i128,
-        reason: Vec<u8>,
+        reason: Bytes,
     ) -> Result<(), Error> {
         if amount <= 0 {
             return Err(Error::InvalidSlashAmount);
@@ -3921,7 +3928,7 @@ impl SoroTaskContract {
                 address: keeper_address.clone(),
                 score: reputation.score,
                 timestamp: env.ledger().timestamp(),
-                reason,
+                reason: reason.clone(),
                 previous_score,
             };
             set_keeper_reputation_history(env, keeper_address, &history);
@@ -3939,10 +3946,10 @@ impl SoroTaskContract {
         Ok(())
     }
 
-    pub fn slash_keeper(env: Env, keeper: Address, amount: i128, reason: Vec<u8>) {
+    pub fn slash_keeper(env: Env, admin: Address, keeper: Address, amount: i128, reason: Bytes) {
         enter_security_guard(&env);
-        let caller = Address::current(&env);
-        if !Self::has_admin_access(&env, &caller) {
+        admin.require_auth();
+        if !Self::has_admin_access(&env, &admin) {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
@@ -4203,7 +4210,7 @@ mod tests {
     use soroban_sdk::{
         contract, contractimpl,
         testutils::{Address as _, Events, Ledger as _},
-        vec, BytesN, Env, FromVal, IntoVal,
+        vec, BytesN, Env, IntoVal,
     };
 
     // ── Mock Contracts ───────────────────────────────────────────────────────
@@ -5135,7 +5142,7 @@ mod tests {
         assert_eq!(retrieved_config.gas_balance, config.gas_balance);
 
         // Check event (events.all() returns ContractEvents which can be indexed)
-        let events = env.events().all();
+        let _events = env.events().all();
         // Event structure: (contract_id, (topic0, topic1, ...))
         // Note: Skipping detailed event assertions due to API changes in soroban-sdk 25.3.0
         // TODO: Update event assertions when ContractEvents API is stable
@@ -5712,8 +5719,9 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let name = vec![&env, b"Test Portfolio".to_vec()];
-        let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+        let name = Bytes::from_slice(&env, b"Test Portfolio");
+        let description = Bytes::from_slice(&env, b"");
+        let portfolio_id = client.create_portfolio(&name, &description);
 
         let target = env.register_contract(None, MockTarget);
         let task1_id = client.register(&base_config(&env, target.clone()));
@@ -5738,8 +5746,9 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let name = vec![&env, b"Test Portfolio".to_vec()];
-        let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+        let name = Bytes::from_slice(&env, b"Test Portfolio");
+        let description = Bytes::from_slice(&env, b"");
+        let portfolio_id = client.create_portfolio(&name, &description);
 
         let target = env.register_contract(None, MockTarget);
         let task1_id = client.register(&base_config(&env, target.clone()));
@@ -5766,8 +5775,9 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let name = vec![&env, b"Test Portfolio".to_vec()];
-        let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+        let name = Bytes::from_slice(&env, b"Test Portfolio");
+        let description = Bytes::from_slice(&env, b"");
+        let portfolio_id = client.create_portfolio(&name, &description);
 
         let target = env.register_contract(None, MockTarget);
         let task1_id = client.register(&base_config(&env, target.clone()));
@@ -5811,13 +5821,14 @@ mod tests {
         let token_admin = env.current_contract_address();
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
-        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
-        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+        let _token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let _token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
 
         client.init(&token_address);
 
-        let name = vec![&env, b"Test Portfolio".to_vec()];
-        let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+        let name = Bytes::from_slice(&env, b"Test Portfolio");
+        let description = Bytes::from_slice(&env, b"");
+        let portfolio_id = client.create_portfolio(&name, &description);
 
         let target = env.register_contract(None, MockTarget);
         let task1_id = client.register(&base_config(&env, target.clone()));
@@ -5877,7 +5888,7 @@ mod tests {
         let token_admin = env.current_contract_address();
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
-        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let _token_client = soroban_sdk::token::Client::new(&env, &token_address);
         let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
 
         client.init(&token_address);
@@ -5911,7 +5922,7 @@ mod tests {
         let token_admin = env.current_contract_address();
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
-        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let _token_client = soroban_sdk::token::Client::new(&env, &token_address);
         let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
 
         client.init(&token_address);
@@ -5927,9 +5938,11 @@ mod tests {
         client.stake_tokens(&100);
 
         // Create proposal
-        let title = vec![&env, b"Test Proposal".to_vec()];
-        let description = vec![&env, b"This is a test proposal".to_vec()];
-        let proposal_id = client.create_proposal(&title, &description, &10000);
+        let title = Bytes::from_slice(&env, b"Test Proposal");
+        let description = Bytes::from_slice(&env, b"This is a test proposal");
+        let payload = Vec::<Val>::new(&env);
+        let proposal_id =
+            client.create_proposal(&title, &description, &10000, &ProposalType::Other, &payload);
 
         // Verify proposal was created
         let proposal = client.get_governance_proposal(&proposal_id).unwrap();
@@ -6251,12 +6264,11 @@ mod tests {
 
         // Update state channel
         let state_hash = Bytes::from_slice(&env, b"state_hash");
-        let micro_tasks = Vec::<ExecutableTask>::new(&env);
         let signature = Bytes::from_slice(&env, b"signature");
 
         // Set up mock target for micro-tasks
         let target = env.register_contract(None, MockTarget);
-        let mut task = ExecutableTask {
+        let task = ExecutableTask {
             task_id: 1,
             target: target.clone(),
             function: Symbol::new(&env, "ping"),
@@ -6293,12 +6305,11 @@ mod tests {
 
         // Update state channel
         let state_hash = Bytes::from_slice(&env, b"state_hash");
-        let micro_tasks = Vec::<ExecutableTask>::new(&env);
         let signature = Bytes::from_slice(&env, b"signature");
 
         // Set up mock target for micro-tasks
         let target = env.register_contract(None, MockTarget);
-        let mut task = ExecutableTask {
+        let task = ExecutableTask {
             task_id: 1,
             target: target.clone(),
             function: Symbol::new(&env, "ping"),

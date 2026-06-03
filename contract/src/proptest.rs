@@ -1,10 +1,6 @@
-use crate::{DataKey, Error, SoroTaskContract, SoroTaskContractClient, TaskConfig};
+use crate::{SoroTaskContract, SoroTaskContractClient, TaskConfig};
 use proptest::prelude::*;
-use soroban_sdk::{
-    contract, contractimpl,
-    testutils::{Address as _, Ledger as _},
-    Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Env, Symbol, Vec};
 
 #[contract]
 pub struct MockToken;
