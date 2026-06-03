@@ -4282,7 +4282,7 @@ mod tests {
     fn setup() -> (Env, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let id = env.register_contract(None, SoroTaskContract);
+        let id = env.register(SoroTaskContract, ());
         (env, id)
     }
 
@@ -4952,7 +4952,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let cfg = base_config(&env, target.clone());
         let task_id = client.register(&cfg);
 
@@ -4976,7 +4976,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task_id = client.register(&base_config(&env, target));
         let keeper = env.current_contract_address();
 
@@ -4996,7 +4996,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
 
         let mut args: Vec<Val> = Vec::new(&env);
         args.push_back(5_i64.into_val(&env));
@@ -5031,8 +5031,8 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
-        let resolver = env.register_contract(None, resolver_true::MockResolverTrue);
+        let target = env.register(MockTarget, ());
+        let resolver = env.register(resolver_true::MockResolverTrue, ());
 
         let cfg = TaskConfig {
             yield_strategy: None,
@@ -5059,8 +5059,8 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
-        let resolver = env.register_contract(None, resolver_false::MockResolverFalse);
+        let target = env.register(MockTarget, ());
+        let resolver = env.register(resolver_false::MockResolverFalse, ());
 
         let cfg = TaskConfig {
             yield_strategy: None,
@@ -5086,7 +5086,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let mut cfg = base_config(&env, target);
         cfg.interval = 1; // Small interval to allow repeated execution
         let task_id = client.register(&cfg);
@@ -5110,7 +5110,7 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        let contract_id = env.register_contract(None, SoroTaskContract);
+        let contract_id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &contract_id);
 
         let creator = env.current_contract_address();
@@ -5153,7 +5153,7 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        let contract_id = env.register_contract(None, SoroTaskContract);
+        let contract_id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &contract_id);
 
         let creator = env.current_contract_address();
@@ -5186,7 +5186,7 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        let contract_id = env.register_contract(None, SoroTaskContract);
+        let contract_id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &contract_id);
 
         let creator = env.current_contract_address();
@@ -5216,11 +5216,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        let contract_id = env.register_contract(None, SoroTaskContract);
+        let contract_id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &contract_id);
 
         let creator = env.current_contract_address();
-        let dummy_id = env.register_contract(None, DummyContract);
+        let dummy_id = env.register(DummyContract, ());
         let target = dummy_id.clone();
 
         let config = TaskConfig {
@@ -5270,7 +5270,7 @@ mod tests {
 
         client.init(&token_address);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let mut cfg = base_config(&env, target);
         cfg.gas_balance = 0;
         let creator = cfg.creator.clone();
@@ -5301,7 +5301,7 @@ mod tests {
         let token_address = token_id.address();
         client.init(&token_address);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let mut cfg = base_config(&env, target);
         cfg.gas_balance = 1000;
         let task_id = client.register(&cfg);
@@ -5320,7 +5320,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let allowed_keeper = env.current_contract_address();
         let unauthorized_keeper = env.current_contract_address();
 
@@ -5338,7 +5338,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let allowed_keeper = env.current_contract_address();
 
         let mut config = base_config(&env, target);
@@ -5365,7 +5365,7 @@ mod tests {
 
         client.init(&token_address);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let mut cfg = base_config(&env, target);
         cfg.gas_balance = 0; // Start with 0, will deposit later
         let creator = cfg.creator.clone();
@@ -5411,7 +5411,7 @@ mod tests {
         let token_address = token_id.address();
         client.init(&token_address);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let mut cfg = base_config(&env, target);
         cfg.gas_balance = 50; // Less than the fixed fee of 100
         let task_id = client.register(&cfg);
@@ -5442,7 +5442,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let mut cfg = base_config(&env, target);
         cfg.gas_balance = 1000;
         let task_id = client.register(&cfg);
@@ -5474,7 +5474,7 @@ mod tests {
 
         client.init(&token_address);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let mut cfg = base_config(&env, target);
         cfg.gas_balance = 0;
         let creator = cfg.creator.clone();
@@ -5506,7 +5506,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let mut task_ids = Vec::new(&env);
 
         for _ in 0..4 {
@@ -5534,7 +5534,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         for _ in 0..5 {
             client.register(&base_config(&env, target.clone()));
         }
@@ -5552,7 +5552,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task_id = client.register(&base_config(&env, target));
 
         client.pause_task(&task_id);
@@ -5572,7 +5572,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task1_id = client.register(&base_config(&env, target.clone()));
         let task2_id = client.register(&base_config(&env, target));
 
@@ -5589,7 +5589,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task1_id = client.register(&base_config(&env, target.clone()));
         let task2_id = client.register(&base_config(&env, target));
 
@@ -5606,7 +5606,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task_id = client.register(&base_config(&env, target));
 
         // Try to add self-dependency
@@ -5624,7 +5624,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task1_id = client.register(&base_config(&env, target.clone()));
         let task2_id = client.register(&base_config(&env, target.clone()));
         let task3_id = client.register(&base_config(&env, target));
@@ -5648,7 +5648,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task1_id = client.register(&base_config(&env, target.clone()));
         let task2_id = client.register(&base_config(&env, target));
 
@@ -5672,7 +5672,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task1_id = client.register(&base_config(&env, target.clone()));
         let task2_id = client.register(&base_config(&env, target));
 
@@ -5723,7 +5723,7 @@ mod tests {
         let description = Bytes::from_slice(&env, b"");
         let portfolio_id = client.create_portfolio(&name, &description);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task1_id = client.register(&base_config(&env, target.clone()));
         let task2_id = client.register(&base_config(&env, target.clone()));
 
@@ -5750,7 +5750,7 @@ mod tests {
         let description = Bytes::from_slice(&env, b"");
         let portfolio_id = client.create_portfolio(&name, &description);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task1_id = client.register(&base_config(&env, target.clone()));
         let task2_id = client.register(&base_config(&env, target.clone()));
 
@@ -5779,7 +5779,7 @@ mod tests {
         let description = Bytes::from_slice(&env, b"");
         let portfolio_id = client.create_portfolio(&name, &description);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task1_id = client.register(&base_config(&env, target.clone()));
         let task2_id = client.register(&base_config(&env, target.clone()));
 
@@ -5830,7 +5830,7 @@ mod tests {
         let description = Bytes::from_slice(&env, b"");
         let portfolio_id = client.create_portfolio(&name, &description);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task1_id = client.register(&base_config(&env, target.clone()));
         let task2_id = client.register(&base_config(&env, target.clone()));
 
@@ -5962,8 +5962,8 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
-        let resolver = env.register_contract(None, resolver_false::MockResolverFalse);
+        let target = env.register(MockTarget, ());
+        let resolver = env.register(resolver_false::MockResolverFalse, ());
 
         let dependency_cfg = TaskConfig {
             yield_strategy: None,
@@ -5996,7 +5996,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let dependency_id = client.register(&base_config(&env, target.clone()));
         let dependent_id = client.register(&base_config(&env, target));
         let keeper = env.current_contract_address();
@@ -6019,7 +6019,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let victim_id = client.register(&base_config(&env, target.clone()));
 
         let mut args: Vec<Val> = Vec::new(&env);
@@ -6048,7 +6048,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task_id = client.register(&base_config(&env, target));
 
         // Try to add dependency on non-existent task
@@ -6073,7 +6073,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task_id = client.register(&base_config(&env, target));
 
         assert_eq!(task_id, 1, "first registered task must receive ID 1");
@@ -6088,7 +6088,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let id1 = client.register(&base_config(&env, target.clone()));
         let id2 = client.register(&base_config(&env, target.clone()));
         let id3 = client.register(&base_config(&env, target));
@@ -6108,7 +6108,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let cfg = base_config(&env, target);
 
         let id1 = client.register(&cfg);
@@ -6133,7 +6133,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
 
         // Simulate two registrations as close together as possible (same env,
         // back-to-back calls). Soroban serialises all calls within a test env
@@ -6159,7 +6159,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
 
         // Register one valid task first
         let id_before = client.register(&base_config(&env, target.clone()));
@@ -6190,7 +6190,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let n: u32 = 5;
         let mut registered_ids = soroban_sdk::Vec::new(&env);
 
@@ -6267,7 +6267,7 @@ mod tests {
         let signature = Bytes::from_slice(&env, b"signature");
 
         // Set up mock target for micro-tasks
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task = ExecutableTask {
             task_id: 1,
             target: target.clone(),
@@ -6308,7 +6308,7 @@ mod tests {
         let signature = Bytes::from_slice(&env, b"signature");
 
         // Set up mock target for micro-tasks
-        let target = env.register_contract(None, MockTarget);
+        let target = env.register(MockTarget, ());
         let task = ExecutableTask {
             task_id: 1,
             target: target.clone(),

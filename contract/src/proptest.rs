@@ -13,14 +13,14 @@ impl MockToken {
 fn setup_env_and_client() -> (Env, SoroTaskContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, SoroTaskContract);
+    let contract_id = env.register(SoroTaskContract, ());
     let client = SoroTaskContractClient::new(&env, &contract_id);
     (env, client)
 }
 
 fn setup_with_token() -> (Env, SoroTaskContractClient<'static>) {
     let (env, client) = setup_env_and_client();
-    let token_id = env.register_contract(None, MockToken);
+    let token_id = env.register(MockToken, ());
     client.init(&token_id);
     (env, client)
 }

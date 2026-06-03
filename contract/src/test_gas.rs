@@ -20,7 +20,7 @@ impl MockTarget {
 fn setup() -> (Env, SoroTaskContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let id = env.register_contract(None, SoroTaskContract);
+    let id = env.register(SoroTaskContract, ());
     let client = SoroTaskContractClient::new(&env, &id);
     (env, client)
 }
@@ -69,7 +69,7 @@ fn test_gas_init() {
 #[test]
 fn test_gas_register() {
     let (env, client) = setup();
-    let target = env.register_contract(None, MockTarget);
+    let target = env.register(MockTarget, ());
     let cfg = base_config(&env, target);
 
     track_gas(&env, "register", || {
@@ -80,7 +80,7 @@ fn test_gas_register() {
 #[test]
 fn test_gas_monitor_active_index() {
     let (env, client) = setup();
-    let target = env.register_contract(None, MockTarget);
+    let target = env.register(MockTarget, ());
     let cfg = base_config(&env, target);
 
     for _ in 0..32 {
@@ -104,7 +104,7 @@ fn test_gas_deposit() {
     let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
     client.init(&token_address);
 
-    let target = env.register_contract(None, MockTarget);
+    let target = env.register(MockTarget, ());
     let cfg = base_config(&env, target);
     let task_id = client.register(&cfg);
 
@@ -126,7 +126,7 @@ fn test_gas_withdraw() {
     let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
     client.init(&token_address);
 
-    let target = env.register_contract(None, MockTarget);
+    let target = env.register(MockTarget, ());
     let cfg = base_config(&env, target);
     // Mint tokens to creator first
     token_admin_client.mint(&cfg.creator, &2000);
@@ -150,7 +150,7 @@ fn test_gas_execute() {
     let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
     client.init(&token_address);
 
-    let target = env.register_contract(None, MockTarget);
+    let target = env.register(MockTarget, ());
     let cfg = base_config(&env, target);
     // Mint tokens to creator for gas fees
     token_admin_client.mint(&cfg.creator, &2000);
@@ -177,7 +177,7 @@ fn test_gas_cancel() {
     let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
     client.init(&token_address);
 
-    let target = env.register_contract(None, MockTarget);
+    let target = env.register(MockTarget, ());
     let mut cfg = base_config(&env, target);
     cfg.gas_balance = 0; // Start with 0
                          // Mint tokens to creator for gas fees
