@@ -12,6 +12,7 @@ const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
 const { MetricsServer } = require("./src/metrics");
+const { GasMonitor } = require("./src/gasMonitor");
 const HistoryManager = require("./src/history");
 const { StreamHub } = require("./src/streamHub");
 const { ApiGateway } = require("./src/apiGateway");
@@ -97,7 +98,9 @@ async function main() {
     changedAt: null,
     actor: null,
   };
-  const metricsServer = new MetricsServer(undefined, createLogger("metrics"), null, {
+
+  const gasMonitor = new GasMonitor(createLogger("gasMonitor"));
+  const metricsServer = new MetricsServer(gasMonitor, createLogger("metrics"), null, {
     port: config.metricsPort,
     healthStaleThreshold: config.healthStaleThresholdMs,
     historyManager,
@@ -277,6 +280,12 @@ async function main() {
     }
 
     try {
+      const dynamicFeeMultiplier = gasMonitor && typeof gasMonitor.getDynamicFeeMultiplier === 'function'
+        ? gasMonitor.getDynamicFeeMultiplier()
+        : 1;
+      deps.dynamicFeeMultiplier = dynamicFeeMultiplier;
+      deps.gasMonitor = gasMonitor;
+
       const retryResult = await executeTaskWithRetry(taskId, deps, {
         attemptId: context.attemptId,
         correlationId,

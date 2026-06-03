@@ -1,3 +1,5 @@
+const { toLogPayload } = require('./structuredErrors');
+
 /**
  * Error classifications for retry logic.
  */
@@ -213,6 +215,7 @@ async function withRetry(fn, options = {}) {
       lastError = error;
       const classification = classifyError(error);
       const context = {
+        ...toLogPayload(error, { classification }),
         code: extractErrorCode(error),
         classification,
         message: error?.message || String(error),

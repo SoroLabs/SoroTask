@@ -1,5 +1,6 @@
 const { createLogger } = require('./logger');
 const { GasForecaster } = require('./gasForecaster');
+const { GasPriceTrend } = require('./gasPriceTrend');
 
 class GasMonitor {
   constructor(logger) {
@@ -20,6 +21,7 @@ class GasMonitor {
 
     // Initialize gas forecaster for budget forecasting
     this.forecaster = new GasForecaster(this.logger);
+    this.priceTrend = new GasPriceTrend(this.logger);
   }
 
   async checkGasBalance(taskId, gasBalance) {
@@ -94,6 +96,7 @@ class GasMonitor {
       forecastingEnabled: true,
       forecastSafetyBuffer: this.forecaster.SAFETY_BUFFER_MULTIPLIER,
       forecastAggregationWindow: this.forecaster.AGGREGATION_WINDOW_SECONDS,
+      dynamicFeeMultiplier: this.getDynamicFeeMultiplier(),
     };
   }
 
@@ -106,6 +109,25 @@ class GasMonitor {
    */
   recordExecution(taskId, feePaid) {
     this.forecaster.recordExecution(taskId, feePaid);
+    this.priceTrend.recordFee(feePaid);
+  }
+
+  /**
+   * Get the current dynamic fee multiplier based on recent gas price trends.
+   *
+   * @returns {number}
+   */
+  getDynamicFeeMultiplier() {
+    return this.priceTrend.getDynamicFeeMultiplier();
+  }
+
+  /**
+   * Get the current gas price trend state.
+   *
+   * @returns {object}
+   */
+  getPriceState() {
+    return this.priceTrend.getState();
   }
 
   /**
@@ -146,7 +168,10 @@ class GasMonitor {
    * @returns {object} Forecaster diagnostics
    */
   getForecasterState() {
-    return this.forecaster.getState();
+    return {
+      ...this.forecaster.getState(),
+      priceState: this.priceTrend.getState(),
+    };
   }
 }
 

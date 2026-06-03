@@ -41,6 +41,9 @@ pub enum Error {
     InvalidYieldStrategy = 25,
     YieldHarvestFailed = 26,
     InsufficientYield = 27,
+    KeeperNotFound = 28,
+    InsufficientStake = 29,
+    InvalidSlashAmount = 30,
     // Oracle-related errors
     OracleNotSet = 28,
     OracleRequestFailed = 29,
@@ -93,6 +96,7 @@ pub struct TaskDependency {
 pub enum ExecutionOutcome {
     NeverRun,
     Success,
+    Failed,
     Skipped,
 }
 
@@ -619,6 +623,7 @@ pub enum DataKey {
     PermissionGrantCounter,
     DelegationCounter,
     KeeperReputation(Address),
+    KeeperReputationHistory(Address),
     KeeperReputationCounter,
     ProxyConfig,
     UpgradeRecord(u64),
@@ -773,13 +778,13 @@ fn set_keeper_reputation_counter(env: &Env, counter: u64) {
 fn get_keeper_reputation_history(env: &Env, address: &Address) -> Option<KeeperReputationHistory> {
     env.storage()
         .persistent()
-        .get(&DataKey::KeeperReputation(address.clone()))
+        .get(&DataKey::KeeperReputationHistory(address.clone()))
 }
 
 fn set_keeper_reputation_history(env: &Env, address: &Address, history: &KeeperReputationHistory) {
     env.storage()
         .persistent()
-        .set(&DataKey::KeeperReputation(address.clone()), history);
+        .set(&DataKey::KeeperReputationHistory(address.clone()), history);
 }
 
 fn get_role_assignment(env: &Env, address: &Address) -> Option<RoleAssignment> {
@@ -2924,6 +2929,7 @@ impl SoroTaskContract {
         // Check if token is initialized for native token fee payments
         if env.storage().instance().has(&DataKey::Token) {
             // Get tokenomics configuration
+            let tokenomics: TokenomicsConfig = env
             let tokenomics_config: TokenomicsConfig = env
                 .storage()
                 .instance()
@@ -2950,13 +2956,16 @@ impl SoroTaskContract {
             fee = base_fee + args_size + target_complexity_bonus;
 
             // Apply fee model specific logic
+            match tokenomics.fee_model {
+                FeeModel::Fixed => {
+                    fee = tokenomics.min_fee;
             match tokenomics_config.fee_model {
                 FeeModel::Fixed => {
                     fee = tokenomics_config.min_fee;
                 }
                 FeeModel::Percentage => {
                     // Calculate percentage-based fee
-                    let percentage = 10; // 1% fee
+                    let percentage = 10; // 10% fee
                     fee = (base_fee + args_size + target_complexity_bonus) * percentage / 100;
                 }
                 FeeModel::Dynamic => {
@@ -3696,7 +3705,10 @@ impl SoroTaskContract {
         // Update staking pool
         let mut updated_pool = pool.clone();
         updated_pool.total_staked += amount;
-        updated_pool.stakers_count += 1;
+        if staking_balance.amount == amount {
+            // This is the first stake for this address
+            updated_pool.stakers_count += 1;
+        }
 
         env.storage()
             .instance()
@@ -3841,6 +3853,106 @@ impl SoroTaskContract {
                 reward_amount,
             );
         }
+        exit_security_guard(&env);
+    }
+
+    fn has_admin_access(env: &Env, caller: &Address) -> bool {
+        if let Some(admin_address) = env.storage().instance().get(&DataKey::AdminAddress) {
+            if caller == &admin_address {
+                return true;
+            }
+        }
+
+        if let Some(permission_grant) = get_permission_grant(env, caller) {
+            for perm in permission_grant.permissions.iter() {
+                if *perm == Permission::AdminAccess {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn try_slash_keeper_internal(
+        env: &Env,
+        keeper_address: &Address,
+        amount: i128,
+        reason: Vec<u8>,
+    ) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidSlashAmount);
+        }
+
+        let mut staking_balance: StakingBalance = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StakingBalance(keeper_address.clone()))
+            .ok_or(Error::KeeperNotFound)?;
+
+        if staking_balance.amount < amount {
+            return Err(Error::InsufficientStake);
+        }
+
+        // Reduce keeper stake and update pool totals.
+        staking_balance.amount -= amount;
+        env.storage()
+            .persistent()
+            .set(&DataKey::StakingBalance(keeper_address.clone()), &staking_balance);
+
+        let mut pool: StakingPool = env
+            .storage()
+            .instance()
+            .get(&DataKey::StakingPool)
+            .expect("Staking pool not initialized");
+
+        pool.total_staked -= amount;
+        if staking_balance.amount == 0 {
+            pool.stakers_count = pool.stakers_count.saturating_sub(1);
+        }
+
+        env.storage().instance().set(&DataKey::StakingPool, &pool);
+
+        // Lower keeper reputation when staking is slashed.
+        if let Some(mut reputation) = get_keeper_reputation(env, keeper_address) {
+            let previous_score = reputation.score;
+            reputation.score = reputation.score.saturating_sub(100);
+            reputation.last_updated = env.ledger().timestamp();
+            set_keeper_reputation(env, keeper_address, &reputation);
+
+            let history = KeeperReputationHistory {
+                address: keeper_address.clone(),
+                score: reputation.score,
+                timestamp: env.ledger().timestamp(),
+                reason,
+                previous_score,
+            };
+            set_keeper_reputation_history(env, keeper_address, &history);
+        }
+
+        env.events().publish(
+            (
+                Symbol::new(env, "KeeperSlashed"),
+                Symbol::new(env, "v1"),
+                keeper_address.clone(),
+            ),
+            (amount, reason),
+        );
+
+        Ok(())
+    }
+
+    pub fn slash_keeper(env: Env, keeper: Address, amount: i128, reason: Vec<u8>) {
+        enter_security_guard(&env);
+        let caller = Address::current(&env);
+        if !Self::has_admin_access(&env, &caller) {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        if let Err(err) = Self::try_slash_keeper_internal(&env, &keeper, amount, reason) {
+            panic_with_error!(&env, err);
+        }
+
         exit_security_guard(&env);
     }
 

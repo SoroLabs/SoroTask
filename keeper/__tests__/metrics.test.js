@@ -1,5 +1,5 @@
 // Simple metrics tests
-const { Metrics } = require('../src/metrics');
+const { Metrics, MetricsHistory } = require('../src/metrics');
 
 describe('Metrics', () => {
   let metrics;
@@ -36,5 +36,24 @@ describe('Metrics', () => {
     const snapshot = metrics.snapshot();
     expect(snapshot).toBeDefined();
     expect(typeof snapshot).toBe('object');
+  });
+
+  it('should record history points on cycle completion', () => {
+    metrics.increment('tasksExecutedTotal', 3);
+    metrics.increment('tasksFailedTotal', 1);
+    metrics.record('lastCycleDurationMs', 250);
+    expect(metrics.history.getSamples()).toHaveLength(1);
+    expect(metrics.history.getSamples()[0].successRate).toBeCloseTo(0.75);
+  });
+});
+
+describe('MetricsHistory', () => {
+  it('caps samples at maxSamples', () => {
+    const history = new MetricsHistory(2);
+    history.record({ a: 1 });
+    history.record({ a: 2 });
+    history.record({ a: 3 });
+    expect(history.getSamples()).toHaveLength(2);
+    expect(history.getSamples()[0].a).toBe(2);
   });
 });

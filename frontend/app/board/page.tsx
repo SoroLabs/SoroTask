@@ -26,7 +26,10 @@ export default function BoardPage() {
     <SplitPaneLayout>
       <div className="h-full flex flex-col bg-neutral-950">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-neutral-700 flex-shrink-0">
+        <div
+          data-onboarding="board"
+          className="px-6 py-4 border-b border-neutral-700 flex-shrink-0"
+        >
           <h1 className="text-2xl font-bold text-neutral-100 mb-2">Board</h1>
           <p className="text-sm text-neutral-400">
             Organize your tasks with drag and drop
