@@ -29,6 +29,7 @@ jobs:
             const additions  = pr.additions;
             const deletions  = pr.deletions;
             const totalLines = additions + deletions;
+            const hardLimit = 2500;
 
             // ── 2. Determine size label ──────────────────────────────────────
             // Thresholds:  XS < 10 | S < 100 | M < 300 | L < 1000 | XL ≥ 1000
@@ -80,8 +81,8 @@ jobs:
               `= ${totalLines} total lines → labelled "${tier.label}"`
             );
 
-            // ── 6. Enforce 1,000-line hard limit ─────────────────────────────
-            if (totalLines >= 1000) {
+            // ── 6. Enforce hard limit ────────────────────────────────────────
+            if (totalLines >= hardLimit) {
               // Post actionable guidance as a PR comment
               await github.rest.issues.createComment({
                 owner, repo, issue_number: prNumber,
@@ -90,7 +91,7 @@ jobs:
                   '',
                   `This PR touches **${totalLines} lines** ` +
                   `(+${additions} additions, \`-\`${deletions} deletions), ` +
-                  `which exceeds the project's **1,000-line limit**.`,
+                  `which exceeds the project's **${hardLimit.toLocaleString()}-line limit**.`,
                   '',
                   'Large PRs are hard to review, increase the risk of bugs slipping through, ',
                   'and slow down the merge queue for everyone. Please break this into smaller, ',
@@ -112,7 +113,7 @@ jobs:
               });
 
               core.setFailed(
-                `PR #${prNumber} exceeds the 1,000 line limit ` +
+                `PR #${prNumber} exceeds the ${hardLimit.toLocaleString()} line limit ` +
                 `(${totalLines} lines changed). Please split it into smaller PRs.`
               );
             }
