@@ -18,7 +18,9 @@
 ///   `combo_<feature_a>_<feature_b>[_<outcome>]`
 #[cfg(test)]
 mod test_combinations {
-    use crate::{Error, SoroTaskContract, SoroTaskContractClient, TaskConfig};
+    use crate::{
+        Error, FeeModel, SoroTaskContract, SoroTaskContractClient, TaskConfig, TokenomicsConfig,
+    };
     use soroban_sdk::{
         contract, contractimpl,
         testutils::{Address as _, Ledger as _},
@@ -78,13 +80,14 @@ mod test_combinations {
     fn setup() -> (Env, SoroTaskContractClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
-        let id = env.register_contract(None, SoroTaskContract);
+        let id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &id);
         (env, client)
     }
 
-    fn base(env: &Env, target: Address) -> TaskConfig { yield_strategy: None,
-        TaskConfig { yield_strategy: None,
+    fn base(env: &Env, target: Address) -> TaskConfig {
+        TaskConfig {
+            yield_strategy: None,
             creator: Address::generate(env),
             target,
             function: Symbol::new(env, "ping"),
@@ -113,10 +116,11 @@ mod test_combinations {
     #[test]
     fn combo_resolver_true_interval_not_elapsed_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 3_600,
             ..base(&env, target)
@@ -140,10 +144,11 @@ mod test_combinations {
     #[test]
     fn combo_resolver_false_interval_elapsed_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 100,
             ..base(&env, target)
@@ -166,10 +171,11 @@ mod test_combinations {
     #[test]
     fn combo_resolver_true_interval_elapsed_executes() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 100,
             ..base(&env, target)
@@ -197,10 +203,11 @@ mod test_combinations {
         let token_id = env.register_stellar_asset_contract_v2(token_admin);
         client.init(&token_id.address());
 
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             gas_balance: 50, // below fixed fee of 100
             ..base(&env, target)
@@ -226,10 +233,11 @@ mod test_combinations {
     #[test]
     fn combo_resolver_false_gas_not_consumed() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             gas_balance: 1_000,
             ..base(&env, target)
@@ -252,10 +260,11 @@ mod test_combinations {
     #[test]
     fn combo_resolver_panic_treated_as_false() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_panic::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_panic::R, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             gas_balance: 1_000,
             ..base(&env, target)
@@ -282,11 +291,12 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_unauthorized_interval_elapsed_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, allowed],
             interval: 100,
             ..base(&env, target)
@@ -309,10 +319,11 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_authorized_interval_not_elapsed_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             interval: 3_600,
             ..base(&env, target)
@@ -338,12 +349,13 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_unauthorized_resolver_true_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, allowed],
             resolver: Some(resolver),
             ..base(&env, target)
@@ -367,11 +379,12 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_authorized_resolver_true_executes() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             resolver: Some(resolver),
             ..base(&env, target)
@@ -389,11 +402,12 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_authorized_resolver_false_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             resolver: Some(resolver),
             ..base(&env, target)
@@ -423,10 +437,11 @@ mod test_combinations {
         let token_id = env.register_stellar_asset_contract_v2(token_admin);
         client.init(&token_id.address());
 
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             gas_balance: 0,
             ..base(&env, target)
@@ -453,11 +468,12 @@ mod test_combinations {
     #[test]
     fn combo_dependency_unmet_resolver_true_blocked() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
         let blocker_id = client.register(&base(&env, target.clone()));
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -482,11 +498,12 @@ mod test_combinations {
     #[test]
     fn combo_dependency_met_resolver_false_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
 
         let blocker_id = client.register(&base(&env, target.clone()));
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -514,11 +531,12 @@ mod test_combinations {
     #[test]
     fn combo_dependency_met_resolver_true_executes() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
         let blocker_id = client.register(&base(&env, target.clone()));
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -544,12 +562,13 @@ mod test_combinations {
     #[test]
     fn combo_dependency_unmet_whitelist_unauthorized_fails_with_unauthorized() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
         let blocker_id = client.register(&base(&env, target.clone()));
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, allowed],
             ..base(&env, target)
         };
@@ -577,10 +596,11 @@ mod test_combinations {
     #[test]
     fn combo_paused_resolver_true_whitelist_open_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -604,10 +624,11 @@ mod test_combinations {
     #[test]
     fn combo_paused_then_resumed_executes_normally() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 100,
             ..base(&env, target)
@@ -634,9 +655,10 @@ mod test_combinations {
     #[test]
     fn combo_gas_deducted_at_exact_interval_boundary() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             interval: 500,
             gas_balance: 1_000,
             ..base(&env, target)
@@ -657,9 +679,10 @@ mod test_combinations {
     #[test]
     fn combo_gas_not_deducted_before_interval_boundary() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             interval: 500,
             gas_balance: 1_000,
             ..base(&env, target)
@@ -686,11 +709,12 @@ mod test_combinations {
     #[test]
     fn combo_all_features_happy_path() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             whitelist: vec![&env, keeper.clone()],
             interval: 1_000,
@@ -731,12 +755,13 @@ mod test_combinations {
         let token_id = env.register_stellar_asset_contract_v2(token_admin);
         client.init(&token_id.address());
 
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             whitelist: vec![&env, allowed],
             interval: 100,
@@ -771,16 +796,26 @@ mod test_combinations {
         let token_admin_client =
             soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
         client.init(&token_id.address());
+        let fee_config = TokenomicsConfig {
+            staking_reward_rate: 500,
+            governance_quorum_percentage: 1000,
+            governance_voting_period: 3_600_000,
+            fee_model: FeeModel::Fixed,
+            min_fee: 100,
+            max_fee: 100,
+        };
+        client.init_tokenomics_config(&fee_config);
 
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let keeper = Address::generate(&env);
         let creator;
 
         let cfg = {
             let c = base(&env, target);
             creator = c.creator.clone();
-            TaskConfig { yield_strategy: None,
+            TaskConfig {
+                yield_strategy: None,
                 resolver: Some(resolver),
                 whitelist: vec![&env, keeper.clone()],
                 interval: 100,
@@ -824,11 +859,11 @@ mod test_combinations {
     #[test]
     fn combo_multiple_dependencies_unmet_blocked() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
 
         let blocker_1 = client.register(&base(&env, target.clone()));
         let blocker_2 = client.register(&base(&env, target.clone()));
-        
+
         let task_id = client.register(&base(&env, target));
         client.add_dependency(&task_id, &blocker_1);
         client.add_dependency(&task_id, &blocker_2);
@@ -838,7 +873,7 @@ mod test_combinations {
 
         // Run only blocker 1
         client.execute(&keeper, &blocker_1);
-        
+
         // Task must still be blocked
         let result = client.try_execute(&keeper, &task_id);
         assert_eq!(
@@ -862,7 +897,7 @@ mod test_combinations {
     #[test]
     fn combo_dependencies_met_but_paused_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
 
         let blocker_id = client.register(&base(&env, target.clone()));
         let task_id = client.register(&base(&env, target));
@@ -873,7 +908,7 @@ mod test_combinations {
 
         // Meet dependency
         client.execute(&keeper, &blocker_id);
-        
+
         // Pause task
         client.pause_task(&task_id);
 
@@ -894,8 +929,8 @@ mod test_combinations {
     #[test]
     fn combo_dependencies_met_but_resolver_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
 
         let blocker_id = client.register(&base(&env, target.clone()));
         let mut cfg = base(&env, target);
@@ -908,20 +943,20 @@ mod test_combinations {
 
         // Meet dependency
         client.execute(&keeper, &blocker_id);
-        
+
         // Try to execute target task (resolver is false)
         client.execute(&keeper, &task_id);
-        
+
         // Verify it DID NOT run
         assert_eq!(client.get_task(&task_id).unwrap().last_run, 0);
     }
 
-    /// Why: Verifies that a task can execute even if its gas balance is 
+    /// Why: Verifies that a task can execute even if its gas balance is
     /// exactly equal to the fee. This is a critical boundary condition.
     #[test]
     fn combo_exact_gas_balance() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let mut cfg = base(&env, target);
         cfg.gas_balance = 100; // Exact fee
         let task_id = client.register(&cfg);
@@ -930,7 +965,7 @@ mod test_combinations {
         ts(&env, 3_600);
 
         client.execute(&keeper, &task_id);
-        
+
         let task = client.get_task(&task_id).unwrap();
         assert_eq!(task.last_run, 3_600);
         assert_eq!(task.gas_balance, 0);
@@ -941,13 +976,13 @@ mod test_combinations {
     #[test]
     fn combo_gas_deduction_sequence() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let mut cfg = base(&env, target);
         cfg.gas_balance = 150; // Not enough for two (fee=100)
         let task_id = client.register(&cfg);
 
         let keeper = Address::generate(&env);
-        
+
         // First run
         ts(&env, 3_600);
         client.execute(&keeper, &task_id);

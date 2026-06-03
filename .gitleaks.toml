@@ -8,8 +8,8 @@ useDefault = true
 [[rules]]
 id = "sorolab-api-key"
 description = "SoroLabs API Key pattern"
-regex = '''(?i)(sorolab[_-]?api[_-]?key|sorolab[_-]?secret)\s*=\s*['\"]?[a-z0-9]{32,}['\"]?'''
-secretGroup = 3
+regex = '''(?i)(?:sorolab[_-]?api[_-]?key|sorolab[_-]?secret)\s*=\s*['\"]?([a-z0-9]{32,})['\"]?'''
+secretGroup = 1
 entropy = 5.0
 
 # Allowlist patterns - files or paths to exclude

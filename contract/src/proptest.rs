@@ -1,10 +1,6 @@
-use crate::{DataKey, Error, SoroTaskContract, SoroTaskContractClient, TaskConfig};
+use crate::{SoroTaskContract, SoroTaskContractClient, TaskConfig};
 use proptest::prelude::*;
-use soroban_sdk::{
-    contract, contractimpl,
-    testutils::{Address as _, Ledger as _},
-    Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Env, Symbol, Vec};
 
 #[contract]
 pub struct MockToken;
@@ -17,14 +13,14 @@ impl MockToken {
 fn setup_env_and_client() -> (Env, SoroTaskContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, SoroTaskContract);
+    let contract_id = env.register(SoroTaskContract, ());
     let client = SoroTaskContractClient::new(&env, &contract_id);
     (env, client)
 }
 
 fn setup_with_token() -> (Env, SoroTaskContractClient<'static>) {
     let (env, client) = setup_env_and_client();
-    let token_id = env.register_contract(None, MockToken);
+    let token_id = env.register(MockToken, ());
     client.init(&token_id);
     (env, client)
 }
@@ -56,9 +52,9 @@ proptest! {
         };
 
         let task_id = client.register(&config);
-        
+
         let retrieved = client.get_task(&task_id).unwrap();
-        
+
         prop_assert_eq!(retrieved.creator, creator);
         prop_assert_eq!(retrieved.target, target);
         prop_assert_eq!(retrieved.interval, interval);
@@ -143,7 +139,7 @@ proptest! {
         };
 
         let task_id = client.register(&config);
-        
+
         let mut expected_balance = initial_balance;
 
         for (is_deposit, amount) in operations {
@@ -159,7 +155,7 @@ proptest! {
                     prop_assert!(res.is_err());
                 }
             }
-            
+
             let retrieved = client.get_task(&task_id).unwrap();
             prop_assert_eq!(retrieved.gas_balance, expected_balance);
         }

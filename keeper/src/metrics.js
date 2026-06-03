@@ -8,9 +8,34 @@ const { ApiGateway } = require('./apiGateway');
 const { FailurePredictor, KeeperReputationScorer } = require('./insights');
 const SloMetrics = require('./sloMetrics');
 
+class MetricsHistory {
+  constructor(maxSamples = 120) {
+    this.maxSamples = maxSamples;
+    this.samples = [];
+  }
+
+  record(point) {
+    this.samples.push({
+      timestamp: new Date().toISOString(),
+      ...point,
+    });
+    if (this.samples.length > this.maxSamples) {
+      this.samples.shift();
+    }
+  }
+
+  getSamples(limit) {
+    const max = typeof limit === 'number' ? limit : this.samples.length;
+    return this.samples.slice(-max);
+  }
+}
+
 class Metrics {
   constructor() {
     this.startTime = Date.now();
+    this.history = new MetricsHistory(
+      parseInt(process.env.METRICS_HISTORY_MAX_SAMPLES || '120', 10),
+    );
     this.maxFeeSamples = 100;
     this.lastPollAt = null;
     this.rpcConnected = false;
@@ -132,6 +157,21 @@ class Metrics {
     };
   }
 
+  recordHistoryPoint() {
+    const executed = this.counters.tasksExecutedTotal;
+    const failed = this.counters.tasksFailedTotal;
+    const attempts = executed + failed;
+    this.history.record({
+      tasksCheckedTotal: this.counters.tasksCheckedTotal,
+      tasksDueTotal: this.counters.tasksDueTotal,
+      tasksExecutedTotal: executed,
+      tasksFailedTotal: failed,
+      successRate: attempts > 0 ? executed / attempts : 1,
+      avgFeePaidXlm: this.gauges.avgFeePaidXlm,
+      lastCycleDurationMs: this.gauges.lastCycleDurationMs,
+    });
+  }
+
   getHealthStatus(staleThreshold) {
     const now = Date.now();
     const uptimeSeconds = Math.floor((now - this.startTime) / 1000);
@@ -162,11 +202,19 @@ function createDefaultGasMonitor() {
       forecastingEnabled: false,
       forecastSafetyBuffer: 0,
       forecastAggregationWindow: 0,
+      dynamicFeeMultiplier: 1,
     }),
     getForecasterState: () => ({
       trackedTasks: 0,
       totalHistoricalSamples: 0,
+      priceState: {
+        shortTermAverage: 0,
+        longTermAverage: 0,
+        trend: 0,
+        multiplier: 1,
+      },
     }),
+    getDynamicFeeMultiplier: () => 1,
   };
 }
 
@@ -586,6 +634,9 @@ class MetricsServer {
       } else if (req.url === '/metrics/slo' || req.url === '/metrics/slo/') {
         this.handleSloMetrics(res);
 
+      } else if (url.pathname === '/metrics/history' || url.pathname === '/metrics/history/') {
+        this.handleMetricsHistory(req, res);
+
       } else if (req.url === '/admin/billing' || req.url === '/admin/billing/') {
         protect(() => this.handleBilling(res))();
 
@@ -647,6 +698,17 @@ class MetricsServer {
       'Content-Type': 'application/json',
     });
     res.end(JSON.stringify(healthData, null, 2));
+  }
+
+  handleMetricsHistory(req, res) {
+    const url = new URL(req.url || '/metrics/history', 'http://localhost');
+    const limit = Math.min(
+      parseInt(url.searchParams.get('limit') || '60', 10),
+      this.metrics.history.maxSamples,
+    );
+    const samples = this.metrics.history.getSamples(limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ samples, count: samples.length }, null, 2));
   }
 
   handleMetrics(res) {
@@ -888,6 +950,7 @@ class MetricsServer {
       this.promAvgFee.set(this.metrics.gauges.avgFeePaidXlm);
     } else if (key === 'lastCycleDurationMs') {
       this.promCycleDuration.set(value);
+      this.metrics.recordHistoryPoint();
     } else if (key === 'lastRetryCycleDurationMs') {
       this.promRetryCycleDuration.set(value);
     } else if (key === 'rpcCircuitState') {
@@ -932,4 +995,4 @@ class MetricsServer {
   }
 }
 
-module.exports = { Metrics, MetricsServer };
+module.exports = { Metrics, MetricsHistory, MetricsServer };

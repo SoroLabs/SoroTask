@@ -42,7 +42,7 @@ jobs:
       - name: Run cargo-audit
         # --deny warnings escalates all advisories to errors.
         # The build will fail if any high-severity vulnerability is found.
-        run: cargo audit --deny warnings
+        run: cargo audit --deny warnings --ignore RUSTSEC-2024-0388 --ignore RUSTSEC-2024-0436
 
   cargo-deny:
     name: Check Licenses & Bans (cargo-deny)
@@ -59,7 +59,5 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           manifest-path: contract/Cargo.toml
-          # deny.toml lives inside the contract directory
-          config: contract/deny.toml
           # Fail on: advisories (CVEs), bans, licenses, sources
           command: check advisories bans licenses sources

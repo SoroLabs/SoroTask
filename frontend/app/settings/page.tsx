@@ -3,6 +3,10 @@
 import { useSession, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import type { HardwareWalletSession } from "@/app/lib/hardwareWallet";
+import { HardwareWalletPanel } from "@/src/components/wallet/HardwareWalletPanel";
+import { TxBatchRegistration } from "@/src/components/wallet/TxBatchRegistration";
+import { useOnboarding } from "@/src/components/onboarding/OnboardingProvider";
 
 interface ProviderConfig {
   name: string;
@@ -14,7 +18,10 @@ interface ProviderConfig {
 export default function SettingsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const { start: startOnboarding } = useOnboarding();
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [hardwareSession, setHardwareSession] =
+    useState<HardwareWalletSession | null>(null);
 
   if (status === "loading") {
     return (
@@ -155,6 +162,25 @@ export default function SettingsPage() {
               <p className="font-mono">{session.user.providerAccountId || "N/A"}</p>
             </div>
           </div>
+        </div>
+
+        <div className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 shadow-xl mb-6">
+          <h2 className="text-xl font-semibold mb-2">Product tour</h2>
+          <p className="text-sm text-neutral-400 mb-4">
+            Replay the guided onboarding to revisit the board, dashboards, and wallet flows.
+          </p>
+          <button
+            type="button"
+            onClick={() => startOnboarding()}
+            className="rounded-lg border border-neutral-600 px-4 py-2 text-sm text-neutral-200 hover:border-blue-500"
+          >
+            Restart onboarding
+          </button>
+        </div>
+
+        <div className="mb-6 space-y-0">
+          <HardwareWalletPanel onSessionChange={setHardwareSession} />
+          <TxBatchRegistration hardwareSession={hardwareSession} />
         </div>
 
         {/* Connected Providers Section */}
