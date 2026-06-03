@@ -2929,7 +2929,6 @@ impl SoroTaskContract {
         // Check if token is initialized for native token fee payments
         if env.storage().instance().has(&DataKey::Token) {
             // Get tokenomics configuration
-            let tokenomics: TokenomicsConfig = env
             let tokenomics_config: TokenomicsConfig = env
                 .storage()
                 .instance()
@@ -2956,9 +2955,6 @@ impl SoroTaskContract {
             fee = base_fee + args_size + target_complexity_bonus;
 
             // Apply fee model specific logic
-            match tokenomics.fee_model {
-                FeeModel::Fixed => {
-                    fee = tokenomics.min_fee;
             match tokenomics_config.fee_model {
                 FeeModel::Fixed => {
                     fee = tokenomics_config.min_fee;
@@ -3896,9 +3892,10 @@ impl SoroTaskContract {
 
         // Reduce keeper stake and update pool totals.
         staking_balance.amount -= amount;
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakingBalance(keeper_address.clone()), &staking_balance);
+        env.storage().persistent().set(
+            &DataKey::StakingBalance(keeper_address.clone()),
+            &staking_balance,
+        );
 
         let mut pool: StakingPool = env
             .storage()
