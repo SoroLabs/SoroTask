@@ -4455,7 +4455,7 @@ mod tests {
         enter_security_guard(&env);
 
         // Check if caller has admin access
-        let caller = env.current_contract_address();
+        let caller = Address::generate(&env);
         let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
 
         if let Some(admin) = admin_address {
@@ -4509,7 +4509,7 @@ mod tests {
         enter_security_guard(&env);
 
         // Check if caller has admin access
-        let caller = env.current_contract_address();
+        let caller = Address::generate(&env);
         let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
 
         if let Some(admin) = admin_address {
@@ -4557,7 +4557,7 @@ mod tests {
         enter_security_guard(&env);
 
         // Check if caller has admin access
-        let caller = env.current_contract_address();
+        let caller = Address::generate(&env);
         let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
 
         if let Some(admin) = admin_address {
@@ -4627,7 +4627,7 @@ mod tests {
         enter_security_guard(&env);
 
         // Check if caller has admin access
-        let caller = env.current_contract_address();
+        let caller = Address::generate(&env);
         let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
 
         if let Some(admin) = admin_address {
@@ -4693,7 +4693,7 @@ mod tests {
         enter_security_guard(&env);
 
         // Check if caller has the permissions being delegated
-        let caller = env.current_contract_address();
+        let caller = Address::generate(&env);
         let permission_grant = get_permission_grant(&env, &caller);
 
         if let Some(grant) = permission_grant {
@@ -4745,7 +4745,7 @@ mod tests {
         enter_security_guard(&env);
 
         // Check if caller is the original delegator
-        let caller = env.current_contract_address();
+        let caller = Address::generate(&env);
         let delegation = get_delegation(&env, &delegatee);
 
         if let Some(delegation) = delegation {
@@ -4780,7 +4780,7 @@ mod tests {
         enter_security_guard(&env);
 
         // Check if caller has admin access
-        let caller = env.current_contract_address();
+        let caller = Address::generate(&env);
         let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
 
         if let Some(admin) = admin_address {
@@ -4978,7 +4978,7 @@ mod tests {
 
         let target = env.register(MockTarget, ());
         let task_id = client.register(&base_config(&env, target));
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
 
         set_timestamp(&env, 12_345);
         client.execute(&keeper, &task_id);
@@ -5004,7 +5004,7 @@ mod tests {
 
         let cfg = TaskConfig {
             yield_strategy: None,
-            creator: env.current_contract_address(),
+            creator: Address::generate(&env),
             target,
             function: Symbol::new(&env, "add"),
             args,
@@ -5018,7 +5018,7 @@ mod tests {
         };
 
         let task_id = client.register(&cfg);
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
         set_timestamp(&env, 99_999);
         client.execute(&keeper, &task_id);
 
@@ -5041,7 +5041,7 @@ mod tests {
         };
 
         let task_id = client.register(&cfg);
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
         set_timestamp(&env, 55_000);
         client.execute(&keeper, &task_id);
 
@@ -5069,7 +5069,7 @@ mod tests {
         };
 
         let task_id = client.register(&cfg);
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
         set_timestamp(&env, 77_777);
         client.execute(&keeper, &task_id);
 
@@ -5090,7 +5090,7 @@ mod tests {
         let mut cfg = base_config(&env, target);
         cfg.interval = 1; // Small interval to allow repeated execution
         let task_id = client.register(&cfg);
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
 
         set_timestamp(&env, 1_000);
         client.execute(&keeper, &task_id);
@@ -5113,8 +5113,8 @@ mod tests {
         let contract_id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &contract_id);
 
-        let creator = env.current_contract_address();
-        let target = env.current_contract_address();
+        let creator = Address::generate(&env);
+        let target = Address::generate(&env);
 
         let config = TaskConfig {
             yield_strategy: None,
@@ -5156,8 +5156,8 @@ mod tests {
         let contract_id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &contract_id);
 
-        let creator = env.current_contract_address();
-        let target = env.current_contract_address();
+        let creator = Address::generate(&env);
+        let target = Address::generate(&env);
 
         let config = TaskConfig {
             yield_strategy: None,
@@ -5189,8 +5189,8 @@ mod tests {
         let contract_id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &contract_id);
 
-        let creator = env.current_contract_address();
-        let target = env.current_contract_address();
+        let creator = Address::generate(&env);
+        let target = Address::generate(&env);
 
         let config = TaskConfig {
             yield_strategy: None,
@@ -5219,7 +5219,7 @@ mod tests {
         let contract_id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &contract_id);
 
-        let creator = env.current_contract_address();
+        let creator = Address::generate(&env);
         let dummy_id = env.register(DummyContract, ());
         let target = dummy_id.clone();
 
@@ -5239,7 +5239,7 @@ mod tests {
         };
 
         let task_id = client.register(&config);
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
 
         // First execution (ledger 50, last_run 0, interval 100)
         // 50 < 0 + 100 -> returns early
@@ -5262,7 +5262,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let token_admin = env.current_contract_address();
+        let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
@@ -5297,7 +5297,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let token_id = env.register_stellar_asset_contract_v2(env.current_contract_address());
+        let token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
         let token_address = token_id.address();
         client.init(&token_address);
 
@@ -5321,8 +5321,8 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         let target = env.register(MockTarget, ());
-        let allowed_keeper = env.current_contract_address();
-        let unauthorized_keeper = env.current_contract_address();
+        let allowed_keeper = Address::generate(&env);
+        let unauthorized_keeper = Address::generate(&env);
 
         let mut config = base_config(&env, target);
         config.whitelist = vec![&env, allowed_keeper.clone()];
@@ -5339,7 +5339,7 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         let target = env.register(MockTarget, ());
-        let allowed_keeper = env.current_contract_address();
+        let allowed_keeper = Address::generate(&env);
 
         let mut config = base_config(&env, target);
         config.whitelist = vec![&env, allowed_keeper.clone()];
@@ -5357,7 +5357,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let token_admin = env.current_contract_address();
+        let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
@@ -5372,7 +5372,7 @@ mod tests {
         let task_id = client.register(&cfg);
 
         // Mint tokens to creator and keeper
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
         token_admin_client.mint(&creator, &5000);
         token_admin_client.mint(&keeper, &0);
 
@@ -5406,7 +5406,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let token_admin = env.current_contract_address();
+        let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
         client.init(&token_address);
@@ -5417,7 +5417,7 @@ mod tests {
         let task_id = client.register(&cfg);
 
         set_timestamp(&env, 3600);
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
 
         // Execution should fail due to insufficient balance
         let result = client.try_execute(&keeper, &task_id);
@@ -5448,7 +5448,7 @@ mod tests {
         let task_id = client.register(&cfg);
 
         set_timestamp(&env, 3600);
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
 
         // Execute without initializing token
         client.execute(&keeper, &task_id);
@@ -5466,7 +5466,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let token_admin = env.current_contract_address();
+        let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
@@ -5659,7 +5659,7 @@ mod tests {
         assert!(client.is_task_blocked(&task2_id));
 
         // Execute task1
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
         set_timestamp(&env, 3600);
         client.execute(&keeper, &task1_id);
 
@@ -5680,7 +5680,7 @@ mod tests {
         client.add_dependency(&task2_id, &task1_id);
 
         // Try to execute task2 while blocked
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
         set_timestamp(&env, 3600);
         let result = client.try_execute(&keeper, &task2_id);
 
@@ -5818,7 +5818,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let token_admin = env.current_contract_address();
+        let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
         let _token_client = soroban_sdk::token::Client::new(&env, &token_address);
@@ -5854,7 +5854,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let token_admin = env.current_contract_address();
+        let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
         client.init(&token_address);
@@ -5885,7 +5885,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let token_admin = env.current_contract_address();
+        let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
         let _token_client = soroban_sdk::token::Client::new(&env, &token_address);
@@ -5897,7 +5897,7 @@ mod tests {
         client.init_staking_pool(&500);
 
         // Mint tokens to staker
-        let staker = env.current_contract_address();
+        let staker = Address::generate(&env);
         token_admin_client.mint(&staker, &1000);
 
         // Stake tokens
@@ -5919,7 +5919,7 @@ mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
-        let token_admin = env.current_contract_address();
+        let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
         let _token_client = soroban_sdk::token::Client::new(&env, &token_address);
@@ -5931,7 +5931,7 @@ mod tests {
         client.init_staking_pool(&500);
 
         // Mint tokens to proposer
-        let proposer = env.current_contract_address();
+        let proposer = Address::generate(&env);
         token_admin_client.mint(&proposer, &1000);
 
         // Stake tokens
@@ -5981,7 +5981,7 @@ mod tests {
         );
         assert!(client.is_task_blocked(&dependent_id));
 
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
         set_timestamp(&env, 3_600);
         client.execute(&keeper, &dependency_id);
 
@@ -5999,7 +5999,7 @@ mod tests {
         let target = env.register(MockTarget, ());
         let dependency_id = client.register(&base_config(&env, target.clone()));
         let dependent_id = client.register(&base_config(&env, target));
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
 
         set_timestamp(&env, 3_600);
         client.execute(&keeper, &dependency_id);
@@ -6034,7 +6034,7 @@ mod tests {
         };
         let malicious_id = client.register(&malicious_cfg);
 
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
         set_timestamp(&env, 3_600);
         let result = client.try_execute(&keeper, &malicious_id);
 
@@ -6227,8 +6227,8 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         // Create participants
-        let participant1 = env.current_contract_address();
-        let participant2 = env.current_contract_address();
+        let participant1 = Address::generate(&env);
+        let participant2 = Address::generate(&env);
         let participants = vec![&env, participant1.clone(), participant2.clone()];
 
         // Create initial balances
@@ -6253,7 +6253,7 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         // Create participants
-        let participant1 = env.current_contract_address();
+        let participant1 = Address::generate(&env);
         let participants = vec![&env, participant1.clone()];
 
         // Create initial balances
@@ -6294,7 +6294,7 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         // Create participants
-        let participant1 = env.current_contract_address();
+        let participant1 = Address::generate(&env);
         let participants = vec![&env, participant1.clone()];
 
         // Create initial balances
@@ -6327,7 +6327,7 @@ mod tests {
         set_timestamp(&env, 3600);
 
         // Settle state channel
-        let keeper = env.current_contract_address();
+        let keeper = Address::generate(&env);
         client.settle_state_channel(&channel_id, &1, &keeper);
 
         // Verify settlement was processed
