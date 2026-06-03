@@ -59,7 +59,5 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           manifest-path: contract/Cargo.toml
-          # deny.toml lives inside the contract directory
-          config: contract/deny.toml
           # Fail on: advisories (CVEs), bans, licenses, sources
           command: check advisories bans licenses sources
