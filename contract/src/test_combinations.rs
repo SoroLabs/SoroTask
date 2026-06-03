@@ -18,7 +18,9 @@
 ///   `combo_<feature_a>_<feature_b>[_<outcome>]`
 #[cfg(test)]
 mod test_combinations {
-    use crate::{Error, SoroTaskContract, SoroTaskContractClient, TaskConfig};
+    use crate::{
+        Error, FeeModel, SoroTaskContract, SoroTaskContractClient, TaskConfig, TokenomicsConfig,
+    };
     use soroban_sdk::{
         contract, contractimpl,
         testutils::{Address as _, Ledger as _},
@@ -794,6 +796,15 @@ mod test_combinations {
         let token_admin_client =
             soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
         client.init(&token_id.address());
+        let fee_config = TokenomicsConfig {
+            staking_reward_rate: 500,
+            governance_quorum_percentage: 1000,
+            governance_voting_period: 3_600_000,
+            fee_model: FeeModel::Fixed,
+            min_fee: 100,
+            max_fee: 100,
+        };
+        client.init_tokenomics_config(&fee_config);
 
         let target = env.register(Target, ());
         let resolver = env.register(resolver_true::R, ());

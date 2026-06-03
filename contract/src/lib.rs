@@ -1599,7 +1599,29 @@ impl SoroTaskContract {
 
         for i in 0..portfolio_tasks.len() {
             let task_id = portfolio_tasks.get(i).unwrap();
-            Self::pause_task(env.clone(), task_id);
+            let task_key = DataKey::Task(task_id);
+            let mut config: TaskConfig = env
+                .storage()
+                .persistent()
+                .get(&task_key)
+                .expect("Task not found");
+
+            if !config.is_active {
+                panic_with_error!(&env, Error::TaskAlreadyPaused);
+            }
+
+            config.is_active = false;
+            env.storage().persistent().set(&task_key, &config);
+            remove_active_task_id(&env, task_id);
+
+            env.events().publish(
+                (
+                    Symbol::new(&env, "TaskPaused"),
+                    Symbol::new(&env, "v1"),
+                    task_id,
+                ),
+                config.creator.clone(),
+            );
         }
 
         // Emit PortfolioPaused event
@@ -1630,7 +1652,29 @@ impl SoroTaskContract {
 
         for i in 0..portfolio_tasks.len() {
             let task_id = portfolio_tasks.get(i).unwrap();
-            Self::resume_task(env.clone(), task_id);
+            let task_key = DataKey::Task(task_id);
+            let mut config: TaskConfig = env
+                .storage()
+                .persistent()
+                .get(&task_key)
+                .expect("Task not found");
+
+            if config.is_active {
+                panic_with_error!(&env, Error::TaskAlreadyActive);
+            }
+
+            config.is_active = true;
+            env.storage().persistent().set(&task_key, &config);
+            add_active_task_id(&env, task_id);
+
+            env.events().publish(
+                (
+                    Symbol::new(&env, "TaskResumed"),
+                    Symbol::new(&env, "v1"),
+                    task_id,
+                ),
+                config.creator.clone(),
+            );
         }
 
         // Emit PortfolioResumed event
@@ -1658,10 +1702,35 @@ impl SoroTaskContract {
         portfolio.creator.require_auth();
 
         let portfolio_tasks = Self::get_portfolio_tasks(env.clone(), portfolio_id);
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Not initialized");
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
 
         for i in 0..portfolio_tasks.len() {
             let task_id = portfolio_tasks.get(i).unwrap();
-            Self::deposit_gas(env.clone(), task_id, portfolio.creator.clone(), amount);
+            let task_key = DataKey::Task(task_id);
+            let mut config: TaskConfig = env
+                .storage()
+                .persistent()
+                .get(&task_key)
+                .expect("Task not found");
+
+            token_client.transfer(&portfolio.creator, &env.current_contract_address(), &amount);
+
+            config.gas_balance += amount;
+            env.storage().persistent().set(&task_key, &config);
+
+            env.events().publish(
+                (
+                    Symbol::new(&env, "GasDeposited"),
+                    Symbol::new(&env, "v1"),
+                    task_id,
+                ),
+                (portfolio.creator.clone(), amount),
+            );
         }
 
         // Emit PortfolioFunded event
@@ -5269,6 +5338,15 @@ mod tests {
         let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
 
         client.init(&token_address);
+        let fee_config = TokenomicsConfig {
+            staking_reward_rate: 500,
+            governance_quorum_percentage: 1000,
+            governance_voting_period: 3_600_000,
+            fee_model: FeeModel::Fixed,
+            min_fee: 100,
+            max_fee: 100,
+        };
+        client.init_tokenomics_config(&fee_config);
 
         let target = env.register(MockTarget, ());
         let mut cfg = base_config(&env, target);
@@ -5822,7 +5900,7 @@ mod tests {
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
         let token_address = token_id.address();
         let _token_client = soroban_sdk::token::Client::new(&env, &token_address);
-        let _token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
 
         client.init(&token_address);
 
@@ -5839,6 +5917,7 @@ mod tests {
         client.add_task_to_portfolio(&portfolio_id, &task2_id);
 
         // Fund portfolio with gas tokens
+        token_admin_client.mint(&id, &2000);
         client.fund_portfolio(&portfolio_id, &1000);
 
         // Verify tasks have received gas
@@ -5896,15 +5975,14 @@ mod tests {
         // Initialize staking pool
         client.init_staking_pool(&500);
 
-        // Mint tokens to staker
-        let staker = Address::generate(&env);
-        token_admin_client.mint(&staker, &1000);
+        // stake_tokens stakes from the contract address.
+        token_admin_client.mint(&id, &1000);
 
         // Stake tokens
         client.stake_tokens(&100);
 
         // Verify staking balance
-        let staking_balance = client.get_staking_balance(&staker).unwrap();
+        let staking_balance = client.get_staking_balance(&id).unwrap();
         assert_eq!(staking_balance.amount, 100);
 
         // Verify staking pool
@@ -5930,9 +6008,8 @@ mod tests {
         // Initialize staking pool
         client.init_staking_pool(&500);
 
-        // Mint tokens to proposer
-        let proposer = Address::generate(&env);
-        token_admin_client.mint(&proposer, &1000);
+        // stake_tokens stakes from the contract address.
+        token_admin_client.mint(&id, &1000);
 
         // Stake tokens
         client.stake_tokens(&100);
@@ -6253,8 +6330,7 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         // Create participants
-        let participant1 = Address::generate(&env);
-        let participants = vec![&env, participant1.clone()];
+        let participants = vec![&env, id.clone()];
 
         // Create initial balances
         let balances = vec![&env, 1000_i128.into_val(&env)];
@@ -6294,8 +6370,7 @@ mod tests {
         let client = SoroTaskContractClient::new(&env, &id);
 
         // Create participants
-        let participant1 = Address::generate(&env);
-        let participants = vec![&env, participant1.clone()];
+        let participants = vec![&env, id.clone()];
 
         // Create initial balances
         let balances = vec![&env, 1000_i128.into_val(&env)];
