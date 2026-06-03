@@ -87,8 +87,12 @@ impl EventLogger {
             timestamp,
             metadata,
         };
-        
-        let topics = (Symbol::new(env, "sorotask"), Symbol::new(env, "state_change"), task_id);
+
+        let topics = (
+            Symbol::new(env, "sorotask"),
+            Symbol::new(env, "state_change"),
+            task_id,
+        );
         env.events().publish(topics, event_data);
     }
 
@@ -110,7 +114,7 @@ impl EventLogger {
             timestamp,
             gas_limit,
         };
-        
+
         let event_data = ExecutionLogEvent {
             task_id,
             context,
@@ -120,7 +124,11 @@ impl EventLogger {
             result_data,
         };
 
-        let topics = (Symbol::new(env, "sorotask"), Symbol::new(env, "execution"), task_id);
+        let topics = (
+            Symbol::new(env, "sorotask"),
+            Symbol::new(env, "execution"),
+            task_id,
+        );
         env.events().publish(topics, event_data);
     }
 
@@ -143,7 +151,11 @@ impl EventLogger {
             timestamp,
         };
 
-        let topics = (Symbol::new(env, "sorotask"), Symbol::new(env, "access_log"), actor);
+        let topics = (
+            Symbol::new(env, "sorotask"),
+            Symbol::new(env, "access_log"),
+            actor,
+        );
         env.events().publish(topics, event_data);
     }
 }

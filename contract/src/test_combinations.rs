@@ -84,7 +84,8 @@ mod test_combinations {
     }
 
     fn base(env: &Env, target: Address) -> TaskConfig {
-        TaskConfig { yield_strategy: None,
+        TaskConfig {
+            yield_strategy: None,
             creator: Address::generate(env),
             target,
             function: Symbol::new(env, "ping"),
@@ -116,7 +117,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let resolver = env.register_contract(None, resolver_true::R);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 3_600,
             ..base(&env, target)
@@ -143,7 +145,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let resolver = env.register_contract(None, resolver_false::R);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 100,
             ..base(&env, target)
@@ -169,7 +172,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let resolver = env.register_contract(None, resolver_true::R);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 100,
             ..base(&env, target)
@@ -200,7 +204,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let resolver = env.register_contract(None, resolver_true::R);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             gas_balance: 50, // below fixed fee of 100
             ..base(&env, target)
@@ -229,7 +234,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let resolver = env.register_contract(None, resolver_false::R);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             gas_balance: 1_000,
             ..base(&env, target)
@@ -255,7 +261,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let resolver = env.register_contract(None, resolver_panic::R);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             gas_balance: 1_000,
             ..base(&env, target)
@@ -286,7 +293,8 @@ mod test_combinations {
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, allowed],
             interval: 100,
             ..base(&env, target)
@@ -312,7 +320,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             interval: 3_600,
             ..base(&env, target)
@@ -343,7 +352,8 @@ mod test_combinations {
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, allowed],
             resolver: Some(resolver),
             ..base(&env, target)
@@ -371,7 +381,8 @@ mod test_combinations {
         let resolver = env.register_contract(None, resolver_true::R);
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             resolver: Some(resolver),
             ..base(&env, target)
@@ -393,7 +404,8 @@ mod test_combinations {
         let resolver = env.register_contract(None, resolver_false::R);
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             resolver: Some(resolver),
             ..base(&env, target)
@@ -426,7 +438,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             gas_balance: 0,
             ..base(&env, target)
@@ -457,7 +470,8 @@ mod test_combinations {
         let resolver = env.register_contract(None, resolver_true::R);
 
         let blocker_id = client.register(&base(&env, target.clone()));
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -486,7 +500,8 @@ mod test_combinations {
         let resolver = env.register_contract(None, resolver_false::R);
 
         let blocker_id = client.register(&base(&env, target.clone()));
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -518,7 +533,8 @@ mod test_combinations {
         let resolver = env.register_contract(None, resolver_true::R);
 
         let blocker_id = client.register(&base(&env, target.clone()));
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -549,7 +565,8 @@ mod test_combinations {
         let intruder = Address::generate(&env);
 
         let blocker_id = client.register(&base(&env, target.clone()));
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, allowed],
             ..base(&env, target)
         };
@@ -580,7 +597,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let resolver = env.register_contract(None, resolver_true::R);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -607,7 +625,8 @@ mod test_combinations {
         let target = env.register_contract(None, Target);
         let resolver = env.register_contract(None, resolver_true::R);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 100,
             ..base(&env, target)
@@ -636,7 +655,8 @@ mod test_combinations {
         let (env, client) = setup();
         let target = env.register_contract(None, Target);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             interval: 500,
             gas_balance: 1_000,
             ..base(&env, target)
@@ -659,7 +679,8 @@ mod test_combinations {
         let (env, client) = setup();
         let target = env.register_contract(None, Target);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             interval: 500,
             gas_balance: 1_000,
             ..base(&env, target)
@@ -690,7 +711,8 @@ mod test_combinations {
         let resolver = env.register_contract(None, resolver_true::R);
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             whitelist: vec![&env, keeper.clone()],
             interval: 1_000,
@@ -736,7 +758,8 @@ mod test_combinations {
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
-        let cfg = TaskConfig { yield_strategy: None,
+        let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             whitelist: vec![&env, allowed],
             interval: 100,
@@ -780,7 +803,8 @@ mod test_combinations {
         let cfg = {
             let c = base(&env, target);
             creator = c.creator.clone();
-            TaskConfig { yield_strategy: None,
+            TaskConfig {
+                yield_strategy: None,
                 resolver: Some(resolver),
                 whitelist: vec![&env, keeper.clone()],
                 interval: 100,
@@ -828,7 +852,7 @@ mod test_combinations {
 
         let blocker_1 = client.register(&base(&env, target.clone()));
         let blocker_2 = client.register(&base(&env, target.clone()));
-        
+
         let task_id = client.register(&base(&env, target));
         client.add_dependency(&task_id, &blocker_1);
         client.add_dependency(&task_id, &blocker_2);
@@ -838,7 +862,7 @@ mod test_combinations {
 
         // Run only blocker 1
         client.execute(&keeper, &blocker_1);
-        
+
         // Task must still be blocked
         let result = client.try_execute(&keeper, &task_id);
         assert_eq!(
@@ -873,7 +897,7 @@ mod test_combinations {
 
         // Meet dependency
         client.execute(&keeper, &blocker_id);
-        
+
         // Pause task
         client.pause_task(&task_id);
 
@@ -908,15 +932,15 @@ mod test_combinations {
 
         // Meet dependency
         client.execute(&keeper, &blocker_id);
-        
+
         // Try to execute target task (resolver is false)
         client.execute(&keeper, &task_id);
-        
+
         // Verify it DID NOT run
         assert_eq!(client.get_task(&task_id).unwrap().last_run, 0);
     }
 
-    /// Why: Verifies that a task can execute even if its gas balance is 
+    /// Why: Verifies that a task can execute even if its gas balance is
     /// exactly equal to the fee. This is a critical boundary condition.
     #[test]
     fn combo_exact_gas_balance() {
@@ -930,7 +954,7 @@ mod test_combinations {
         ts(&env, 3_600);
 
         client.execute(&keeper, &task_id);
-        
+
         let task = client.get_task(&task_id).unwrap();
         assert_eq!(task.last_run, 3_600);
         assert_eq!(task.gas_balance, 0);
@@ -947,7 +971,7 @@ mod test_combinations {
         let task_id = client.register(&cfg);
 
         let keeper = Address::generate(&env);
-        
+
         // First run
         ts(&env, 3_600);
         client.execute(&keeper, &task_id);

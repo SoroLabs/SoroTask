@@ -56,9 +56,9 @@ proptest! {
         };
 
         let task_id = client.register(&config);
-        
+
         let retrieved = client.get_task(&task_id).unwrap();
-        
+
         prop_assert_eq!(retrieved.creator, creator);
         prop_assert_eq!(retrieved.target, target);
         prop_assert_eq!(retrieved.interval, interval);
@@ -143,7 +143,7 @@ proptest! {
         };
 
         let task_id = client.register(&config);
-        
+
         let mut expected_balance = initial_balance;
 
         for (is_deposit, amount) in operations {
@@ -159,7 +159,7 @@ proptest! {
                     prop_assert!(res.is_err());
                 }
             }
-            
+
             let retrieved = client.get_task(&task_id).unwrap();
             prop_assert_eq!(retrieved.gas_balance, expected_balance);
         }

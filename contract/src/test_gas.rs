@@ -2,8 +2,9 @@
 
 use crate::{SoroTaskContract, SoroTaskContractClient, TaskConfig};
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger},
-    vec, Address, Env, Symbol, Vec, contract, contractimpl,
+    vec, Address, Env, Symbol, Vec,
 };
 
 #[contract]
@@ -25,7 +26,8 @@ fn setup() -> (Env, SoroTaskContractClient<'static>) {
 }
 
 fn base_config(env: &Env, target: Address) -> TaskConfig {
-    TaskConfig { yield_strategy: None,
+    TaskConfig {
+        yield_strategy: None,
         creator: Address::generate(env),
         target,
         function: Symbol::new(env, "ping"),
@@ -94,7 +96,7 @@ fn test_gas_monitor_active_index() {
 #[test]
 fn test_gas_deposit() {
     let (env, client) = setup();
-    
+
     // Setup token
     let token_admin = Address::generate(&env);
     let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
@@ -105,7 +107,7 @@ fn test_gas_deposit() {
     let target = env.register_contract(None, MockTarget);
     let cfg = base_config(&env, target);
     let task_id = client.register(&cfg);
-    
+
     // Mint tokens
     token_admin_client.mint(&cfg.creator, &5000);
 
@@ -117,7 +119,7 @@ fn test_gas_deposit() {
 #[test]
 fn test_gas_withdraw() {
     let (env, client) = setup();
-    
+
     let token_admin = Address::generate(&env);
     let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_address = token_id.address();
@@ -129,7 +131,7 @@ fn test_gas_withdraw() {
     // Mint tokens to creator first
     token_admin_client.mint(&cfg.creator, &2000);
     let task_id = client.register(&cfg);
-    
+
     // Deposit gas properly
     client.deposit_gas(&task_id, &cfg.creator, &1000);
 
@@ -141,7 +143,7 @@ fn test_gas_withdraw() {
 #[test]
 fn test_gas_execute() {
     let (env, client) = setup();
-    
+
     let token_admin = Address::generate(&env);
     let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_address = token_id.address();
@@ -153,10 +155,10 @@ fn test_gas_execute() {
     // Mint tokens to creator for gas fees
     token_admin_client.mint(&cfg.creator, &2000);
     let task_id = client.register(&cfg);
-    
+
     // Deposit gas for execution
     client.deposit_gas(&task_id, &cfg.creator, &1000);
-    
+
     let keeper = Address::generate(&env);
     env.ledger().set_timestamp(99999); // Ensure it's runnable
 
@@ -168,7 +170,7 @@ fn test_gas_execute() {
 #[test]
 fn test_gas_cancel() {
     let (env, client) = setup();
-    
+
     let token_admin = Address::generate(&env);
     let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_address = token_id.address();
@@ -178,11 +180,11 @@ fn test_gas_cancel() {
     let target = env.register_contract(None, MockTarget);
     let mut cfg = base_config(&env, target);
     cfg.gas_balance = 0; // Start with 0
-    // Mint tokens to creator for gas fees
+                         // Mint tokens to creator for gas fees
     token_admin_client.mint(&cfg.creator, &2000);
     let task_id = client.register(&cfg);
-    
-    // Deposit gas properly  
+
+    // Deposit gas properly
     client.deposit_gas(&task_id, &cfg.creator, &500);
 
     track_gas(&env, "cancel_task", || {
