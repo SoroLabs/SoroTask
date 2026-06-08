@@ -21,7 +21,7 @@ jobs:
           targets: wasm32v1-none
 
       - name: Install stellar-cli
-        uses: stellar/stellar-cli@v23.0.1
+        uses: stellar/stellar-cli@v26.1.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
