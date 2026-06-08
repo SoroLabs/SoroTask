@@ -82,7 +82,7 @@ jobs:
 
       # ============== CODECOV UPLOAD ==============
       - name: Upload Rust coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/rust/cobertura.xml
@@ -92,7 +92,7 @@ jobs:
           verbose: true
 
       - name: Upload frontend coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/frontend/coverage-final.json
