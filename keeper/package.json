@@ -52,8 +52,8 @@
     "@babel/preset-env": "^7.29.7",
     "babel-jest": "^30.4.1",
     "benny": "^3.7.1",
-    "eslint": "^10.2.1",
-    "fast-check": "^3.22.0",
+    "eslint": "^10.5.0",
+    "fast-check": "^4.8.0",
     "ioredis-mock": "^8.13.1",
     "jest": "^30.4.2",
     "pino-pretty": "^13.1.3"
