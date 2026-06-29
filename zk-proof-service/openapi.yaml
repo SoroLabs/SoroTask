@@ -1,0 +1,243 @@
+openapi: 3.1.0
+info:
+  title: SoroTask ZK-Proof Service API
+  version: 0.1.0
+  description: >
+    API contract between the Keeper and the standalone ZK-Proof Service.
+    The service generates and verifies proof payloads for privacy-preserving
+    task conditions before the Keeper submits task execution to the contract.
+servers:
+  - url: http://localhost:3002
+    description: Local development service
+tags:
+  - name: Proofs
+    description: Generate and verify ZK proof payloads.
+paths:
+  /generate-proof:
+    post:
+      tags:
+        - Proofs
+      summary: Generate a proof for a task condition.
+      operationId: generateProof
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateProofRequest"
+            examples:
+              privateCondition:
+                summary: Generate proof for a light-client task condition.
+                value:
+                  taskId: "task-42"
+                  taskCondition:
+                    type: "privacy-preserving"
+                    circuitId: "task-condition-v1"
+                    inputsHash: "0x9c4e3b2a1f"
+                  clientData:
+                    clientId: "keeper-light-client-1"
+                    ledgerSequence: 123456
+                    nonce: "0x4f8c"
+      responses:
+        "200":
+          description: Proof generated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateProofResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /verify-proof:
+    post:
+      tags:
+        - Proofs
+      summary: Verify a generated proof payload before contract submission.
+      operationId: verifyProof
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyProofRequest"
+            examples:
+              generatedProof:
+                summary: Verify a generated Groth16-style proof.
+                value:
+                  taskId: "task-42"
+                  proof:
+                    proofId: "b7f79386-5a42-493d-b01d-63258f83a760"
+                    pi_a:
+                      - "0x1"
+                      - "0x2"
+                    pi_b:
+                      - ["0x3", "0x4"]
+                      - ["0x5", "0x6"]
+                    pi_c:
+                      - "0x7"
+                      - "0x8"
+                    publicSignals:
+                      - "0x9"
+                  expectedCircuitId: "task-condition-v1"
+      responses:
+        "200":
+          description: Verification completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyProofResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          description: Proof is well-formed but does not satisfy verification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  responses:
+    BadRequest:
+      description: Request payload is missing required fields or has invalid JSON.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: Proof workers are unavailable or the service is not initialized.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    GenerateProofRequest:
+      type: object
+      required:
+        - taskCondition
+        - clientData
+      properties:
+        taskId:
+          type: string
+          description: Optional SoroTask task identifier used for traceability.
+        taskCondition:
+          $ref: "#/components/schemas/TaskCondition"
+        clientData:
+          $ref: "#/components/schemas/ClientData"
+    GenerateProofResponse:
+      type: object
+      required:
+        - proof
+      properties:
+        proof:
+          $ref: "#/components/schemas/Proof"
+    VerifyProofRequest:
+      type: object
+      required:
+        - proof
+      properties:
+        taskId:
+          type: string
+          description: Optional SoroTask task identifier used for traceability.
+        proof:
+          $ref: "#/components/schemas/Proof"
+        expectedCircuitId:
+          type: string
+          description: Circuit identifier the Keeper expects this proof to satisfy.
+    VerifyProofResponse:
+      type: object
+      required:
+        - valid
+      properties:
+        valid:
+          type: boolean
+          description: True when proof verification succeeds.
+        proofId:
+          type: string
+          description: Echoes the verified proof identifier when available.
+        publicSignals:
+          type: array
+          items:
+            type: string
+          description: Public signals accepted by the verifier.
+    TaskCondition:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          description: Privacy condition type or strategy name.
+          examples:
+            - privacy-preserving
+        circuitId:
+          type: string
+          description: ZK circuit identifier used to select the proving key.
+        inputsHash:
+          type: string
+          description: Hex-encoded commitment to private witness inputs.
+      additionalProperties: true
+    ClientData:
+      type: object
+      properties:
+        clientId:
+          type: string
+          description: Keeper or light-client identifier for audit traces.
+        ledgerSequence:
+          type: integer
+          minimum: 0
+          description: Ledger sequence used when the proof depends on chain state.
+        nonce:
+          type: string
+          description: Optional anti-replay nonce.
+      additionalProperties: true
+    Proof:
+      type: object
+      required:
+        - proofId
+        - pi_a
+        - pi_b
+        - pi_c
+        - publicSignals
+      properties:
+        proofId:
+          type: string
+          description: Unique proof identifier returned by the worker pool.
+        status:
+          type: string
+          enum:
+            - success
+            - failed
+          description: Generation status for the proof payload.
+        pi_a:
+          type: array
+          minItems: 2
+          items:
+            type: string
+        pi_b:
+          type: array
+          minItems: 2
+          items:
+            type: array
+            minItems: 2
+            items:
+              type: string
+        pi_c:
+          type: array
+          minItems: 2
+          items:
+            type: string
+        publicSignals:
+          type: array
+          items:
+            type: string
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code.
+        message:
+          type: string
+          description: Human-readable error detail.

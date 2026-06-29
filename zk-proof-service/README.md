@@ -8,6 +8,17 @@ This module implements a backend worker pool dedicated to generating ZK proofs f
 - **Fault-Tolerance:** Includes a robust try-catch boundary inside the proof generation pipeline, ensuring that individual worker failures do not crash the primary backend service.
 - **Strict Architectural Boundaries:** Completely decoupled from the SoroTask core database layer. Receives standard JSON data from light clients and outputs verified proof structures (`pi_a`, `pi_b`, `pi_c`, `publicSignals`).
 
+## API Contract
+
+The Keeper-to-service HTTP contract is defined in [`openapi.yaml`](./openapi.yaml).
+It currently specifies:
+
+- `POST /generate-proof` for producing proof payloads from `taskCondition` and `clientData`.
+- `POST /verify-proof` for checking generated proof payloads before contract submission.
+
+Both endpoints use JSON request and response bodies so the service can be
+integrated behind an Express route, RPC gateway, or a future worker queue.
+
 ## Implementation Requirements Addressed
 - **High Resilience:** Configurable worker count to manage high loads.
 - **Test Coverage:** Exceeds the >90% code coverage requirement for all critical execution paths.
