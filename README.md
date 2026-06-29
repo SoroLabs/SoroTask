@@ -151,6 +151,56 @@ sequenceDiagram
     Keeper->>Keeper: Log execution & metrics
 ```
 
+### ZK-Proof Service Flow
+
+The optional `zk-proof-service` sits beside the Keeper. It generates proof
+payloads for privacy-preserving task conditions before the Keeper submits an
+execution transaction to the SoroTask contract.
+
+```mermaid
+flowchart LR
+    Dashboard["Frontend Dashboard"]
+    Keeper["Keeper Bot"]
+    ZKService["ZK-Proof Service\n(worker pool)"]
+    Contract["SoroTask Contract"]
+    Resolver["Resolver Contract\n(optional verifier)"]
+    Target["Target Contract"]
+
+    Dashboard -->|"Register task with private condition metadata"| Contract
+    Keeper -->|"Read due task and condition requirements"| Contract
+    Keeper -->|"Request proof\n(taskCondition, clientData)"| ZKService
+    ZKService -->|"Validate input and assign worker"| ZKService
+    ZKService -->|"Return proof\npi_a, pi_b, pi_c, publicSignals"| Keeper
+    Keeper -->|"Submit execute(task_id) with proof context"| Contract
+    Contract -->|"Verify condition, directly or through resolver"| Resolver
+    Resolver -->|"Condition accepted or rejected"| Contract
+    Contract -->|"Invoke target function when condition passes"| Target
+    Target -->|"Execution result"| Contract
+```
+
+```mermaid
+sequenceDiagram
+    participant Keeper as Keeper Bot
+    participant ZK as ZK-Proof Service
+    participant Contract as SoroTask Contract
+    participant Resolver as Resolver Contract
+    participant Target as Target Contract
+
+    Keeper->>Contract: get_task(taskId)
+    Contract-->>Keeper: TaskConfig with private condition requirement
+    Keeper->>ZK: generateProof(taskCondition, clientData)
+    ZK->>ZK: Validate input and reserve idle worker
+    ZK-->>Keeper: Proof payload and publicSignals
+    Keeper->>Contract: execute(keeper, taskId)
+    opt Resolver-backed condition
+        Contract->>Resolver: check_condition(proof context)
+        Resolver-->>Contract: true or false
+    end
+    Contract->>Target: invoke configured function
+    Target-->>Contract: result
+    Contract-->>Keeper: execution success or contract error
+```
+
 ### Architecture Summary
 
 1. **Register**: User registers a task via Contract.
