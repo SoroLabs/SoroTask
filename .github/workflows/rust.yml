@@ -1,0 +1,52 @@
+name: Rust CI
+
+on:
+  push:
+    paths:
+      - "contract/**"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "contract/**"
+      - ".github/workflows/rust.yml"
+
+jobs:
+  contract:
+    name: Contract checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contract
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Rust dependencies and build output
+        id: rust-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contract/target
+          key: ${{ runner.os }}-contract-cargo-${{ hashFiles('contract/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-contract-cargo-
+
+      - name: Report cache status
+        run: echo "Rust cache hit: ${{ steps.rust-cache.outputs.cache-hit }}"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build contract
+        run: cargo build --release
+
+      - name: Run contract tests
+        run: cargo test --release
