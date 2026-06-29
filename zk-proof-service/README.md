@@ -8,6 +8,18 @@ This module implements a backend worker pool dedicated to generating ZK proofs f
 - **Fault-Tolerance:** Includes a robust try-catch boundary inside the proof generation pipeline, ensuring that individual worker failures do not crash the primary backend service.
 - **Strict Architectural Boundaries:** Completely decoupled from the SoroTask core database layer. Receives standard JSON data from light clients and outputs verified proof structures (`pi_a`, `pi_b`, `pi_c`, `publicSignals`).
 
+## Express Server
+The service can run as a standalone Express application for local development and container deployments.
+
+```bash
+npm install
+npm start
+```
+
+- `GET /health` returns service readiness and worker status.
+- `POST /generate-proof` accepts `taskCondition` and `clientData` JSON payloads.
+- Set `PORT` or `WORKER_COUNT` to override the default port and worker pool size.
+
 ## Implementation Requirements Addressed
 - **High Resilience:** Configurable worker count to manage high loads.
 - **Test Coverage:** Exceeds the >90% code coverage requirement for all critical execution paths.
