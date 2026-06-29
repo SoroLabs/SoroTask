@@ -5,7 +5,9 @@ import { useTasks } from "@/src/hooks/tasks";
 import { useLayoutStore } from "@/src/store/layoutStore";
 import SplitPaneLayout from "@/src/components/layout/SplitPaneLayout";
 import TaskCardWithSelection from "@/components/TaskCardWithSelection";
+import { TaskListSkeleton } from "@/components/skeletons";
 import type { TaskFilters } from "@/src/lib/query/keys";
+import type { Task, TaskStatus } from "@/src/lib/mockApi/tasks";
 
 export default function TasksPage() {
   const [filters, setFilters] = useState<TaskFilters>({});
@@ -38,12 +40,13 @@ export default function TasksPage() {
           <div className="flex gap-3 items-center">
             <select
               value={filters.status || ""}
-              onChange={(e) =>
+              onChange={(e) => {
+                const status = e.target.value as TaskStatus | "";
                 setFilters((prev) => ({
                   ...prev,
-                  status: e.target.value as any || undefined,
-                }))
-              }
+                  status: status || undefined,
+                }));
+              }}
               className="bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-200"
             >
               <option value="">All Status</option>
@@ -71,16 +74,7 @@ export default function TasksPage() {
           onScroll={handleScroll}
           className="flex-1 overflow-y-auto px-6 py-6"
         >
-          {isLoading && (
-            <div className="space-y-4">
-              {[...Array(5)].map((_, i) => (
-                <div
-                  key={i}
-                  className="h-32 bg-neutral-800 rounded-xl animate-pulse"
-                />
-              ))}
-            </div>
-          )}
+          {isLoading && <TaskListSkeleton rows={5} />}
 
           {!isLoading && tasks && tasks.length === 0 && (
             <div className="text-center py-12">
@@ -90,7 +84,7 @@ export default function TasksPage() {
 
           {!isLoading && tasks && tasks.length > 0 && (
             <div className="space-y-4">
-              {tasks.map((task: any) => (
+              {tasks.map((task: Task) => (
                 <TaskCardWithSelection key={task.id} task={task} />
               ))}
             </div>
