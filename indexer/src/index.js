@@ -8,6 +8,7 @@ const {
 const { runStaleTaskCleanup } = require("./staleTasks");
 const { startApiServer } = require("./api");
 const { computeAndStoreLedgerMerkle } = require("./merkleStore");
+const { broadcastEvent } = require("./wsServer");
 
 // Configuration
 const RPC_URL = "https://soroban-testnet.stellar.org"; // Change as needed
@@ -153,6 +154,14 @@ async function handleEvent(event) {
         console.error("Error inserting event:", err.message);
       } else {
         console.log(`Stored event: ${name} for task ${taskId} at ledger ${event.ledgerSequence}`);
+        // Issue #861: push newly-ingested events to subscribed WebSocket clients.
+        broadcastEvent({
+          ledger_sequence: event.ledgerSequence,
+          contract_id: CONTRACT_ID,
+          event_name: name,
+          task_id: taskId,
+          data: JSON.parse(dataJson),
+        });
       }
     }
   );
@@ -472,7 +481,15 @@ Options:
 if (!handleCLI()) {
   // Start polling
   console.log("Starting event indexer...");
-  startApiServer(4000).catch(console.error);
+  const { createWsServer } = require("./wsServer");
+  startApiServer(4000)
+    .then((httpServer) => {
+      // Issue #861: attach the real-time WebSocket streaming server to the
+      // same HTTP server, served at ws://<host>:4000/ws.
+      createWsServer({ server: httpServer, path: "/ws" });
+      console.log("🔌 WebSocket event stream ready at ws://localhost:4000/ws");
+    })
+    .catch(console.error);
   setInterval(poll, POLL_INTERVAL_MS);
   poll(); // Initial call
 
