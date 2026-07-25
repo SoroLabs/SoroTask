@@ -1,0 +1,46 @@
+# Prometheus alerting rules for the SoroTask ZK proof service (issue #860).
+#
+# These reference the metrics exported at GET /metrics:
+#   zk_worker_pool_active, zk_worker_pool_capacity,
+#   zk_proof_duration_ms, zk_queue_wait_ms
+#
+# NOTE: This file is an ops/infra deliverable. It is provided in standard
+# Prometheus alerting-rule format, but actually wiring it into a live
+# Prometheus + Alertmanager deployment (rule_files, routing, receivers) and an
+# autoscaler is an operational task that cannot be verified by an application
+# code change alone. Load it via prometheus.yml `rule_files:`.
+groups:
+  - name: zk-proof-service
+    rules:
+      - alert: ZkWorkerPoolSaturated
+        # All workers busy for a sustained period -> scale the pool out.
+        expr: (zk_worker_pool_active >= zk_worker_pool_capacity) and (zk_worker_pool_capacity > 0)
+        for: 2m
+        labels:
+          severity: warning
+          service: zk-proof-service
+        annotations:
+          summary: "ZK worker pool saturated"
+          description: "All {{ $value }} workers have been busy for 2m. Consider scaling out."
+
+      - alert: ZkQueueWaitHigh
+        # p95 queue-wait latency is high -> requests are backing up.
+        expr: histogram_quantile(0.95, sum(rate(zk_queue_wait_ms_bucket[5m])) by (le)) > 250
+        for: 5m
+        labels:
+          severity: warning
+          service: zk-proof-service
+        annotations:
+          summary: "ZK proof queue wait p95 high"
+          description: "p95 queue wait > 250ms over 5m; add capacity."
+
+      - alert: ZkProofDurationHigh
+        # p95 proof generation is slow -> possible resource pressure.
+        expr: histogram_quantile(0.95, sum(rate(zk_proof_duration_ms_bucket[5m])) by (le)) > 5000
+        for: 5m
+        labels:
+          severity: critical
+          service: zk-proof-service
+        annotations:
+          summary: "ZK proof generation p95 latency high"
+          description: "p95 proof generation > 5s over 5m."
