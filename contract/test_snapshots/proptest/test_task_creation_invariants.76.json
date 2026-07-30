@@ -54,7 +54,7 @@
                         "symbol": "gas_balance"
                       },
                       "val": {
-                        "i128": "1797919"
+                        "i128": "4159457"
                       }
                     },
                     {
@@ -62,7 +62,7 @@
                         "symbol": "interval"
                       },
                       "val": {
-                        "u32": 56800014
+                        "u32": 12975249
                       }
                     },
                     {
@@ -247,7 +247,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "1797919"
+                      "i128": "4159457"
                     }
                   },
                   {
@@ -255,7 +255,7 @@
                       "symbol": "interval"
                     },
                     "val": {
-                      "u32": 56800014
+                      "u32": 12975249
                     }
                   },
                   {
@@ -331,7 +331,7 @@
                     "symbol": "TaskFingerprint"
                   },
                   {
-                    "bytes": "c3617e3985b199ff8e6c9fa5e38d64787b1ba06805047039aac7540b47fa5c3b"
+                    "bytes": "6ccc14ef0b6e1ef0c727d212db5ab243f621b76c736e21c3eb4ba17c2b720842"
                   }
                 ]
               },
