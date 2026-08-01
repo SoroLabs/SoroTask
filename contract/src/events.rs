@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Bytes, Env, Symbol, Val, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Symbol, Val, Vec};
 
 /// Represents the type of state change
 #[contracttype]
@@ -115,6 +115,48 @@ pub struct AccessLogEvent {
     pub target: Symbol,
     pub target_id: Option<u64>,
     pub is_authorized: bool,
+    pub timestamp: u64,
+}
+
+/// Event payload for task invalidation due to upstream protocol upgrades
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TaskInvalidatedEvent {
+    pub task_id: u64,
+    pub target_contract: Address,
+    pub reason: Symbol,
+    pub timestamp: u64,
+}
+
+/// Event payload for rate limiting when a task is deferred due to block execution cap
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RateLimitExceededEvent {
+    pub task_id: u64,
+    pub block_execution_count: u32,
+    pub max_per_block: u32,
+    pub timestamp: u64,
+}
+
+/// Event payload for encrypted parameter registration
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EncryptedParamsRegisteredEvent {
+    pub task_id: u64,
+    pub encryption_scheme: Symbol,
+    pub public_key: BytesN<32>,
+    pub timestamp: u64,
+}
+
+/// Event payload for delegation pool changes
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct DelegationPoolEvent {
+    pub delegator: Address,
+    pub keeper: Address,
+    pub amount: i128,
+    pub commission_rate: u32,
+    pub action: Symbol,
     pub timestamp: u64,
 }
 
@@ -238,6 +280,104 @@ impl EventLogger {
             Symbol::new(env, "sorotask"),
             Symbol::new(env, "access_log"),
             actor,
+        );
+        env.events().publish(topics, event_data);
+    }
+
+    /// Logs a task invalidation event when an upstream protocol upgrade
+    /// causes a registered task to become invalid.
+    pub fn log_task_invalidated(
+        env: &Env,
+        task_id: u64,
+        target_contract: Address,
+        reason: Symbol,
+    ) {
+        let timestamp = env.ledger().timestamp();
+        let event_data = TaskInvalidatedEvent {
+            task_id,
+            target_contract,
+            reason,
+            timestamp,
+        };
+
+        let topics = (
+            Symbol::new(env, "sorotask"),
+            Symbol::new(env, "task_invalidated"),
+            task_id,
+        );
+        env.events().publish(topics, event_data);
+    }
+
+    /// Logs a rate limit exceeded event when a task execution is deferred
+    /// because the per-block execution cap has been reached.
+    pub fn log_rate_limit_exceeded(
+        env: &Env,
+        task_id: u64,
+        block_execution_count: u32,
+        max_per_block: u32,
+    ) {
+        let timestamp = env.ledger().timestamp();
+        let event_data = RateLimitExceededEvent {
+            task_id,
+            block_execution_count,
+            max_per_block,
+            timestamp,
+        };
+
+        let topics = (
+            Symbol::new(env, "sorotask"),
+            Symbol::new(env, "rate_limit_exceeded"),
+            task_id,
+        );
+        env.events().publish(topics, event_data);
+    }
+
+    /// Logs an encrypted parameters registration event.
+    pub fn log_encrypted_params_registered(
+        env: &Env,
+        task_id: u64,
+        encryption_scheme: Symbol,
+        public_key: BytesN<32>,
+    ) {
+        let timestamp = env.ledger().timestamp();
+        let event_data = EncryptedParamsRegisteredEvent {
+            task_id,
+            encryption_scheme,
+            public_key,
+            timestamp,
+        };
+
+        let topics = (
+            Symbol::new(env, "sorotask"),
+            Symbol::new(env, "encrypted_params_registered"),
+            task_id,
+        );
+        env.events().publish(topics, event_data);
+    }
+
+    /// Logs a delegation pool event (stake, unstake, commission update, slash).
+    pub fn log_delegation_pool_event(
+        env: &Env,
+        delegator: Address,
+        keeper: Address,
+        amount: i128,
+        commission_rate: u32,
+        action: Symbol,
+    ) {
+        let timestamp = env.ledger().timestamp();
+        let event_data = DelegationPoolEvent {
+            delegator,
+            keeper,
+            amount,
+            commission_rate,
+            action: action.clone(),
+            timestamp,
+        };
+
+        let topics = (
+            Symbol::new(env, "sorotask"),
+            Symbol::new(env, "delegation_pool"),
+            action,
         );
         env.events().publish(topics, event_data);
     }
