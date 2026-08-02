@@ -74,6 +74,17 @@ const typeDefs = gql`
     created_at: String!
   }
 
+  """
+  A single keeper execution outcome, derived from KeeperPaid events.
+  """
+  type ExecutionHistory {
+    task_id: Int
+    keeper: String!
+    fee: String!
+    ledger_sequence: Int!
+    processed_at: String!
+  }
+
   type Query {
     """
     Get the currently authenticated user.
@@ -104,6 +115,21 @@ const typeDefs = gql`
     Retrieve reconciliation logs. Restricted to OPERATOR.
     """
     reconciliationLogs(task_id: Int, limit: Int, offset: Int): [ReconciliationLog!]!
+
+    """
+    Retrieve keeper execution history. Optionally filter by task_id.
+    """
+    executionHistory(task_id: Int, limit: Int, offset: Int): [ExecutionHistory!]!
+  }
+
+  type Subscription {
+    """
+    Streams newly indexed contract events in real time (task registrations,
+    executions, gas deposits, ...). Optionally filter by task_id or
+    contract_id. Only active on a live WebSocket connection to /graphql;
+    has no effect on plain query/mutation requests.
+    """
+    eventAdded(task_id: Int, contract_id: String): Event!
   }
 
   type Mutation {

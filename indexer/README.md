@@ -71,6 +71,18 @@ When run with `--apply`, each cleaned task is copied to `archived_tasks` with th
 
 Operators should run `--cleanup-stale` first, review `stale_cleanup_logs`, and only then rerun with `--apply`.
 
+## Cold Storage Archival (Issue #825)
+
+Events older than `ARCHIVAL_CUTOFF_DAYS` (default 90) are automatically archived off the primary `events` table:
+
+1. A daily scheduled check (`scheduleArchival` in `src/archival.js`, started from `src/index.js`) looks for events past the retention window.
+2. Eligible events are written to a Parquet file (SNAPPY-compressed) and uploaded to `s3://$S3_COLD_STORAGE_BUCKET/events/year=YYYY/month=MM/`.
+3. Once uploaded, the archived rows are pruned from the primary `events` table.
+
+This requires `S3_COLD_STORAGE_BUCKET` (defaults to `ignition-cold-storage`) and standard AWS credentials/region (`AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) to be configured in the environment; the run is skipped harmlessly (logged, not thrown) if nothing is eligible yet.
+
+Archived events remain queryable without re-hydrating them into the primary database via `GET /events/archived?contractId=<id>&limit=<n>` (requires a `USER`-role JWT), which runs a DuckDB query directly over the S3 Parquet files using the `httpfs` extension. See `src/archivalQuery.js`.
+
 ## Database Schema
 
 The indexer creates an `events` table with the following structure:

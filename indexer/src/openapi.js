@@ -107,6 +107,28 @@ const openApiSpec = {
         },
       },
     },
+    '/events/archived': {
+      get: {
+        summary: 'Query cold-storage archived events',
+        description:
+          'Queries events older than the retention window directly from S3 Parquet archives ' +
+          '(written by the daily archival job) via DuckDB, without re-hydrating them into the primary database.',
+        operationId: 'getArchivedEvents',
+        tags: ['System'],
+        parameters: [
+          { name: 'contractId', in: 'query', required: true, schema: { type: 'string' } },
+          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', default: 100 } },
+        ],
+        responses: {
+          200: {
+            description: 'Archived events for the given contract',
+            content: { 'application/json': { schema: { type: 'object' } } },
+          },
+          400: { description: 'Missing contractId', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          403: { description: 'Forbidden', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+        },
+      },
+    },
     '/metrics': {
       get: {
         summary: 'Prometheus metrics',

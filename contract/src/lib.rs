@@ -65,24 +65,18 @@ pub enum Error {
     TaskNotFound = 36,
     InvalidUpgradeVersion = 37,
     DuplicateTask = 38,
-    InvalidBounty = 39,
-    BountyBelowMinimum = 40,
+    BountyBelowMinimum = 39,
+    InvalidBounty = 40,
     FeatureDisabled = 41,
     InvalidZkProof = 42,
     FlashSwapFailed = 43,
     InsufficientFlashProfit = 44,
-    // Rate limiting errors
-    BlockExecutionLimitReached = 45,
-    // Invalidation hook errors
-    InvalidationHookNotFound = 46,
-    InvalidationHookAlreadyExists = 47,
-    // Encrypted params errors
-    EncryptionKeyNotFound = 48,
-    DecryptionFailed = 49,
-    // Delegation pool errors
-    DelegationPoolNotFound = 50,
-    InvalidCommissionRate = 51,
-    InsufficientDelegation = 52,
+    InvalidSlippage = 45,
+    OptimisticClaimPending = 46,
+    NoOptimisticClaim = 47,
+    ChallengeWindowClosed = 48,
+    ChallengeWindowActive = 49,
+    FraudProofInvalid = 50,
 }
 
 #[contracttype]
@@ -173,9 +167,11 @@ const MAX_DEPENDENCY_DEPTH: u32 = 16;
 /// Maximum number of tasks allowed in a single batch execution
 const MAX_BATCH_SIZE: u32 = 100;
 
-/// Maximum number of task executions allowed per ledger block
-/// to prevent gas spikes and mempool flooding.
-const MAX_TASKS_PER_BLOCK: u32 = 50;
+/// Ledgers a submitted optimistic resolver-condition claim stays open to
+/// challenge before it can be finalized.
+const OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS: u32 = 100;
+/// Minimum bond a keeper must post to submit an optimistic claim.
+const MIN_OPTIMISTIC_BOND: i128 = 100;
 
 /// Permission Bitmask Flags for Task RBAC
 pub const PERM_CAN_PAUSE: u32 = 1;
@@ -782,6 +778,32 @@ pub struct FlashSwapExecution {
     pub timestamp: u64,
 }
 
+/// A keeper's standing preference for how their execution fee is paid out.
+/// When set, `PayKeeper` routes the fee through `router` into `payout_token`
+/// instead of paying it in the contract's single global gas token.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeeperPayoutPreference {
+    pub payout_token: Address,
+    pub router: Address,
+    /// Maximum acceptable slippage in basis points (0-10000) applied to the
+    /// router's quoted output when deriving `min_amount_out` for the swap.
+    pub max_slippage_bps: u32,
+}
+
+/// An optimistically-submitted resolver condition claim, bonded by the
+/// submitting keeper and open to challenge for `OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS`.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct OptimisticExecution {
+    pub task_id: u64,
+    pub keeper: Address,
+    pub bond: i128,
+    pub claimed_condition_result: bool,
+    pub submitted_at_ledger: u32,
+    pub resolved: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RandomSeedRotation {
@@ -866,6 +888,8 @@ pub enum DataKey {
     ExecutionTrace(u64),
     MinBounty,
     FeatureFlags,
+    KeeperPayoutPreference(Address),
+    OptimisticExecution(u64),
     ZkRangeProofs(u64),
     ZkRangeProofCounter,
     TaskDynamicBounty(u64),
@@ -3107,56 +3131,17 @@ impl SoroTaskContract {
                     );
                 }
 
+                // Transfer keeper fee (always >= 0), auto-routed through the
+                // keeper's preferred DEX router/payout token if configured.
                 if keeper_fee > 0 {
-                    let delegators = get_keeper_delegators(env, keeper);
-                    let total_delegated = get_keeper_total_delegated(env, keeper);
-
-                    if !delegators.is_empty() && total_delegated > 0 {
-                        let commission_rate = get_keeper_commission(env, keeper);
-                        let commission = (keeper_fee * commission_rate as i128) / 10_000i128;
-                        let pool_share = keeper_fee - commission;
-
-                        let mut distributed: i128 = 0;
-                        let delegators_len = delegators.len();
-
-                        for i in 0..delegators_len {
-                            let delegator = delegators.get(i).unwrap();
-                            let delegation: DelegationPool = env
-                                .storage()
-                                .persistent()
-                                .get(&DataKey::DelegationPool(delegator.clone()))
-                                .expect("Delegation pool entry missing");
-
-                            if delegation.amount > 0 && delegation.is_active {
-                                let share = (pool_share * delegation.amount) / total_delegated;
-                                if share > 0 {
-                                    token_client.transfer(
-                                        &env.current_contract_address(),
-                                        &delegator,
-                                        &share,
-                                    );
-                                    distributed += share;
-                                }
-                            }
-                        }
-
-                        if commission > 0 {
-                            token_client.transfer(
-                                &env.current_contract_address(),
-                                keeper,
-                                &commission,
-                            );
-                        }
-
-                        let remainder = pool_share - distributed;
-                        if remainder > 0 {
-                            token_client.transfer(
-                                &env.current_contract_address(),
-                                keeper,
-                                &remainder,
-                            );
-                        }
-                    } else {
+                    let routed = Self::try_pay_keeper_via_router(
+                        env,
+                        keeper,
+                        keeper_fee,
+                        &token_address,
+                        &token_client,
+                    );
+                    if !routed {
                         token_client.transfer(
                             &env.current_contract_address(),
                             keeper,
@@ -4054,6 +4039,353 @@ impl SoroTaskContract {
             .instance()
             .get(&DataKey::Token)
             .expect("Not initialized")
+    }
+
+    /// Sets or updates the calling keeper's payout routing preference: when
+    /// paid an execution fee, `PayKeeper` will swap it from the global gas
+    /// token into `payout_token` via `router` instead of paying it out
+    /// directly. `max_slippage_bps` (0-10000) bounds a `min_amount_out` that
+    /// is passed to the router for it to self-enforce; see
+    /// `try_pay_keeper_via_router` for what happens if it doesn't.
+    pub fn set_keeper_payout_preference(
+        env: Env,
+        keeper: Address,
+        payout_token: Address,
+        router: Address,
+        max_slippage_bps: u32,
+    ) {
+        keeper.require_auth();
+        if max_slippage_bps > 10_000 {
+            panic_with_error!(&env, Error::InvalidSlippage);
+        }
+        let pref = KeeperPayoutPreference {
+            payout_token,
+            router,
+            max_slippage_bps,
+        };
+        let key = DataKey::KeeperPayoutPreference(keeper);
+        env.storage().persistent().set(&key, &pref);
+        env.storage().persistent().extend_ttl(&key, 100_000, 100_000);
+    }
+
+    /// Removes the calling keeper's payout routing preference, reverting
+    /// future fee payments to the plain global gas token.
+    pub fn clear_keeper_payout_preference(env: Env, keeper: Address) {
+        keeper.require_auth();
+        env.storage()
+            .persistent()
+            .remove(&DataKey::KeeperPayoutPreference(keeper));
+    }
+
+    /// Returns a keeper's payout routing preference, if any.
+    pub fn get_keeper_payout_preference(
+        env: Env,
+        keeper: Address,
+    ) -> Option<KeeperPayoutPreference> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::KeeperPayoutPreference(keeper))
+    }
+
+    /// Attempts to pay `amount` of `gas_token` to `keeper` routed through
+    /// their configured DEX router into their preferred payout token.
+    /// Returns `true` if the swap was executed (funds already moved),
+    /// `false` if no preference is configured or the router quote/swap
+    /// failed, in which case the caller must fall back to a plain transfer.
+    ///
+    /// Funds are only ever moved via a short-lived `approve` (expiring the
+    /// same ledger) rather than a pre-emptive transfer, so a reverting or
+    /// misbehaving router never leaves the contract's balance debited
+    /// without the keeper being paid - the caller's fallback transfer is
+    /// always safe to run when this returns `false`.
+    ///
+    /// Expected router interface:
+    /// - `get_amount_out(token_in, token_out, amount_in) -> i128`
+    /// - `swap(token_in, token_out, amount_in, min_amount_out, from, to) -> i128`
+    ///   pulling `amount_in` of `token_in` from `from` (via the prior
+    ///   `approve`) and sending the swap output to `to`.
+    fn try_pay_keeper_via_router(
+        env: &Env,
+        keeper: &Address,
+        amount: i128,
+        gas_token: &Address,
+        token_client: &soroban_sdk::token::Client,
+    ) -> bool {
+        let pref: Option<KeeperPayoutPreference> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::KeeperPayoutPreference(keeper.clone()));
+        let pref = match pref {
+            Some(p) if &p.payout_token != gas_token => p,
+            _ => return false,
+        };
+
+        let quote_args: Vec<Val> = (gas_token.clone(), pref.payout_token.clone(), amount)
+            .into_val(env);
+        let expected_out: i128 = match env.try_invoke_contract::<i128, soroban_sdk::Error>(
+            &pref.router,
+            &Symbol::new(env, "get_amount_out"),
+            quote_args,
+        ) {
+            Ok(Ok(v)) if v > 0 => v,
+            _ => return false,
+        };
+        let min_amount_out =
+            expected_out * (10_000i128 - pref.max_slippage_bps as i128) / 10_000i128;
+
+        let expiration_ledger = env.ledger().sequence() + 1;
+        token_client.approve(
+            &env.current_contract_address(),
+            &pref.router,
+            &amount,
+            &expiration_ledger,
+        );
+
+        let swap_args: Vec<Val> = (
+            gas_token.clone(),
+            pref.payout_token.clone(),
+            amount,
+            min_amount_out,
+            env.current_contract_address(),
+            keeper.clone(),
+        )
+            .into_val(env);
+
+        match env.try_invoke_contract::<i128, soroban_sdk::Error>(
+            &pref.router,
+            &Symbol::new(env, "swap"),
+            swap_args,
+        ) {
+            Ok(Ok(amount_out)) if amount_out > 0 => {
+                // The router is expected to self-enforce `min_amount_out`
+                // (it was passed the value precisely so it can revert if it
+                // can't meet it); a non-compliant router could still return
+                // a lower amount without reverting. Once it reports success
+                // here the swap has already happened - we can no longer
+                // safely "undo" it and fall back to a plain transfer without
+                // risking a double payout of the contract's gas token
+                // balance - so a shortfall is reported via a distinct event
+                // rather than treated as a failure. This only ever risks the
+                // keeper's own fee: the keeper chose the router themselves
+                // via `set_keeper_payout_preference`.
+                let event_name = if amount_out >= min_amount_out {
+                    "KeeperPayoutRouted"
+                } else {
+                    "KeeperPayoutSlippageExceeded"
+                };
+                env.events().publish(
+                    (Symbol::new(env, event_name), Symbol::new(env, "v1")),
+                    (
+                        keeper.clone(),
+                        gas_token.clone(),
+                        pref.payout_token.clone(),
+                        amount,
+                        amount_out,
+                        min_amount_out,
+                    ),
+                );
+                true
+            }
+            _ => {
+                // Nothing was pulled (a failed/panicking sub-invocation rolls
+                // back its own state changes), but revoke the approval
+                // defensively in case the router is still live for the rest
+                // of this ledger.
+                token_client.approve(&env.current_contract_address(), &pref.router, &0, &expiration_ledger);
+                false
+            }
+        }
+    }
+
+    /// Submits an optimistic claim about `task_id`'s resolver condition,
+    /// bonded by the keeper. If unchallenged for
+    /// `OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS` ledgers, the claim can be
+    /// finalized via `finalize_optimistic_result` and the bond returned.
+    pub fn submit_optimistic_result(
+        env: Env,
+        keeper: Address,
+        task_id: u64,
+        claimed_condition_result: bool,
+        bond: i128,
+    ) {
+        enter_security_guard(&env);
+        keeper.require_auth();
+
+        if bond < MIN_OPTIMISTIC_BOND {
+            panic_with_error!(&env, Error::KeeperStakeTooLow);
+        }
+
+        let task_key = DataKey::Task(task_id);
+        if !env.storage().persistent().has(&task_key) {
+            panic_with_error!(&env, Error::TaskNotFound);
+        }
+
+        let claim_key = DataKey::OptimisticExecution(task_id);
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, OptimisticExecution>(&claim_key)
+        {
+            if !existing.resolved {
+                panic_with_error!(&env, Error::OptimisticClaimPending);
+            }
+        }
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Not initialized");
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&keeper, &env.current_contract_address(), &bond);
+
+        let claim = OptimisticExecution {
+            task_id,
+            keeper: keeper.clone(),
+            bond,
+            claimed_condition_result,
+            submitted_at_ledger: env.ledger().sequence(),
+            resolved: false,
+        };
+        env.storage().persistent().set(&claim_key, &claim);
+        env.storage().persistent().extend_ttl(&claim_key, 100_000, 100_000);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "OptimisticResultSubmitted"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (keeper, claimed_condition_result, bond),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Challenges a pending optimistic claim by re-evaluating the task's
+    /// resolver on-chain. If the claim was dishonest, the keeper's bond is
+    /// slashed and paid to the challenger; otherwise the challenge reverts.
+    pub fn challenge_optimistic_result(env: Env, challenger: Address, task_id: u64) {
+        enter_security_guard(&env);
+        challenger.require_auth();
+
+        let claim_key = DataKey::OptimisticExecution(task_id);
+        let mut claim: OptimisticExecution = env
+            .storage()
+            .persistent()
+            .get(&claim_key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoOptimisticClaim));
+
+        if claim.resolved {
+            panic_with_error!(&env, Error::NoOptimisticClaim);
+        }
+        if env.ledger().sequence() >= claim.submitted_at_ledger + OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS {
+            panic_with_error!(&env, Error::ChallengeWindowClosed);
+        }
+
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::TaskNotFound));
+
+        let actual_result = match config.resolver {
+            Some(ref resolver_address) => {
+                let mut args = Vec::<Val>::new(&env);
+                args.push_back(config.args.clone().into_val(&env));
+                match env.try_invoke_contract::<bool, soroban_sdk::Error>(
+                    resolver_address,
+                    &Symbol::new(&env, "check_condition"),
+                    args,
+                ) {
+                    Ok(Ok(v)) => v,
+                    _ => false,
+                }
+            }
+            None => true,
+        };
+
+        if actual_result == claim.claimed_condition_result {
+            panic_with_error!(&env, Error::FraudProofInvalid);
+        }
+
+        claim.resolved = true;
+        env.storage().persistent().set(&claim_key, &claim);
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Not initialized");
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &challenger, &claim.bond);
+
+        Self::set_task_status(&env, task_id, ExecutionOutcome::Failed);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "OptimisticResultChallenged"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (claim.keeper.clone(), challenger, claim.bond),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Finalizes an unchallenged optimistic claim once its challenge window
+    /// has elapsed: returns the keeper's bond in full, then runs the task's
+    /// real execution (the same gated pipeline `execute` uses, paying the
+    /// keeper as normal), skipping the keeper's own auth since they already
+    /// authorized `submit_optimistic_result`. If the claim's condition
+    /// doesn't actually hold (or another gate fails), execution simply
+    /// reports `Skipped`, same as a normal `execute` call would.
+    pub fn finalize_optimistic_result(env: Env, task_id: u64) {
+        enter_security_guard(&env);
+
+        let claim_key = DataKey::OptimisticExecution(task_id);
+        let mut claim: OptimisticExecution = env
+            .storage()
+            .persistent()
+            .get(&claim_key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoOptimisticClaim));
+
+        if claim.resolved {
+            panic_with_error!(&env, Error::NoOptimisticClaim);
+        }
+        if env.ledger().sequence() < claim.submitted_at_ledger + OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS {
+            panic_with_error!(&env, Error::ChallengeWindowActive);
+        }
+
+        claim.resolved = true;
+        env.storage().persistent().set(&claim_key, &claim);
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Not initialized");
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &claim.keeper, &claim.bond);
+
+        Self::execute_internal(&env, &claim.keeper, task_id, true);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "OptimisticResultFinalized"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (claim.keeper.clone(), claim.bond),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Returns the pending or resolved optimistic claim for a task, if any.
+    pub fn get_optimistic_result(env: Env, task_id: u64) -> Option<OptimisticExecution> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::OptimisticExecution(task_id))
     }
 
     pub fn get_task_status(env: Env, task_id: u64) -> TaskExecutionStatus {
@@ -6509,7 +6841,122 @@ pub(crate) mod tests {
         }
     }
 
-    // ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Helpers ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬
+    /// Minimal DEX router mocks for testing `try_pay_keeper_via_router`
+    /// (Issue #829). `MockDexRouter` performs a 1:1 swap by pulling
+    /// `token_in` from `from` (via the caller's prior `approve`) and paying
+    /// `token_out` out of its own pre-funded balance. `MockFailingDexRouter`
+    /// always reverts, to exercise the payout fallback path.
+    mod mock_router {
+        use soroban_sdk::{contract, contractimpl, token, Address, Env};
+
+        #[contract]
+        pub struct MockDexRouter;
+
+        #[contractimpl]
+        impl MockDexRouter {
+            pub fn get_amount_out(
+                _env: Env,
+                _token_in: Address,
+                _token_out: Address,
+                amount_in: i128,
+            ) -> i128 {
+                amount_in
+            }
+
+            pub fn swap(
+                env: Env,
+                token_in: Address,
+                token_out: Address,
+                amount_in: i128,
+                min_amount_out: i128,
+                from: Address,
+                to: Address,
+            ) -> i128 {
+                let amount_out = amount_in;
+                assert!(amount_out >= min_amount_out, "slippage exceeded");
+                let token_in_client = token::Client::new(&env, &token_in);
+                token_in_client.transfer_from(
+                    &env.current_contract_address(),
+                    &from,
+                    &env.current_contract_address(),
+                    &amount_in,
+                );
+                let token_out_client = token::Client::new(&env, &token_out);
+                token_out_client.transfer(&env.current_contract_address(), &to, &amount_out);
+                amount_out
+            }
+        }
+
+        #[contract]
+        pub struct MockFailingDexRouter;
+
+        #[contractimpl]
+        impl MockFailingDexRouter {
+            pub fn get_amount_out(
+                _env: Env,
+                _token_in: Address,
+                _token_out: Address,
+                amount_in: i128,
+            ) -> i128 {
+                amount_in
+            }
+
+            pub fn swap(
+                _env: Env,
+                _token_in: Address,
+                _token_out: Address,
+                _amount_in: i128,
+                _min_amount_out: i128,
+                _from: Address,
+                _to: Address,
+            ) -> i128 {
+                panic!("router unavailable");
+            }
+        }
+
+        /// A router that ignores `min_amount_out` and pays out only half of
+        /// `amount_in` without reverting - exercises the case where the
+        /// contract can detect a slippage violation but must not fall back
+        /// to a second plain-token payout, since funds already moved.
+        #[contract]
+        pub struct MockUnderpayingDexRouter;
+
+        #[contractimpl]
+        impl MockUnderpayingDexRouter {
+            pub fn get_amount_out(
+                _env: Env,
+                _token_in: Address,
+                _token_out: Address,
+                amount_in: i128,
+            ) -> i128 {
+                amount_in
+            }
+
+            pub fn swap(
+                env: Env,
+                token_in: Address,
+                token_out: Address,
+                amount_in: i128,
+                _min_amount_out: i128,
+                from: Address,
+                to: Address,
+            ) -> i128 {
+                let amount_out = amount_in / 2;
+                let token_in_client = token::Client::new(&env, &token_in);
+                token_in_client.transfer_from(
+                    &env.current_contract_address(),
+                    &from,
+                    &env.current_contract_address(),
+                    &amount_in,
+                );
+                let token_out_client = token::Client::new(&env, &token_out);
+                token_out_client.transfer(&env.current_contract_address(), &to, &amount_out);
+                amount_out
+            }
+        }
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
     fn setup() -> (Env, Address) {
         let env = Env::default();
@@ -8111,6 +8558,193 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_keeper_payout_routed_through_dex() {
+        use mock_router::MockDexRouter;
+
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let gas_token = token_id.address();
+        let gas_token_client = soroban_sdk::token::Client::new(&env, &gas_token);
+        let gas_token_admin_client =
+            soroban_sdk::token::StellarAssetClient::new(&env, &gas_token);
+
+        let payout_admin = Address::generate(&env);
+        let payout_token_id = env.register_stellar_asset_contract_v2(payout_admin.clone());
+        let payout_token = payout_token_id.address();
+        let payout_token_client = soroban_sdk::token::Client::new(&env, &payout_token);
+        let payout_token_admin_client =
+            soroban_sdk::token::StellarAssetClient::new(&env, &payout_token);
+
+        let admin = Address::generate(&env);
+        client.init_proxy(&admin, &gas_token, &1);
+        client.init_tokenomics_config(&TokenomicsConfig {
+            staking_reward_rate: 500,
+            governance_quorum_percentage: 1000,
+            governance_voting_period: 3_600_000,
+            fee_model: FeeModel::Fixed,
+            min_fee: 100,
+            max_fee: 10000,
+        });
+        client.set_protocol_fee_bps(&0);
+
+        let router_id = env.register(MockDexRouter, ());
+        // Pre-fund the router with payout_token so it can pay the keeper out.
+        payout_token_admin_client.mint(&router_id, &1_000);
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+
+        let keeper = Address::generate(&env);
+        gas_token_admin_client.mint(&creator, &5000);
+        client.deposit_gas(&task_id, &creator, &1000);
+
+        client.set_keeper_payout_preference(&keeper, &payout_token, &router_id, &500);
+        assert_eq!(
+            client.get_keeper_payout_preference(&keeper),
+            Some(KeeperPayoutPreference {
+                payout_token: payout_token.clone(),
+                router: router_id.clone(),
+                max_slippage_bps: 500,
+            })
+        );
+
+        set_timestamp(&env, 3600);
+        client.execute(&keeper, &task_id);
+
+        // Keeper is paid entirely in the routed payout token, not the gas token.
+        assert_eq!(gas_token_client.balance(&keeper), 0);
+        assert_eq!(payout_token_client.balance(&keeper), 100);
+    }
+
+    #[test]
+    fn test_keeper_payout_falls_back_when_router_fails() {
+        use mock_router::MockFailingDexRouter;
+
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let gas_token = token_id.address();
+        let gas_token_client = soroban_sdk::token::Client::new(&env, &gas_token);
+        let gas_token_admin_client =
+            soroban_sdk::token::StellarAssetClient::new(&env, &gas_token);
+
+        let payout_admin = Address::generate(&env);
+        let payout_token_id = env.register_stellar_asset_contract_v2(payout_admin.clone());
+        let payout_token = payout_token_id.address();
+
+        let admin = Address::generate(&env);
+        client.init_proxy(&admin, &gas_token, &1);
+        client.init_tokenomics_config(&TokenomicsConfig {
+            staking_reward_rate: 500,
+            governance_quorum_percentage: 1000,
+            governance_voting_period: 3_600_000,
+            fee_model: FeeModel::Fixed,
+            min_fee: 100,
+            max_fee: 10000,
+        });
+        client.set_protocol_fee_bps(&0);
+
+        let router_id = env.register(MockFailingDexRouter, ());
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+
+        let keeper = Address::generate(&env);
+        gas_token_admin_client.mint(&creator, &5000);
+        client.deposit_gas(&task_id, &creator, &1000);
+
+        client.set_keeper_payout_preference(&keeper, &payout_token, &router_id, &500);
+
+        set_timestamp(&env, 3600);
+        client.execute(&keeper, &task_id);
+
+        // Router failed, so the keeper falls back to a plain gas-token payout.
+        assert_eq!(gas_token_client.balance(&keeper), 100);
+    }
+
+    #[test]
+    fn test_keeper_payout_does_not_double_pay_when_router_underpays() {
+        use mock_router::MockUnderpayingDexRouter;
+
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let gas_token = token_id.address();
+        let gas_token_client = soroban_sdk::token::Client::new(&env, &gas_token);
+        let gas_token_admin_client =
+            soroban_sdk::token::StellarAssetClient::new(&env, &gas_token);
+
+        let payout_admin = Address::generate(&env);
+        let payout_token_id = env.register_stellar_asset_contract_v2(payout_admin.clone());
+        let payout_token = payout_token_id.address();
+        let payout_token_client = soroban_sdk::token::Client::new(&env, &payout_token);
+        let payout_token_admin_client =
+            soroban_sdk::token::StellarAssetClient::new(&env, &payout_token);
+
+        let admin = Address::generate(&env);
+        client.init_proxy(&admin, &gas_token, &1);
+        client.init_tokenomics_config(&TokenomicsConfig {
+            staking_reward_rate: 500,
+            governance_quorum_percentage: 1000,
+            governance_voting_period: 3_600_000,
+            fee_model: FeeModel::Fixed,
+            min_fee: 100,
+            max_fee: 10000,
+        });
+        client.set_protocol_fee_bps(&0);
+
+        let router_id = env.register(MockUnderpayingDexRouter, ());
+        payout_token_admin_client.mint(&router_id, &1_000);
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+
+        let keeper = Address::generate(&env);
+        gas_token_admin_client.mint(&creator, &5000);
+        client.deposit_gas(&task_id, &creator, &1000);
+
+        // 0 bps slippage tolerance: any shortfall from the router should be
+        // reported (via a distinct event), not silently double-paid.
+        client.set_keeper_payout_preference(&keeper, &payout_token, &router_id, &0);
+
+        set_timestamp(&env, 3600);
+        client.execute(&keeper, &task_id);
+
+        // The router paid out half (50) of the fee (100) in payout_token and
+        // ignored min_amount_out without reverting. The keeper must receive
+        // exactly that - not the swapped amount *and* a gas-token fallback.
+        assert_eq!(payout_token_client.balance(&keeper), 50);
+        assert_eq!(gas_token_client.balance(&keeper), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #45)")]
+    fn test_set_keeper_payout_preference_rejects_invalid_slippage() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let keeper = Address::generate(&env);
+        let payout_token = Address::generate(&env);
+        let router = Address::generate(&env);
+        client.set_keeper_payout_preference(&keeper, &payout_token, &router, &10_001);
+    }
+
+    #[test]
     fn test_fee_recipient_receives_fee() {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
@@ -9650,6 +10284,128 @@ pub(crate) mod tests {
         assert_eq!(updated_report.total_vault_balance, 225i128);
         assert!(updated_report.is_solvent);
         assert_eq!(updated_report.solvency_ratio_bps, 10_000u32);
+    }
+
+    // ── Optimistic execution / fraud-proof challenge tests (Issue #828) ────
+
+    /// Whether to register a resolver for an optimistic-execution test task,
+    /// and if so, whether it approves (`true`) or denies (`false`).
+    enum OptimisticResolver {
+        None,
+        AlwaysTrue,
+        AlwaysFalse,
+    }
+
+    /// Sets up a contract + gas token + a registered task (optionally with a
+    /// resolver), returning `(env, client, task_id, keeper)` with the keeper
+    /// pre-funded with 1,000 gas tokens.
+    fn setup_optimistic_task(
+        resolver: OptimisticResolver,
+    ) -> (Env, SoroTaskContractClient<'static>, u64, Address) {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+
+        let admin = Address::generate(&env);
+        client.init_proxy(&admin, &token_address, &1);
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.resolver = match resolver {
+            OptimisticResolver::None => None,
+            OptimisticResolver::AlwaysTrue => {
+                Some(env.register(resolver_true::MockResolverTrue, ()))
+            }
+            OptimisticResolver::AlwaysFalse => {
+                Some(env.register(resolver_false::MockResolverFalse, ()))
+            }
+        };
+        let task_id = client.register(&cfg);
+
+        let keeper = Address::generate(&env);
+        token_admin_client.mint(&keeper, &1_000);
+
+        (env, client, task_id, keeper)
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_submit_optimistic_result_requires_min_bond() {
+        let (_env, client, task_id, keeper) = setup_optimistic_task(OptimisticResolver::None);
+        client.submit_optimistic_result(&keeper, &task_id, &true, &10);
+    }
+
+    #[test]
+    fn test_finalize_optimistic_result_returns_bond_after_window() {
+        let (env, client, task_id, keeper) = setup_optimistic_task(OptimisticResolver::None);
+        let token_address = client.get_token();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+
+        client.submit_optimistic_result(&keeper, &task_id, &true, &100);
+        assert_eq!(token_client.balance(&keeper), 900);
+
+        env.ledger()
+            .with_mut(|l| l.sequence_number += OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS);
+        client.finalize_optimistic_result(&task_id);
+
+        assert_eq!(token_client.balance(&keeper), 1_000);
+        assert!(client.get_optimistic_result(&task_id).unwrap().resolved);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #49)")]
+    fn test_finalize_optimistic_result_before_window_reverts() {
+        let (_env, client, task_id, keeper) = setup_optimistic_task(OptimisticResolver::None);
+        client.submit_optimistic_result(&keeper, &task_id, &true, &100);
+        client.finalize_optimistic_result(&task_id);
+    }
+
+    #[test]
+    fn test_challenge_optimistic_result_slashes_dishonest_keeper() {
+        let (env, client, task_id, keeper) =
+            setup_optimistic_task(OptimisticResolver::AlwaysFalse);
+        let token_address = client.get_token();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+
+        // Keeper dishonestly claims the (actually-false) condition is true.
+        client.submit_optimistic_result(&keeper, &task_id, &true, &100);
+
+        let challenger = Address::generate(&env);
+        client.challenge_optimistic_result(&challenger, &task_id);
+
+        assert_eq!(token_client.balance(&challenger), 100);
+        assert_eq!(token_client.balance(&keeper), 900);
+        assert!(client.get_optimistic_result(&task_id).unwrap().resolved);
+        assert_eq!(
+            client.get_task_status(&task_id).outcome,
+            ExecutionOutcome::Failed
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #50)")]
+    fn test_challenge_optimistic_result_reverts_when_claim_is_honest() {
+        let (env, client, task_id, keeper) =
+            setup_optimistic_task(OptimisticResolver::AlwaysTrue);
+        client.submit_optimistic_result(&keeper, &task_id, &true, &100);
+        let challenger = Address::generate(&env);
+        client.challenge_optimistic_result(&challenger, &task_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #48)")]
+    fn test_challenge_optimistic_result_after_window_reverts() {
+        let (env, client, task_id, keeper) =
+            setup_optimistic_task(OptimisticResolver::AlwaysFalse);
+        client.submit_optimistic_result(&keeper, &task_id, &true, &100);
+        env.ledger()
+            .with_mut(|l| l.sequence_number += OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS);
+        let challenger = Address::generate(&env);
+        client.challenge_optimistic_result(&challenger, &task_id);
     }
 }
 

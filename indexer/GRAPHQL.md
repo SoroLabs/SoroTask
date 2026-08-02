@@ -42,6 +42,9 @@ Fetches a single task by ID. Note: Fields like `whitelist_json` and `blocked_by_
 #### `events(task_id: Int, limit: Int, offset: Int): [Event!]!`
 Fetches blockchain events. Optionally filter by a specific `task_id`.
 
+#### `executionHistory(task_id: Int, limit: Int, offset: Int): [ExecutionHistory!]!`
+Fetches keeper execution outcomes (fee paid, ledger sequence), derived from `KeeperPaid` events. Optionally filter by `task_id`.
+
 #### `reconciliationLogs(task_id: Int, limit: Int, offset: Int): [ReconciliationLog!]!`
 **(Requires OPERATOR or ADMIN role)**
 Fetches background reconciliation logs.
@@ -56,6 +59,29 @@ Fetches background reconciliation logs.
 #### `pauseTask(id: ID!): Task`
 Sets a task to inactive (`is_active = 0`).
 - **Authorization**: The caller must either be an `ADMIN` or the `Creator` of the task.
+
+---
+
+### Subscriptions (Issue #824)
+
+#### `eventAdded(task_id: Int, contract_id: String): Event!`
+Streams newly indexed contract events (task registrations, executions, gas deposits, ...) in real time over a WebSocket connection. Optionally filter by `task_id` or `contract_id`.
+
+- **URL**: `ws://localhost:4000/graphql` (same host/port as the HTTP API)
+- **Protocol**: [`subscriptions-transport-ws`](https://github.com/apollographql/subscriptions-transport-ws) (`graphql-ws` legacy sub-protocol) - compatible with Apollo Client's `WebSocketLink`/`GraphQLWsLink` configured for that protocol, or `subscriptions-transport-ws`'s `SubscriptionClient` directly.
+- Subscriptions only exist on the WebSocket transport; plain HTTP `POST /graphql` requests only ever serve queries/mutations and never block on them.
+
+```graphql
+subscription {
+  eventAdded(task_id: 42) {
+    id
+    event_name
+    task_id
+    data_json
+    processed_at
+  }
+}
+```
 
 ---
 

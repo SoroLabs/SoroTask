@@ -9,6 +9,8 @@ const { runStaleTaskCleanup } = require("./staleTasks");
 const { startApiServer } = require("./api");
 const { broadcastEvent } = require("./wsServer");
 const { computeAndStoreLedgerMerkle } = require("./merkleStore");
+const { scheduleArchival } = require("./archival");
+const { pubsub, EVENT_ADDED } = require("./graphql/pubsub");
 
 // Configuration
 const RPC_URL = "https://soroban-testnet.stellar.org"; // Change as needed
@@ -164,7 +166,7 @@ async function handleEvent(event) {
     name,
     taskId,
     dataJson,
-    (err) => {
+    function (err) {
       if (err) {
         console.error("Error inserting event:", err.message);
       } else {
@@ -177,6 +179,18 @@ async function handleEvent(event) {
           event_name: name,
           task_id: taskId,
           data: JSON.parse(dataJson),
+        });
+        // Issue #824: publish to the GraphQL `eventAdded` subscription.
+        pubsub.publish(EVENT_ADDED, {
+          eventAdded: {
+            id: this.lastID,
+            ledger_sequence: event.ledgerSequence,
+            contract_id: CONTRACT_ID,
+            event_name: name,
+            task_id: taskId,
+            data_json: dataJson,
+            processed_at: new Date().toISOString(),
+          },
         });
       }
     }
@@ -539,6 +553,11 @@ if (!handleCLI()) {
       console.error("[Cleanup] Error running stale task cleanup:", err.message);
     });
   }, STALE_CLEANUP_INTERVAL_MS);
+
+  // Issue #825: archive events older than ARCHIVAL_CUTOFF_DAYS (default 90)
+  // to S3 Parquet and prune them from the primary table, checked daily.
+  console.log("Starting event archival scheduler (cold storage, checked daily)...");
+  scheduleArchival(dbDeps);
 }
 
 // Graceful shutdown

@@ -1,6 +1,8 @@
 const jwt = require('jsonwebtoken');
+const { withFilter } = require('graphql-subscriptions');
 const { ROLES, JWT_SECRET, enforceRole, isOwner } = require('./auth');
 const { queryAll, queryGet, queryRun } = require('./db');
+const { pubsub, EVENT_ADDED } = require('./pubsub');
 
 const resolvers = {
   Query: {
@@ -52,9 +54,43 @@ const resolvers = {
         return queryAll('SELECT * FROM reconciliation_logs WHERE task_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', [task_id, limit, offset]);
       }
       return queryAll('SELECT * FROM reconciliation_logs ORDER BY created_at DESC LIMIT ? OFFSET ?', [limit, offset]);
-    }
+    },
+    executionHistory: async (parent, { task_id, limit = 50, offset = 0 }) => {
+      const params = task_id !== undefined ? [task_id, limit, offset] : [limit, offset];
+      const rows = await queryAll(
+        `SELECT task_id, ledger_sequence, processed_at,
+                json_extract(data_json, '$.keeper') AS keeper,
+                json_extract(data_json, '$.fee') AS fee
+         FROM events
+         WHERE event_name = 'KeeperPaid' ${task_id !== undefined ? 'AND task_id = ?' : ''}
+         ORDER BY ledger_sequence DESC
+         LIMIT ? OFFSET ?`,
+        params,
+      );
+      return rows;
+    },
   },
-  
+
+  Subscription: {
+    eventAdded: {
+      subscribe: withFilter(
+        () => pubsub.asyncIterableIterator([EVENT_ADDED]),
+        (payload, variables) => {
+          if (variables.task_id !== undefined && payload.eventAdded.task_id !== variables.task_id) {
+            return false;
+          }
+          if (
+            variables.contract_id !== undefined &&
+            payload.eventAdded.contract_id !== variables.contract_id
+          ) {
+            return false;
+          }
+          return true;
+        },
+      ),
+    },
+  },
+
   Mutation: {
     loginDemo: (parent, { address, role }) => {
       // For demo purposes, allow token generation.
