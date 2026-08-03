@@ -36,10 +36,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@aws-sdk/client-kms": "^3.1099.0",
+    "@aws-sdk/client-kms": "^3.1100.0",
     "@stellar/stellar-sdk": "^16.2.0",
     "dotenv": "^17.4.2",
-    "ioredis": "^5.11.0",
+    "ioredis": "^6.0.0",
     "node-fetch": "^3.3.2",
     "p-limit": "^7.3.1",
     "pino": "^10.3.1",
