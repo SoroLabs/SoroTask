@@ -170,6 +170,10 @@ const MAX_ARGS_COUNT: u32 = 32;
 const MAX_ARGS_SIZE_BYTES: u32 = 4096;
 
 const FIXED_EXECUTION_FEE: i128 = 100;
+const FIRST_FEE_DISCOUNT_THRESHOLD: u64 = 100;
+const SECOND_FEE_DISCOUNT_THRESHOLD: u64 = 1_000;
+const FIRST_FEE_DISCOUNT_BPS: u32 = 1_000;
+const SECOND_FEE_DISCOUNT_BPS: u32 = 2_500;
 const MAX_DEPENDENCIES_PER_TASK: u32 = 16;
 const MAX_DEPENDENCY_DEPTH: u32 = 16;
 /// Maximum number of tasks allowed per ledger block for rate limiting
@@ -983,6 +987,8 @@ pub enum DataKey {
     KeeperTotalDelegated(Address),
     BundleCounter,
     BundleExecution(u64),
+    /// Cumulative successful execution count for a task creator
+    CreatorExecutionCount(Address),
 }
 
 fn enter_security_guard(env: &Env) {
@@ -1297,6 +1303,29 @@ fn check_and_increment_block_execution(env: &Env) -> Result<(), Error> {
 
     set_block_execution_count(env, count + 1);
     Ok(())
+}
+
+fn read_creator_execution_count(env: &Env, creator: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CreatorExecutionCount(creator.clone()))
+        .unwrap_or(0)
+}
+
+fn fee_discount_bps(execution_count: u64) -> u32 {
+    if execution_count >= SECOND_FEE_DISCOUNT_THRESHOLD {
+        SECOND_FEE_DISCOUNT_BPS
+    } else if execution_count >= FIRST_FEE_DISCOUNT_THRESHOLD {
+        FIRST_FEE_DISCOUNT_BPS
+    } else {
+        0
+    }
+}
+
+fn calculate_discounted_execution_fee(env: &Env, config: &TaskConfig) -> i128 {
+    let base_fee = SoroTaskContract::calculate_execution_fee(env, config);
+    let discount_bps = fee_discount_bps(read_creator_execution_count(env, &config.creator));
+    base_fee - (base_fee * discount_bps as i128 / 10_000i128)
 }
 
 // ============================================================================
@@ -3299,7 +3328,7 @@ impl SoroTaskContract {
 
         if zk_passed {
             // ── 10. Fee calculation ─────────────────────────────────────
-            let fee: i128 = Self::calculate_execution_fee(env, &config);
+            let fee: i128 = calculate_discounted_execution_fee(env, &config);
             trace_steps.push_back(events::ExecutionStepRecord {
                 step: ExecutionStep::CalculateFee,
                 result: StepResult::Passed,
@@ -3456,6 +3485,31 @@ impl SoroTaskContract {
                 .persistent()
                 .remove(&DataKey::VrfKeeperAssignment(task_id));
             Self::set_task_status(env, task_id, ExecutionOutcome::Success);
+
+            let previous_execution_count = read_creator_execution_count(env, &config.creator);
+            let execution_count = previous_execution_count.saturating_add(1);
+            env.storage().persistent().set(
+                &DataKey::CreatorExecutionCount(config.creator.clone()),
+                &execution_count,
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKey::CreatorExecutionCount(config.creator.clone()),
+                100_000,
+                100_000,
+            );
+
+            let previous_discount_bps = fee_discount_bps(previous_execution_count);
+            let discount_bps = fee_discount_bps(execution_count);
+            if discount_bps != previous_discount_bps {
+                env.events().publish(
+                    (
+                        Symbol::new(env, "FeeDiscountTierUpdated"),
+                        Symbol::new(env, "v1"),
+                        config.creator.clone(),
+                    ),
+                    (execution_count, discount_bps),
+                );
+            }
             final_outcome = ExecutionOutcome::Success;
 
             trace_steps.push_back(events::ExecutionStepRecord {
@@ -3508,6 +3562,11 @@ impl SoroTaskContract {
         enter_security_guard(&env);
         Self::execute_internal(&env, &keeper, task_id, false);
         exit_security_guard(&env);
+    }
+
+    /// Returns the cumulative number of successful task executions for a creator.
+    pub fn get_creator_execution_count(env: Env, creator: Address) -> u64 {
+        read_creator_execution_count(&env, &creator)
     }
 
     /// Initializes the contract with a gas token.
@@ -9086,6 +9145,75 @@ pub(crate) mod tests {
         assert_eq!(token_client.balance(&keeper), 95);
     }
 
+    #[test]
+    fn test_creator_execution_fee_discount_tiers() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        client.set_max_tasks_per_block(&admin, &2_000);
+
+        let target = env.register(MockTarget, ());
+        let mut config = base_config(&env, target);
+        config.creator = Address::generate(&env);
+        config.interval = 1;
+        config.gas_balance = 100_000;
+        let creator = config.creator.clone();
+        let task_id = client.register(&config);
+        let keeper = Address::generate(&env);
+
+        for timestamp in 1..=100u64 {
+            set_timestamp(&env, timestamp);
+            client.execute(&keeper, &task_id);
+        }
+        assert_eq!(client.get_creator_execution_count(&creator), 100);
+        assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 90_000);
+
+        set_timestamp(&env, 101);
+        client.execute(&keeper, &task_id);
+        assert_eq!(client.get_creator_execution_count(&creator), 101);
+        assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 89_910);
+
+        for timestamp in 102..=1_000u64 {
+            set_timestamp(&env, timestamp);
+            client.execute(&keeper, &task_id);
+        }
+        assert_eq!(client.get_creator_execution_count(&creator), 1_000);
+
+        set_timestamp(&env, 1_001);
+        client.execute(&keeper, &task_id);
+        assert_eq!(client.get_creator_execution_count(&creator), 1_001);
+        assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 8_925);
+    }
+
+    #[test]
+    fn test_creator_execution_counts_are_isolated() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let target = env.register(MockTarget, ());
+        let creator_a = Address::generate(&env);
+        let creator_b = Address::generate(&env);
+        let keeper = Address::generate(&env);
+
+        let mut config_a = base_config(&env, target.clone());
+        config_a.creator = creator_a.clone();
+        config_a.interval = 1;
+        let task_a = client.register(&config_a);
+        let mut config_b = base_config(&env, target);
+        config_b.creator = creator_b.clone();
+        config_b.interval = 1;
+        let task_b = client.register(&config_b);
+
+        set_timestamp(&env, 1);
+        client.execute(&keeper, &task_a);
+        assert_eq!(client.get_creator_execution_count(&creator_a), 1);
+        assert_eq!(client.get_creator_execution_count(&creator_b), 0);
+
+        set_timestamp(&env, 2);
+        client.execute(&keeper, &task_b);
+        assert_eq!(client.get_creator_execution_count(&creator_a), 1);
+        assert_eq!(client.get_creator_execution_count(&creator_b), 1);
+    }
+
 
     /// Test that execution fails if gas_balance is insufficient for the fee.
     #[test]
@@ -9121,6 +9249,7 @@ pub(crate) mod tests {
             50,
             "gas_balance should not change on failed execution"
         );
+        assert_eq!(client.get_creator_execution_count(&cfg.creator), 0);
     }
 
     /// Test that gas_balance is deducted even without initialized token.
