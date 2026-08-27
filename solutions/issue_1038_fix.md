@@ -1,0 +1,1 @@
+Solution proposal for 🦀 [CONTRACT] 128-Bit Fixed-Point Arithmetic Standardization for Fee and Yield Accrual
