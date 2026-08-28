@@ -1283,6 +1283,92 @@ fn set_keeper_stake(env: &Env, keeper: &Address, amount: i128) {
         .set(&DataKey::KeeperStake(keeper.clone()), &amount);
 }
 
+fn get_total_task_escrows(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalTaskEscrows)
+        .unwrap_or(0)
+}
+
+fn set_total_task_escrows(env: &Env, amount: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalTaskEscrows, &amount);
+}
+
+fn add_total_task_escrows(env: &Env, amount: i128) {
+    if amount > 0 {
+        let current = get_total_task_escrows(env);
+        set_total_task_escrows(env, current.saturating_add(amount));
+    }
+}
+
+fn sub_total_task_escrows(env: &Env, amount: i128) {
+    if amount > 0 {
+        let current = get_total_task_escrows(env);
+        set_total_task_escrows(env, current.saturating_sub(amount));
+    }
+}
+
+fn get_total_keeper_stakes(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalKeeperStakes)
+        .unwrap_or(0)
+}
+
+fn set_total_keeper_stakes(env: &Env, amount: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalKeeperStakes, &amount);
+}
+
+fn add_total_keeper_stakes(env: &Env, amount: i128) {
+    if amount > 0 {
+        let current = get_total_keeper_stakes(env);
+        set_total_keeper_stakes(env, current.saturating_add(amount));
+    }
+}
+
+fn sub_total_keeper_stakes(env: &Env, amount: i128) {
+    if amount > 0 {
+        let current = get_total_keeper_stakes(env);
+        set_total_keeper_stakes(env, current.saturating_sub(amount));
+    }
+}
+
+fn get_total_unclaimed_fees(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalUnclaimedFees)
+        .unwrap_or(0)
+}
+
+fn set_total_unclaimed_fees(env: &Env, amount: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalUnclaimedFees, &amount);
+}
+
+fn assert_balance_invariant(env: &Env) {
+    if let Some(token_address) = env.storage().instance().get::<DataKey, Address>(&DataKey::Token) {
+        let token_client = soroban_sdk::token::Client::new(env, &token_address);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        let total_task_escrows = get_total_task_escrows(env);
+        let total_keeper_stakes = get_total_keeper_stakes(env);
+        let total_unclaimed_fees = get_total_unclaimed_fees(env);
+        assert!(
+            contract_balance >= total_task_escrows + total_keeper_stakes + total_unclaimed_fees,
+            "Total balance invariant violated: contract balance {} is less than required sum {} (escrows: {}, stakes: {}, unclaimed: {})",
+            contract_balance,
+            total_task_escrows + total_keeper_stakes + total_unclaimed_fees,
+            total_task_escrows,
+            total_keeper_stakes,
+            total_unclaimed_fees
+        );
+    }
+}
+
 fn read_proxy_config(env: &Env) -> Option<ProxyConfig> {
     env.storage().instance().get(&DataKey::ProxyConfig)
 }
@@ -3896,6 +3982,7 @@ impl SoroTaskContract {
             let keeper_fee: i128 = fee - protocol_fee;
 
             config.gas_balance -= fee;
+            sub_total_task_escrows(env, fee);
 
             if env.storage().instance().has(&DataKey::Token) {
                 let token_address: Address = env
@@ -3936,6 +4023,7 @@ impl SoroTaskContract {
                         );
                     }
                 }
+                assert_balance_invariant(env);
             }
             trace_steps.push_back(events::ExecutionStepRecord {
                 step: ExecutionStep::PayKeeper,
@@ -4032,6 +4120,36 @@ impl SoroTaskContract {
             token,
         );
         exit_security_guard(&env);
+    }
+
+    /// Gets the current global sum of all task escrows.
+    pub fn get_total_task_escrows(env: Env) -> i128 {
+        get_total_task_escrows(&env)
+    }
+
+    /// Gets the current global sum of all keeper stakes.
+    pub fn get_total_keeper_stakes(env: Env) -> i128 {
+        get_total_keeper_stakes(&env)
+    }
+
+    /// Gets the current global sum of all unclaimed fees.
+    pub fn get_total_unclaimed_fees(env: Env) -> i128 {
+        get_total_unclaimed_fees(&env)
+    }
+
+    /// Validates whether the global balance invariant holds:
+    /// contract_balance >= total_task_escrows + total_keeper_stakes + total_unclaimed_fees
+    pub fn check_balance_invariant(env: Env) -> bool {
+        if let Some(token_address) = env.storage().instance().get::<DataKey, Address>(&DataKey::Token) {
+            let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+            let contract_balance = token_client.balance(&env.current_contract_address());
+            let total_task_escrows = get_total_task_escrows(&env);
+            let total_keeper_stakes = get_total_keeper_stakes(&env);
+            let total_unclaimed_fees = get_total_unclaimed_fees(&env);
+            contract_balance >= total_task_escrows + total_keeper_stakes + total_unclaimed_fees
+        } else {
+            true
+        }
     }
 
     /// Sets the fee recipient address.
@@ -4268,6 +4386,8 @@ impl SoroTaskContract {
             .expect("Token not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&delegator, &env.current_contract_address(), &amount);
+        add_total_keeper_stakes(&env, amount);
+        assert_balance_invariant(&env);
 
         let mut pool = env
             .storage()
@@ -4344,6 +4464,7 @@ impl SoroTaskContract {
             .set(&DataKey::DelegationPool(delegator.clone()), &pool);
 
         update_keeper_total_delegated(&env, &keeper, -amount);
+        sub_total_keeper_stakes(&env, amount);
 
         let token_address: Address = env
             .storage()
@@ -4352,6 +4473,7 @@ impl SoroTaskContract {
             .expect("Token not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &delegator, &amount);
+        assert_balance_invariant(&env);
 
         events::EventLogger::log_delegation_pool_event(
             &env, delegator.clone(), keeper, amount, pool.commission_rate,
@@ -4814,6 +4936,9 @@ impl SoroTaskContract {
         config.gas_balance += amount;
         env.storage().persistent().set(&task_key, &config);
 
+        add_total_task_escrows(env, amount);
+        assert_balance_invariant(env);
+
         // Emit event
         env.events().publish(
             (
@@ -4856,13 +4981,16 @@ impl SoroTaskContract {
             .get(&DataKey::Token)
             .expect("Not initialized");
 
-        // Transfer tokens back to creator
-        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
-        token_client.transfer(&env.current_contract_address(), &config.creator, &amount);
-
         // Update balance
         config.gas_balance -= amount;
         env.storage().persistent().set(&task_key, &config);
+
+        sub_total_task_escrows(&env, amount);
+
+        // Transfer tokens back to creator
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &config.creator, &amount);
+        assert_balance_invariant(&env);
 
         // Emit event
         env.events().publish(
@@ -4895,6 +5023,7 @@ impl SoroTaskContract {
 
         // Refund: Automatically withdraw all remaining gas_balance to the creator
         if config.gas_balance > 0 {
+            sub_total_task_escrows(&env, config.gas_balance);
             if env.storage().instance().has(&DataKey::Token) {
                 let token_address: Address = env.storage().instance().get(&DataKey::Token).unwrap();
                 let token_client = soroban_sdk::token::Client::new(&env, &token_address);
@@ -4904,6 +5033,7 @@ impl SoroTaskContract {
                     &config.gas_balance,
                 );
             }
+            assert_balance_invariant(&env);
         }
 
         // Remove the task from the active index first to avoid stale scans.
@@ -5212,6 +5342,8 @@ impl SoroTaskContract {
             .expect("Not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&keeper, &env.current_contract_address(), &bond);
+        add_total_keeper_stakes(&env, bond);
+        assert_balance_invariant(&env);
 
         let claim = OptimisticExecution {
             task_id,
@@ -5286,6 +5418,7 @@ impl SoroTaskContract {
         claim.resolved = true;
         env.storage().persistent().set(&claim_key, &claim);
 
+        sub_total_keeper_stakes(&env, claim.bond);
         let token_address: Address = env
             .storage()
             .instance()
@@ -5293,6 +5426,7 @@ impl SoroTaskContract {
             .expect("Not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &challenger, &claim.bond);
+        assert_balance_invariant(&env);
 
         Self::set_task_status(&env, task_id, ExecutionOutcome::Failed);
 
@@ -5334,6 +5468,7 @@ impl SoroTaskContract {
         claim.resolved = true;
         env.storage().persistent().set(&claim_key, &claim);
 
+        sub_total_keeper_stakes(&env, claim.bond);
         let token_address: Address = env
             .storage()
             .instance()
@@ -5341,6 +5476,7 @@ impl SoroTaskContract {
             .expect("Not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &claim.keeper, &claim.bond);
+        assert_balance_invariant(&env);
 
         Self::execute_internal(&env, &claim.keeper, task_id, true);
 
@@ -6353,6 +6489,8 @@ impl SoroTaskContract {
         // Transfer tokens from staker to contract
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&staker, &env.current_contract_address(), &amount);
+        add_total_keeper_stakes(&env, amount);
+        assert_balance_invariant(&env);
 
         // Update staking balance
         let mut staking_balance = env
@@ -6439,9 +6577,12 @@ impl SoroTaskContract {
             .get(&DataKey::Token)
             .expect("Token not initialized");
 
+        sub_total_keeper_stakes(&env, amount);
+
         // Transfer tokens from contract to staker
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &staker, &amount);
+        assert_balance_invariant(&env);
 
         // Update staking balance
         staking_balance.amount -= amount;
@@ -6524,6 +6665,7 @@ impl SoroTaskContract {
             // Transfer rewards to staker
             let token_client = soroban_sdk::token::Client::new(&env, &token_address);
             token_client.transfer(&env.current_contract_address(), &staker, &reward_amount);
+            assert_balance_invariant(&env);
 
             // Update staking balance
             staking_balance.accumulated_rewards += reward_amount;
@@ -11470,6 +11612,173 @@ pub(crate) mod tests {
             .with_mut(|l| l.sequence_number += OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS);
         let challenger = Address::generate(&env);
         client.challenge_optimistic_result(&challenger, &task_id);
+    }
+
+    // ── Issue #1049: Total Balance Invariant & Isolated Escrow Accounting ────
+
+    #[test]
+    fn test_total_balance_invariant_on_deposit_and_withdrawal() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+
+        client.init(&token_address);
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+
+        token_admin_client.mint(&creator, &10_000);
+        assert_eq!(client.get_total_task_escrows(), 0);
+        assert!(client.check_balance_invariant());
+
+        // Deposit gas
+        client.deposit_gas(&task_id, &creator, &3_000);
+        assert_eq!(client.get_total_task_escrows(), 3_000);
+        assert_eq!(token_client.balance(&id), 3_000);
+        assert!(client.check_balance_invariant());
+
+        // Deposit additional gas
+        client.deposit_gas(&task_id, &creator, &2_000);
+        assert_eq!(client.get_total_task_escrows(), 5_000);
+        assert_eq!(token_client.balance(&id), 5_000);
+        assert!(client.check_balance_invariant());
+
+        // Withdraw partial gas
+        client.withdraw_gas(&task_id, &1_500);
+        assert_eq!(client.get_total_task_escrows(), 3_500);
+        assert_eq!(token_client.balance(&id), 3_500);
+        assert!(client.check_balance_invariant());
+    }
+
+    #[test]
+    fn test_total_balance_invariant_on_task_cancellation() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+
+        client.init(&token_address);
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+
+        token_admin_client.mint(&creator, &5_000);
+        client.deposit_gas(&task_id, &creator, &4_000);
+        assert_eq!(client.get_total_task_escrows(), 4_000);
+        assert_eq!(token_client.balance(&id), 4_000);
+        assert!(client.check_balance_invariant());
+
+        // Cancel task: refunds remaining gas to creator
+        client.cancel_task(&task_id);
+        assert_eq!(client.get_total_task_escrows(), 0);
+        assert_eq!(token_client.balance(&id), 0);
+        assert_eq!(token_client.balance(&creator), 5_000);
+        assert!(client.check_balance_invariant());
+    }
+
+    #[test]
+    fn test_total_balance_invariant_on_execution_payout() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+
+        client.init(&token_address);
+
+        let admin = Address::generate(&env);
+        client.set_admin_address(&admin);
+        let fee_recipient = Address::generate(&env);
+        client.set_fee_recipient(&fee_recipient);
+        client.set_protocol_fee_bps(&1000); // 10% protocol fee
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+
+        token_admin_client.mint(&creator, &10_000);
+        client.deposit_gas(&task_id, &creator, &5_000);
+        assert_eq!(client.get_total_task_escrows(), 5_000);
+        assert!(client.check_balance_invariant());
+
+        // Execute task
+        let keeper = Address::generate(&env);
+        client.execute(&keeper, &task_id);
+
+        // Gas balance reduced by task fee (min_bounty is 100)
+        let remaining_task = client.get_task(&task_id).unwrap();
+        assert_eq!(remaining_task.gas_balance, 5_000 - 100);
+        assert_eq!(client.get_total_task_escrows(), 4_900);
+        assert_eq!(token_client.balance(&id), 4_900);
+        assert_eq!(token_client.balance(&keeper), 90);
+        assert_eq!(token_client.balance(&fee_recipient), 10);
+        assert!(client.check_balance_invariant());
+    }
+
+    #[test]
+    fn test_total_balance_invariant_on_staking_and_delegation() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+
+        client.init(&token_address);
+        client.init_staking_pool(&500);
+
+        let staker = Address::generate(&env);
+        token_admin_client.mint(&staker, &10_000);
+
+        // Stake tokens in staking pool
+        client.stake_tokens(&staker, &3_000);
+        assert_eq!(client.get_total_keeper_stakes(), 3_000);
+        assert_eq!(token_client.balance(&id), 3_000);
+        assert!(client.check_balance_invariant());
+
+        // Delegate stake to keeper
+        let keeper = Address::generate(&env);
+        let delegator = Address::generate(&env);
+        token_admin_client.mint(&delegator, &10_000);
+
+        client.delegate_stake(&delegator, &keeper, &2_000);
+        assert_eq!(client.get_total_keeper_stakes(), 5_000);
+        assert_eq!(token_client.balance(&id), 5_000);
+        assert!(client.check_balance_invariant());
+
+        // Undelegate partial stake
+        client.undelegate_stake(&delegator, &1_000);
+        assert_eq!(client.get_total_keeper_stakes(), 4_000);
+        assert_eq!(token_client.balance(&id), 4_000);
+        assert!(client.check_balance_invariant());
+
+        // Unstake partial tokens from pool
+        client.unstake_tokens(&staker, &1_000);
+        assert_eq!(client.get_total_keeper_stakes(), 3_000);
+        assert_eq!(token_client.balance(&id), 3_000);
+        assert!(client.check_balance_invariant());
     }
 }
 

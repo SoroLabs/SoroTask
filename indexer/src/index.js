@@ -11,6 +11,8 @@ const { broadcastEvent } = require("./wsServer");
 const { computeAndStoreLedgerMerkle } = require("./merkleStore");
 const { scheduleArchival } = require("./archival");
 const { pubsub, EVENT_ADDED } = require("./graphql/pubsub");
+const { LedgerHashValidator } = require("./ledgerHashValidator");
+const { EventSchemaRegistry } = require("./eventSchemaRegistry");
 
 // Configuration
 const RPC_URL = "https://soroban-testnet.stellar.org"; // Change as needed
@@ -72,6 +74,22 @@ const db = new sqlite3.Database(DB_FILE, (err) => {
   }
 });
 
+// Initialize ledger hash validator for reorg detection (Issue #1065)
+const ledgerHashValidator = new LedgerHashValidator({
+  rpc,
+  db,
+  windowSize: parseInt(process.env.LEDGER_HASH_WINDOW_SIZE, 10) || 64,
+  onRollback: async (details) => {
+    console.error(`[ReorgRollback] Rolled back to ledger ${details.rollback.rollbackToSequence}`, {
+      deletedEvents: details.rollback.deletedEvents,
+      deletedTasks: details.rollback.deletedTasks,
+    });
+  },
+});
+
+// Initialize event schema registry for multi-version event parsing (Issue #1067)
+const eventSchemaRegistry = new EventSchemaRegistry();
+
 // Promise-style adapters over the callback `db` so shared modules (merkleStore)
 // can run against the indexer's live database connection.
 const dbDeps = {
@@ -106,53 +124,70 @@ const gapDetector = new LedgerGapDetector({
 
 // Event handler mapping
 async function handleEvent(event) {
-  // Decode topics from base64 XDR strings to native values
+  // Use schema registry for versioned event decoding (Issue #1067)
   const topics = event.topic.map(t => scValToNative(xdr.ScVal.fromXDR(t, 'base64')));
   const name = topics[0];
-  let taskId;
-  // Version-aware topic extraction
-  if (topics.length > 2 && topics[1] === "v1") {
-    taskId = Number(topics[2]);
-  } else if (topics.length > 2 && typeof topics[1] === "string" && topics[1].startsWith("v")) {
-    // Future-proofing: unknown version marker detected
-    console.warn(`[Indexer] Detected unknown event version: ${topics[1]}. Attempting to parse topic[2] as taskId.`);
-    taskId = Number(topics[2]);
-  } else {
-    // Legacy event (v0): taskId is the second topic
-    taskId = Number(topics[1]);
-  }
   
-  const data = scValToNative(xdr.ScVal.fromXDR(event.value, 'base64')); // Array of native values
-
-  // Convert data to JSON based on event type
+  // Attempt schema-based decoding first
+  const decoded = eventSchemaRegistry.decodeEvent(
+    name,
+    event.topic,
+    event.value,
+    event.ledgerSequence,
+  );
+  
+  let taskId;
   let dataJson;
-  switch (name) {
-    case "TaskRegistered":
-    case "TaskPaused":
-    case "TaskResumed":
-    case "TaskCancelled":
-      // Data: [creator: string]
-      dataJson = JSON.stringify({ creator: data[0] });
-      break;
-    case "ContractInitialized":
-      // Data: [token: string]
-      dataJson = JSON.stringify({ token: data[0] });
-      break;
-    case "KeeperPaid":
-      // Data: [keeper: string, fee: bigint]
-      dataJson = JSON.stringify({ keeper: data[0], fee: data[1].toString() });
-      break;
-    case "GasDeposited":
-    case "GasWithdrawn":
-      // Data: [from/creator: string, amount: bigint]
-      dataJson = JSON.stringify({
-        address: data[0],
-        amount: data[1].toString(),
-      });
-      break;
-    default:
-      console.warn(`Unknown event type: ${name}`);
-      return;
+  
+  if (decoded && !decoded.isFallback) {
+    // Schema registry successfully decoded the event
+    taskId = decoded.taskId;
+    dataJson = JSON.stringify(decoded.data);
+  } else {
+    // Fallback to legacy parsing
+    // Version-aware topic extraction
+    if (topics.length > 2 && topics[1] === "v1") {
+      taskId = Number(topics[2]);
+    } else if (topics.length > 2 && typeof topics[1] === "string" && topics[1].startsWith("v")) {
+      // Future-proofing: unknown version marker detected
+      console.warn(`[Indexer] Detected unknown event version: ${topics[1]}. Attempting to parse topic[2] as taskId.`);
+      taskId = Number(topics[2]);
+    } else {
+      // Legacy event (v0): taskId is the second topic
+      taskId = Number(topics[1]);
+    }
+    
+    const data = scValToNative(xdr.ScVal.fromXDR(event.value, 'base64')); // Array of native values
+
+    // Convert data to JSON based on event type
+    switch (name) {
+      case "TaskRegistered":
+      case "TaskPaused":
+      case "TaskResumed":
+      case "TaskCancelled":
+        // Data: [creator: string]
+        dataJson = JSON.stringify({ creator: data[0] });
+        break;
+      case "ContractInitialized":
+        // Data: [token: string]
+        dataJson = JSON.stringify({ token: data[0] });
+        break;
+      case "KeeperPaid":
+        // Data: [keeper: string, fee: bigint]
+        dataJson = JSON.stringify({ keeper: data[0], fee: data[1].toString() });
+        break;
+      case "GasDeposited":
+      case "GasWithdrawn":
+        // Data: [from/creator: string, amount: bigint]
+        dataJson = JSON.stringify({
+          address: data[0],
+          amount: data[1].toString(),
+        });
+        break;
+      default:
+        console.warn(`Unknown event type: ${name}`);
+        return;
+    }
   }
 
   // Store event in database
@@ -429,12 +464,68 @@ async function poll() {
       limit: 200,
     });
 
+    // Validate ledger hashes for reorg detection (Issue #1065)
+    const ledgerHashes = new Map();
+    for (const event of response.events) {
+      const seq = event.ledgerSequence;
+      if (!ledgerHashes.has(seq)) {
+        // Fetch ledger header to get hash and prev_hash
+        try {
+          const ledgerResponse = await rpc.getLedger(seq);
+          if (ledgerResponse && ledgerResponse.hash) {
+            ledgerHashes.set(seq, {
+              sequence: seq,
+              hash: ledgerResponse.hash,
+              prevHash: ledgerResponse.prevHash || ledgerResponse.previousLedgerHash || null,
+            });
+          }
+        } catch (ledgerErr) {
+          console.warn(`[HashValidator] Could not fetch ledger ${seq}:`, ledgerErr.message);
+        }
+      }
+    }
+
+    // Validate ledger chain integrity
+    for (const [seq, ledgerData] of ledgerHashes) {
+      const validation = await ledgerHashValidator.validateNewLedger(
+        ledgerData.sequence,
+        ledgerData.hash,
+        ledgerData.prevHash,
+      );
+
+      if (!validation.valid) {
+        console.error(`[HashValidator] Ledger ${seq} validation failed: ${validation.reason}`);
+        
+        if (validation.reason === 'hash_mismatch') {
+          // Potential reorg — collect chain data and attempt rollback
+          console.error(`[ReorgRollback] Hash mismatch detected at ledger ${seq}. Initiating rollback...`);
+          
+          const chainData = Array.from(ledgerHashes.values());
+          const rollbackResult = await ledgerHashValidator.rollbackToAncestor(chainData);
+          
+          if (rollbackResult.success) {
+            console.log(`[ReorgRollback] Successfully rolled back to ledger ${rollbackResult.ancestor.sequence}`);
+            // Update cursor to the rollback point
+            cursor = rollbackResult.ancestor.sequence.toString();
+          } else {
+            console.error(`[ReorgRollback] Failed to rollback: ${rollbackResult.reason}`);
+          }
+          return; // Abort this poll cycle
+        }
+      }
+    }
+
     const touchedLedgers = new Set();
     for (const event of response.events) {
       await handleEvent(event);
       touchedLedgers.add(event.ledgerSequence);
       cursor = event.ledger.toString(); // Update cursor to the last event's ledger
       updateLedgerMetrics(Number(cursor), Number(networkHead));
+    }
+
+    // Persist ledger hash window periodically
+    if (touchedLedgers.size > 0) {
+      await ledgerHashValidator.getState(); // Trigger persistence if needed
     }
 
     // Issue #863: (re)compute and persist a Merkle root over each ledger's
@@ -515,6 +606,11 @@ Options:
 
 // Main
 if (!handleCLI()) {
+  // Initialize ledger hash validator for reorg detection
+  ledgerHashValidator.initialize().catch(err => {
+    console.error('[HashValidator] Initialization error:', err.message);
+  });
+
   // Start polling
   console.log("Starting event indexer...");
   const { createWsServer } = require("./wsServer");

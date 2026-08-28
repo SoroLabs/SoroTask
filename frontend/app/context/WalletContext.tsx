@@ -18,6 +18,7 @@ import React, {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import {
@@ -72,11 +73,43 @@ export type WalletContextValue = {
 
 const WalletContext = createContext<WalletContextValue | null>(null);
 
+type ClientMountStore = {
+  subscribe: (listener: () => void) => () => void;
+  getSnapshot: () => boolean;
+  getServerSnapshot: () => boolean;
+  markMounted: () => void;
+};
+
+function createClientMountStore(): ClientMountStore {
+  let mounted = false;
+  const listeners = new Set<() => void>();
+
+  return {
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    getSnapshot: () => mounted,
+    getServerSnapshot: () => false,
+    markMounted() {
+      if (mounted) return;
+      mounted = true;
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
+  const clientMountStore = useRef<ClientMountStore>(createClientMountStore());
+  const isClientMounted = useSyncExternalStore(
+    clientMountStore.current.subscribe,
+    clientMountStore.current.getSnapshot,
+    clientMountStore.current.getServerSnapshot,
+  );
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [session, setSession] = useState<WalletSession | null>(null);
   const [errorCode, setErrorCode] = useState<WalletError | null>(null);
@@ -142,6 +175,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   // -------------------------------------------------------------------------
 
   useEffect(() => {
+    clientMountStore.current.markMounted();
+  }, []);
+
+  useEffect(() => {
+    if (!isClientMounted) return;
     let cancelled = false;
 
     async function restore() {
@@ -163,7 +201,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       stopWatcherRef.current?.();
       stopWatcherRef.current = null;
     };
-  }, [startWatcher]);
+  }, [isClientMounted, startWatcher]);
 
   // -------------------------------------------------------------------------
   // Actions

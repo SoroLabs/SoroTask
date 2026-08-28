@@ -46,9 +46,8 @@ export interface Task {
   target: string;
   functionName: string;
   interval: number;
-  gasBalance: number;
-  status: TaskStatus;
-  createdAt: string;
+  /** Gas balance in stroops. Keep contract token amounts as BigInt. */
+  gasBalance: bigint;
 }
 
 export type LogStatus = 'Success' | 'Failed' | 'Pending';

@@ -1,8 +1,10 @@
 const { scValToNative, xdr } = require('@stellar/stellar-sdk');
+const { EventSchemaRegistry } = require('./eventSchemaRegistry');
 
 class ParallelLedgerParser {
   constructor(options = {}) {
     this.concurrency = options.concurrency || 4;
+    this.schemaRegistry = options.schemaRegistry || new EventSchemaRegistry(options);
   }
 
   parseEvent(event) {
@@ -57,6 +59,40 @@ class ParallelLedgerParser {
       };
     } catch (err) {
       throw new Error(`Failed to parse ledger event: ${err.message}`);
+    }
+  }
+
+  /**
+   * Parse an event using the schema registry for versioned decoding.
+   * Falls back to legacy parsing if schema registry fails.
+   *
+   * @param {object} event - Raw event with topic and value arrays
+   * @returns {object} Parsed event
+   */
+  parseEventWithSchema(event) {
+    try {
+      const name = scValToNative(xdr.ScVal.fromXDR(event.topic[0], 'base64'));
+      const ledgerSequence = event.ledgerSequence || event.ledger;
+
+      const decoded = this.schemaRegistry.decodeEvent(
+        name,
+        event.topic,
+        event.value,
+        ledgerSequence,
+      );
+
+      return {
+        ledgerSequence,
+        eventName: decoded.eventName,
+        taskId: decoded.taskId,
+        dataJson: JSON.stringify(decoded.data),
+        schemaVersion: decoded.version,
+        isFallback: decoded.isFallback,
+        parsedAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      // Fallback to legacy parsing
+      return this.parseEvent(event);
     }
   }
 

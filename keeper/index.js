@@ -26,14 +26,7 @@ const { RetryScheduler } = require("./src/retryScheduler");
 const { GracefulShutdownManager } = require("./src/gracefulShutdown");
 const { TaskReconciler } = require("./src/reconciler");
 const { createDefaultFilterChain } = require("./src/taskFilter");
-const { WebhookAuthProtocol, InMemoryReplayStore } = require("./src/webhookAuth");
-const { WebhookTriggerHandler } = require("./src/webhookTrigger");
-const { MultiRegionRPCClient } = require("./src/disasterRecovery");
-const { KeeperP2PNetwork } = require("./src/p2pNetwork");
-const { KeeperAlertManager } = require("./src/keeperAlerts");
-const { TaskMetadataCache } = require("./src/taskMetadataCache");
-const { FraudDetectionService } = require("./src/fraudDetection");
-const { SLAMonitor } = require("./src/slaMonitor");
+const { getRedisClient } = require("./src/lock");
 
 // Create root logger for the main module
 const logger = createLogger("keeper");
@@ -152,45 +145,6 @@ async function main() {
     ownedTasks: 0,
     skippedTasks: 0,
   });
-
-  metricsServer.start();
-
-  // Keep the existing RPC surface while adding explicit multi-region failover.
-  const failoverClient = new MultiRegionRPCClient(config.rpcUrls, {
-    logger: createLogger("rpc-failover"),
-    metrics: metricsServer,
-    failureThreshold: config.rpcFailoverFailureThreshold,
-    cooldownMs: config.rpcFailoverCooldownMs,
-    healthCheckIntervalMs: config.rpcFailoverHealthCheckIntervalMs,
-    maxHealthyLedgerLag: config.rpcFailoverMaxHealthyLedgerLag,
-    latencyPenaltyThresholdMs: config.rpcFailoverLatencyPenaltyThresholdMs,
-    serverFactory: (url) => new Server(url),
-  });
-  if (config.rpcFailoverEnabled) {
-    failoverClient.start();
-    logger.info("RPC failover enabled", {
-      endpointCount: config.rpcUrls.length,
-      activeRegion: failoverClient.getStateSnapshot().activeRegion,
-    });
-  }
-  metricsServer.setFailoverStateProvider(() => failoverClient.getStateSnapshot());
-  const server = failoverClient.getServerFacade();
-
-  const alertManager = new KeeperAlertManager();
-  alertManager.startRpcMonitor(() => server.getLatestLedger());
-
-  const slaMonitor = new SLAMonitor(server, config.contractId, config, {
-    historyManager,
-    metricsServer,
-    logger: createLogger("sla-monitor"),
-    operatorKeypair: keypair,
-  });
-
-  if (slaMonitor.enabled) {
-    await slaMonitor.start();
-    logger.info("SLA monitor started");
-  }
-
   // Perform startup validation to fail fast on configuration errors
   const validator = new StartupValidator(
     server,
@@ -270,6 +224,16 @@ async function main() {
     taskMetadataCache,
   });
   logger.info("Poller initialized", { contractId: config.contractId });
+
+  // Initialize execution queue
+  const queue = new ExecutionQueue(undefined, metricsServer, { idempotencyGuard });
+  const queueLogger = createLogger("queue");
+  await queue.initialize();
+  metricsServer.setReadinessProviders({
+    redisClient: getRedisClient(),
+    workerPool: queue,
+  });
+  metricsServer.start();
 
   queue.on("task:started", (taskId, context) =>
     queueLogger.info("Started execution", {

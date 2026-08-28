@@ -189,6 +189,15 @@ function loadConfig() {
       minExecutionSuccessRate: parseFloat(process.env.SLO_MIN_EXECUTION_SUCCESS_RATE) || 0.95,
       minPollSuccessRate: parseFloat(process.env.SLO_MIN_POLL_SUCCESS_RATE) || 0.99,
     },
+    // Issue #1063 — Wallet balance monitoring thresholds
+    walletBalanceMonitor: {
+      enabled: parseBoolean(process.env.WALLET_BALANCE_MONITOR_ENABLED, true),
+      checkIntervalMs: parseInteger(process.env.WALLET_BALANCE_CHECK_INTERVAL_MS, 60000),
+      warningThreshold: parseFloat(process.env.WALLET_WARNING_THRESHOLD_XLM) || 50,
+      criticalThreshold: parseFloat(process.env.WALLET_CRITICAL_THRESHOLD_XLM) || 20,
+      sweepEnabled: parseBoolean(process.env.WALLET_SWEEP_ENABLED, false),
+      sweepTargetAmount: parseFloat(process.env.WALLET_SWEEP_TARGET_AMOUNT_XLM) || 100,
+    },
   };
 
   logger.info('SLO thresholds active', {

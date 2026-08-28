@@ -1,137 +1,11 @@
 openapi: 3.0.3
 info:
   title: SoroTask ZK-Proof Service API
-  description: |
-    API contract between SoroTask keepers and the off-chain Zero-Knowledge proof service.
-
-    Keepers call this service to generate Groth16-style proofs for privacy-preserving task
-    conditions and to verify proofs before submitting them on-chain via `submit_zk_condition`.
-
-    The service is stateless with respect to the SoroTask core database. It accepts JSON
-    payloads, performs proof generation or verification in a worker pool, and returns
-    standardized proof structures (`pi_a`, `pi_b`, `pi_c`, `publicSignals`).
   version: 1.0.0
-  contact:
-    name: SoroLabs
-    url: https://github.com/SoroLabs/SoroTask
-
-servers:
-  - url: http://localhost:3100
-    description: Local development
-  - url: https://zk-proof.sorotask.com
-    description: Production
-
-tags:
-  - name: Proofs
-    description: ZK proof generation and verification
-  - name: Health
-    description: Service readiness and worker pool status
-
 paths:
   /generate-proof:
     post:
-      tags:
-        - Proofs
-      summary: Generate a ZK proof for a task condition
-      description: |
-        Accepts a public task condition and private client witness data, allocates a worker
-        from the proof generation pool, and returns a Groth16 proof suitable for on-chain
-        submission.
-
-        The keeper (or light client relaying through a keeper) must supply both
-        `taskCondition` and `clientData`. The service never persists private witness data
-        beyond the lifetime of the request.
       operationId: generateProof
-      security:
-        - BearerAuth: []
-      parameters:
-        - $ref: '#/components/parameters/RequestIdHeader'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GenerateProofRequest'
-            examples:
-              liquidityThreshold:
-                summary: Liquidity threshold condition
-                value:
-                  requestId: 7f3c2a1b-9d4e-4f5a-8b6c-1a2b3c4d5e6f
-                  keeperId: keeper-a1b2c3d4
-                  taskId: 42
-                  circuitId: liquidity-threshold-v1
-                  taskCondition:
-                    type: liquidity-threshold
-                    params:
-                      minLiquidity: 10000
-                  clientData:
-                    witness:
-                      actualLiquidity: 25000
-                    salt: "0xfe3a"
-                  verifierAddress: CDVERIFY456789ABCDEF1234567890ABCDEF1234
-      responses:
-        '200':
-          description: Proof generated successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GenerateProofResponse'
-              examples:
-                success:
-                  value:
-                    proofId: 9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f
-                    status: success
-                    taskId: 42
-                    conditionHash: "0x1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80"
-                    proof:
-                      pi_a:
-                        - "0x1A2B3C4D5E6F"
-                        - "0x7F8E9D0C1B2A"
-                      pi_b:
-                        - - "0x3E4D5C6B7A89"
-                          - "0x9A8B7C6D5E4F"
-                        - - "0x2A3B4C5D6E7F"
-                          - "0x8F7E6D5C4B3A"
-                      pi_c:
-                        - "0x7E6D5C4B3A29"
-                        - "0x1A9B2C8D3E7F"
-                      publicSignals:
-                        - "0x1"
-                    serializedProof: "0xabcdef..."
-                    generatedAt: "2026-06-29T12:00:00.000Z"
-                    processingTimeMs: 842
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '422':
-          description: Witness does not satisfy the task condition
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error:
-                  code: CONSTRAINT_UNSATISFIED
-                  message: Client witness does not satisfy task condition constraints
-                  details:
-                    circuitId: liquidity-threshold-v1
-                    field: actualLiquidity
-                    constraint: actualLiquidity >= minLiquidity
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
-
-  /proofs/async:
-    post:
-      tags:
-        - Proofs
-      summary: Enqueue asynchronous ZK proof generation
-      description: |
-        Enqueues an asynchronous proof calculation job to avoid HTTP timeouts on complex circuits.
-        Returns a job identifier (`jobId`) immediately with status `queued`.
-      operationId: enqueueAsyncProof
-      security:
-        - BearerAuth: []
       requestBody:
         required: true
         content:
@@ -139,557 +13,99 @@ paths:
             schema:
               $ref: '#/components/schemas/GenerateProofRequest'
       responses:
-        '202':
-          description: Proof job enqueued successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  jobId:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    example: queued
-                  taskId:
-                    type: integer
-                  createdAt:
-                    type: string
-                    format: date-time
-
-  /proofs/{job_id}/stream:
-    get:
-      tags:
-        - Proofs
-      summary: Stream proof generation progress via Server-Sent Events (SSE)
-      description: |
-        Establishes an SSE stream delivering progress updates (`queued`, `processing` %, `completed`, `failed`)
-        and final proof payload upon completion.
-      operationId: streamProofProgress
-      parameters:
-        - name: job_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: SSE stream established
-          content:
-            text/event-stream:
-              schema:
-                type: string
-
+        '200': { description: Proof generated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { description: Constraint unsatisfied }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /verify-proof:
     post:
-      tags:
-        - Proofs
-      summary: Verify a ZK proof off-chain
-      description: |
-        Validates a previously generated proof against the expected task condition, circuit,
-        and optional condition hash. Keepers should call this endpoint before broadcasting
-        `submit_zk_condition` to the Soroban contract.
-
-        When `conditionHash` is omitted, the service derives it from `taskCondition`.
       operationId: verifyProof
-      security:
-        - BearerAuth: []
-      parameters:
-        - $ref: '#/components/parameters/RequestIdHeader'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/VerifyProofRequest'
-            examples:
-              validProof:
-                summary: Verify a generated proof
-                value:
-                  requestId: 2b4d6f8a-1c3e-5g7i-9k0m-2n4p6r8t0v2x
-                  keeperId: keeper-a1b2c3d4
-                  taskId: 42
-                  circuitId: liquidity-threshold-v1
-                  taskCondition:
-                    type: liquidity-threshold
-                    params:
-                      minLiquidity: 10000
-                  conditionHash: "0x1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80"
-                  verifierAddress: CDVERIFY456789ABCDEF1234567890ABCDEF1234
-                  proof:
-                    proofId: 9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f
-                    pi_a:
-                      - "0x1A2B3C4D5E6F"
-                      - "0x7F8E9D0C1B2A"
-                    pi_b:
-                      - - "0x3E4D5C6B7A89"
-                        - "0x9A8B7C6D5E4F"
-                      - - "0x2A3B4C5D6E7F"
-                        - "0x8F7E6D5C4B3A"
-                    pi_c:
-                      - "0x7E6D5C4B3A29"
-                      - "0x1A9B2C8D3E7F"
-                    publicSignals:
-                      - "0x1"
       responses:
-        '200':
-          description: Verification completed (check `valid` field for outcome)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/VerifyProofResponse'
-              examples:
-                valid:
-                  value:
-                    valid: true
-                    proofId: 9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f
-                    taskId: 42
-                    conditionHash: "0x1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80"
-                    verifiedAt: "2026-06-29T12:01:30.000Z"
-                    verificationDetails:
-                      circuitId: liquidity-threshold-v1
-                      publicSignalsMatch: true
-                      conditionHashMatch: true
-                invalid:
-                  value:
-                    valid: false
-                    proofId: 9e8d7c6b-5a4f-3e2d-1c0b-9a8b7c6d5e4f
-                    taskId: 42
-                    conditionHash: "0x1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80"
-                    verifiedAt: "2026-06-29T12:01:30.000Z"
-                    verificationDetails:
-                      circuitId: liquidity-threshold-v1
-                      publicSignalsMatch: false
-                      conditionHashMatch: true
-                      reason: Proof vector verification failed
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
-
+        '200': { description: Verification completed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /health:
     get:
-      tags:
-        - Health
-      summary: Service health and worker pool status
-      description: |
-        Returns readiness of the ZK proof worker pool. Keepers may use this endpoint for
-        pre-flight checks before routing proof generation requests.
-      operationId: getHealth
-      security: []
+      operationId: health
       responses:
-        '200':
-          description: Service is healthy and accepting requests
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResponse'
-              example:
-                status: healthy
-                version: 1.0.0
-                workerPool:
-                  totalWorkers: 4
-                  idleWorkers: 3
-                  activeWorkers: 1
-                uptimeSeconds: 86400
-        '503':
-          description: Service is not ready to accept proof requests
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResponse'
-              example:
-                status: unavailable
-                version: 1.0.0
-                workerPool:
-                  totalWorkers: 0
-                  idleWorkers: 0
-                  activeWorkers: 0
-                uptimeSeconds: 0
-
+        '200': { description: Healthy }
+        '503': { description: Unavailable }
 components:
-  securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: |
-        Keeper authentication token issued by the SoroTask platform.
-        Requests without a valid token are rejected with HTTP 401.
-
-  parameters:
-    RequestIdHeader:
-      name: X-Request-Id
-      in: header
-      required: false
-      description: |
-        Optional client-supplied correlation ID. When omitted, the service generates one
-        and echoes it in error responses when applicable.
-      schema:
-        type: string
-        format: uuid
-
-  responses:
-    BadRequest:
-      description: Invalid or malformed request payload
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-          example:
-            error:
-              code: INVALID_INPUT
-              message: taskCondition and clientData are required
-              details:
-                missingFields:
-                  - clientData
-    Unauthorized:
-      description: Missing or invalid authentication credentials
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-          example:
-            error:
-              code: UNAUTHORIZED
-              message: Invalid or missing bearer token
-    ServiceUnavailable:
-      description: Worker pool is not initialized or is at capacity
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-          example:
-            error:
-              code: SERVICE_NOT_READY
-              message: ZK proof worker pool is not initialized
-
   schemas:
     GenerateProofRequest:
       type: object
-      required:
-        - taskId
-        - circuitId
-        - taskCondition
-        - clientData
+      additionalProperties: false
+      required: [taskId, circuitId, taskCondition, clientData]
       properties:
-        requestId:
-          type: string
-          format: uuid
-          description: Client-generated correlation ID for logging and tracing
-        keeperId:
-          type: string
-          description: Identifier of the keeper initiating the request
-          example: keeper-a1b2c3d4
-        taskId:
-          type: integer
-          format: int64
-          minimum: 1
-          description: On-chain SoroTask task ID this proof applies to
-          example: 42
-        circuitId:
-          type: string
-          description: Registered ZK circuit identifier used for proof generation
-          example: liquidity-threshold-v1
-        taskCondition:
-          $ref: '#/components/schemas/TaskCondition'
-        clientData:
-          $ref: '#/components/schemas/ClientData'
-        verifierAddress:
-          type: string
-          description: |
-            Stellar/Soroban address of the on-chain ZK verifier contract.
-            Used to select the correct verification key and encode public signals.
-          example: CDVERIFY456789ABCDEF1234567890ABCDEF1234
-
-    GenerateProofResponse:
-      type: object
-      required:
-        - proofId
-        - status
-        - taskId
-        - conditionHash
-        - proof
-        - generatedAt
-      properties:
-        proofId:
-          type: string
-          format: uuid
-          description: Unique identifier for this proof generation result
-        status:
-          type: string
-          enum:
-            - success
-          description: Generation outcome (only `success` is returned on HTTP 200)
-        taskId:
-          type: integer
-          format: int64
-          description: Echo of the request task ID
-        conditionHash:
-          type: string
-          pattern: '^0x[0-9a-fA-F]+$'
-          description: |
-            SHA-256 hash of the canonical task condition, hex-encoded with `0x` prefix.
-            Submitted on-chain as `condition_hash` in `submit_zk_condition`.
-        proof:
-          $ref: '#/components/schemas/ZkProof'
-        serializedProof:
-          type: string
-          description: |
-            Hex-encoded bytes of the proof, ready for on-chain `zk_proof` argument.
-            Maximum length 4096 bytes per contract constraint.
-        generatedAt:
-          type: string
-          format: date-time
-          description: ISO 8601 timestamp when proof generation completed
-        processingTimeMs:
-          type: integer
-          minimum: 0
-          description: Wall-clock time spent in the worker pool for this request
-
+        requestId: { type: string, format: uuid }
+        keeperId: { type: string, minLength: 1 }
+        taskId: { type: integer, format: int64, minimum: 1 }
+        circuitId: { type: string, minLength: 1 }
+        taskCondition: { $ref: '#/components/schemas/TaskCondition' }
+        clientData: { $ref: '#/components/schemas/ClientData' }
+        verifierAddress: { type: string, minLength: 1 }
     VerifyProofRequest:
       type: object
-      required:
-        - taskId
-        - circuitId
-        - taskCondition
-        - proof
+      additionalProperties: false
+      required: [taskId, circuitId, taskCondition, proof]
       properties:
-        requestId:
-          type: string
-          format: uuid
-        keeperId:
-          type: string
-          example: keeper-a1b2c3d4
-        taskId:
-          type: integer
-          format: int64
-          minimum: 1
-          example: 42
-        circuitId:
-          type: string
-          example: liquidity-threshold-v1
-        taskCondition:
-          $ref: '#/components/schemas/TaskCondition'
-        conditionHash:
-          type: string
-          pattern: '^0x[0-9a-fA-F]+$'
-          description: |
-            Expected condition hash. When provided, the service verifies the proof's
-            public signals match this hash.
-        verifierAddress:
-          type: string
-          description: On-chain verifier contract address used for verification key lookup
-          example: CDVERIFY456789ABCDEF1234567890ABCDEF1234
-        proof:
-          allOf:
-            - $ref: '#/components/schemas/ZkProof'
-            - type: object
-              required:
-                - proofId
-
-    VerifyProofResponse:
-      type: object
-      required:
-        - valid
-        - taskId
-        - conditionHash
-        - verifiedAt
-        - verificationDetails
-      properties:
-        valid:
-          type: boolean
-          description: Whether the proof is cryptographically valid for the given condition
-        proofId:
-          type: string
-          format: uuid
-          description: Echo of the proof identifier from the request
-        taskId:
-          type: integer
-          format: int64
-        conditionHash:
-          type: string
-          pattern: '^0x[0-9a-fA-F]+$'
-          description: Condition hash used during verification
-        verifiedAt:
-          type: string
-          format: date-time
-        verificationDetails:
-          $ref: '#/components/schemas/VerificationDetails'
-
+        requestId: { type: string, format: uuid }
+        keeperId: { type: string, minLength: 1 }
+        taskId: { type: integer, format: int64, minimum: 1 }
+        circuitId: { type: string, minLength: 1 }
+        taskCondition: { $ref: '#/components/schemas/TaskCondition' }
+        conditionHash: { type: string, minLength: 1 }
+        verifierAddress: { type: string, minLength: 1 }
+        proof: { $ref: '#/components/schemas/ZkProof' }
     TaskCondition:
       type: object
-      required:
-        - type
-        - params
-      description: |
-        Public task condition definition. The `type` selects the circuit semantics;
-        `params` holds type-specific public inputs that appear in public signals.
+      additionalProperties: false
+      required: [type, params]
       properties:
-        type:
-          type: string
-          description: Condition type identifier matching a registered circuit
-          example: liquidity-threshold
-        params:
-          type: object
-          additionalProperties: true
-          description: Type-specific public condition parameters
-          example:
-            minLiquidity: 10000
-
+        type: { type: string, minLength: 1 }
+        params: { type: object, additionalProperties: true }
     ClientData:
       type: object
-      required:
-        - witness
-      description: |
-        Private witness inputs supplied by the light client. Never logged or persisted
-        by the service beyond request processing.
+      additionalProperties: false
+      required: [witness]
       properties:
-        witness:
-          type: object
-          additionalProperties: true
-          description: Private inputs required by the circuit
-          example:
-            actualLiquidity: 25000
-        salt:
-          type: string
-          description: Optional randomness for commitment-based circuits
-          example: "0xfe3a"
-
+        witness: { type: object, minProperties: 1, additionalProperties: true }
+        salt: { type: string }
     ZkProof:
       type: object
-      required:
-        - pi_a
-        - pi_b
-        - pi_c
-        - publicSignals
-      description: |
-        Groth16 proof structure compatible with circom/snarkjs and the SoroTask
-        on-chain verifier. Field elements are hex-encoded strings with `0x` prefix.
+      additionalProperties: false
+      required: [proofId, pi_a, pi_b, pi_c, publicSignals]
       properties:
-        proofId:
-          type: string
-          format: uuid
-          description: Proof identifier (required on verify requests, returned on generate)
-        pi_a:
-          type: array
-          minItems: 2
-          maxItems: 2
-          items:
-            type: string
-            pattern: '^0x[0-9a-fA-F]+$'
-          description: Groth16 proof element A (G1 point, two coordinates)
-        pi_b:
-          type: array
-          minItems: 2
-          maxItems: 2
-          items:
-            type: array
-            minItems: 2
-            maxItems: 2
-            items:
-              type: string
-              pattern: '^0x[0-9a-fA-F]+$'
-          description: Groth16 proof element B (G2 point, 2x2 coordinates)
-        pi_c:
-          type: array
-          minItems: 2
-          maxItems: 2
-          items:
-            type: string
-            pattern: '^0x[0-9a-fA-F]+$'
-          description: Groth16 proof element C (G1 point, two coordinates)
-        publicSignals:
-          type: array
-          items:
-            type: string
-            pattern: '^0x[0-9a-fA-F]+$'
-          description: Public inputs / outputs exposed by the circuit
-
-    VerificationDetails:
+        proofId: { type: string, format: uuid }
+        pi_a: { type: array, minItems: 2, maxItems: 2, items: { type: string, minLength: 1 } }
+        pi_b: { type: array, minItems: 2, maxItems: 2, items: { type: array, minItems: 2, maxItems: 2, items: { type: string, minLength: 1 } } }
+        pi_c: { type: array, minItems: 2, maxItems: 2, items: { type: string, minLength: 1 } }
+        publicSignals: { type: array, items: { type: string, minLength: 1 } }
+    ProblemDetails:
       type: object
-      required:
-        - circuitId
-        - publicSignalsMatch
+      required: [type, title, status, detail]
       properties:
-        circuitId:
-          type: string
-        publicSignalsMatch:
-          type: boolean
-          description: Whether proof public signals align with the task condition
-        conditionHashMatch:
-          type: boolean
-          description: Whether derived hash matches the supplied conditionHash
-        reason:
-          type: string
-          description: Human-readable failure reason when `valid` is false
-
-    HealthResponse:
-      type: object
-      required:
-        - status
-        - version
-        - workerPool
-      properties:
-        status:
-          type: string
-          enum:
-            - healthy
-            - degraded
-            - unavailable
-        version:
-          type: string
-          example: 1.0.0
-        workerPool:
-          type: object
-          required:
-            - totalWorkers
-            - idleWorkers
-            - activeWorkers
-          properties:
-            totalWorkers:
-              type: integer
-              minimum: 0
-            idleWorkers:
-              type: integer
-              minimum: 0
-            activeWorkers:
-              type: integer
-              minimum: 0
-        uptimeSeconds:
-          type: integer
-          minimum: 0
-
-    ErrorResponse:
-      type: object
-      required:
-        - error
-      properties:
-        error:
-          type: object
-          required:
-            - code
-            - message
-          properties:
-            code:
-              type: string
-              enum:
-                - INVALID_INPUT
-                - CONSTRAINT_UNSATISFIED
-                - UNAUTHORIZED
-                - SERVICE_NOT_READY
-                - PROOF_GENERATION_FAILED
-                - PROOF_VERIFICATION_FAILED
-                - INTERNAL_ERROR
-            message:
-              type: string
-            details:
-              type: object
-              additionalProperties: true
-
-security:
-  - BearerAuth: []
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        errors: { type: array, items: { type: object, additionalProperties: true } }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    Unauthorized:
+      description: Unauthorized
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    ServiceUnavailable:
+      description: Service unavailable
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }

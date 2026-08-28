@@ -102,6 +102,7 @@ const TaskCreationForm: React.FC<TaskCreationFormProps> = ({ initialConfig }) =>
           required={true}
           placeholder="3600"
           type="number"
+          preserveInput
           min="60"
           fieldState={getFieldState('interval')}
           onChange={(value) => handleChange('interval', value)}
@@ -115,6 +116,7 @@ const TaskCreationForm: React.FC<TaskCreationFormProps> = ({ initialConfig }) =>
           required={true}
           placeholder="10"
           type="number"
+          preserveInput
           min="0.1"
           max="10000"
           step="0.1"

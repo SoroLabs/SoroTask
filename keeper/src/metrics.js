@@ -1,4 +1,5 @@
 const http = require('http');
+const fs = require('fs');
 const promClient = require('prom-client');
 const { _Server } = require('socket.io');
 const { requireAdminAuth } = require('./auth');
@@ -649,15 +650,6 @@ class Metrics {
     };
   }
 
-  updateFraudState(state) {
-    Object.assign(this.fraudState, state);
-  }
-
-  updateReconciliationState(state) {
-    Object.assign(this.reconciliationState, state);
-  }
-}
-
 function createDefaultGasMonitor() {
   return {
     getLowGasCount: () => 0,
@@ -689,7 +681,7 @@ class MetricsServer {
     this.gasMonitor = gasMonitor || createDefaultGasMonitor();
     this.logger = logger || createLogger('metrics');
     this.deadLetterQueue = deadLetterQueue || null;
-    this.port = options.port || parseInt(process.env.METRICS_PORT, 10) || 3000;
+    this.port = options.port ?? (parseInt(process.env.METRICS_PORT, 10) || 3000);
     this.healthStaleThreshold = options.healthStaleThreshold
       || parseInt(process.env.HEALTH_STALE_THRESHOLD_MS || '60000', 10);
     this.server = null;
@@ -700,31 +692,11 @@ class MetricsServer {
     this.controlStateProvider = options.controlStateProvider || null;
     this.controlActionHandler = options.controlActionHandler || null;
     this.historyManager = options.historyManager || null;
-    this.p2pStateProvider = options.p2pStateProvider || null;
-    this.failoverStateProvider = options.failoverStateProvider || null;
-    this.webhookHandler = options.webhookHandler || null;
-    this.webhookPath = options.webhookPath || '/webhook/trigger';
-    this.webhookPaths = new Set([
-      this.webhookPath,
-      '/webhooks/task-executions',
-    ]);
-    this.p2pStateProvider = options.p2pStateProvider || null;
-    this.streamHub = options.streamHub || null;
-    this.apiGateway = options.apiGateway || new ApiGateway({
-      defaultCapacity: options.defaultGatewayCapacity,
-      defaultRefillPerSecond: options.defaultGatewayRefillPerSecond,
-      defaultBillingUnits: options.defaultGatewayBillingUnits,
-    });
-    this.failurePredictor = options.failurePredictor || new FailurePredictor({
-      historyManager: this.historyManager,
-      deadLetterQueue: this.deadLetterQueue,
-      retryBudget: options.retryBudgetTracker || null,
-      logger: createLogger('failure-predictor'),
-    });
-    this.reputationScorer = options.reputationScorer || new KeeperReputationScorer({
-      historyManager: this.historyManager,
-      logger: createLogger('reputation-scorer'),
-    });
+    this.redisClient = options.redisClient || null;
+    this.workerPool = options.workerPool || null;
+    this.tmpPath = options.tmpPath || '/tmp';
+    this.redisLatencyThresholdMs = options.redisLatencyThresholdMs
+      || parseInt(process.env.REDIS_LATENCY_THRESHOLD_MS || '250', 10);
     this.register = new promClient.Registry();
 
     // Instantiate IndicatorRegistry for SLO observability.
@@ -797,6 +769,11 @@ class MetricsServer {
 
   setReconciliationEngine(engine) {
     this.reconciliationEngine = engine;
+  }
+
+  setReadinessProviders({ redisClient, workerPool } = {}) {
+    if (redisClient) this.redisClient = redisClient;
+    if (workerPool) this.workerPool = workerPool;
   }
 
   initPrometheusMetrics() {
@@ -1469,10 +1446,7 @@ class MetricsServer {
     }
 
     this.server = http.createServer(async (req, res) => {
-      const protect = (handler) => {
-        return () => requireAdminAuth(req, res, handler);
-      };
-
+      const protect = (handler) => () => requireAdminAuth(req, res, handler);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -1484,28 +1458,11 @@ class MetricsServer {
       }
 
       const url = new URL(req.url, `http://127.0.0.1:${this.port}`);
-      const routePath = url.pathname;
+      if (url.pathname === '/healthz' || url.pathname === '/healthz/') {
+        this.handleLiveness(res);
 
-      if (this.apiGateway && routePath !== '/health' && routePath !== '/health/') {
-        const gatewayDecision = this.apiGateway.evaluate(req, routePath);
-        if (!gatewayDecision.allowed) {
-          this.increment('throttledRequestsTotal', { name: 'api-gateway' });
-          res.writeHead(429, {
-            'Content-Type': 'application/json',
-            'Retry-After': Math.ceil((gatewayDecision.retryAfterMs || 1000) / 1000),
-          });
-          res.end(JSON.stringify({
-            error: 'Too Many Requests',
-            route: routePath,
-            retryAfterMs: gatewayDecision.retryAfterMs,
-            policy: gatewayDecision.policy,
-          }, null, 2));
-          return;
-        }
-      }
-
-      if (url.pathname === '/health' || url.pathname === '/health/') {
-        this.handleHealth(res);
+      } else if (url.pathname === '/readyz' || url.pathname === '/readyz/' || url.pathname === '/health' || url.pathname === '/health/') {
+        await this.handleReadiness(res);
 
       } else if (req.url === '/metrics' || req.url === '/metrics/') {
         this.handleMetrics(res);
@@ -1728,15 +1685,73 @@ class MetricsServer {
     res.end(JSON.stringify(healthData, null, 2));
   }
 
-  handleMetricsHistory(req, res) {
-    const url = new URL(req.url || '/metrics/history', 'http://localhost');
-    const limit = Math.min(
-      parseInt(url.searchParams.get('limit') || '60', 10),
-      this.metrics.history.maxSamples,
-    );
-    const samples = this.metrics.history.getSamples(limit);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ samples, count: samples.length }, null, 2));
+  handleLiveness(res) {
+    const status = this.metrics.getHealthStatus(this.healthStaleThreshold);
+    const healthy = status.status !== 'stale';
+    res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: healthy ? 'ok' : 'degraded',
+      uptime: status.uptime,
+      lastPollAt: status.lastPollAt,
+    }));
+  }
+
+  async handleReadiness(res) {
+    const checks = {
+      redis: await this.checkRedis(),
+      workers: this.checkWorkers(),
+      tmpDisk: this.checkTmpDisk(),
+    };
+    const healthy = Object.values(checks).every((check) => check.healthy);
+    res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: healthy ? 'ready' : 'degraded',
+      checks,
+    }, null, 2));
+  }
+
+  checkWorkers() {
+    if (!this.workerPool || typeof this.workerPool.getReadinessStatus !== 'function') {
+      return { healthy: false, reason: 'worker_pool_unavailable' };
+    }
+    return this.workerPool.getReadinessStatus();
+  }
+
+  async checkRedis() {
+    if (!this.redisClient || typeof this.redisClient.ping !== 'function') {
+      return { healthy: false, reason: 'redis_unavailable' };
+    }
+    const startedAt = Date.now();
+    try {
+      const response = await this.redisClient.ping();
+      const latencyMs = Date.now() - startedAt;
+      const healthy = response === 'PONG' && latencyMs <= this.redisLatencyThresholdMs;
+      return {
+        healthy,
+        connected: response === 'PONG',
+        latencyMs,
+        ...(latencyMs > this.redisLatencyThresholdMs ? { reason: 'queue_latency_high' } : {}),
+        ...(this.redisClient.isLocalFallback ? { localFallback: true } : {}),
+      };
+    } catch (error) {
+      return { healthy: false, connected: false, reason: 'redis_ping_failed', error: error.message };
+    }
+  }
+
+  checkTmpDisk() {
+    const minimumBytes = 2 * 1024 * 1024 * 1024;
+    try {
+      const stats = fs.statfsSync(this.tmpPath);
+      const availableBytes = Number(stats.bavail) * Number(stats.bsize);
+      return {
+        healthy: availableBytes > minimumBytes,
+        availableBytes,
+        minimumBytes,
+        path: this.tmpPath,
+      };
+    } catch (error) {
+      return { healthy: false, reason: 'tmp_disk_check_failed', error: error.message, path: this.tmpPath };
+    }
   }
 
   handleMetrics(res) {

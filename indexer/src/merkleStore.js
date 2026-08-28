@@ -14,6 +14,10 @@
  */
 
 const { buildEventTree, hashEvent, getProof } = require("./merkle");
+const {
+  IncrementalMerkleTree,
+  ensureIncrementalSchema,
+} = require("./incrementalMerkle");
 
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS merkle_roots (
@@ -24,8 +28,9 @@ const CREATE_TABLE_SQL = `
   )
 `;
 
-async function ensureSchema({ queryRun }) {
-  await queryRun(CREATE_TABLE_SQL);
+async function ensureSchema(deps) {
+  await deps.queryRun(CREATE_TABLE_SQL);
+  await ensureIncrementalSchema(deps);
 }
 
 /**
@@ -41,13 +46,27 @@ async function getLedgerEvents({ queryAll }, ledger) {
 
 /**
  * Compute the Merkle tree for a ledger's events and persist the root.
+ * Uses the incremental Merkle tree for O(log N) updates and cached proofs.
  * @returns {Promise<{ledger:number, root:string|null, leafCount:number}>}
  */
 async function computeAndStoreLedgerMerkle(deps, ledger) {
   await ensureSchema(deps);
   const events = await getLedgerEvents(deps, ledger);
-  const tree = buildEventTree(events);
-  if (tree.root) {
+
+  const treeId = `ledger:${ledger}`;
+  const incrementalTree = new IncrementalMerkleTree(deps, treeId);
+
+  // Check if this ledger already has an incremental tree with the correct count
+  const existingCount = await incrementalTree.getLeafCount();
+  if (existingCount < events.length) {
+    // Append only the new leaves (incremental update)
+    for (let i = existingCount; i < events.length; i++) {
+      await incrementalTree.appendLeaf(events[i]);
+    }
+  }
+
+  const root = await incrementalTree.getRoot();
+  if (root) {
     await deps.queryRun(
       `INSERT INTO merkle_roots (ledger_sequence, root, leaf_count, computed_at)
        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -55,10 +74,10 @@ async function computeAndStoreLedgerMerkle(deps, ledger) {
          root = excluded.root,
          leaf_count = excluded.leaf_count,
          computed_at = CURRENT_TIMESTAMP`,
-      [ledger, tree.root, events.length],
+      [ledger, root, events.length],
     );
   }
-  return { ledger, root: tree.root, leafCount: events.length };
+  return { ledger, root, leafCount: events.length };
 }
 
 async function getStoredRoot({ queryGet }, ledger) {
@@ -71,11 +90,14 @@ async function getStoredRoot({ queryGet }, ledger) {
 /**
  * Build the response payload for GET /events/:ledger/merkle-proof.
  *
+ * Uses the incremental Merkle tree for cached O(log N) proof generation,
+ * targeting <5ms latency for inclusion proofs on 100,000+ indexed tasks.
+ *
  * Response shape:
  *  - Without ?eventId: returns the ledger's full leaf set + root (and stored
  *    root, if any) so a caller can reconstruct/verify the whole tree.
  *  - With ?eventId=<events.id>: returns an inclusion proof for that single
- *    event leaf: { leaf, proof: [...siblingHashes], root, index }.
+ *    event leaf: { leaf, proof: [...siblingHashes], root, index, cached }.
  *
  * @returns {Promise<{status:number, body:object}>}
  */
@@ -88,10 +110,13 @@ async function buildMerkleProofResponse(deps, ledger, eventId) {
     };
   }
 
-  const tree = buildEventTree(events);
+  const treeId = `ledger:${ledger}`;
+  const incrementalTree = new IncrementalMerkleTree(deps, treeId);
   const stored = await getStoredRoot(deps, ledger);
 
   if (eventId === undefined || eventId === null || eventId === "") {
+    // Full tree response — use legacy build for leaf listing
+    const tree = buildEventTree(events);
     return {
       status: 200,
       body: {
@@ -105,14 +130,35 @@ async function buildMerkleProofResponse(deps, ledger, eventId) {
   }
 
   const targetId = Number(eventId);
-  const index = events.findIndex((event) => Number(event.id) === targetId);
-  if (index === -1) {
+  const targetEvent = events.find((event) => Number(event.id) === targetId);
+  if (!targetEvent) {
     return {
       status: 404,
       body: { error: `Event ${eventId} not found in ledger ${ledger}` },
     };
   }
 
+  // Try incremental tree proof first (cached, <5ms target)
+  const proofResult = await incrementalTree.serveProof(targetId);
+  if (proofResult) {
+    return {
+      status: 200,
+      body: {
+        ledger_sequence: ledger,
+        eventId: targetId,
+        index: proofResult.index,
+        leaf: proofResult.leaf,
+        proof: proofResult.proof,
+        root: proofResult.root,
+        storedRoot: stored ? stored.root : null,
+        cached: proofResult.cached,
+      },
+    };
+  }
+
+  // Fallback: if incremental tree not populated, rebuild from events
+  const tree = buildEventTree(events);
+  const index = events.findIndex((event) => Number(event.id) === targetId);
   const leaf = hashEvent(events[index]);
   const proof = getProof(tree, index);
   return {
@@ -125,6 +171,7 @@ async function buildMerkleProofResponse(deps, ledger, eventId) {
       proof,
       root: tree.root,
       storedRoot: stored ? stored.root : null,
+      cached: false,
     },
   };
 }

@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
 const { createLogger } = require('./logger');
-const { ErrorClassification } = require('./retry');
+const { ErrorClassification, calculateDelay } = require('./retry');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DEAD_LETTER_FILE = path.join(DATA_DIR, 'dead-letter-queue.json');
@@ -12,6 +12,9 @@ const DEAD_LETTER_FILE = path.join(DATA_DIR, 'dead-letter-queue.json');
  * 
  * Captures tasks that have exceeded retry thresholds and isolates them
  * from the normal execution loop to prevent resource waste and noise.
+ * 
+ * Implements exponential backoff for quarantined tasks and webhook
+ * notifications to task creators on quarantine events.
  */
 class DeadLetterQueue extends EventEmitter {
   constructor(options = {}) {
@@ -21,8 +24,8 @@ class DeadLetterQueue extends EventEmitter {
     
     // Configuration with defaults
     this.config = {
-      // Maximum number of failures before quarantine
-      maxFailures: parseInt(process.env.DLQ_MAX_FAILURES, 10) || 5,
+      // Maximum number of consecutive failures before quarantine
+      maxFailures: parseInt(process.env.DLQ_MAX_FAILURES, 10) || 3,
       
       // Time window for counting failures (in milliseconds)
       failureWindowMs: parseInt(process.env.DLQ_FAILURE_WINDOW_MS, 10) || 3600000, // 1 hour
@@ -32,6 +35,14 @@ class DeadLetterQueue extends EventEmitter {
       
       // Maximum number of dead-letter records to keep
       maxRecords: parseInt(process.env.DLQ_MAX_RECORDS, 10) || 1000,
+      
+      // Exponential backoff configuration
+      baseDelayMs: parseInt(process.env.DLQ_BASE_DELAY_MS, 10) || 5000, // 5 seconds base
+      maxDelayMs: parseInt(process.env.DLQ_MAX_DELAY_MS, 10) || 3600000, // 1 hour max
+      
+      // Webhook notification configuration
+      webhookUrl: process.env.DLQ_WEBHOOK_URL || null,
+      webhookTimeoutMs: parseInt(process.env.DLQ_WEBHOOK_TIMEOUT_MS, 10) || 10000,
       
       ...options.config,
     };
@@ -46,12 +57,17 @@ class DeadLetterQueue extends EventEmitter {
     // Dead-letter records with full context
     // Map<taskId, DeadLetterRecord>
     this.deadLetterRecords = new Map();
+    
+    // Exponential backoff tracking: Map<taskId, { attempt, nextRetryAt }>
+    this.backoffState = new Map();
 
     // Statistics
     this.stats = {
       totalQuarantined: 0,
       totalRecovered: 0,
       activeQuarantined: 0,
+      notificationsSent: 0,
+      notificationsFailed: 0,
     };
 
     this._ensureDataDir();
@@ -150,6 +166,13 @@ class DeadLetterQueue extends EventEmitter {
     this.stats.totalQuarantined++;
     this.stats.activeQuarantined = this.quarantinedTasks.size;
 
+    // Initialize backoff state for quarantined task
+    this.backoffState.set(taskId, {
+      attempt: 0,
+      nextRetryAt: Date.now() + this.config.baseDelayMs,
+      quarantinedAt: now,
+    });
+
     // Enforce max records limit
     this._enforceMaxRecords();
 
@@ -163,6 +186,16 @@ class DeadLetterQueue extends EventEmitter {
     });
 
     this.emit('task:quarantined', { taskId, record: deadLetterRecord });
+
+    // Send webhook notification (async, non-blocking)
+    this.sendNotification({
+      type: 'task_quarantined',
+      taskId,
+      reason,
+      failureCount: history.length,
+      errorPattern: deadLetterRecord.errorPattern,
+      quarantinedAt: new Date(now).toISOString(),
+    }).catch(() => {}); // Fire and forget
   }
 
   /**
@@ -186,6 +219,7 @@ class DeadLetterQueue extends EventEmitter {
 
     this.quarantinedTasks.delete(taskId);
     this.failureHistory.delete(taskId);
+    this.resetBackoff(taskId);
     this.stats.totalRecovered++;
     this.stats.activeQuarantined = this.quarantinedTasks.size;
 
@@ -197,6 +231,14 @@ class DeadLetterQueue extends EventEmitter {
     });
 
     this.emit('task:recovered', { taskId, recoveryReason });
+
+    // Send recovery notification (async, non-blocking)
+    this.sendNotification({
+      type: 'task_recovered',
+      taskId,
+      recoveryReason,
+      recoveredAt: new Date().toISOString(),
+    }).catch(() => {}); // Fire and forget
 
     return true;
   }
@@ -255,6 +297,117 @@ class DeadLetterQueue extends EventEmitter {
   }
 
   /**
+   * Calculate the exponential backoff delay for a quarantined task.
+   * 
+   * @param {number} taskId - The task ID
+   * @returns {number} - Delay in milliseconds before next retry attempt
+   */
+  getBackoffDelay(taskId) {
+    const state = this.backoffState.get(taskId);
+    if (!state) {
+      return this.config.baseDelayMs;
+    }
+    return calculateDelay(state.attempt, this.config.baseDelayMs, this.config.maxDelayMs);
+  }
+
+  /**
+   * Check if a quarantined task is eligible for retry based on backoff timing.
+   * 
+   * @param {number} taskId - The task ID
+   * @returns {boolean} - True if task can be retried now
+   */
+  isReadyForRetry(taskId) {
+    if (!this.quarantinedTasks.has(taskId)) {
+      return true; // Not quarantined, always ready
+    }
+    
+    const state = this.backoffState.get(taskId);
+    if (!state || !state.nextRetryAt) {
+      return true; // No backoff state, ready to retry
+    }
+    
+    return Date.now() >= state.nextRetryAt;
+  }
+
+  /**
+   * Record a retry attempt for a quarantined task and update backoff state.
+   * 
+   * @param {number} taskId - The task ID
+   */
+  recordRetryAttempt(taskId) {
+    const state = this.backoffState.get(taskId) || { attempt: 0 };
+    state.attempt++;
+    
+    const delay = calculateDelay(state.attempt, this.config.baseDelayMs, this.config.maxDelayMs);
+    state.nextRetryAt = Date.now() + delay;
+    state.lastAttemptAt = Date.now();
+    
+    this.backoffState.set(taskId, state);
+    
+    this.logger.info('Recorded retry attempt with backoff', {
+      taskId,
+      attempt: state.attempt,
+      nextRetryAt: new Date(state.nextRetryAt).toISOString(),
+      backoffMs: delay,
+    });
+    
+    this._saveToDisk();
+  }
+
+  /**
+   * Reset backoff state for a task (on successful recovery or execution).
+   * 
+   * @param {number} taskId - The task ID
+   */
+  resetBackoff(taskId) {
+    this.backoffState.delete(taskId);
+    this._saveToDisk();
+  }
+
+  /**
+   * Send webhook notification about quarantine event.
+   * 
+   * @param {Object} notification - Notification payload
+   * @returns {Promise<boolean>} - True if notification sent successfully
+   */
+  async sendNotification(notification) {
+    if (!this.config.webhookUrl) {
+      return false;
+    }
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.config.webhookTimeoutMs);
+      
+      const response = await fetch(this.config.webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-SoroTask-DLQ-Event': notification.type,
+        },
+        body: JSON.stringify(notification),
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (response.ok) {
+        this.stats.notificationsSent++;
+        this.logger.info('DLQ notification sent', { type: notification.type, taskId: notification.taskId });
+        return true;
+      } else {
+        this.stats.notificationsFailed++;
+        this.logger.warn('DLQ notification failed', { status: response.status });
+        return false;
+      }
+    } catch (err) {
+      this.stats.notificationsFailed++;
+      this.logger.warn('DLQ notification error', { error: err.message });
+      return false;
+    }
+  }
+
+  /**
    * Get all dead-letter records (for inspection/debugging).
    * 
    * @param {Object} filters - Optional filters
@@ -290,6 +443,7 @@ class DeadLetterQueue extends EventEmitter {
       for (const [taskId, record] of this.deadLetterRecords.entries()) {
         if (record.status === 'recovered') {
           this.deadLetterRecords.delete(taskId);
+          this.backoffState.delete(taskId);
         }
       }
       this.logger.info('Cleared recovered dead-letter records');
@@ -297,6 +451,7 @@ class DeadLetterQueue extends EventEmitter {
       this.quarantinedTasks.clear();
       this.failureHistory.clear();
       this.deadLetterRecords.clear();
+      this.backoffState.clear();
       this.stats.activeQuarantined = 0;
       this.logger.warn('Cleared all dead-letter records');
     }
@@ -324,8 +479,8 @@ class DeadLetterQueue extends EventEmitter {
       );
 
       // Quarantine if:
-      // 1. Max failures exceeded, OR
-      // 2. Any non-retryable error detected
+      // 1. Non-retryable error detected (immediate quarantine), OR
+      // 2. Max consecutive failures exceeded
       return hasNonRetryable || history.length >= this.config.maxFailures;
     }
 
@@ -507,6 +662,13 @@ class DeadLetterQueue extends EventEmitter {
           ));
         }
         
+        // Load backoff state
+        if (data.backoffState) {
+          this.backoffState = new Map(Object.entries(data.backoffState).map(
+            ([k, v]) => [parseInt(k, 10), v],
+          ));
+        }
+        
         if (data.stats) {
           this.stats = { ...this.stats, ...data.stats };
         }
@@ -517,6 +679,7 @@ class DeadLetterQueue extends EventEmitter {
           quarantinedCount: this.quarantinedTasks.size,
           totalRecords: this.deadLetterRecords.size,
           failureHistoryCount: this.failureHistory.size,
+          backoffStateCount: this.backoffState.size,
         });
       }
     } catch (err) {
@@ -535,6 +698,7 @@ class DeadLetterQueue extends EventEmitter {
         quarantinedTasks: Array.from(this.quarantinedTasks),
         deadLetterRecords: Object.fromEntries(this.deadLetterRecords),
         failureHistory: Object.fromEntries(this.failureHistory),
+        backoffState: Object.fromEntries(this.backoffState),
         stats: this.stats,
         updatedAt: new Date().toISOString(),
       };

@@ -2,10 +2,14 @@ const parser = require('./parser');
 const registry = require('./registry');
 const errorHandler = require('./errorHandler');
 const Monitor = require('./monitor');
+const { AbiCache } = require('./abiCache');
 
 class ABIRegistryService {
-  constructor() {
+  constructor(options = {}) {
     this.monitor = new Monitor(parser, registry);
+    this.cache = options.cache || new AbiCache(options);
+    this.indexerEvents = null;
+    if (options.indexerEvents) this.attachIndexerEvents(options.indexerEvents);
   }
 
   start() {
@@ -24,6 +28,27 @@ class ABIRegistryService {
   
   getErrorHandler() {
     return errorHandler;
+  }
+
+  async getABI(contractId, wasmHash, fetchABI) {
+    const cached = await this.cache.getPersistent(contractId, wasmHash);
+    if (cached) return cached;
+    if (typeof fetchABI !== 'function') return null;
+    const abi = await fetchABI();
+    if (abi) await this.cache.set(contractId, wasmHash, abi);
+    return abi;
+  }
+
+  async invalidateOnIndexerEvent(event) {
+    return this.cache.handleIndexerEvent(event);
+  }
+
+  attachIndexerEvents(eventEmitter) {
+    if (!eventEmitter || typeof eventEmitter.on !== 'function') return false;
+    this.indexerEvents = eventEmitter;
+    eventEmitter.on('event', event => this.invalidateOnIndexerEvent(event));
+    eventEmitter.on('ContractUpgraded', event => this.invalidateOnIndexerEvent(event));
+    return true;
   }
 }
 

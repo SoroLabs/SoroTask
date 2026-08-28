@@ -558,6 +558,11 @@ class ExecutionQueue extends EventEmitter {
                 this.emit('task:skipped', taskId, { reason: 'distributed_lock' });
                 return;
               }
+              // Thread fencing token into attemptContext for executor to consume
+              if (distributedLockToken && typeof distributedLockToken === 'object') {
+                attemptContext.fencingToken = distributedLockToken.fencingToken;
+                attemptContext.lockToken = distributedLockToken.token;
+              }
               this.emit('task:lock-acquired', taskId, distributedLockToken);
             }
 
@@ -777,6 +782,11 @@ class ExecutionQueue extends EventEmitter {
               this.emit('task:skipped', taskId, { reason: 'distributed_lock' });
               return;
             }
+            // Thread fencing token into attemptContext for executor to consume
+            if (distributedLockToken && typeof distributedLockToken === 'object') {
+              attemptContext.fencingToken = distributedLockToken.fencingToken;
+              attemptContext.lockToken = distributedLockToken.token;
+            }
             this.emit('task:lock-acquired', taskId, distributedLockToken);
           }
 
@@ -964,6 +974,20 @@ class ExecutionQueue extends EventEmitter {
       failed: this.failedCount,
       failedTaskIds: Array.from(this.failedTasks),
       queueDepth: this.limit?.getStats?.().queueDepth || 0,
+    };
+  }
+
+  getReadinessStatus() {
+    const limiterStats = typeof this.limit.getStats === 'function' ? this.limit.getStats() : {};
+    const queued = typeof limiterStats.queueDepth === 'number' ? limiterStats.queueDepth : this.depth;
+    const exhausted = this.inFlight >= this.concurrencyLimit || queued > 0;
+    return {
+      healthy: !this.shuttingDown && !exhausted,
+      capacity: this.concurrencyLimit,
+      inFlight: this.inFlight,
+      queued,
+      available: Math.max(this.concurrencyLimit - this.inFlight, 0),
+      shuttingDown: this.shuttingDown,
     };
   }
 

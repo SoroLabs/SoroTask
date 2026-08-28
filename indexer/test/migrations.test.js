@@ -21,15 +21,31 @@ test("002 migration configures TimescaleDB hypertable and compression", () => {
   assert.match(sql, /002_timescaledb_raw_events_retention/);
 });
 
+test("003 migration adds dashboard composite and JSONB indexes", () => {
+  const sql = fs.readFileSync(
+    path.join(migrationsDir, "003_dashboard_query_indexes.sql"),
+    "utf8",
+  );
+
+  assert.match(sql, /tasks \(creator_address, is_active, created_at DESC\)/i);
+  assert.match(sql, /executions \(task_id, ledger_sequence DESC\)/i);
+  assert.match(sql, /raw_events \(contract_id, event_name, ledger_sequence DESC\)/i);
+  assert.match(sql, /tasks USING GIN \(args_json\)/i);
+  assert.match(sql, /tasks USING GIN \(whitelist_json\)/i);
+  assert.match(sql, /tasks USING GIN \(blocked_by_json\)/i);
+  assert.match(sql, /raw_events USING GIN \(data_json\)/i);
+});
+
 test("migration versions are unique and ordered", () => {
   const files = fs
     .readdirSync(migrationsDir)
-    .filter((name) => name.endsWith(".sql"))
+    .filter((name) => name.endsWith(".sql") && !name.endsWith(".down.sql"))
     .sort();
 
   assert.deepEqual(files, [
     "001_initial_schema.sql",
     "002_timescaledb_raw_events_retention.sql",
+    "003_dashboard_query_indexes.sql",
   ]);
 
   for (const file of files) {

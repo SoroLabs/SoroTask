@@ -19,6 +19,7 @@ interface FormFieldProps {
   min?: number | string;
   max?: number | string;
   step?: string;
+  preserveInput?: boolean;
   helpText?: string;
   children?: React.ReactNode;
 }
@@ -39,6 +40,7 @@ const FormField: React.FC<FormFieldProps> = ({
   min,
   max,
   step,
+  preserveInput = false,
   helpText,
   children
 }) => {
@@ -76,7 +78,7 @@ const FormField: React.FC<FormFieldProps> = ({
       'data-testid': `${name}-input`,
       value: value || '',
       onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => 
-        onChange(type === 'number' ? Number(e.target.value) : e.target.value),
+        onChange(type === 'number' && !preserveInput ? Number(e.target.value) : e.target.value),
       onBlur,
       disabled,
       placeholder,

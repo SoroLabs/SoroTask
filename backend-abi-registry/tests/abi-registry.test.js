@@ -1,8 +1,10 @@
 const parser = require('../parser');
+const { gzipSync } = require('zlib');
 const registry = require('../registry');
 const errorHandler = require('../errorHandler');
 const Monitor = require('../monitor');
 const abiRegistryService = require('../index');
+const { AbiCache } = require('../abiCache');
 
 describe('ABIRegistryService', () => {
   beforeEach(() => {
@@ -57,6 +59,54 @@ describe('ABIRegistryService', () => {
       expect(abi).toBeNull();
       expect(errorHandler.getRecentErrors()[0].message).toBe('Simulated parsing error');
     });
+
+    it('should parse raw and compressed WASM payloads', async () => {
+      const wasm = Buffer.concat([Buffer.from([0x00, 0x61, 0x73, 0x6d]), Buffer.from([1, 0, 0, 0])]);
+
+      await expect(parser.extractABI({ bytecode: wasm })).resolves.toMatchObject({ version: '1.0.0' });
+      await expect(parser.extractABI({ bytecode: gzipSync(wasm) })).resolves.toMatchObject({ version: '1.0.0' });
+    });
+
+    it('should reject invalid WASM magic bytes', async () => {
+      const result = await parser.extractABI({ bytecode: gzipSync(Buffer.from('not wasm')) });
+
+      expect(result).toBeNull();
+      expect(errorHandler.getRecentErrors()[0].message).toBe('Invalid WASM magic bytes');
+    });
+
+    it('should reject oversized compressed and uncompressed payloads', async () => {
+      const oversizedCompressed = Buffer.alloc(parser.MAX_COMPRESSED_SIZE + 1);
+      const oversizedWasm = Buffer.concat([
+        Buffer.from([0x00, 0x61, 0x73, 0x6d]),
+        Buffer.alloc(parser.MAX_UNCOMPRESSED_SIZE + 1 - 4)
+      ]);
+
+      await expect(parser.extractABI({ bytecode: oversizedCompressed })).resolves.toBeNull();
+      expect(errorHandler.getRecentErrors()[0].message).toBe('Compressed bytecode exceeds 2097152 bytes');
+
+      await expect(parser.extractABI({ bytecode: gzipSync(oversizedWasm) })).resolves.toBeNull();
+      expect(errorHandler.getRecentErrors()[1].message).toBe('Uncompressed bytecode exceeds 10485760 bytes');
+    });
+
+    it('should return a structured 422 response for corrupted sections', async () => {
+      const corruptedWasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0, 0, 5, 1, 2]);
+      const response = await parser.extractABIResponse({ bytecode: corruptedWasm });
+
+      expect(response).toEqual({
+        status: 422,
+        body: { error: { code: 'SECTION_OUT_OF_BOUNDS', message: 'WASM section exceeds bytecode bounds', status: 422 } }
+      });
+    });
+
+    it('should not throw for 1,000 mutated WASM samples', async () => {
+      const wasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
+
+      for (let sample = 0; sample < 1000; sample += 1) {
+        const mutated = Buffer.from(wasm);
+        mutated[sample % mutated.length] ^= (sample % 255) + 1;
+        await expect(parser.extractABI({ bytecode: mutated })).resolves.not.toBeInstanceOf(Error);
+      }
+    });
   });
 
   describe('Registry', () => {
@@ -95,6 +145,37 @@ describe('ABIRegistryService', () => {
       registry.addABI('C123', { functions: [] });
       const all = registry.getAll();
       expect(all['C123']).toBeDefined();
+    });
+  });
+
+  describe('ABI cache', () => {
+    it('uses an LRU memory cache with a 1,000-entry limit', async () => {
+      const cache = new AbiCache({ maxEntries: 2 });
+      await cache.set('C1', 'H1', { version: '1' });
+      await cache.set('C2', 'H2', { version: '2' });
+      expect(cache.get('C1', 'H1')).toEqual({ version: '1' });
+      await cache.set('C3', 'H3', { version: '3' });
+      expect(cache.get('C2', 'H2')).toBeNull();
+      expect(cache.get('C1', 'H1')).toEqual({ version: '1' });
+    });
+
+    it('hydrates the memory tier from Redis and invalidates upgrades', async () => {
+      const redis = { get: jest.fn().mockResolvedValue('{"version":"1"}'), set: jest.fn(), del: jest.fn(), keys: jest.fn().mockResolvedValue([]), publish: jest.fn() };
+      const cache = new AbiCache({ redisClient: redis });
+      await expect(cache.getPersistent('C1', 'H1')).resolves.toEqual({ version: '1' });
+      await cache.handleIndexerEvent({ event_name: 'ContractUpgraded', contract_id: 'C1', data: { old_hash: 'H1' } });
+      expect(redis.del).toHaveBeenCalledWith('abi:C1:H1');
+      expect(redis.publish).toHaveBeenCalledWith('abi:invalidate', expect.any(String));
+    });
+
+    it('invalidates every ABI version when an upgrade omits the old hash', async () => {
+      const cache = new AbiCache();
+      await cache.set('C1', 'H1', { version: '1' });
+      await cache.set('C1', 'H2', { version: '2' });
+      await cache.handleIndexerEvent({ event_name: 'ContractUpgraded', contract_id: 'C1' });
+
+      expect(cache.get('C1', 'H1')).toBeNull();
+      expect(cache.get('C1', 'H2')).toBeNull();
     });
   });
 

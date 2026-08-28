@@ -6,6 +6,7 @@
  */
 
 import React from "react";
+import { renderToString } from "react-dom/server";
 import { render, screen, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WalletProvider, useWallet } from "@/app/context/WalletContext";
@@ -90,6 +91,18 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("session restore on mount", () => {
+  it("does not access wallet APIs while rendering on the server", () => {
+    const markup = renderToString(
+      <WalletProvider>
+        <TestConsumer />
+      </WalletProvider>,
+    );
+
+    expect(markup).toContain('data-testid="status">idle');
+    expect(mockRestore).not.toHaveBeenCalled();
+    expect(mockWatch).not.toHaveBeenCalled();
+  });
+
   it("restores an existing session silently", async () => {
     mockRestore.mockResolvedValue(MOCK_SESSION);
 

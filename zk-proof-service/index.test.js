@@ -11,6 +11,13 @@ const {
 } = require('./lib/helpers');
 
 describe('ZKProofService', () => {
+  test('uses isolated prover workers with the production resource limits', () => {
+    const service = new ZKProofService(1);
+
+    expect(service.workerMemoryMb).toBe(4096);
+    expect(service.workerTimeoutMs).toBe(60000);
+  });
+
   let service;
 
   beforeEach(() => {

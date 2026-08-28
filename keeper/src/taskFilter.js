@@ -215,6 +215,37 @@ function circuitBreakerFilter(taskId, context) {
   return { pass: true, reason: 'ok' };
 }
 
+/**
+ * Filter 6 — Quarantine guard (poison pill isolation).
+ *
+ * Skips tasks that have been quarantined by the Dead-Letter Queue due to
+ * repeated failures. This prevents poison-pill tasks from consuming worker
+ * threads and keeper gas funds in an infinite failure loop.
+ *
+ * Quarantined tasks are excluded until manually recovered or the backoff
+ * period expires.
+ *
+ * Cost: single Map/Set lookup.
+ * Rejection rate: spikes during failure episodes; near-zero in healthy state.
+ */
+function quarantineFilter(taskId, context) {
+  const deadLetterQueue = context && context.deadLetterQueue;
+  if (!deadLetterQueue) {
+    return { pass: true, reason: 'no_dlq' };
+  }
+
+  if (deadLetterQueue.isQuarantined(taskId)) {
+    // Check if backoff period has expired and task is ready for retry
+    if (!deadLetterQueue.isReadyForRetry(taskId)) {
+      return { pass: false, reason: 'quarantined_backoff' };
+    }
+    // Backoff expired — allow retry attempt
+    return { pass: true, reason: 'quarantine_retry_eligible' };
+  }
+
+  return { pass: true, reason: 'ok' };
+}
+
 // ─── TaskFilterChain ─────────────────────────────────────────────────────────
 
 /**
@@ -348,7 +379,7 @@ class TaskFilterChain {
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
 /**
- * Create the default filter chain with all five built-in filters wired in
+ * Create the default filter chain with all six built-in filters wired in
  * the correct order.
  *
  * Options map directly to filter context fields; any omitted option simply
@@ -357,6 +388,7 @@ class TaskFilterChain {
  * @param {object} [options]
  * @param {object} [options.idempotencyGuard]  — ExecutionIdempotencyGuard instance
  * @param {object} [options.circuitBreaker]    — CircuitBreaker instance
+ * @param {object} [options.deadLetterQueue]   — DeadLetterQueue instance (Issue #1052)
  * @param {object} [options.logger]            — pino-compatible logger
  * @returns {TaskFilterChain}
  */
@@ -368,7 +400,8 @@ function createDefaultFilterChain(options = {}) {
     .addFilter('cachedGasFilter', cachedGasFilter)
     .addFilter('cachedTimingFilter', cachedTimingFilter)
     .addFilter('idempotencyLockFilter', idempotencyLockFilter)
-    .addFilter('circuitBreakerFilter', circuitBreakerFilter);
+    .addFilter('circuitBreakerFilter', circuitBreakerFilter)
+    .addFilter('quarantineFilter', quarantineFilter);
 
   return chain;
 }
@@ -386,4 +419,5 @@ module.exports = {
   cachedTimingFilter,
   idempotencyLockFilter,
   circuitBreakerFilter,
+  quarantineFilter,
 };
