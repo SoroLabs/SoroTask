@@ -54,7 +54,7 @@
                         "symbol": "gas_balance"
                       },
                       "val": {
-                        "i128": "6357646"
+                        "i128": "2492772"
                       }
                     },
                     {
@@ -62,7 +62,7 @@
                         "symbol": "interval"
                       },
                       "val": {
-                        "u32": 86361517
+                        "u32": 67323231
                       }
                     },
                     {
@@ -129,7 +129,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 26,
+    "protocol_version": 27,
     "sequence_number": 0,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -247,7 +247,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "6357646"
+                      "i128": "2492772"
                     }
                   },
                   {
@@ -255,7 +255,7 @@
                       "symbol": "interval"
                     },
                     "val": {
-                      "u32": 86361517
+                      "u32": 67323231
                     }
                   },
                   {
@@ -331,13 +331,221 @@
                     "symbol": "TaskFingerprint"
                   },
                   {
-                    "bytes": "2ad11b35c851d8ee1112cc0a308d79d7b47ed57531e0a695f51588ce082251fc"
+                    "bytes": "de738a10845cf8b447f8c55476d6f62edad5bddaadfa364f2d4dde03fa0d8112"
                   }
                 ]
               },
               "durability": "persistent",
               "val": {
                 "bool": true
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "TaskMeta"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "blocked_by"
+                    },
+                    "val": {
+                      "vec": []
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "creator"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "gas_balance"
+                    },
+                    "val": {
+                      "i128": "2492772"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "interval"
+                    },
+                    "val": {
+                      "u32": 67323231
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "is_active"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_run"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "permissions"
+                    },
+                    "val": {
+                      "u32": 15
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "resolver"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "whitelist"
+                    },
+                    "val": {
+                      "vec": []
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "yield_strategy"
+                    },
+                    "val": "void"
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "TaskPayload"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "args"
+                    },
+                    "val": {
+                      "vec": []
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "function"
+                    },
+                    "val": {
+                      "symbol": "ping"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "target"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "TaskStats"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "failure_count"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_ledger"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "run_count"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
               }
             }
           },
