@@ -1,4 +1,4 @@
-export type WalletProviderType = "freighter" | "walletconnect" | "mock";
+export type WalletProviderType = "freighter" | "albedo" | "xbull" | "lobstr" | "walletconnect" | "mock";
 
 export interface WalletProvider {
   readonly id: WalletProviderType;
