@@ -987,6 +987,10 @@ pub enum DataKey {
     /// Whether a governance unpause proposal is currently pending
     UnpauseProposed,
     Task(u64),
+    /// Per-task delegated permission bitmask for a non-creator address
+    /// (Issue #778). Same bit layout as `TaskConfig.permissions`
+    /// (`PERM_CAN_PAUSE` etc.) — absence means no delegated access.
+    TaskDelegate(u64, Address),
     Counter,
     ActiveTasks,
     Token,
@@ -2387,6 +2391,113 @@ impl SoroTaskContract {
     pub fn pause_task(env: Env, task_id: u64) {
         enter_security_guard(&env);
         Self::pause_task_internal(&env, task_id, false);
+        exit_security_guard(&env);
+    }
+
+    /// Grant (or update) a delegate's permission bitmask for a task
+    /// (Issue #778). Creator-only. Pass `permissions = 0` to revoke —
+    /// equivalent to `revoke_task_delegate`, kept as a separate,
+    /// more-discoverable entrypoint below.
+    pub fn set_task_delegate(env: Env, task_id: u64, delegate: Address, permissions: u32) {
+        enter_security_guard(&env);
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+        config.creator.require_auth();
+
+        let delegate_key = DataKey::TaskDelegate(task_id, delegate.clone());
+        if permissions == 0 {
+            env.storage().persistent().remove(&delegate_key);
+        } else {
+            env.storage().persistent().set(&delegate_key, &permissions);
+        }
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskDelegateSet"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (delegate, permissions),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Revoke a delegate's access to a task entirely (Issue #778). Creator-only.
+    pub fn revoke_task_delegate(env: Env, task_id: u64, delegate: Address) {
+        enter_security_guard(&env);
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+        config.creator.require_auth();
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TaskDelegate(task_id, delegate.clone()));
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskDelegateRevoked"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            delegate,
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Pause a task as either its creator or a delegate holding
+    /// `PERM_CAN_PAUSE` (Issue #778). Added alongside — not replacing —
+    /// `pause_task`, which remains creator-only and unchanged: Soroban has
+    /// no implicit caller identity, so delegated authorization needs an
+    /// explicit `caller` parameter, which would be a breaking signature
+    /// change to the existing entrypoint.
+    pub fn pause_task_as(env: Env, task_id: u64, caller: Address) {
+        enter_security_guard(&env);
+        caller.require_auth();
+
+        let task_key = DataKey::Task(task_id);
+        let mut config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+
+        if caller != config.creator {
+            let delegate_permissions: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TaskDelegate(task_id, caller.clone()))
+                .unwrap_or(0);
+            if delegate_permissions & PERM_CAN_PAUSE == 0 {
+                panic_with_error!(&env, Error::Unauthorized);
+            }
+        } else if config.permissions != 0 && (config.permissions & PERM_CAN_PAUSE) == 0 {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        if !config.is_active {
+            panic_with_error!(&env, Error::TaskAlreadyPaused);
+        }
+
+        config.is_active = false;
+        env.storage().persistent().set(&task_key, &config);
+        remove_active_task_id(&env, task_id);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskPaused"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            caller,
+        );
         exit_security_guard(&env);
     }
 

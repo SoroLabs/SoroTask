@@ -65,6 +65,14 @@ function loadConfig() {
     keeperSecret: process.env.KEEPER_SECRET,
     contractId: process.env.CONTRACT_ID,
     pollIntervalMs: parseInteger(process.env.POLLING_INTERVAL_MS, 10000),
+    // Issue #782 — adaptive polling. Defaults disabled: this changes the
+    // keeper's polling cadence from fixed to variable, and while it's not
+    // a correctness risk (it only ever changes how often the loop runs,
+    // never skips/blocks execution), it's still a behavior change that
+    // should be an explicit opt-in for existing deployments.
+    adaptivePollingEnabled: parseBoolean(process.env.ADAPTIVE_POLLING_ENABLED, false),
+    adaptivePollMinIntervalMs: parseInteger(process.env.ADAPTIVE_POLLING_MIN_MS, 1000),
+    adaptivePollMaxIntervalMs: parseInteger(process.env.ADAPTIVE_POLLING_MAX_MS, 60000),
     minPollingIntervalMs: parseInteger(process.env.MIN_POLLING_INTERVAL_MS, 1000),
     maxPollingIntervalMs: parseInteger(process.env.MAX_POLLING_INTERVAL_MS, 60000),
     maxRetries: parseInteger(process.env.MAX_RETRIES, 3),

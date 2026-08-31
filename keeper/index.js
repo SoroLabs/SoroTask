@@ -16,6 +16,8 @@ const { GasMonitor } = require("./src/gasMonitor");
 const HistoryManager = require("./src/history");
 const { StreamHub } = require("./src/streamHub");
 const { ApiGateway } = require("./src/apiGateway");
+const { FailurePredictor, KeeperReputationScorer } = require("./src/insights");
+const { DeadLetterQueue } = require("./src/deadLetter");
 const { FailurePredictor, KeeperReputationScorer, ProfitabilityEstimator } = require("./src/insights");
 const { GasForecaster } = require("./src/gasForecaster");
 const { normalizeShardConfig, ConsistentHashRing, filterTasksByHashRing } = require("./src/sharding");
@@ -28,6 +30,7 @@ const { GracefulShutdownManager } = require("./src/gracefulShutdown");
 const { TaskReconciler } = require("./src/reconciler");
 const { createDefaultFilterChain } = require("./src/taskFilter");
 const { getRedisClient } = require("./src/lock");
+const { computeAdaptivePollingInterval } = require("./src/adaptiveScheduler");
 const { withSpan } = require("./src/otel");
 
 // Create root logger for the main module
@@ -88,6 +91,13 @@ async function main() {
     historyManager,
     logger: createLogger("reputation-scorer"),
   });
+  // Issue #783 — dead-letter queue. Already existed (quarantine after N
+  // consecutive failures, exponential backoff, webhook alerting) but had
+  // zero callers anywhere. Wired into executeTask below (record failures,
+  // auto-recover on success) and into the poll loop (skip quarantined
+  // tasks that aren't yet ready for their backoff retry).
+  const deadLetterQueue = new DeadLetterQueue({
+    logger: createLogger("dead-letter-queue"),
   // Issue #781 — profitability gate. gasForecaster accumulates per-task fee
   // history (fed by executeTask below) so profitabilityEstimator can compare
   // a task's bounty against its forecasted cost before spending a real fee
@@ -115,7 +125,7 @@ async function main() {
   };
 
   const gasMonitor = new GasMonitor(createLogger("gasMonitor"));
-  const metricsServer = new MetricsServer(gasMonitor, createLogger("metrics"), null, {
+  const metricsServer = new MetricsServer(gasMonitor, createLogger("metrics"), deadLetterQueue, {
     port: config.metricsPort,
     healthStaleThreshold: config.healthStaleThresholdMs,
     historyManager,
@@ -503,6 +513,9 @@ async function main() {
         correlationId,
         txHash: retryResult.result?.txHash || null,
       });
+      if (deadLetterQueue.isQuarantined(taskId)) {
+        deadLetterQueue.recover(taskId, "execution_succeeded");
+      }
     } catch (error) {
       taskLogger.error("Failed to execute task", {
         taskId,
@@ -529,6 +542,12 @@ async function main() {
         attemptId: context.attemptId || null,
         correlationId,
         classification: error.classification || null,
+      });
+      deadLetterQueue.recordFailure(taskId, {
+        error: error.error || error,
+        errorClassification: error.classification || undefined,
+        txHash: error.result?.txHash || null,
+        phase: "execution",
       });
       throw error;
     }
@@ -777,7 +796,7 @@ async function main() {
   shutdownManager.on("shutdown:stop-accepting", () => {
     logger.info("Stopped accepting new work");
     // Stop the polling loops explicitly
-    clearInterval(pollingInterval);
+    clearTimeout(pollingTimer);
     clearInterval(reconcileInterval);
   });
 
@@ -803,14 +822,31 @@ async function main() {
 
   // Polling loop
   const pollingIntervalMs = config.pollIntervalMs;
-  logger.info("Starting polling loop", { 
+  logger.info("Starting polling loop", {
     intervalMs: pollingIntervalMs,
     shardId: config.shardId,
-    totalShards: config.totalShards
+    totalShards: config.totalShards,
+    adaptivePollingEnabled: config.adaptivePollingEnabled,
   });
 
+  // Issue #782: adaptive polling. computeAdaptivePollingInterval already
+  // existed (backlog/latency/error-aware, with anti-oscillation smoothing)
+  // but had no caller anywhere — the loop below was always a fixed-interval
+  // setInterval. Converted to a self-rescheduling setTimeout so the delay
+  // before the next cycle can actually vary; consecutivePollErrors and
+  // lastAdaptiveIntervalMs are the running state computeAdaptivePollingInterval
+  // needs across cycles (error backoff, smoothing against the previous interval).
+  let pollingTimer = null;
+  let consecutivePollErrors = 0;
+  let lastAdaptiveIntervalMs = pollingIntervalMs;
 
-  const pollingInterval = setInterval(async () => {
+
+  const runPollCycle = async () => {
+    const cycleStartedAt = Date.now();
+    let dueCountThisCycle = 0;
+    let backlogSizeThisCycle = 0;
+    let cycleErrored = false;
+
     // Don't accept new work during shutdown
     if (shutdownManager.state !== "running") {
       logger.debug("Skipping poll cycle during shutdown", {
@@ -835,6 +871,7 @@ async function main() {
 
       // Get list of all registered task IDs
       const taskIds = registry.getTaskIds();
+      backlogSizeThisCycle = taskIds.length;
       const dbShardState = dbShardManager.refresh({
         activeUsers: queue.getInFlightStatus().inFlight,
         pendingTasks: taskIds.length,
@@ -863,6 +900,33 @@ async function main() {
 
       // Poll for due tasks
       // Pass registry so cached gas/timing filters can read previously fetched values
+      const dueTaskIds = await poller.pollDueTasks(shardSelection.ownedTaskIds, {
+        registry,
+        idempotencyGuard,
+        includeContext: true,
+      });
+      dueCountThisCycle = dueTaskIds.length;
+
+      // Issue #783: skip tasks the dead-letter queue has quarantined
+      // (repeatedly failing) unless they've become due for their next
+      // exponential-backoff retry attempt — this is what actually stops
+      // a broken task from consuming a poll slot every single cycle.
+      const quarantinedSkipped = [];
+      const executableTaskIds = dueTaskIds.filter((task) => {
+        const taskId = typeof task === "object" ? task.taskId : task;
+        if (!deadLetterQueue.isQuarantined(taskId)) return true;
+        if (deadLetterQueue.isReadyForRetry(taskId)) {
+          deadLetterQueue.recordRetryAttempt(taskId);
+          return true;
+        }
+        quarantinedSkipped.push(taskId);
+        return false;
+      });
+      if (quarantinedSkipped.length > 0) {
+        logger.info("Skipped quarantined tasks not yet ready for retry", {
+          taskIds: quarantinedSkipped,
+        });
+      }
       const dueTaskIds = await withSpan(
         'poll_cycle',
         () => poller.pollDueTasks(shardSelection.ownedTaskIds, {
@@ -873,22 +937,22 @@ async function main() {
         { ownedTaskCount: shardSelection.ownedTaskIds.length },
       );
 
-      if (dueTaskIds.length > 0) {
+      if (executableTaskIds.length > 0) {
         const lockSnapshot = idempotencyGuard.getSnapshot();
         logger.info("Found due tasks, enqueueing for execution", {
-          dueCount: dueTaskIds.length,
+          dueCount: executableTaskIds.length,
         });
         logger.info("Execution idempotency state", {
           stateFile: lockSnapshot.stateFile,
           activeLocks: lockSnapshot.lockCount,
         });
 
-        dueTaskIds.forEach((task) =>
+        executableTaskIds.forEach((task) =>
           shutdownManager.trackTask(typeof task === "object" ? task.taskId : task)
         );
 
         // Transform the dueTask results to pass correlation IDs to the queue
-        const tasksToEnqueue = dueTaskIds.map(d => ({
+        const tasksToEnqueue = executableTaskIds.map(d => ({
           taskId: d.taskId,
           context: { pollCorrelationId: d.correlationId }
         }));
@@ -904,9 +968,57 @@ async function main() {
       }
 
       } catch (error) {
+        cycleErrored = true;
         logger.error("Error in polling cycle", { error: error.message });
+      } finally {
+        consecutivePollErrors = cycleErrored
+          ? consecutivePollErrors + 1
+          : 0;
+
+        if (config.adaptivePollingEnabled) {
+          const cycleDurationMs = Date.now() - cycleStartedAt;
+          const { intervalMs, reasons } = computeAdaptivePollingInterval(
+            {
+              baseIntervalMs: pollingIntervalMs,
+              minIntervalMs: config.adaptivePollMinIntervalMs,
+              maxIntervalMs: config.adaptivePollMaxIntervalMs,
+              backlogSize: backlogSizeThisCycle,
+              dueCount: dueCountThisCycle,
+              // Not yet tracked: how many tasks are due soon (vs. right
+              // now) and the average RPC round-trip time. Neutral values
+              // below make computeAdaptivePollingInterval skip those
+              // adjustments entirely rather than fabricating signal.
+              dueSoonCount: 0,
+              minSecondsUntilDue: Infinity,
+              avgRpcLatencyMs: 0,
+              cycleDurationMs,
+              errors: consecutivePollErrors,
+            },
+            lastAdaptiveIntervalMs,
+          );
+          lastAdaptiveIntervalMs = intervalMs;
+          logger.debug("Adaptive polling interval computed", {
+            intervalMs,
+            reasons,
+            backlogSize: backlogSizeThisCycle,
+            dueCount: dueCountThisCycle,
+            cycleDurationMs,
+            consecutivePollErrors,
+          });
+        }
+
+        scheduleNextPoll();
       }
-    }, pollingIntervalMs);
+  };
+
+  function scheduleNextPoll() {
+    const nextDelayMs = config.adaptivePollingEnabled
+      ? lastAdaptiveIntervalMs
+      : pollingIntervalMs;
+    pollingTimer = setTimeout(runPollCycle, nextDelayMs);
+  }
+
+  scheduleNextPoll();
 
   // Run first poll immediately
   logger.info('Running initial poll');
