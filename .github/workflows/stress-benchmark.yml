@@ -26,7 +26,7 @@ jobs:
           node tests/stress/load_stress_suite.js
 
       - name: Upload Benchmark Report Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stress-benchmark-report
           path: tests/stress/stress-benchmark-report.json
