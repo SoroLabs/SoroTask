@@ -8,7 +8,7 @@
     "bundle:audit": "tsx scripts/bundle-audit.ts"
   },
   "devDependencies": {
-    "eslint": "^10.8.0",
+    "eslint": "^10.9.1",
     "husky": "^9.1.7",
     "lint-staged": "^17.2.0",
     "prettier": "^3.9.6",
