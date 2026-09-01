@@ -664,7 +664,7 @@ function createApp(zkService, options = {}) {
 }
 
 async function createServer(options = {}) {
-  const zkService = options.zkService || new ZKProofService(options.workerCount || CPU_CONCURRENCY);
+  const zkService = options.zkService || new ZKProofService(options.workerCount || CPU_CONCURRENCY, options);
   if (!options.skipInitialize && typeof zkService?.initialize === 'function') {
     zkService.initialize();
   }
