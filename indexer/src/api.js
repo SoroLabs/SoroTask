@@ -24,9 +24,6 @@ function registerRestRoutes(app, deps = dbHelpers) {
   // Attach W3C TraceContext middleware
   app.use(traceContextMiddleware('indexer'));
 
-  // Attach rate limiter middleware
-  app.use(createRateLimiter());
-
   // Metrics endpoint
   app.get('/metrics', metricsHandler);
 
@@ -127,17 +124,17 @@ function createExpressApp() {
   app.use(express.json());
   app.use('/api/cross-chain', createCrossChainRouter());
 
-  // Prometheus scrape target - mounted ahead of auth/rate-limiting
+  // Prometheus scrape target and public docs remain accessible without login.
   app.get('/metrics', metricsHandler);
-
-  registerRestRoutes(app);
-
   app.use(expressJwtAuth);
+  app.use(createRateLimiter());
 
   app.get('/api-docs.json', (req, res) => res.json(openApiSpec));
   if (openApiSpec) {
     app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
   }
+
+  registerRestRoutes(app);
 
   ensureSchema(dbHelpers).catch((err) => {
     console.error('Failed to ensure merkle schema:', err);
