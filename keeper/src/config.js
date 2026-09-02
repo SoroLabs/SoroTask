@@ -65,6 +65,14 @@ function loadConfig() {
     keeperSecret: process.env.KEEPER_SECRET,
     contractId: process.env.CONTRACT_ID,
     pollIntervalMs: parseInteger(process.env.POLLING_INTERVAL_MS, 10000),
+    // Issue #782 — adaptive polling. Defaults disabled: this changes the
+    // keeper's polling cadence from fixed to variable, and while it's not
+    // a correctness risk (it only ever changes how often the loop runs,
+    // never skips/blocks execution), it's still a behavior change that
+    // should be an explicit opt-in for existing deployments.
+    adaptivePollingEnabled: parseBoolean(process.env.ADAPTIVE_POLLING_ENABLED, false),
+    adaptivePollMinIntervalMs: parseInteger(process.env.ADAPTIVE_POLLING_MIN_MS, 1000),
+    adaptivePollMaxIntervalMs: parseInteger(process.env.ADAPTIVE_POLLING_MAX_MS, 60000),
     minPollingIntervalMs: parseInteger(process.env.MIN_POLLING_INTERVAL_MS, 1000),
     maxPollingIntervalMs: parseInteger(process.env.MAX_POLLING_INTERVAL_MS, 60000),
     maxRetries: parseInteger(process.env.MAX_RETRIES, 3),
@@ -181,6 +189,16 @@ function loadConfig() {
       replayTtlMs: parseInteger(process.env.INBOUND_WEBHOOK_REPLAY_TTL_MS, 600000),
       maxBodyBytes: parseInteger(process.env.INBOUND_WEBHOOK_MAX_BODY_BYTES, 1048576),
     },
+    // Issue #781 — profitability gate. Defaults disabled: this changes
+    // existing keeper execution behavior (skipping tasks it would
+    // otherwise have executed), so it must be an explicit opt-in rather
+    // than silently active for every existing deployment on upgrade.
+    profitabilityGate: {
+      enabled: parseBoolean(process.env.PROFITABILITY_GATE_ENABLED, false),
+      // Minimum net profit (bounty - forecasted cost) required to proceed,
+      // in stroops. 0 means "skip only when forecast to run at a loss".
+      minNetProfitStroops: parseInteger(process.env.PROFITABILITY_MIN_NET_PROFIT_STROOPS, 0),
+    },
     // SLO threshold configuration
     sloThresholds: {
       stalePollSeconds: parseInteger(process.env.SLO_STALE_POLL_SECONDS, 30),
@@ -197,6 +215,32 @@ function loadConfig() {
       criticalThreshold: parseFloat(process.env.WALLET_CRITICAL_THRESHOLD_XLM) || 20,
       sweepEnabled: parseBoolean(process.env.WALLET_SWEEP_ENABLED, false),
       sweepTargetAmount: parseFloat(process.env.WALLET_SWEEP_TARGET_AMOUNT_XLM) || 100,
+    },
+    // Issue #787 — auto-swap earned stablecoin bounties to XLM when the
+    // keeper's native balance runs low. Defaults disabled: this submits
+    // real swap transactions on the keeper's own signing account, so it
+    // must be an explicit opt-in, not silently active for every deployment.
+    gasVaultRefill: {
+      enabled: parseBoolean(process.env.GAS_VAULT_REFILL_ENABLED, false),
+      // Trigger a swap when the keeper's XLM balance falls below this.
+      triggerThresholdXlm: parseFloat(process.env.GAS_VAULT_REFILL_TRIGGER_XLM) || 30,
+      // Swap enough to bring the XLM balance up to roughly this amount.
+      targetBalanceXlm: parseFloat(process.env.GAS_VAULT_REFILL_TARGET_XLM) || 100,
+      // Soroswap-compatible router contract ID.
+      routerContractId: process.env.GAS_VAULT_REFILL_ROUTER_CONTRACT_ID || null,
+      // Comma-separated stablecoin contract IDs to draw from, in priority order.
+      sourceAssetContractIds: (process.env.GAS_VAULT_REFILL_SOURCE_ASSETS || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      // Native XLM (SAC) contract ID for the target side of the swap.
+      xlmContractId: process.env.GAS_VAULT_REFILL_XLM_CONTRACT_ID || null,
+      // Max acceptable slippage, as a fraction (0.01 = 1%).
+      maxSlippage: parseFloat(process.env.GAS_VAULT_REFILL_MAX_SLIPPAGE) || 0.01,
+      // Minimum time between swap attempts, to avoid repeated swaps from
+      // one still-settling transaction.
+      cooldownMs: parseInteger(process.env.GAS_VAULT_REFILL_COOLDOWN_MS, 600000),
+      checkIntervalMs: parseInteger(process.env.GAS_VAULT_REFILL_CHECK_INTERVAL_MS, 60000),
     },
   };
 

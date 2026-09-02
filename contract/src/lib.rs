@@ -3,22 +3,18 @@
 mod monolith;
 
 pub mod access;
+pub mod packed_args;
+// Issue #777 investigation: this file previously declared
+// `pub mod access; pub mod execution; pub mod oracle; pub mod storage;
+// pub mod types; pub mod vrf; pub mod yield;` — none of those files
+// (src/access.rs, src/execution.rs, etc.) exist in this crate, and
+// `pub mod events;` was declared twice. Both are hard compile errors
+// ("file not found for module" / "the name `events` is defined multiple
+// times"), and nothing else in this file referenced any of the six
+// nonexistent modules by path — only the `pub use *` lines removed here
+// did. `events.rs` does exist and is kept, once.
 pub mod events;
-pub mod execution;
-pub mod oracle;
-pub mod storage;
-pub mod types;
-pub mod vrf;
-pub mod r#yield;
-
-pub use access::*;
 pub use events::*;
-pub use execution::*;
-pub use oracle::*;
-pub use storage::*;
-pub use types::*;
-pub use vrf::*;
-pub use r#yield::*;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, xdr::ToXdr, Address,
@@ -29,6 +25,81 @@ use soroban_sdk::{
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    InvalidInterval = 1,
+    Unauthorized = 2,
+    InsufficientBalance = 3,
+    NotInitialized = 4,
+    TaskPaused = 5,
+    TaskAlreadyPaused = 6,
+    TaskAlreadyActive = 7,
+    SelfDependency = 8,
+    DependencyNotFound = 9,
+    CircularDependency = 10,
+    DependencyBlocked = 11,
+    AlreadyInitialized = 12,
+    UnauthorizedSlasher = 13,
+    KeeperStakeTooLow = 14,
+    OperatorAlreadySet = 15,
+    // Payload validation errors
+    ArgsTooMany = 34,
+    ArgsTooLarge = 35,
+    InvalidPayload = 16,
+    ReentrantCall = 17,
+    DependencyLimitExceeded = 18,
+    DependencyDepthExceeded = 19,
+    // VRF-related errors
+    VrfOracleNotSet = 20,
+    InvalidVrfRequest = 21,
+    VrfRequestFailed = 22,
+    VrfAlreadyFulfilled = 23,
+    // Yield strategy-related errors
+    YieldStrategyNotInitialized = 24,
+    InvalidYieldStrategy = 25,
+    YieldHarvestFailed = 26,
+    InsufficientYield = 27,
+    // Oracle-related errors
+    OracleNotSet = 28,
+    OracleRequestFailed = 29,
+    OracleInvalidResponse = 30,
+    OracleTimeout = 31,
+    OracleUnsupportedProvider = 32,
+    InvalidInsurancePolicy = 33,
+    TaskNotFound = 36,
+    InvalidVdfProof = 61,
+    InvalidUpgradeVersion = 37,
+    DuplicateTask = 38,
+    BountyBelowMinimum = 39,
+    InvalidBounty = 40,
+    FeatureDisabled = 41,
+    InvalidZkProof = 42,
+    FlashSwapFailed = 43,
+    InsufficientFlashProfit = 44,
+    InvalidSlippage = 45,
+    OptimisticClaimPending = 46,
+    NoOptimisticClaim = 47,
+    ChallengeWindowClosed = 48,
+    ChallengeWindowActive = 49,
+    FraudProofInvalid = 50,
+    EmptyBundle = 51,
+    BundleTooLarge = 52,
+    BundleStepFailed = 53,
+    BlockExecutionLimitReached = 54,
+    DecryptionFailed = 55,
+    InsufficientDelegation = 56,
+    InvalidCommissionRate = 57,
+    VolatilityExceeded = 62,
+    VolatilityCircuitBreakerTripped = 63,
+    VolatilityTimelockActive = 64,
+    UnpauseNotProposed = 65,
+    UnpauseTimelockActive = 66,
+    InvalidPauseThreshold = 67,
+    /// refund_inactive_task (Issue #777): the task is still active — only
+    /// an already-paused/auto-invalidated task can be permissionlessly
+    /// refunded; an active task's creator must cancel_task themselves.
+    TaskStillActive = 65,
+    /// refund_inactive_task (Issue #777): the task hasn't been inactive
+    /// long enough yet (see INACTIVE_TASK_ABANDONMENT_SECONDS).
+    AbandonmentPeriodNotElapsed = 66,
     // ── 100..199: Authorization & Role-Based Access ──────────────────────────────
     Unauthorized = 100,
     UnauthorizedSlasher = 101,
@@ -220,12 +291,23 @@ const MIN_OPTIMISTIC_BOND: i128 = 100;
 /// State Archival TTL Extension Thresholds (Issue #1031)
 pub const MIN_THRESHOLD_LEDGERS: u32 = 100_000;
 pub const EXTEND_TO_LEDGERS: u32 = 500_000;
+/// Delay between a governance-approved unpause proposal reaching quorum and
+/// when it becomes executable via `execute_unpause` (Issue #774).
+pub const UNPAUSE_TIMELOCK_SECONDS: u64 = 86_400;
 
 /// Permission Bitmask Flags for Task RBAC
 pub const PERM_CAN_PAUSE: u32 = 1;
 pub const PERM_CAN_UPDATE: u32 = 2;
 pub const PERM_CAN_CANCEL: u32 = 4;
 pub const PERM_CAN_DEPOSIT: u32 = 8;
+
+/// Issue #777: minimum time an inactive task must sit untouched (since
+/// `last_run`) before anyone (not just the creator) may permissionlessly
+/// trigger `refund_inactive_task` and reclaim its locked gas deposit. Set
+/// well above any legitimate pause-then-resume workflow so a creator who
+/// pauses a task and comes back a day later never has it refunded out
+/// from under them.
+pub const INACTIVE_TASK_ABANDONMENT_SECONDS: u64 = 60 * 60 * 24 * 90; // 90 days
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -946,7 +1028,17 @@ pub enum DataKey {
     Guardians,
     PauseSignatures,
     EmergencyPauseState,
+    /// Configurable K-of-N threshold for `emergency_pause` guardian signatures (Issue #774)
+    PauseThreshold,
+    /// Timestamp at which a pending governance-approved unpause becomes executable
+    UnpauseTimelock,
+    /// Whether a governance unpause proposal is currently pending
+    UnpauseProposed,
     Task(u64),
+    /// Per-task delegated permission bitmask for a non-creator address
+    /// (Issue #778). Same bit layout as `TaskConfig.permissions`
+    /// (`PERM_CAN_PAUSE` etc.) — absence means no delegated access.
+    TaskDelegate(u64, Address),
     Counter,
     ActiveTasks,
     Token,
@@ -1843,6 +1935,37 @@ impl SoroTaskContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Sets the K in the K-of-N guardian signature threshold required to
+    /// trigger `emergency_pause`/`propose_unpause`. Admin-gated. (Issue #774)
+    pub fn set_pause_threshold(env: Env, admin: Address, threshold: u32) -> Result<(), Error> {
+        if threshold == 0 {
+            return Err(Error::InvalidPauseThreshold);
+        }
+        if let Some(configured_admin) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::AdminAddress)
+        {
+            configured_admin.require_auth();
+            if configured_admin != admin {
+                return Err(Error::Unauthorized);
+            }
+        } else {
+            admin.require_auth();
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::PauseThreshold, &threshold);
+        Ok(())
+    }
+
+    fn pause_threshold(env: &Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PauseThreshold)
+            .unwrap_or(3)
+    }
+
     pub fn emergency_pause(env: Env, guardian: Address) -> bool {
         guardian.require_auth();
         let guardians: Vec<Address> = env
@@ -1888,7 +2011,7 @@ impl SoroTaskContract {
                 .set(&DataKey::PauseSignatures, &sigs);
         }
 
-        if sigs.len() >= 3 {
+        if sigs.len() >= Self::pause_threshold(&env) {
             let state = EmergencyPauseState {
                 is_paused: true,
                 paused_at: env.ledger().timestamp(),
@@ -1931,14 +2054,101 @@ impl SoroTaskContract {
         false
     }
 
-    pub fn unpause_protocol(env: Env) {
-        if let Some(admin) = env
+    /// Guardian-signed proposal to lift an emergency pause. Requires the same
+    /// K-of-N guardian threshold as `emergency_pause`. Once the threshold is
+    /// reached, starts a governance timelock; `execute_unpause` may only be
+    /// called after it elapses. (Issue #774)
+    pub fn propose_unpause(env: Env, guardian: Address) -> bool {
+        guardian.require_auth();
+        let guardians: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Guardians)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut is_guardian = false;
+        let mut i = 0;
+        while i < guardians.len() {
+            if guardians.get(i).unwrap() == guardian {
+                is_guardian = true;
+                break;
+            }
+            i += 1;
+        }
+        if !is_guardian {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        let mut sigs: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PauseSignatures)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut already_signed = false;
+        let mut j = 0;
+        while j < sigs.len() {
+            if sigs.get(j).unwrap() == guardian {
+                already_signed = true;
+                break;
+            }
+            j += 1;
+        }
+        if !already_signed {
+            sigs.push_back(guardian);
+            env.storage()
+                .persistent()
+                .set(&DataKey::PauseSignatures, &sigs);
+        }
+
+        if sigs.len() >= Self::pause_threshold(&env) {
+            let timelock = env.ledger().timestamp().saturating_add(UNPAUSE_TIMELOCK_SECONDS);
+            env.storage()
+                .persistent()
+                .set(&DataKey::UnpauseTimelock, &timelock);
+            env.storage()
+                .persistent()
+                .set(&DataKey::UnpauseProposed, &true);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Executes a previously-approved unpause once its governance timelock
+    /// has elapsed. Admin-gated. (Issue #774)
+    pub fn execute_unpause(env: Env, admin: Address) -> Result<(), Error> {
+        if let Some(configured_admin) = env
             .storage()
             .persistent()
             .get::<DataKey, Address>(&DataKey::AdminAddress)
         {
+            configured_admin.require_auth();
+            if configured_admin != admin {
+                return Err(Error::Unauthorized);
+            }
+        } else {
             admin.require_auth();
         }
+
+        let proposed: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UnpauseProposed)
+            .unwrap_or(false);
+        if !proposed {
+            return Err(Error::UnpauseNotProposed);
+        }
+
+        let timelock: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UnpauseTimelock)
+            .unwrap_or(u64::MAX);
+        if env.ledger().timestamp() < timelock {
+            return Err(Error::UnpauseTimelockActive);
+        }
+
         let state = EmergencyPauseState {
             is_paused: false,
             paused_at: 0,
@@ -1951,6 +2161,11 @@ impl SoroTaskContract {
         env.storage()
             .persistent()
             .set(&DataKey::PauseSignatures, &empty_sigs);
+        env.storage()
+            .persistent()
+            .set(&DataKey::UnpauseProposed, &false);
+        env.storage().persistent().remove(&DataKey::UnpauseTimelock);
+        Ok(())
     }
 
     pub fn extend_emergency_pause(env: Env, additional_seconds: u64) {
@@ -1977,7 +2192,13 @@ impl SoroTaskContract {
 
     /// Validates task payload arguments for size and structure.
     /// Returns Ok(()) if valid, or an error code if validation fails.
-    fn validate_args(args: &Vec<Val>) -> Result<(), Error> {
+    ///
+    /// Uses the actual XDR-serialized byte length rather than a fixed
+    /// 64-bytes-per-arg upper bound, so compact payloads (e.g. a single
+    /// small integer) aren't over-counted against `MAX_ARGS_SIZE_BYTES`.
+    /// See `packed_args` for the bit-packed storage encoding this
+    /// accounting is meant to reflect (Issue #775).
+    fn validate_args(env: &Env, args: &Vec<Val>) -> Result<(), Error> {
         let args_count = args.len();
 
         // Validate argument count
@@ -1985,10 +2206,8 @@ impl SoroTaskContract {
             return Err(Error::ArgsTooMany);
         }
 
-        // Estimate serialized size (each Val is at least 8 bytes + overhead)
-        // This is a conservative estimate since Val representation varies
-        let estimated_size = args_count * 64; // 64 bytes per Val as upper bound
-        if estimated_size > MAX_ARGS_SIZE_BYTES {
+        let serialized_size = args.to_xdr(env).len();
+        if serialized_size > MAX_ARGS_SIZE_BYTES {
             return Err(Error::ArgsTooLarge);
         }
 
@@ -2032,7 +2251,7 @@ impl SoroTaskContract {
         }
 
         // Validate payload arguments before storage
-        if let Err(e) = Self::validate_args(&config.args) {
+        if let Err(e) = Self::validate_args(&env, &config.args) {
             panic_with_error!(&env, e);
         }
 
@@ -2056,6 +2275,12 @@ impl SoroTaskContract {
         if config.permissions == 0 {
             config.permissions = PERM_CAN_PAUSE | PERM_CAN_UPDATE | PERM_CAN_CANCEL | PERM_CAN_DEPOSIT;
         }
+        // Dependency edges must go through `add_dependency`/`add_dependency_with_rule`,
+        // which enforce cycle detection and MAX_DEPENDENCY_DEPTH. A caller-supplied
+        // `blocked_by` at registration time would bypass those checks entirely
+        // (e.g. a self-reference or a cycle among not-yet-existing task IDs), so
+        // it is ignored here (Issue #776).
+        config.blocked_by = Vec::new(&env);
 
         // Allocate next sequential ID:
         // 1. Fetch current counter (defaults to 0 if first registration)
@@ -2226,6 +2451,113 @@ impl SoroTaskContract {
     pub fn pause_task(env: Env, task_id: u64) {
         enter_security_guard(&env);
         Self::pause_task_internal(&env, task_id, false);
+        exit_security_guard(&env);
+    }
+
+    /// Grant (or update) a delegate's permission bitmask for a task
+    /// (Issue #778). Creator-only. Pass `permissions = 0` to revoke —
+    /// equivalent to `revoke_task_delegate`, kept as a separate,
+    /// more-discoverable entrypoint below.
+    pub fn set_task_delegate(env: Env, task_id: u64, delegate: Address, permissions: u32) {
+        enter_security_guard(&env);
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+        config.creator.require_auth();
+
+        let delegate_key = DataKey::TaskDelegate(task_id, delegate.clone());
+        if permissions == 0 {
+            env.storage().persistent().remove(&delegate_key);
+        } else {
+            env.storage().persistent().set(&delegate_key, &permissions);
+        }
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskDelegateSet"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (delegate, permissions),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Revoke a delegate's access to a task entirely (Issue #778). Creator-only.
+    pub fn revoke_task_delegate(env: Env, task_id: u64, delegate: Address) {
+        enter_security_guard(&env);
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+        config.creator.require_auth();
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TaskDelegate(task_id, delegate.clone()));
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskDelegateRevoked"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            delegate,
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Pause a task as either its creator or a delegate holding
+    /// `PERM_CAN_PAUSE` (Issue #778). Added alongside — not replacing —
+    /// `pause_task`, which remains creator-only and unchanged: Soroban has
+    /// no implicit caller identity, so delegated authorization needs an
+    /// explicit `caller` parameter, which would be a breaking signature
+    /// change to the existing entrypoint.
+    pub fn pause_task_as(env: Env, task_id: u64, caller: Address) {
+        enter_security_guard(&env);
+        caller.require_auth();
+
+        let task_key = DataKey::Task(task_id);
+        let mut config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+
+        if caller != config.creator {
+            let delegate_permissions: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TaskDelegate(task_id, caller.clone()))
+                .unwrap_or(0);
+            if delegate_permissions & PERM_CAN_PAUSE == 0 {
+                panic_with_error!(&env, Error::Unauthorized);
+            }
+        } else if config.permissions != 0 && (config.permissions & PERM_CAN_PAUSE) == 0 {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        if !config.is_active {
+            panic_with_error!(&env, Error::TaskAlreadyPaused);
+        }
+
+        config.is_active = false;
+        env.storage().persistent().set(&task_key, &config);
+        remove_active_task_id(&env, task_id);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskPaused"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            caller,
+        );
         exit_security_guard(&env);
     }
 
@@ -4740,6 +5072,88 @@ impl SoroTaskContract {
         exit_security_guard(&env);
     }
 
+    /// Permissionlessly refunds and removes an abandoned task (Issue #777).
+    ///
+    /// Unused gas deposits otherwise remain locked in contract storage
+    /// indefinitely if a task's creator pauses it (or it gets
+    /// auto-invalidated by an invalidation hook — Issue #832) and then
+    /// never calls `cancel_task` themselves — e.g. because they lost their
+    /// key, or simply moved on. This lets *anyone* (a keeper doing periodic
+    /// cleanup, or any other caller) trigger the same refund + storage
+    /// cleanup `cancel_task` performs, but only once the task has been
+    /// inactive for at least `INACTIVE_TASK_ABANDONMENT_SECONDS` — the
+    /// refund always goes to `config.creator`, never the caller, so there's
+    /// no incentive to grief an active task, and the still-active check
+    /// plus grace period mean a creator who's just paused a task and
+    /// intends to resume it soon is never at risk of losing it out from
+    /// under them.
+    pub fn refund_inactive_task(env: Env, task_id: u64) {
+        enter_security_guard(&env);
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+
+        if config.is_active {
+            panic_with_error!(&env, Error::TaskStillActive);
+        }
+
+        let now = env.ledger().timestamp();
+        let inactive_since = config.last_run;
+        if now < inactive_since || now - inactive_since < INACTIVE_TASK_ABANDONMENT_SECONDS {
+            panic_with_error!(&env, Error::AbandonmentPeriodNotElapsed);
+        }
+
+        if config.gas_balance > 0 {
+            sub_total_task_escrows(&env, config.gas_balance);
+            if env.storage().instance().has(&DataKey::Token) {
+                let token_address: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+                let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &config.creator,
+                    &config.gas_balance,
+                );
+            }
+            assert_balance_invariant(&env);
+        }
+
+        remove_active_task_id(&env, task_id);
+
+        let fingerprint = task_fingerprint(
+            &env,
+            &config.creator,
+            &config.target,
+            &config.function,
+            &config.args,
+            config.interval.into(),
+        );
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TaskFingerprint(fingerprint));
+
+        env.storage().persistent().remove(&task_key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TaskStatus(task_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::DependencyRules(task_id));
+
+        let refund_amount = config.gas_balance;
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskAbandonRefunded"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (config.creator.clone(), refund_amount),
+        );
+        exit_security_guard(&env);
+    }
+
     /// Modifies an existing task configuration.
     ///
     /// Only the task owner (creator) may call this function. Locked fields:
@@ -4765,7 +5179,7 @@ impl SoroTaskContract {
             panic_with_error!(&env, Error::InvalidInterval);
         }
 
-        if let Err(e) = Self::validate_args(&new_config.args) {
+        if let Err(e) = Self::validate_args(&env, &new_config.args) {
             panic_with_error!(&env, e);
         }
 
@@ -5915,6 +6329,70 @@ impl SoroTaskContract {
 
         // Clamp between 50% and 300%
         base_factor.clamp(50, 300)
+    }
+
+    /// Feeds fresh network-congestion data into the dynamic fee model
+    /// (Issue #777). Without this, `calculate_execution_fee`'s
+    /// `FeeModel::Dynamic` branch reads `NetworkMetrics`/`KeeperMetrics` via
+    /// `get_network_metrics`/`get_keeper_metrics` — but nothing ever wrote
+    /// those keys, so it was permanently stuck at their hardcoded defaults
+    /// (congestion 50, 10 active keepers) regardless of real conditions.
+    /// Intended to be called periodically by an off-chain oracle/admin
+    /// process, e.g. from `avg_gas_price_last_hour` observed on Horizon/RPC.
+    ///
+    /// Admin-gated the same way as the other protocol-parameter setters in
+    /// this contract (`unpause_protocol`, `extend_emergency_pause`, etc.):
+    /// require auth only if an admin address has been configured.
+    pub fn update_network_metrics(
+        env: Env,
+        last_24h_transaction_count: u64,
+        avg_gas_price_last_hour: i128,
+        current_congestion_level: u32,
+    ) {
+        if let Some(admin) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::AdminAddress)
+        {
+            admin.require_auth();
+        }
+
+        let metrics = NetworkMetrics {
+            last_24h_transaction_count,
+            avg_gas_price_last_hour,
+            current_congestion_level: current_congestion_level.clamp(0, 100),
+            last_updated: env.ledger().timestamp(),
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::NetworkMetrics, &metrics);
+    }
+
+    /// Companion to `update_network_metrics` for the keeper-availability
+    /// side of the same dynamic fee model (Issue #777).
+    pub fn update_keeper_metrics(
+        env: Env,
+        active_keepers_count: u64,
+        total_keepers_registered: u64,
+        avg_response_time_ms: u64,
+    ) {
+        if let Some(admin) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::AdminAddress)
+        {
+            admin.require_auth();
+        }
+
+        let metrics = KeeperMetrics {
+            active_keepers_count,
+            total_keepers_registered,
+            avg_response_time_ms,
+            last_updated: env.ledger().timestamp(),
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::KeeperMetrics, &metrics);
     }
 
     /// Initializes a yield harvesting strategy.

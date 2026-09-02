@@ -38,6 +38,11 @@
   "dependencies": {
     "@aws-sdk/client-kms": "^3.1099.0",
     "@google-cloud/kms": "^6.0.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.55.0",
+    "@opentelemetry/resources": "^1.28.0",
+    "@opentelemetry/sdk-trace-node": "^1.28.0",
+    "@opentelemetry/semantic-conventions": "^1.28.0",
     "@stellar/stellar-sdk": "^16.2.0",
     "dotenv": "^17.4.2",
     "ioredis": "^5.11.0",

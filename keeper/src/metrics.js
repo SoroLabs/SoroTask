@@ -1929,6 +1929,83 @@ class MetricsServer {
     }
   }
 
+  /**
+   * Issue #783: GET /admin/dead-letter — list quarantined tasks + stats.
+   * Routed and auth-protected already (see the routing table above); this
+   * method itself was never implemented, so hitting the route threw
+   * "handleDeadLetter is not a function".
+   */
+  handleDeadLetter(res) {
+    if (!this.deadLetterQueue) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Dead-letter queue unavailable' }));
+      return;
+    }
+
+    try {
+      const payload = {
+        stats: this.deadLetterQueue.getStats(),
+        records: this.deadLetterQueue.getAllRecords(),
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload, null, 2));
+    } catch (error) {
+      this.logger.error('Error reading dead-letter queue state', { error: error.stack });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to read dead-letter queue state' }));
+    }
+  }
+
+  /**
+   * Issue #783: POST /admin/dead-letter/{taskId}/retry and
+   * /admin/dead-letter/{taskId}/purge — per-task recovery/removal.
+   * Retrying only clears quarantine/backoff state so the task is eligible
+   * again on the next poll cycle; it doesn't execute the task directly.
+   */
+  handleDeadLetterTask(req, res) {
+    if (!this.deadLetterQueue) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Dead-letter queue unavailable' }));
+      return;
+    }
+
+    const match = req.url.match(/^\/admin\/dead-letter\/([^/]+)\/(retry|purge)\/?$/);
+    if (!match || req.method !== 'POST') {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not Found' }));
+      return;
+    }
+
+    const taskId = Number(match[1]);
+    const action = match[2];
+
+    try {
+      if (action === 'retry') {
+        if (!this.deadLetterQueue.isQuarantined(taskId)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Task is not quarantined' }));
+          return;
+        }
+        this.deadLetterQueue.recover(taskId, 'manual_admin_retry');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'recovered', taskId }));
+      } else {
+        const purged = this.deadLetterQueue.purgeTask(taskId);
+        if (!purged) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No dead-letter record for this task' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'purged', taskId }));
+      }
+    } catch (error) {
+      this.logger.error('Error handling dead-letter admin action', { error: error.stack, taskId, action });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to process request' }));
+    }
+  }
+
   async handlePrometheusMetrics(res) {
     try {
       this.syncPrometheusMetrics();

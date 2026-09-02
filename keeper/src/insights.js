@@ -122,6 +122,19 @@ class KeeperReputationScorer {
     const stakeScore = clamp(Number(metrics.stakeAmount) || 0, 0, Number(metrics.maxStakeAmount) || 1);
     const missedHeartbeatPenalty = clamp(Number(metrics.missedHeartbeats) || 0, 0, 10) / 10;
 
+    // Issue #784 — execution speed and gas efficiency. Both are `null` in
+    // `summary` until enough executions have been recorded with the
+    // durationMs/bounty fields (see history.js); a keeper with no history
+    // yet shouldn't be penalized as if it were slow/wasteful, so each
+    // defaults to a neutral 1.0 (full credit) rather than 0 when absent.
+    const targetDurationMs = Number(metrics.targetDurationMs) || 5000;
+    const executionSpeed = summary.averageDurationMs == null
+      ? 1
+      : clamp(targetDurationMs / Math.max(1, Number(summary.averageDurationMs)), 0, 1);
+    const gasEfficiency = summary.averageGasEfficiency == null
+      ? 1
+      : clamp(Number(summary.averageGasEfficiency), 0, 1);
+
     const features = {
       successRate,
       uptime: clamp(uptimeRatio, 0, 1),
@@ -129,15 +142,19 @@ class KeeperReputationScorer {
       stake: clamp(stakeScore, 0, 1),
       failurePenalty: clamp(failureRate, 0, 1),
       missedHeartbeatPenalty,
+      executionSpeed,
+      gasEfficiency,
     };
 
     const score = weightedScore(features, {
-      successRate: 0.36,
-      uptime: 0.2,
-      taskCoverage: 0.15,
-      stake: 0.15,
-      failurePenalty: 0.08,
+      successRate: 0.28,
+      uptime: 0.16,
+      taskCoverage: 0.12,
+      stake: 0.12,
+      failurePenalty: 0.06,
       missedHeartbeatPenalty: 0.06,
+      executionSpeed: 0.1,
+      gasEfficiency: 0.1,
     });
 
     return {
@@ -148,6 +165,8 @@ class KeeperReputationScorer {
         successRate,
         failureRate,
         sampleCount: Number(summary.sampleCount) || 0,
+        averageDurationMs: summary.averageDurationMs,
+        averageGasEfficiency: summary.averageGasEfficiency,
       },
     };
   }
