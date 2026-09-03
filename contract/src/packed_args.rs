@@ -107,6 +107,7 @@ fn read_varint_i128(buf: &Bytes, offset: u32) -> (i128, u32) {
 
 /// A single decoded task argument, mirroring the subset of Soroban `Val`
 /// types supported by the compact encoding.
+#[soroban_sdk::contracttype]
 #[derive(Clone, Debug)]
 pub enum PackedArg {
     Bool(bool),
@@ -233,7 +234,7 @@ trait AddressFromXdr {
 }
 impl AddressFromXdr for Address {
     fn from_xdr(env: &Env, bytes: &Bytes) -> Result<Address, ()> {
-        soroban_sdk::TryFromVal::try_from_val(env, bytes).map_err(|_| ())
+        <Address as soroban_sdk::xdr::FromXdr>::from_xdr(env, bytes).map_err(|_| ())
     }
 }
 
@@ -242,7 +243,7 @@ trait SymbolFromXdr {
 }
 impl SymbolFromXdr for Symbol {
     fn from_xdr(env: &Env, bytes: &Bytes) -> Result<Symbol, ()> {
-        soroban_sdk::TryFromVal::try_from_val(env, bytes).map_err(|_| ())
+        <Symbol as soroban_sdk::xdr::FromXdr>::from_xdr(env, bytes).map_err(|_| ())
     }
 }
 
@@ -251,6 +252,6 @@ trait StringFromXdr {
 }
 impl StringFromXdr for String {
     fn from_xdr(env: &Env, bytes: &Bytes) -> Result<String, ()> {
-        soroban_sdk::TryFromVal::try_from_val(env, bytes).map_err(|_| ())
+        <String as soroban_sdk::xdr::FromXdr>::from_xdr(env, bytes).map_err(|_| ())
     }
 }

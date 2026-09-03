@@ -15,6 +15,15 @@ pub mod packed_args;
 // did. `events.rs` does exist and is kept, once.
 pub mod events;
 pub use events::*;
+pub mod math;
+pub mod dag;
+pub mod storage;
+pub mod task;
+pub mod admin;
+pub mod upgrade;
+
+pub use storage::{TaskMeta, TaskPayload, TaskStats};
+pub use upgrade::{UpgradeProposal, UPGRADE_TIMELOCK_SECONDS};
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, xdr::ToXdr, Address,
@@ -40,32 +49,27 @@ pub enum Error {
     UnauthorizedSlasher = 13,
     KeeperStakeTooLow = 14,
     OperatorAlreadySet = 15,
-    // Payload validation errors
-    ArgsTooMany = 34,
-    ArgsTooLarge = 35,
     InvalidPayload = 16,
     ReentrantCall = 17,
     DependencyLimitExceeded = 18,
     DependencyDepthExceeded = 19,
-    // VRF-related errors
     VrfOracleNotSet = 20,
     InvalidVrfRequest = 21,
     VrfRequestFailed = 22,
     VrfAlreadyFulfilled = 23,
-    // Yield strategy-related errors
     YieldStrategyNotInitialized = 24,
     InvalidYieldStrategy = 25,
     YieldHarvestFailed = 26,
     InsufficientYield = 27,
-    // Oracle-related errors
     OracleNotSet = 28,
     OracleRequestFailed = 29,
     OracleInvalidResponse = 30,
     OracleTimeout = 31,
     OracleUnsupportedProvider = 32,
     InvalidInsurancePolicy = 33,
+    ArgsTooMany = 34,
+    ArgsTooLarge = 35,
     TaskNotFound = 36,
-    InvalidVdfProof = 61,
     InvalidUpgradeVersion = 37,
     DuplicateTask = 38,
     BountyBelowMinimum = 39,
@@ -87,76 +91,9 @@ pub enum Error {
     DecryptionFailed = 55,
     InsufficientDelegation = 56,
     InvalidCommissionRate = 57,
-    VolatilityExceeded = 62,
-    VolatilityCircuitBreakerTripped = 63,
-    VolatilityTimelockActive = 64,
-    UnpauseNotProposed = 65,
-    UnpauseTimelockActive = 66,
-    InvalidPauseThreshold = 67,
-    /// refund_inactive_task (Issue #777): the task is still active — only
-    /// an already-paused/auto-invalidated task can be permissionlessly
-    /// refunded; an active task's creator must cancel_task themselves.
-    TaskStillActive = 65,
-    /// refund_inactive_task (Issue #777): the task hasn't been inactive
-    /// long enough yet (see INACTIVE_TASK_ABANDONMENT_SECONDS).
-    AbandonmentPeriodNotElapsed = 66,
-    // ── 100..199: Authorization & Role-Based Access ──────────────────────────────
-    Unauthorized = 100,
-    UnauthorizedSlasher = 101,
-    OperatorAlreadySet = 102,
-    NotInitialized = 103,
-    AlreadyInitialized = 104,
-    FeatureDisabled = 105,
-    InsufficientDelegation = 106,
-    InvalidCommissionRate = 107,
-
-    // ── 200..299: Task Lifecycle & Validation ────────────────────────────────────
-    InvalidInterval = 200,
-    TaskPaused = 201,
-    TaskAlreadyPaused = 202,
-    TaskAlreadyActive = 203,
-    TaskNotFound = 204,
-    DuplicateTask = 205,
-    InvalidPayload = 206,
-    ArgsTooMany = 207,
-    ArgsTooLarge = 208,
-    BountyBelowMinimum = 209,
-    InvalidBounty = 210,
-    InvalidUpgradeVersion = 211,
-    InvalidInsurancePolicy = 212,
-
-    // ── 300..399: Execution, Dependency & Reentrancy ─────────────────────────────
-    ReentrantCall = 300,
-    SelfDependency = 301,
-    DependencyNotFound = 302,
-    CircularDependency = 303,
-    DependencyBlocked = 304,
-    DependencyLimitExceeded = 305,
-    DependencyDepthExceeded = 306,
-    KeeperStakeTooLow = 307,
-    EmptyBundle = 308,
-    BundleTooLarge = 309,
-    BundleStepFailed = 310,
-    BlockExecutionLimitReached = 311,
-    DecryptionFailed = 312,
-    OptimisticClaimPending = 313,
-    NoOptimisticClaim = 314,
-    ChallengeWindowClosed = 315,
-    ChallengeWindowActive = 316,
-    FraudProofInvalid = 317,
-
-    // ── 400..499: Oracles, VRF & ZK Verifier ─────────────────────────────────────
-    OracleNotSet = 400,
-    OracleRequestFailed = 401,
-    OracleInvalidResponse = 402,
-    OracleTimeout = 403,
-    OracleUnsupportedProvider = 404,
-    VrfOracleNotSet = 405,
-    InvalidVrfRequest = 406,
-    VrfRequestFailed = 407,
-    VrfAlreadyFulfilled = 408,
-    InvalidZkProof = 409,
-    InvalidVdfProof = 410,
+    InvalidVdfProof = 58,
+    UpgradeNotProposed = 59,
+    UpgradeTimelockActive = 60,
     // Oracle freshness / multi-oracle errors (Issues #1040, #1041)
     OracleStale = 411,
     OracleDeviationExceeded = 412,
@@ -170,23 +107,15 @@ pub enum Error {
     KeeperBondInsufficient = 418,
     KeeperSlashed = 419,
     KeeperNotBonded = 420,
-
-    // ── 500..599: Yield, Flash Swaps & Treasury ──────────────────────────────────
-    InsufficientBalance = 500,
-    YieldStrategyNotInitialized = 501,
-    InvalidYieldStrategy = 502,
-    YieldHarvestFailed = 503,
-    InsufficientYield = 504,
-    FlashSwapFailed = 505,
-    InsufficientFlashProfit = 506,
-    InvalidSlippage = 507,
-
-    // ── 600..699: Volatility & Circuit Breakers ──────────────────────────────────
     VolatilityExceeded = 600,
     VolatilityCircuitBreakerTripped = 601,
     VolatilityTimelockActive = 602,
-
-    // ── 700..799: Cross-Chain Gateway ────────────────────────────────────────────
+    UnpauseNotProposed = 65,
+    UnpauseTimelockActive = 66,
+    InvalidPauseThreshold = 67,
+    TaskStillActive = 68,
+    AbandonmentPeriodNotElapsed = 69,
+    // Cross-chain errors
     UnsupportedSourceChain = 700,
     InvalidCrossChainPayload = 701,
     InvalidCrossChainSignature = 702,
@@ -310,8 +239,8 @@ const MAX_ARGS_COUNT: u32 = 32;
 const MAX_ARGS_SIZE_BYTES: u32 = 4096;
 
 const FIXED_EXECUTION_FEE: i128 = 100;
-const MAX_DEPENDENCIES_PER_TASK: u32 = 16;
-const MAX_DEPENDENCY_DEPTH: u32 = 16;
+const MAX_DEPENDENCIES_PER_TASK: u32 = 8;
+const MAX_DEPENDENCY_DEPTH: u32 = 5;
 /// Maximum number of tasks allowed per ledger block for rate limiting
 const MAX_TASKS_PER_BLOCK: u32 = 50;
 /// Maximum number of tasks allowed in a single batch execution
@@ -1097,6 +1026,11 @@ pub enum DataKey {
     /// Whether a governance unpause proposal is currently pending
     UnpauseProposed,
     Task(u64),
+    TaskMeta(u64),
+    TaskPayload(u64),
+    TaskStats(u64),
+    StorageSchemaVersion,
+    UpgradeProposal,
     /// Per-task delegated permission bitmask for a non-creator address
     /// (Issue #778). Same bit layout as `TaskConfig.permissions`
     /// (`PERM_CAN_PAUSE` etc.) — absence means no delegated access.
@@ -1561,20 +1495,28 @@ fn assert_balance_invariant(env: &Env) {
 }
 
 fn read_proxy_config(env: &Env) -> Option<ProxyConfig> {
-    env.storage().instance().get(&DataKey::ProxyConfig)
+    admin::read_proxy_config(env)
 }
 
 fn set_proxy_config(env: &Env, config: &ProxyConfig) {
-    env.storage().instance().set(&DataKey::ProxyConfig, config);
+    admin::set_proxy_config(env, config);
 }
 
 fn require_proxy_admin(env: &Env, admin: &Address) -> ProxyConfig {
-    let config = read_proxy_config(env).expect("Proxy not initialized");
-    config.admin.require_auth();
-    if &config.admin != admin {
-        panic_with_error!(env, Error::Unauthorized);
-    }
-    config
+    admin::require_proxy_admin(env, admin)
+}
+
+fn load_task(env: &Env, task_id: u64) -> Option<TaskConfig> {
+    storage::load_task_config(env, task_id)
+}
+
+fn save_task(env: &Env, task_id: u64, config: &TaskConfig) {
+    storage::save_task_split(env, task_id, config);
+}
+
+fn task_exists(env: &Env, task_id: u64) -> bool {
+    storage::has_split_layout(env, task_id)
+        || env.storage().persistent().has(&DataKey::Task(task_id))
 }
 
 fn get_min_bounty(env: &Env) -> i128 {
@@ -2372,16 +2314,13 @@ impl SoroTaskContract {
 
         // Consistency check: Ensure the new ID doesn't already have a task stored.
         // This guards against counter corruption or storage inconsistencies.
-        if env.storage().persistent().has(&DataKey::Task(counter)) {
+        if task_exists(&env, counter) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
 
         env.storage().persistent().set(&DataKey::Counter, &counter);
 
-        // Store the task configuration under the new ID
-        env.storage()
-            .persistent()
-            .set(&DataKey::Task(counter), &config);
+        save_task(&env, counter, &config);
         env.storage().persistent().set(
             &DataKey::TaskStatus(counter),
             &TaskExecutionStatus {
@@ -2410,7 +2349,7 @@ impl SoroTaskContract {
 
     /// Retrieves a task configuration by its ID.
     pub fn get_task(env: Env, task_id: u64) -> Option<TaskConfig> {
-        env.storage().persistent().get(&DataKey::Task(task_id))
+        load_task(&env, task_id)
     }
 
     /// Returns the current task ID counter value.
@@ -2470,17 +2409,13 @@ impl SoroTaskContract {
                 .get(i)
                 .expect("active task index out of bounds")
                 .clone();
-            if let Some(config) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, TaskConfig>(&DataKey::Task(task_id))
-            {
-                if config.is_active && now >= config.last_run + config.interval as u64 {
+            if storage::check_task_ready(&env, task_id, now) {
+                if let Some(payload) = storage::load_task_payload(&env, task_id) {
                     executable.push_back(ExecutableTask {
                         task_id,
-                        target: config.target,
-                        function: config.function,
-                        args: config.args,
+                        target: payload.target,
+                        function: payload.function,
+                        args: payload.args,
                     });
                 }
             }
@@ -2511,7 +2446,7 @@ impl SoroTaskContract {
         }
 
         config.is_active = false;
-        env.storage().persistent().set(&task_key, &config);
+        save_task(env, task_id, &config);
 
         remove_active_task_id(env, task_id);
 
@@ -3487,7 +3422,7 @@ impl SoroTaskContract {
         }
 
         config.is_active = true;
-        env.storage().persistent().set(&task_key, &config);
+        save_task(env, task_id, &config);
 
         add_active_task_id(env, task_id);
 
@@ -4007,17 +3942,13 @@ impl SoroTaskContract {
                 break;
             }
 
-            if let Some(config) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, TaskConfig>(&DataKey::Task(task_id))
-            {
-                if config.is_active && now >= config.last_run + config.interval as u64 {
+            if storage::check_task_ready(&env, task_id, now) {
+                if let Some(payload) = storage::load_task_payload(&env, task_id) {
                     executable.push_back(ExecutableTask {
                         task_id,
-                        target: config.target,
-                        function: config.function,
-                        args: config.args,
+                        target: payload.target,
+                        function: payload.function,
+                        args: payload.args,
                     });
                 }
             }
@@ -4068,9 +3999,8 @@ impl SoroTaskContract {
             env, task_id, keeper, ExecutionStep::ValidateAuth, StepResult::Passed, 0,
         );
 
-        // ── 2. Load task ──────────────────────────────────────────────────
-        let task_key = DataKey::Task(task_id);
-        let mut config: TaskConfig = match env.storage().persistent().get(&task_key) {
+        // ── 2. Load task (meta + payload via normalized storage) ───────────
+        let mut config: TaskConfig = match load_task(env, task_id) {
             Some(cfg) => cfg,
             None => {
                 trace_steps.push_back(events::ExecutionStepRecord {
@@ -4098,7 +4028,7 @@ impl SoroTaskContract {
         // ── 3. Check invalidation hooks (Issue #832) ────────────────────
         if let Some(hook) = check_invalidation_hooks(env, &config.target) {
             config.is_active = false;
-            env.storage().persistent().set(&task_key, &config);
+            save_task(env, task_id, &config);
             remove_active_task_id(env, task_id);
             events::EventLogger::log_task_invalidated(
                 env, task_id, config.target.clone(), hook.callback_fn.clone(),
@@ -4490,8 +4420,8 @@ impl SoroTaskContract {
                 .get(&DataKey::ProtocolFeeBps)
                 .unwrap_or(0);
 
-            let protocol_fee: i128 = fee * (protocol_fee_bps as i128) / 10_000i128;
-            let keeper_fee: i128 = fee - protocol_fee;
+            let (protocol_fee, keeper_fee) = math::split_execution_fee(fee, protocol_fee_bps)
+                .unwrap_or((0, fee));
 
             config.gas_balance -= fee;
             sub_total_task_escrows(env, fee);
@@ -4548,8 +4478,14 @@ impl SoroTaskContract {
 
             // ── 15. Update state ─────────────────────────────────────────
             config.last_run = env.ledger().timestamp();
-            env.storage().persistent().set(&task_key, &config);
-            env.storage().persistent().extend_ttl(&task_key, 100_000, 100_000);
+            save_task(env, task_id, &config);
+            storage::record_successful_run(env, task_id, config.last_run);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::TaskMeta(task_id), 100_000, 100_000);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::TaskPayload(task_id), 100_000, 100_000);
             env.storage()
                 .persistent()
                 .remove(&DataKey::VrfKeeperAssignment(task_id));
@@ -5579,6 +5515,58 @@ impl SoroTaskContract {
             .get(&DataKey::UpgradeRecord(upgrade_id))
     }
 
+    /// Propose a WASM upgrade with a 48-hour timelock (stage 1).
+    pub fn propose_upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+        migration_version: u32,
+        expected_version: u32,
+        new_version: u32,
+    ) {
+        enter_security_guard(&env);
+        upgrade::propose_upgrade(
+            &env,
+            &admin,
+            new_wasm_hash,
+            migration_version,
+            expected_version,
+            new_version,
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Execute a timelocked upgrade after the 48-hour delay (stage 2).
+    pub fn execute_timelocked_upgrade(env: Env, admin: Address) {
+        enter_security_guard(&env);
+        upgrade::execute_upgrade(&env, &admin);
+        exit_security_guard(&env);
+    }
+
+    /// Cancel a pending timelocked upgrade proposal.
+    pub fn cancel_timelocked_upgrade(env: Env, admin: Address) {
+        enter_security_guard(&env);
+        upgrade::cancel_upgrade(&env, &admin);
+        exit_security_guard(&env);
+    }
+
+    pub fn get_pending_upgrade(env: Env) -> Option<UpgradeProposal> {
+        upgrade::get_pending_upgrade(&env)
+    }
+
+    pub fn get_upgrade_timelock_remaining(env: Env) -> u64 {
+        upgrade::timelock_remaining(&env)
+    }
+
+    pub fn get_storage_schema_version(env: Env) -> u32 {
+        storage::schema_version(&env)
+    }
+
+    /// Gas-optimized readiness probe — loads TaskMeta only.
+    pub fn check_task_ready(env: Env, task_id: u64) -> bool {
+        storage::check_task_ready(&env, task_id, env.ledger().timestamp())
+    }
+
     fn deposit_gas_internal(
         env: &Env,
         task_id: u64,
@@ -5613,7 +5601,7 @@ impl SoroTaskContract {
 
         // Update balance
         config.gas_balance += amount;
-        env.storage().persistent().set(&task_key, &config);
+        save_task(env, task_id, &config);
 
         add_total_task_escrows(env, amount);
         assert_balance_invariant(env);
@@ -5662,7 +5650,7 @@ impl SoroTaskContract {
 
         // Update balance
         config.gas_balance -= amount;
-        env.storage().persistent().set(&task_key, &config);
+        save_task(&env, task_id, &config);
 
         sub_total_task_escrows(&env, amount);
 
@@ -5686,12 +5674,7 @@ impl SoroTaskContract {
     /// Cancels a task, refunds remaining gas, and removes it from storage.
     pub fn cancel_task(env: Env, task_id: u64) {
         enter_security_guard(&env);
-        let task_key = DataKey::Task(task_id);
-        let config: TaskConfig = env
-            .storage()
-            .persistent()
-            .get(&task_key)
-            .expect("Task not found");
+        let config: TaskConfig = load_task(&env, task_id).expect("Task not found");
 
         // Validate: Only creator can cancel
         config.creator.require_auth();
@@ -5732,8 +5715,8 @@ impl SoroTaskContract {
             .persistent()
             .remove(&DataKey::TaskFingerprint(fingerprint));
 
-        // Cleanup: Remove the task from storage
-        env.storage().persistent().remove(&task_key);
+        // Cleanup: Remove the task from storage (legacy + split keys)
+        storage::remove_task(&env, task_id);
         env.storage()
             .persistent()
             .remove(&DataKey::TaskStatus(task_id));
@@ -5884,7 +5867,7 @@ impl SoroTaskContract {
             add_active_task_id(&env, task_id);
         }
 
-        env.storage().persistent().set(&task_key, &updated);
+        save_task(&env, task_id, &updated);
 
         env.events().publish(
             (
@@ -6297,11 +6280,7 @@ impl SoroTaskContract {
     ) {
         enter_security_guard(&env);
         // Validate both tasks exist
-        let task: TaskConfig = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Task(task_id))
-            .expect("Task not found");
+        let task: TaskConfig = load_task(&env, task_id).expect("Task not found");
 
         let depends_on_task: Option<TaskConfig> = env
             .storage()
@@ -6315,27 +6294,20 @@ impl SoroTaskContract {
         // Only task creator can add dependencies
         task.creator.require_auth();
 
-        // Prevent self-dependency
-        if task_id == depends_on_task_id {
-            panic_with_error!(&env, Error::SelfDependency);
-        }
-
-        // Check for circular dependencies
-        if Self::would_create_cycle(&env, task_id, depends_on_task_id) {
-            panic_with_error!(&env, Error::CircularDependency);
+        // Validate dependency graph (iterative cycle/depth checks)
+        if let Err(e) = dag::validate_new_dependency(&env, task_id, depends_on_task_id) {
+            panic_with_error!(&env, e);
         }
 
         // Get current blocked_by list
         let mut updated_task = task.clone();
         if !updated_task.blocked_by.contains(&depends_on_task_id) {
-            if updated_task.blocked_by.len() >= MAX_DEPENDENCIES_PER_TASK {
+            if updated_task.blocked_by.len() >= dag::MAX_PARENTS {
                 panic_with_error!(&env, Error::DependencyLimitExceeded);
             }
 
             updated_task.blocked_by.push_back(depends_on_task_id);
-            env.storage()
-                .persistent()
-                .set(&DataKey::Task(task_id), &updated_task);
+            save_task(&env, task_id, &updated_task);
         }
 
         let mut rules = Self::dependency_rules(&env, task_id);
@@ -6364,7 +6336,6 @@ impl SoroTaskContract {
         env.storage()
             .persistent()
             .set(&DataKey::DependencyRules(task_id), &rules);
-        Self::validate_dependency_depth(&env, task_id);
 
         if !task.blocked_by.contains(&depends_on_task_id) {
             // Emit event
@@ -6383,11 +6354,7 @@ impl SoroTaskContract {
     /// Removes a dependency relationship between tasks.
     pub fn remove_dependency(env: Env, task_id: u64, depends_on_task_id: u64) {
         enter_security_guard(&env);
-        let task: TaskConfig = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Task(task_id))
-            .expect("Task not found");
+        let task: TaskConfig = load_task(&env, task_id).expect("Task not found");
 
         // Only task creator can remove dependencies
         task.creator.require_auth();
@@ -6403,9 +6370,7 @@ impl SoroTaskContract {
         }
 
         updated_task.blocked_by = new_blocked_by;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Task(task_id), &updated_task);
+        save_task(&env, task_id, &updated_task);
 
         let existing_rules = Self::dependency_rules(&env, task_id);
         let mut updated_rules = Vec::new(&env);
@@ -6536,72 +6501,25 @@ impl SoroTaskContract {
         false
     }
 
-    fn validate_dependency_depth(env: &Env, task_id: u64) {
-        let mut visited = Vec::new(env);
-        if Self::exceeds_dependency_depth(env, task_id, 0, &mut visited) {
-            panic_with_error!(env, Error::DependencyDepthExceeded);
-        }
+    fn validate_dependency_depth(_env: &Env, _task_id: u64) {
+        // Depth validated iteratively in dag::validate_new_dependency.
+    }
+
+    fn would_create_cycle(env: &Env, task_id: u64, new_dependency: u64) -> bool {
+        dag::would_create_cycle(env, task_id, new_dependency)
+    }
+
+    fn has_path_to(_env: &Env, _from: u64, _to: u64, _visited: &mut Vec<u64>, _depth: u32) -> bool {
+        false
     }
 
     fn exceeds_dependency_depth(
         env: &Env,
         task_id: u64,
-        depth: u32,
-        visited: &mut Vec<u64>,
+        _depth: u32,
+        _visited: &mut Vec<u64>,
     ) -> bool {
-        if depth > MAX_DEPENDENCY_DEPTH {
-            return true;
-        }
-
-        if visited.contains(&task_id) {
-            return false;
-        }
-        visited.push_back(task_id);
-
-        let rules = Self::dependency_rules(env, task_id);
-        for i in 0..rules.len() {
-            let rule = rules.get(i).expect("dependency rule index out of bounds");
-            if Self::exceeds_dependency_depth(env, rule.task_id, depth + 1, visited) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Helper to detect circular dependencies using DFS.
-    fn would_create_cycle(env: &Env, task_id: u64, new_dependency: u64) -> bool {
-        let mut visited = Vec::new(env);
-        Self::has_path_to(env, new_dependency, task_id, &mut visited, 0)
-    }
-
-    /// DFS helper to check if there's a path from 'from' to 'to'.
-    fn has_path_to(env: &Env, from: u64, to: u64, visited: &mut Vec<u64>, depth: u32) -> bool {
-        if from == to {
-            return true;
-        }
-
-        if depth > MAX_DEPENDENCY_DEPTH {
-            panic_with_error!(env, Error::DependencyDepthExceeded);
-        }
-
-        if visited.contains(&from) {
-            return false;
-        }
-
-        visited.push_back(from);
-
-        let task: Option<TaskConfig> = env.storage().persistent().get(&DataKey::Task(from));
-
-        if let Some(t) = task {
-            for i in 0..t.blocked_by.len() {
-                let dep = t.blocked_by.get(i).unwrap();
-                if Self::has_path_to(env, dep, to, visited, depth + 1) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        dag::max_depth_from(env, task_id, u64::MAX) > dag::MAX_DEPENDENCY_DEPTH
     }
 
     /// Calculates execution fee based on task configuration and complexity.
@@ -8245,11 +8163,7 @@ impl SoroTaskContract {
         growth_rate_bps: u32,
     ) {
         enter_security_guard(&env);
-        let task: TaskConfig = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Task(task_id))
-            .expect("Task not found");
+        let task: TaskConfig = load_task(&env, task_id).expect("Task not found");
         task.creator.require_auth();
 
         let bounty_config = DynamicBountyConfig {
@@ -8278,11 +8192,7 @@ impl SoroTaskContract {
 
     /// Calculates the dynamic time-decaying reward for executing a task as deadline approaches.
     pub fn calculate_dynamic_keeper_reward(env: Env, task_id: u64) -> i128 {
-        let task: TaskConfig = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Task(task_id))
-            .expect("Task not found");
+        let task: TaskConfig = load_task(&env, task_id).expect("Task not found");
 
         let base_fee = Self::calculate_execution_fee(&env, &task);
         let current_time = env.ledger().timestamp();
@@ -8633,9 +8543,7 @@ impl SoroTaskContract {
         }
         env.storage().persistent().set(&fp_key, &task_id);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Task(task_id), &task_config);
+        save_task(&env, task_id, &task_config);
         env.storage().persistent().set(
             &DataKey::TaskStatus(task_id),
             &TaskExecutionStatus {
@@ -12796,6 +12704,15 @@ pub(crate) mod tests {
 
         client.init(&token_address);
 
+        client.init_tokenomics_config(&TokenomicsConfig {
+            staking_reward_rate: 500,
+            governance_quorum_percentage: 1000,
+            governance_voting_period: 3_600_000,
+            fee_model: FeeModel::Fixed,
+            min_fee: 100,
+            max_fee: 10000,
+        });
+
         let admin = Address::generate(&env);
         client.set_admin_address(&admin);
         let fee_config = TokenomicsConfig {
@@ -12825,6 +12742,7 @@ pub(crate) mod tests {
         // Execute task (advance timestamp exactly to interval)
         set_timestamp(&env, 3_600);
         let keeper = Address::generate(&env);
+        set_timestamp(&env, 3_600);
         client.execute(&keeper, &task_id);
 
         // Gas balance reduced by task fee (min_bounty is 100)
