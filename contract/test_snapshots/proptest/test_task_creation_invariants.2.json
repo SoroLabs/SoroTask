@@ -54,7 +54,7 @@
                         "symbol": "gas_balance"
                       },
                       "val": {
-                        "i128": "1490371"
+                        "i128": "4456946"
                       }
                     },
                     {
@@ -62,7 +62,7 @@
                         "symbol": "interval"
                       },
                       "val": {
-                        "u32": 40072088
+                        "u32": 84523877
                       }
                     },
                     {
@@ -129,7 +129,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 26,
+    "protocol_version": 27,
     "sequence_number": 0,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -247,7 +247,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "1490371"
+                      "i128": "4456946"
                     }
                   },
                   {
@@ -255,7 +255,7 @@
                       "symbol": "interval"
                     },
                     "val": {
-                      "u32": 40072088
+                      "u32": 84523877
                     }
                   },
                   {
@@ -331,7 +331,7 @@
                     "symbol": "TaskFingerprint"
                   },
                   {
-                    "bytes": "de47a8eab0d5048fe160cbfd2f661916b67c6e6c1a54fa23efb45f9996e78c2d"
+                    "bytes": "0a233826878b5457e9386797429886e6c235e28f67f7aa8906b365c99b569742"
                   }
                 ]
               },

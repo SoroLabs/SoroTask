@@ -168,6 +168,25 @@ async function createHsmSigner(opts = {}) {
     return { hsmSigner: signer, keypair };
   }
 
+  if (providerType === 'gcp-kms') {
+    const { GcpKmsProvider } = require('./hsm/gcpKmsProvider');
+    const hsmProvider = opts.hsmProvider || new GcpKmsProvider({
+      projectId: opts.gcpProjectId || process.env.GCP_KMS_PROJECT_ID,
+      locationId: opts.gcpLocation || process.env.GCP_KMS_LOCATION,
+      keyRingId: opts.gcpKeyRing || process.env.GCP_KMS_KEY_RING,
+      logger: opts.logger,
+    });
+    const signer = new MultiSigHSMSigner({
+      hsmProvider,
+      keyIds: [keyId],
+      networkPassphrase: opts.networkPassphrase,
+      logger: opts.logger,
+    });
+    const pub = await hsmProvider.getPublicKey(keyId);
+    const keypair = _publicPemToKeypair(pub.publicPem);
+    return { hsmSigner: signer, keypair };
+  }
+
   if (providerType === 'vault-transit') {
     const { VaultTransitProvider } = require('./hsm/vaultTransitProvider');
     const hsmProvider = opts.hsmProvider || new VaultTransitProvider({
@@ -488,6 +507,14 @@ function createMultiSigSigner(opts = {}) {
     const { AwsKmsProvider } = require('./hsm/awsKmsProvider');
     hsmProvider = opts.hsmProvider || new AwsKmsProvider({
       region: opts.awsRegion || process.env.AWS_KMS_REGION,
+      logger: opts.logger,
+    });
+  } else if (providerType === 'gcp-kms') {
+    const { GcpKmsProvider } = require('./hsm/gcpKmsProvider');
+    hsmProvider = opts.hsmProvider || new GcpKmsProvider({
+      projectId: opts.gcpProjectId || process.env.GCP_KMS_PROJECT_ID,
+      locationId: opts.gcpLocation || process.env.GCP_KMS_LOCATION,
+      keyRingId: opts.gcpKeyRing || process.env.GCP_KMS_KEY_RING,
       logger: opts.logger,
     });
   } else if (providerType === 'vault-transit') {

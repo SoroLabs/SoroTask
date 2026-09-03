@@ -1,3 +1,0 @@
-Auto-merging frontend/jest.config.js
-CONFLICT (content): Merge conflict in frontend/jest.config.js
-Automatic merge failed; fix conflicts and then commit the result.

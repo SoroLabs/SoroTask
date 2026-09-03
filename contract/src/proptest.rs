@@ -8,6 +8,9 @@ pub struct MockToken;
 #[contractimpl]
 impl MockToken {
     pub fn transfer(_env: Env, _from: Address, _to: Address, _amount: i128) {}
+    pub fn balance(_env: Env, _id: Address) -> i128 {
+        1_000_000_000
+    }
 }
 
 fn setup_env_and_client() -> (Env, SoroTaskContractClient<'static>) {

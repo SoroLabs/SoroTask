@@ -1,4 +1,5 @@
 import { toast } from 'sonner';
+import { captureTransactionBreadcrumb } from './errors/breadcrumbs';
 
 export type TxLifecycleState =
   | 'AWAITING_SIGNATURE'
@@ -44,6 +45,7 @@ export class TransactionToastHandler {
    * Updates state to 'Submitting to Soroban network'
    */
   updateToSubmitting(): void {
+    captureTransactionBreadcrumb('submitting');
     toast.loading('Submitting to Soroban Ledger...', {
       id: this.toastId,
       description: 'Transaction signed. Broadcaster submitting to network consensus...',
@@ -54,6 +56,7 @@ export class TransactionToastHandler {
    * Finalizes toast with Success state and link to Stellar Expert explorer
    */
   confirm(txHash: string): void {
+    captureTransactionBreadcrumb('confirmed_on_ledger', txHash, { network: this.network });
     const explorerUrl = `${STELLAR_EXPERT_BASE_URL[this.network]}/${txHash}`;
 
     toast.success('Transaction Confirmed on Ledger!', {
@@ -71,6 +74,9 @@ export class TransactionToastHandler {
    * Updates toast to Failure state
    */
   fail(error: Error | string): void {
+    captureTransactionBreadcrumb('failed', undefined, {
+      message: typeof error === 'string' ? error : (error.message ?? 'Transaction rejected or failed.'),
+    });
     const message = typeof error === 'string' ? error : error.message || 'Transaction rejected or failed.';
 
     toast.error('Transaction Failed', {

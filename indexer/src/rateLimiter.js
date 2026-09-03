@@ -220,6 +220,17 @@ function createRateLimiter(options = {}) {
   const redisBucket = useRedis ? new RedisTokenBucket(options.redisClient) : null;
 
   return (req, res, next) => {
+    const isPublicRoute =
+      req.path === '/metrics' ||
+      req.path === '/api/health' ||
+      req.path === '/api-docs.json' ||
+      req.path === '/api-docs' ||
+      req.path.startsWith('/api-docs/');
+
+    if (isPublicRoute) {
+      return next();
+    }
+
     // Determine rate limit key and tier
     const apiKey = req.headers['x-api-key'];
     let key;

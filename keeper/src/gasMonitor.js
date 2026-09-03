@@ -1,6 +1,7 @@
 const { createLogger } = require('./logger');
 const { GasForecaster } = require('./gasForecaster');
 const { GasPriceTrend } = require('./gasPriceTrend');
+const { safeFetch } = require('./ssrfGuard');
 
 function finiteNumber(value) {
   const number = Number(value);
@@ -102,7 +103,8 @@ class GasMonitor {
         timestamp: new Date().toISOString(),
       };
 
-      const res = await fetch(this.ALERT_WEBHOOK_URL, {
+      // SSRF filter (Issue #1056).
+      const res = await safeFetch(this.ALERT_WEBHOOK_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

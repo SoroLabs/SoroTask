@@ -80,28 +80,32 @@ const quickLinks = [
   {
     href: "/tokenomics",
     title: "Tokenomics Flow",
-    description: "Model distribution flows, cycles, and pools inside the network.",
+    description:
+      "Model distribution flows, cycles, and pools inside the network.",
     icon: FiLayers,
     accent: "from-emerald-300 to-teal-400",
   },
   {
     href: "/yield-calculator",
     title: "Yield Forecaster",
-    description: "Forecast simple vs compounded yields post keeper execution fees.",
+    description:
+      "Forecast simple vs compounded yields post keeper execution fees.",
     icon: FiTrendingUp,
     accent: "from-sky-300 to-indigo-400",
   },
   {
     href: "/gas-optimization",
     title: "Gas Optimization",
-    description: "Estimate transaction costs, schedule off-peak, and simulate runs.",
+    description:
+      "Estimate transaction costs, schedule off-peak, and simulate runs.",
     icon: FiZap,
     accent: "from-amber-200 to-orange-400",
   },
   {
     href: "/tracing",
     title: "Distributed Tracing",
-    description: "Timeline waterfall diagnostics across services & block consensus.",
+    description:
+      "Timeline waterfall diagnostics across services & block consensus.",
     icon: FiActivity,
     accent: "from-purple-400 to-rose-400",
   },
@@ -142,12 +146,14 @@ export default function HomePage() {
             <Link
               className="rounded-full px-3 py-2 transition hover:bg-white/10 hover:text-white"
               href="/dashboard"
+              prefetch={true}
             >
               Dashboard
             </Link>
             <Link
               className="rounded-full px-3 py-2 transition hover:bg-white/10 hover:text-white"
               href="/marketplace"
+              prefetch={true}
             >
               Marketplace
             </Link>
@@ -164,6 +170,7 @@ export default function HomePage() {
             <WalletNavSlot />
             <Link
               href="/tasks"
+              prefetch={true}
               className="inline-flex items-center gap-2 rounded-full bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-200"
             >
               Launch
@@ -191,6 +198,7 @@ export default function HomePage() {
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link
                 href="/tasks"
+                prefetch={true}
                 className="inline-flex items-center justify-center gap-2 rounded-full bg-emerald-300 px-6 py-3 text-base font-bold text-slate-950 shadow-xl shadow-emerald-950/30 transition hover:-translate-y-0.5 hover:bg-emerald-200"
               >
                 Create automation
@@ -198,6 +206,7 @@ export default function HomePage() {
               </Link>
               <Link
                 href="/dashboard"
+                prefetch={true}
                 className="inline-flex items-center justify-center gap-2 rounded-full border border-white/15 bg-white/10 px-6 py-3 text-base font-semibold text-white backdrop-blur transition hover:-translate-y-0.5 hover:bg-white/15"
               >
                 View live dashboard

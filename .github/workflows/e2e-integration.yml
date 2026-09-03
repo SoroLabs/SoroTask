@@ -24,6 +24,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Check for Conflict Markers
+        run: |
+          chmod +x scripts/check-conflict-markers.sh
+          ./scripts/check-conflict-markers.sh
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:

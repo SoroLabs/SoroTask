@@ -1,7 +1,0 @@
-Auto-merging frontend/app/components/WalletButton.tsx
-CONFLICT (content): Merge conflict in frontend/app/components/WalletButton.tsx
-Auto-merging frontend/app/utils/formValidation/formConfigs.ts
-CONFLICT (content): Merge conflict in frontend/app/utils/formValidation/formConfigs.ts
-Auto-merging frontend/package-lock.json
-Auto-merging frontend/package.json
-Automatic merge failed; fix conflicts and then commit the result.

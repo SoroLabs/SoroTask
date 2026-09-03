@@ -240,5 +240,22 @@ describe('ABIRegistryService', () => {
       expect(abiRegistryService.getRegistry()).toBe(registry);
       expect(abiRegistryService.getErrorHandler()).toBe(errorHandler);
     });
+
+    it('should decode canonical error codes correctly', () => {
+      const decoded100 = abiRegistryService.decodeErrorCode(100);
+      expect(decoded100.name).toBe('Unauthorized');
+      expect(decoded100.category).toBe('Auth');
+
+      const decoded300 = abiRegistryService.decodeErrorCode(300);
+      expect(decoded300.name).toBe('ReentrantCall');
+      expect(decoded300.category).toBe('Execution');
+
+      const decoded507 = abiRegistryService.decodeErrorCode(507);
+      expect(decoded507.name).toBe('InvalidSlippage');
+      expect(decoded507.category).toBe('Treasury');
+
+      const decodedUnknown = abiRegistryService.decodeErrorCode(9999);
+      expect(decodedUnknown.name).toBe('UnknownError');
+    });
   });
 });

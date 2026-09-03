@@ -276,7 +276,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 26,
+    "protocol_version": 27,
     "sequence_number": 0,
     "timestamp": 3600,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -962,10 +962,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "2"
@@ -1041,10 +1041,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "2"
@@ -1120,10 +1120,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "2"
@@ -1199,10 +1199,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "2"
@@ -1215,7 +1215,7 @@
                     "symbol": "detail"
                   },
                   "val": {
-                    "u32": 2
+                    "u32": 100
                   }
                 },
                 {

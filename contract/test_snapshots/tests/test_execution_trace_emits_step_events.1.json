@@ -151,7 +151,7 @@
     ]
   ],
   "ledger": {
-    "protocol_version": 26,
+    "protocol_version": 27,
     "sequence_number": 0,
     "timestamp": 50000,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -1002,6 +1002,18 @@
                       "val": {
                         "u32": 1
                       }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "TotalTaskEscrows"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "i128": "-100"
+                      }
                     }
                   ]
                 }
@@ -1101,10 +1113,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1180,10 +1192,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1259,10 +1271,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1338,10 +1350,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1417,10 +1429,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1496,10 +1508,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1575,10 +1587,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1654,10 +1666,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1733,10 +1745,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1812,10 +1824,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1891,10 +1903,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -1970,10 +1982,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -2049,10 +2061,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -2128,10 +2140,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"
@@ -2207,10 +2219,10 @@
           "v0": {
             "topics": [
               {
-                "symbol": "sorotask"
+                "symbol": "Task"
               },
               {
-                "symbol": "exec_step"
+                "symbol": "StepExecuted"
               },
               {
                 "u64": "1"

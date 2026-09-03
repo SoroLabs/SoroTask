@@ -334,6 +334,27 @@ class HistoryManager {
     const successRate = sampleCount > 0 ? successCount / sampleCount : 0;
     const averageFeePaid = sampleCount > 0 ? totalFeePaid / sampleCount : 0;
 
+    // Issue #784 — execution speed and gas efficiency, for keeper reputation
+    // scoring. Only records that actually carry a duration/bounty (added
+    // alongside this feature; older persisted history predates it) count
+    // toward each average, so historical data doesn't silently zero these out.
+    const durationSamples = records
+      .map((entry) => Number(entry.durationMs))
+      .filter((value) => Number.isFinite(value) && value >= 0);
+    const averageDurationMs = durationSamples.length > 0
+      ? durationSamples.reduce((sum, value) => sum + value, 0) / durationSamples.length
+      : null;
+
+    const efficiencySamples = records
+      .filter((entry) => Number(entry.bounty) > 0 && entry.status === 'SUCCESS')
+      .map((entry) => {
+        const ratio = (Number(entry.feePaid) || 0) / Number(entry.bounty);
+        return Math.max(0, Math.min(1, 1 - ratio));
+      });
+    const averageGasEfficiency = efficiencySamples.length > 0
+      ? efficiencySamples.reduce((sum, value) => sum + value, 0) / efficiencySamples.length
+      : null;
+
     return {
       taskId: taskId == null ? null : String(taskId),
       sampleCount,
@@ -342,6 +363,8 @@ class HistoryManager {
       successRate,
       failureRate,
       averageFeePaid,
+      averageDurationMs,
+      averageGasEfficiency,
       recentExecutions: records.slice(-10).reverse(),
     };
   }
