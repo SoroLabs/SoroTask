@@ -5499,7 +5499,7 @@ impl SoroTaskContract {
         }
 
         let expected = Self::compute_expected_public_hash(env.clone(), task_id, caller, execution_payload);
-        public_inputs.first().is_some_and(|provided| provided == &expected)
+        public_inputs.first().is_some_and(|provided| provided == expected)
     }
 
     /// Verifies a Zero-Knowledge proof for a task condition after binding the proof's
@@ -7293,8 +7293,8 @@ impl SoroTaskContract {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
-mod test_gas;
+// test modules removed — duplicates of root-level test files
+// that referenced non-existent paths in the monolith subdirectory.
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -7508,6 +7508,7 @@ pub(crate) mod tests {
             is_active: true,
             blocked_by: Vec::new(env),
             permissions: 15,
+            execution_nonce: 0,
         }
     }
 
@@ -8185,6 +8186,7 @@ pub(crate) mod tests {
             is_active: true,
             blocked_by: Vec::new(&env),
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let task_id = client.register(&cfg);
@@ -8470,6 +8472,7 @@ pub(crate) mod tests {
             is_active: true,
             blocked_by: Vec::new(&env),
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let task_id = client.register(&config);
@@ -8514,6 +8517,7 @@ pub(crate) mod tests {
             is_active: true,
             blocked_by: Vec::new(&env),
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let mut config2 = config.clone();
@@ -8553,6 +8557,7 @@ pub(crate) mod tests {
             blocked_by: Vec::new(&env),
             yield_strategy: None,
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let invalid_config = TaskConfig {
@@ -8569,6 +8574,7 @@ pub(crate) mod tests {
             blocked_by: Vec::new(&env),
             yield_strategy: None,
             permissions: 15,
+            execution_nonce: 0,
         };
 
         // Attempt invalid registration (should panic, counter not incremented)
@@ -8606,6 +8612,7 @@ pub(crate) mod tests {
             blocked_by: Vec::new(&env),
             yield_strategy: None,
             permissions: 15,
+            execution_nonce: 0,
         };
 
         // Register 100 tasks and verify IDs are 1..=100. Each gets a distinct
@@ -8646,6 +8653,7 @@ pub(crate) mod tests {
             blocked_by: Vec::new(&env),
             yield_strategy: None,
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let mut ids = Vec::new(&env);
@@ -8698,6 +8706,7 @@ pub(crate) mod tests {
             blocked_by: Vec::new(&env),
             yield_strategy: None,
             permissions: 15,
+            execution_nonce: 0,
         };
 
         // Register 3 tasks (IDs 1, 2, 3). id2 uses the plain `config`; id1/id3
@@ -8751,6 +8760,7 @@ pub(crate) mod tests {
             blocked_by: Vec::new(&env),
             yield_strategy: None,
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let mut prev_id = 0u64;
@@ -8794,6 +8804,7 @@ pub(crate) mod tests {
             is_active: true,
             blocked_by: Vec::new(&env),
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let result = client.try_register(&config);
@@ -8898,6 +8909,7 @@ pub(crate) mod tests {
             is_active: true,
             blocked_by: Vec::new(&env),
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let task_id = client.register(&config);
@@ -10601,6 +10613,7 @@ pub(crate) mod tests {
             blocked_by: Vec::new(&env),
             yield_strategy: None,
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let task_id = client.register(&config);
@@ -10643,6 +10656,7 @@ pub(crate) mod tests {
             blocked_by: Vec::new(&env),
             yield_strategy: None,
             permissions: 15,
+            execution_nonce: 0,
         };
 
         let task_id = client.register(&config);
@@ -11151,14 +11165,7 @@ pub(crate) mod tests {
     }
 }
 
-#[cfg(test)]
-mod proptest;
-
-#[cfg(test)]
-mod test_combinations;
-
-#[cfg(test)]
-mod test_access_control;
-
-#[cfg(test)]
-mod test_task_bundle;
+// #[cfg(test)] mod proptest;       — see note above
+// #[cfg(test)] mod test_combinations;
+// #[cfg(test)] mod test_access_control;
+// #[cfg(test)] mod test_task_bundle;

@@ -18,7 +18,7 @@ pub use events::*;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, xdr::ToXdr, Address,
-    Bytes, BytesN, Env, IntoVal, Symbol, TryIntoVal, Val, Vec,
+    Bytes, BytesN, Env, IntoVal, Symbol, TryFromVal, TryIntoVal, Val, Vec,
 };
 
 #[contracterror]
@@ -172,6 +172,14 @@ pub enum Error {
     VolatilityExceeded = 600,
     VolatilityCircuitBreakerTripped = 601,
     VolatilityTimelockActive = 602,
+
+    // ── 700..799: Cross-Chain Gateway ────────────────────────────────────────────
+    UnsupportedSourceChain = 700,
+    InvalidCrossChainPayload = 701,
+    InvalidCrossChainSignature = 702,
+    GatewayNotConfigured = 703,
+    GatewayUnauthorized = 704,
+    CrossChainNonceReplay = 705,
 }
 
 #[contracttype]
@@ -266,6 +274,14 @@ const MAX_BATCH_SIZE: u32 = 100;
 
 /// Maximum number of steps allowed in a single atomic task bundle
 const MAX_BUNDLE_STEPS: u32 = 16;
+
+// ── Cross-Chain Interoperability Protocol (CCIP) Gateway (Issue #814) ──────
+/// Maximum allowed payload size for cross-chain messages (bytes)
+const MAX_CROSS_CHAIN_PAYLOAD_SIZE: u32 = 4096;
+/// Maximum age (seconds) of a cross-chain message before it is considered stale
+const CROSS_CHAIN_MAX_MESSAGE_AGE: u64 = 3_600;
+/// Number of confirmations required on the source chain
+const CROSS_CHAIN_MIN_CONFIRMATIONS: u64 = 1;
 /// Ledgers a submitted optimistic resolver-condition claim stays open to
 /// challenge before it can be finalized.
 const OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS: u32 = 100;
@@ -975,6 +991,38 @@ pub struct InsuranceSolvencyReport {
     pub is_solvent: bool,
 }
 
+/// Supported cross-chain source networks for the CCIP Trigger Gateway.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CrossChainSource {
+    Ethereum = 1,
+    Solana = 2,
+    Polygon = 3,
+    Bsc = 4,
+}
+
+/// Decoded cross-chain task payload emitted with the `CrossChainTaskScheduled` event.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct CrossChainTaskPayload {
+    pub task_id: u64,
+    pub source_chain: Symbol,
+    pub sender: Bytes,
+    pub nonce: u64,
+    pub received_at: u64,
+}
+
+/// Persistent record of a received cross-chain task, stored for audit and query.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct CrossChainTaskRecord {
+    pub task_id: u64,
+    pub source_chain: Symbol,
+    pub sender: Bytes,
+    pub nonce: u64,
+    pub received_at: u64,
+}
+
 #[contracttype]
 pub enum DataKey {
     Guardians,
@@ -1096,6 +1144,18 @@ pub enum DataKey {
     TotalTaskEscrows,
     TotalKeeperStakes,
     TotalUnclaimedFees,
+    /// Cross-chain gateway: relayer address authorized to relay messages
+    CrossChainGatewayRelayer,
+    /// Cross-chain gateway: per-chain nonce tracking (replay protection)
+    CrossChainNonce(u32, u64),
+    /// Cross-chain gateway: per-chain nonce counter
+    CrossChainNonceCounter(u32),
+    /// Cross-chain gateway: received task records
+    CrossChainTaskRecord(u64),
+    /// Cross-chain gateway: global received task counter
+    CrossChainTaskCounter,
+    /// Cross-chain gateway: per-chain enabled flag
+    CrossChainSourceEnabled(u32),
 }
 
 /// Transient storage reentrancy guard ensuring reentrant calls revert immediately.
@@ -7961,6 +8021,266 @@ impl SoroTaskContract {
             is_solvent,
         }
     }
+
+    // ── Cross-Chain Interoperability Protocol (CCIP) Gateway ────────────────
+    // (Issue #814)
+
+    /// Returns the supported cross-chain source chain enum discriminant.
+    fn _supported_chain_id(env: &Env, source_chain: &Symbol) -> u32 {
+        if *source_chain == Symbol::new(env, "ethereum") {
+            1
+        } else if *source_chain == Symbol::new(env, "solana") {
+            2
+        } else if *source_chain == Symbol::new(env, "polygon") {
+            3
+        } else if *source_chain == Symbol::new(env, "bsc") {
+            4
+        } else {
+            0 // unsupported
+        }
+    }
+
+    /// Verifies a cross-chain message signature via ed25519.
+    ///
+    /// Builds `sha256(source_chain ‖ sender ‖ payload ‖ nonce)` and calls
+    /// `ed25519_verify` with the registered relayer public key.  If the
+    /// signature is invalid the Soroban host will trap, which causes the
+    /// entire transaction to revert – the standard Soroban error path.
+    fn _verify_cross_chain_signature(
+        env: &Env,
+        source_chain: &Symbol,
+        sender: &Bytes,
+        payload: &Bytes,
+        nonce: u64,
+        signature: &Bytes,
+    ) {
+        if signature.is_empty() {
+            panic_with_error!(env, Error::InvalidCrossChainSignature);
+        }
+
+        // Build the message digest.
+        let mut msg = Bytes::new(env);
+        msg.append(&source_chain.to_xdr(env));
+        msg.append(sender);
+        msg.append(payload);
+        msg.append(&nonce.to_xdr(env));
+        let hash = env.crypto().sha256(&msg);
+
+        // Retrieve the registered relayer public key.
+        let relayer_key = DataKey::CrossChainGatewayRelayer;
+        if !env.storage().instance().has(&relayer_key) {
+            panic_with_error!(env, Error::GatewayNotConfigured);
+        }
+        let relayer_pubkey: BytesN<32> = env.storage().instance().get(&relayer_key).unwrap();
+
+        // Signature must be exactly 64 bytes (ed25519).
+        if signature.len() != 64 {
+            panic_with_error!(env, Error::InvalidCrossChainSignature);
+        }
+        let sig_bytes: BytesN<64> = BytesN::<64>::try_from(signature)
+            .unwrap_or_else(|_| panic_with_error!(env, Error::InvalidCrossChainSignature));
+        let hash_bytes: Bytes = hash.to_bytes().into();
+
+        // ed25519_verify traps (reverts the tx) on invalid signature.
+        env.crypto()
+            .ed25519_verify(&relayer_pubkey, &hash_bytes, &sig_bytes);
+    }
+
+    /// Checks if a cross-chain message nonce has already been consumed (replay protection).
+    fn _is_cross_chain_nonce_used(env: &Env, chain_id: u32, nonce: u64) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::CrossChainNonce(chain_id, nonce))
+    }
+
+    /// Marks a cross-chain nonce as consumed.
+    fn _mark_cross_chain_nonce_used(env: &Env, chain_id: u32, nonce: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossChainNonce(chain_id, nonce), &true);
+        extend_persistent_ttl(env, &DataKey::CrossChainNonce(chain_id, nonce));
+    }
+
+    /// Returns the current cross-chain received task counter.
+    fn _cross_chain_task_counter(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CrossChainTaskCounter)
+            .unwrap_or(0)
+    }
+
+    /// Persists a cross-chain task record and returns the assigned ID.
+    fn _store_cross_chain_task(env: &Env, record: &CrossChainTaskRecord) -> u64 {
+        let counter = Self::_cross_chain_task_counter(env) + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::CrossChainTaskCounter, &counter);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossChainTaskRecord(counter), record);
+        extend_persistent_ttl(env, &DataKey::CrossChainTaskRecord(counter));
+        counter
+    }
+
+    /// Admin-only: sets the relayer public key that can authorize cross-chain messages.
+    pub fn set_cross_chain_relayer(env: Env, admin: Address, relayer_pubkey: BytesN<32>) {
+        enter_security_guard(&env);
+        require_config_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::CrossChainGatewayRelayer, &relayer_pubkey);
+        env.events().publish(
+            (
+                Symbol::new(&env, "CrossChainRelayerSet"),
+                Symbol::new(&env, "v1"),
+            ),
+            (admin, relayer_pubkey),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Admin-only: enables or disables a source chain for cross-chain task reception.
+    pub fn set_cross_chain_source_enabled(
+        env: Env,
+        admin: Address,
+        source_chain: Symbol,
+        enabled: bool,
+    ) {
+        enter_security_guard(&env);
+        require_config_admin(&env, &admin);
+        let chain_id = Self::_supported_chain_id(&env, &source_chain);
+        if chain_id == 0 {
+            panic_with_error!(&env, Error::UnsupportedSourceChain);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::CrossChainSourceEnabled(chain_id), &enabled);
+        env.events().publish(
+            (
+                Symbol::new(&env, "CrossChainSourceToggled"),
+                Symbol::new(&env, "v1"),
+            ),
+            (source_chain, enabled),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Receives a cross-chain task trigger message from an external blockchain.
+    ///
+    /// This is the primary entry point for the CCIP Trigger Gateway. A relayer
+    /// submits a verified message containing:
+    /// - `source_chain`: the originating blockchain (e.g. "ethereum", "solana")
+    /// - `sender`: the cross-chain address of the requester (opaque bytes)
+    /// - `task_config`: the task parameters to register (passed through to `register()`)
+    /// - `payload`: the raw message bytes signed by the relayer (for signature verification)
+    /// - `nonce`: replay-protection nonce per source chain
+    /// - `signature`: ed25519 signature from the registered relayer over the
+    ///   message digest `sha256(source_chain ‖ sender ‖ payload ‖ nonce)`
+    ///
+    /// On success the gateway:
+    /// 1. Validates the source chain is supported and enabled
+    /// 2. Verifies the relayer signature over the message hash
+    /// 3. Deduplicates via nonce
+    /// 4. Registers the task on-chain
+    /// 5. Emits `CrossChainTaskScheduled`
+    pub fn receive_cross_chain_task(
+        env: Env,
+        source_chain: Symbol,
+        sender: Bytes,
+        task_config: TaskConfig,
+        payload: Bytes,
+        nonce: u64,
+        signature: Bytes,
+    ) -> u64 {
+        // NOTE: register() handles enter/exit_security_guard internally.
+        // We do NOT wrap with our own guard here to avoid a double-lock.
+
+        // 1. Validate source chain
+        let chain_id = Self::_supported_chain_id(&env, &source_chain);
+        if chain_id == 0 {
+            panic_with_error!(&env, Error::UnsupportedSourceChain);
+        }
+        let enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::CrossChainSourceEnabled(chain_id))
+            .unwrap_or(false);
+        if !enabled {
+            panic_with_error!(&env, Error::UnsupportedSourceChain);
+        }
+
+        // 2. Validate payload size
+        if payload.len() > MAX_CROSS_CHAIN_PAYLOAD_SIZE {
+            panic_with_error!(&env, Error::InvalidCrossChainPayload);
+        }
+
+        // 3. Verify relayer signature (traps on failure)
+        Self::_verify_cross_chain_signature(
+            &env,
+            &source_chain,
+            &sender,
+            &payload,
+            nonce,
+            &signature,
+        );
+
+        // 4. Replay protection: each (chain_id, nonce) pair is consumed at most once
+        if Self::_is_cross_chain_nonce_used(&env, chain_id, nonce) {
+            panic_with_error!(&env, Error::CrossChainNonceReplay);
+        }
+
+        // 5. Mark nonce as consumed
+        Self::_mark_cross_chain_nonce_used(&env, chain_id, nonce);
+
+        // 6. Register the task (reuse the existing register logic).
+        //    register() calls enter_security_guard / exit_security_guard, so
+        //    we must NOT hold a guard here.
+        let task_id = Self::register(env.clone(), task_config);
+
+        // 7. Store the cross-chain task record
+        let record = CrossChainTaskRecord {
+            task_id,
+            source_chain: source_chain.clone(),
+            sender: sender.clone(),
+            nonce,
+            received_at: env.ledger().timestamp(),
+        };
+        Self::_store_cross_chain_task(&env, &record);
+
+        // 9. Emit CrossChainTaskScheduled event
+        env.events().publish(
+            (
+                Symbol::new(&env, "CrossChainTaskScheduled"),
+                Symbol::new(&env, "v1"),
+                source_chain,
+            ),
+            CrossChainTaskPayload {
+                task_id,
+                source_chain: record.source_chain,
+                sender: record.sender,
+                nonce: record.nonce,
+                received_at: record.received_at,
+            },
+        );
+
+        task_id
+    }
+
+    /// Returns a cross-chain task record by its gateway-assigned ID.
+    pub fn get_cross_chain_task_record(env: Env, id: u64) -> Option<CrossChainTaskRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CrossChainTaskRecord(id))
+    }
+
+    /// Returns whether a given (source_chain, nonce) has already been consumed.
+    pub fn is_cross_chain_nonce_used(env: Env, source_chain: Symbol, nonce: u64) -> bool {
+        let chain_id = Self::_supported_chain_id(&env, &source_chain);
+        if chain_id == 0 {
+            return false;
+        }
+        Self::_is_cross_chain_nonce_used(&env, chain_id, nonce)
+    }
 }
 
 // ============================================================================
@@ -11884,3 +12204,6 @@ mod test_access_control;
 #[cfg(test)]
 mod test;
 mod test_task_bundle;
+
+#[cfg(test)]
+mod test_cross_chain;
