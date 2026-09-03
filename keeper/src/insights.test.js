@@ -56,4 +56,31 @@ describe('insights helpers', () => {
     expect(['high', 'critical']).toContain(reputation.reputationTier);
     expect(reputation.evidence.sampleCount).toBe(40);
   });
+
+  test('MLTaskPredictor evaluates task failure risk and gas forecasting', () => {
+    const { MLTaskPredictor } = require('./insights');
+    const predictor = new MLTaskPredictor({ minSuccessConfidence: 0.50 });
+
+    const healthyResult = predictor.evaluateTaskExecution({ id: 101 }, {
+      historicalFailureRate: 0.1,
+      resolverComplexity: 0.2,
+      gasVolatility: 0.1,
+      timeOfDayPeak: 0.1,
+    });
+
+    expect(healthyResult.shouldSkip).toBe(false);
+    expect(healthyResult.recommendation).toBe('EXECUTE');
+    expect(healthyResult.confidenceScore).toBeGreaterThan(0.7);
+
+    const riskyResult = predictor.evaluateTaskExecution({ id: 102 }, {
+      historicalFailureRate: 0.9,
+      resolverComplexity: 0.8,
+      gasVolatility: 0.7,
+      timeOfDayPeak: 0.6,
+    });
+
+    expect(riskyResult.shouldSkip).toBe(true);
+    expect(riskyResult.recommendation).toBe('SKIP');
+    expect(riskyResult.skipReason).toContain('below threshold');
+  });
 });

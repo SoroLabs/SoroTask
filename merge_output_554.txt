@@ -1,6 +1,0 @@
-Auto-merging frontend/jest.setup.js
-Auto-merging frontend/package-lock.json
-CONFLICT (content): Merge conflict in frontend/package-lock.json
-Auto-merging frontend/package.json
-CONFLICT (content): Merge conflict in frontend/package.json
-Automatic merge failed; fix conflicts and then commit the result.

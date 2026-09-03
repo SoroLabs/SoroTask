@@ -1,1 +1,2 @@
+./scripts/check-conflict-markers.sh
 npx lint-staged

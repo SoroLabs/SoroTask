@@ -122,6 +122,19 @@ class KeeperReputationScorer {
     const stakeScore = clamp(Number(metrics.stakeAmount) || 0, 0, Number(metrics.maxStakeAmount) || 1);
     const missedHeartbeatPenalty = clamp(Number(metrics.missedHeartbeats) || 0, 0, 10) / 10;
 
+    // Issue #784 — execution speed and gas efficiency. Both are `null` in
+    // `summary` until enough executions have been recorded with the
+    // durationMs/bounty fields (see history.js); a keeper with no history
+    // yet shouldn't be penalized as if it were slow/wasteful, so each
+    // defaults to a neutral 1.0 (full credit) rather than 0 when absent.
+    const targetDurationMs = Number(metrics.targetDurationMs) || 5000;
+    const executionSpeed = summary.averageDurationMs == null
+      ? 1
+      : clamp(targetDurationMs / Math.max(1, Number(summary.averageDurationMs)), 0, 1);
+    const gasEfficiency = summary.averageGasEfficiency == null
+      ? 1
+      : clamp(Number(summary.averageGasEfficiency), 0, 1);
+
     const features = {
       successRate,
       uptime: clamp(uptimeRatio, 0, 1),
@@ -129,15 +142,19 @@ class KeeperReputationScorer {
       stake: clamp(stakeScore, 0, 1),
       failurePenalty: clamp(failureRate, 0, 1),
       missedHeartbeatPenalty,
+      executionSpeed,
+      gasEfficiency,
     };
 
     const score = weightedScore(features, {
-      successRate: 0.36,
-      uptime: 0.2,
-      taskCoverage: 0.15,
-      stake: 0.15,
-      failurePenalty: 0.08,
+      successRate: 0.28,
+      uptime: 0.16,
+      taskCoverage: 0.12,
+      stake: 0.12,
+      failurePenalty: 0.06,
       missedHeartbeatPenalty: 0.06,
+      executionSpeed: 0.1,
+      gasEfficiency: 0.1,
     });
 
     return {
@@ -148,19 +165,13 @@ class KeeperReputationScorer {
         successRate,
         failureRate,
         sampleCount: Number(summary.sampleCount) || 0,
+        averageDurationMs: summary.averageDurationMs,
+        averageGasEfficiency: summary.averageGasEfficiency,
       },
     };
   }
 }
 
-module.exports = {
-  clamp,
-  classifyScore,
-  normalizeRatio,
-  weightedScore,
-  FailurePredictor,
-  KeeperReputationScorer,
-};
 class ProfitabilityEstimator {
   constructor(options = {}) {
     this.logger = options.logger || createLogger('profit-estimator');
@@ -182,4 +193,65 @@ class ProfitabilityEstimator {
     });
   }
 }
-module.exports.ProfitabilityEstimator = ProfitabilityEstimator;
+
+class MLTaskPredictor {
+  constructor(options = {}) {
+    this.logger = options.logger || createLogger('ml-task-predictor');
+    this.minSuccessConfidence = options.minSuccessConfidence ?? 0.40;
+    this.baseGasEstimate = options.baseGasEstimate ?? 100000;
+  }
+
+  predictConfidenceScore(features = {}) {
+    const historicalFailureRate = clamp(Number(features.historicalFailureRate) || 0, 0, 1);
+    const resolverComplexity = clamp(Number(features.resolverComplexity) || 0, 0, 1);
+    const gasVolatility = clamp(Number(features.gasVolatility) || 0, 0, 1);
+    const timeOfDayPeak = clamp(Number(features.timeOfDayPeak) || 0, 0, 1);
+
+    const failureProbability = clamp(
+      0.40 * historicalFailureRate +
+      0.25 * resolverComplexity +
+      0.20 * gasVolatility +
+      0.15 * timeOfDayPeak,
+      0,
+      1
+    );
+
+    const confidenceScore = clamp(1 - failureProbability, 0, 1);
+    return Math.round(confidenceScore * 100) / 100;
+  }
+
+  predictGas(features = {}) {
+    const resolverComplexity = Number(features.resolverComplexity) || 0;
+    const gasVolatility = Number(features.gasVolatility) || 0;
+    const multiplier = 1 + 0.5 * resolverComplexity + 0.3 * gasVolatility;
+    return Math.round(this.baseGasEstimate * multiplier);
+  }
+
+  evaluateTaskExecution(task, features = {}) {
+    const confidenceScore = this.predictConfidenceScore(features);
+    const predictedGas = this.predictGas(features);
+    const shouldSkip = confidenceScore < this.minSuccessConfidence;
+
+    return {
+      taskId: String(task.id || task.taskId),
+      confidenceScore,
+      predictedGas,
+      shouldSkip,
+      skipReason: shouldSkip
+        ? `Confidence score ${confidenceScore} below threshold ${this.minSuccessConfidence}`
+        : null,
+      recommendation: shouldSkip ? 'SKIP' : 'EXECUTE',
+    };
+  }
+}
+
+module.exports = {
+  clamp,
+  classifyScore,
+  normalizeRatio,
+  weightedScore,
+  FailurePredictor,
+  KeeperReputationScorer,
+  ProfitabilityEstimator,
+  MLTaskPredictor,
+};

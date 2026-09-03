@@ -97,6 +97,18 @@ function isOwner(context, creatorAddress) {
  * Express middleware for REST JWT authentication.
  */
 function expressJwtAuth(req, res, next) {
+  const isPublicRoute =
+    req.path === '/metrics' ||
+    req.path === '/api/health' ||
+    req.path === '/api-docs.json' ||
+    req.path === '/api-docs' ||
+    req.path.startsWith('/api-docs/');
+
+  if (isPublicRoute) {
+    req.user = { role: ROLES.ANONYMOUS };
+    return next();
+  }
+
   const authHeader = req.headers.authorization || '';
   if (!authHeader.startsWith('Bearer ')) {
     req.user = { role: ROLES.ANONYMOUS };

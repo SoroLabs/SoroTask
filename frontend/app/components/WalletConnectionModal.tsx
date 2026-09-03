@@ -3,7 +3,7 @@
 /**
  * WalletConnectionModal.tsx
  *
- * Modal flow for connecting a Freighter wallet. Surfaces connection states
+ * Modal flow for connecting Stellar wallets. Supports Freighter, Albedo, xBull, and LOBSTR.
  * (connecting, error, connected) and degrades gracefully when Freighter is
  * not installed.
  */

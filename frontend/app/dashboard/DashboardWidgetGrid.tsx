@@ -1,11 +1,40 @@
 "use client";
 
 import React from "react";
+import dynamic from "next/dynamic";
 import { WidgetGrid } from "@/components/WidgetGrid";
-import { TaskExecutionHeatmapEngine } from "@/src/components/TaskExecutionHeatmapEngine";
-import { RPCNodeHealthDashboard } from "@/src/components/rpc/RPCNodeHealthDashboard";
 import { useRPCHealthStore } from "@/src/store/rpcHealthStore";
 import type { WidgetDefinition } from "@/components/WidgetGrid";
+
+const TaskExecutionHeatmapEngine = dynamic(
+  () =>
+    import("@/src/components/TaskExecutionHeatmapEngine").then(
+      (mod) => mod.TaskExecutionHeatmapEngine,
+    ),
+  {
+    loading: () => (
+      <div className="p-4 text-xs text-slate-400 animate-pulse bg-slate-900/40 rounded-xl">
+        Loading execution heatmap widget...
+      </div>
+    ),
+    ssr: false,
+  },
+);
+
+const RPCNodeHealthDashboard = dynamic(
+  () =>
+    import("@/src/components/rpc/RPCNodeHealthDashboard").then(
+      (mod) => mod.RPCNodeHealthDashboard,
+    ),
+  {
+    loading: () => (
+      <div className="p-4 text-xs text-slate-400 animate-pulse bg-slate-900/40 rounded-xl">
+        Loading RPC health telemetry...
+      </div>
+    ),
+    ssr: false,
+  },
+);
 
 const widgetRegistry: Record<string, WidgetDefinition> = {
   volume: {

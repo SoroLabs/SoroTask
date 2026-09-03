@@ -92,3 +92,48 @@ fn test_log_access() {
         is_authorized,
     );
 }
+
+#[test]
+fn test_log_task_invalidated() {
+    let env = Env::default();
+    let target_contract = Address::generate(&env);
+    EventLogger::log_task_invalidated(
+        &env,
+        101u64,
+        target_contract,
+        Symbol::new(&env, "WasmUpgrade"),
+    );
+}
+
+#[test]
+fn test_log_rate_limit_exceeded() {
+    let env = Env::default();
+    EventLogger::log_rate_limit_exceeded(&env, 202u64, 50, 50);
+}
+
+#[test]
+fn test_log_encrypted_params_registered() {
+    let env = Env::default();
+    let pub_key = soroban_sdk::BytesN::from_array(&env, &[0x42; 32]);
+    EventLogger::log_encrypted_params_registered(
+        &env,
+        303u64,
+        Symbol::new(&env, "ECIES"),
+        pub_key,
+    );
+}
+
+#[test]
+fn test_log_delegation_pool_event() {
+    let env = Env::default();
+    let delegator = Address::generate(&env);
+    let keeper = Address::generate(&env);
+    EventLogger::log_delegation_pool_event(
+        &env,
+        delegator,
+        keeper,
+        5000i128,
+        500u32,
+        Symbol::new(&env, "Stake"),
+    );
+}

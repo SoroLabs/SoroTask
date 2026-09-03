@@ -54,7 +54,7 @@
                         "symbol": "gas_balance"
                       },
                       "val": {
-                        "i128": "1045290"
+                        "i128": "2424574"
                       }
                     },
                     {
@@ -62,7 +62,7 @@
                         "symbol": "interval"
                       },
                       "val": {
-                        "u32": 10934937
+                        "u32": 45916370
                       }
                     },
                     {
@@ -247,7 +247,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "1045290"
+                      "i128": "2424574"
                     }
                   },
                   {
@@ -255,7 +255,7 @@
                       "symbol": "interval"
                     },
                     "val": {
-                      "u32": 10934937
+                      "u32": 45916370
                     }
                   },
                   {
@@ -331,221 +331,13 @@
                     "symbol": "TaskFingerprint"
                   },
                   {
-                    "bytes": "189ba607040dd1905507695324686c8fd9381dc599ae185813a058bdb9804e44"
+                    "bytes": "906cf345a2fd6647c17de96ec8dcf62a2757dd2abc18bdcc231930008e445682"
                   }
                 ]
               },
               "durability": "persistent",
               "val": {
                 "bool": true
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "TaskMeta"
-                  },
-                  {
-                    "u64": "1"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "blocked_by"
-                    },
-                    "val": {
-                      "vec": []
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "creator"
-                    },
-                    "val": {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "gas_balance"
-                    },
-                    "val": {
-                      "i128": "1045290"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "interval"
-                    },
-                    "val": {
-                      "u32": 10934937
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "is_active"
-                    },
-                    "val": {
-                      "bool": true
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "last_run"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "permissions"
-                    },
-                    "val": {
-                      "u32": 15
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "resolver"
-                    },
-                    "val": "void"
-                  },
-                  {
-                    "key": {
-                      "symbol": "whitelist"
-                    },
-                    "val": {
-                      "vec": []
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "yield_strategy"
-                    },
-                    "val": "void"
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "TaskPayload"
-                  },
-                  {
-                    "u64": "1"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "args"
-                    },
-                    "val": {
-                      "vec": []
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "function"
-                    },
-                    "val": {
-                      "symbol": "ping"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "target"
-                    },
-                    "val": {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                    }
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "TaskStats"
-                  },
-                  {
-                    "u64": "1"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "failure_count"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "last_ledger"
-                    },
-                    "val": {
-                      "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "run_count"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  }
-                ]
               }
             }
           },

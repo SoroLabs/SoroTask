@@ -3,6 +3,7 @@ const path = require('path');
 const EventEmitter = require('events');
 const { createLogger } = require('./logger');
 const { ErrorClassification, calculateDelay } = require('./retry');
+const { safeFetch } = require('./ssrfGuard');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DEAD_LETTER_FILE = path.join(DATA_DIR, 'dead-letter-queue.json');
@@ -379,7 +380,9 @@ class DeadLetterQueue extends EventEmitter {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.config.webhookTimeoutMs);
       
-      const response = await fetch(this.config.webhookUrl, {
+      // SSRF filter (Issue #1056): webhookUrl is operator-configured but
+      // still reaches the network from inside the perimeter.
+      const response = await safeFetch(this.config.webhookUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -458,6 +461,34 @@ class DeadLetterQueue extends EventEmitter {
 
     this._saveToDisk();
     this.emit('dlq:cleared', options);
+  }
+
+  /**
+   * Purge a single task's dead-letter record, failure history, and backoff
+   * state (Issue #783's admin "purge" operation). Unlike `clear()`, which
+   * only supports `{ recoveredOnly: true }` or wiping everything, this
+   * removes exactly one task without touching any other task's state.
+   *
+   * @param {number} taskId - The task ID to purge
+   * @returns {boolean} - True if a record existed and was purged
+   */
+  purgeTask(taskId) {
+    const existed = this.deadLetterRecords.has(taskId) || this.failureHistory.has(taskId);
+
+    this.deadLetterRecords.delete(taskId);
+    this.failureHistory.delete(taskId);
+    this.backoffState.delete(taskId);
+    if (this.quarantinedTasks.delete(taskId)) {
+      this.stats.activeQuarantined = Math.max(0, this.stats.activeQuarantined - 1);
+    }
+
+    if (existed) {
+      this._saveToDisk();
+      this.logger.warn('Purged dead-letter record for task', { taskId });
+      this.emit('dlq:purged', { taskId });
+    }
+
+    return existed;
   }
 
   // ---- Internal methods ----

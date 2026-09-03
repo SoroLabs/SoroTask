@@ -3,6 +3,7 @@ const { createRateLimiter } = require("./concurrency");
 const { createLogger } = require("./logger");
 const { acquireLock, releaseLock } = require("./lock");
 const { RetryScheduler } = require("./retryScheduler");
+const { PriorityScheduler } = require('./priorityScheduler');
 
 // ---------------------------------------------------------------------------
 // #847 — Kafka / Redpanda Event Stream Ingestion Engine
@@ -320,6 +321,12 @@ function buildTaskItem(task) {
       priority: normalizePriority(task.priority),
       dueAt: typeof task.dueAt === 'number' ? task.dueAt : Date.now(),
       queuedAt: getMicrosecondTimestamp(),
+      // #1057 — `queuedAt` is microseconds (used for high-resolution tie
+      // breaking). The priority scheduler reasons in wall-clock milliseconds,
+      // so it needs its own field rather than a unit-confused subtraction.
+      queuedAtMs: Date.now(),
+      bounty: task.bounty ?? task.bountyAmount,
+      slaDeadlineMs: task.slaDeadlineMs ?? task.slaDeadline,
       payload: task.payload || null,
       meta: task.meta || {},
       dueLedger: task.dueLedger,
@@ -333,6 +340,9 @@ function buildTaskItem(task) {
     priority: DEFAULT_PRIORITY,
     dueAt: Date.now(),
     queuedAt: getMicrosecondTimestamp(),
+    queuedAtMs: Date.now(),
+    bounty: undefined,
+    slaDeadlineMs: undefined,
     payload: null,
     meta: {},
     dueLedger: undefined,
@@ -362,6 +372,20 @@ class ExecutionQueue extends EventEmitter {
       topic: opts.kafkaTopic,
       brokers: opts.kafkaBrokers,
       groupId: opts.kafkaGroupId,
+    });
+
+    // #1057 — Multi-tier priority scheduling with aging.
+    // Ordering by static priority alone starved low-bounty tasks: the batch is
+    // rebuilt every cycle, so a task that lost once lost every time. The
+    // scheduler folds queue wait into the score and promotes anything past its
+    // SLA (or the hard wait ceiling) into the critical tier.
+    this.priorityScheduler = opts.priorityScheduler || new PriorityScheduler({
+      agingFactor: opts.agingFactor,
+      highBountyThreshold: opts.highBountyThreshold,
+      maxWaitMs: opts.maxQueueWaitMs,
+      slaLeadMs: opts.slaLeadMs,
+      metrics: metricsServer,
+      logger: this.logger,
     });
 
     // #845 — Task dependency graph topology solver
@@ -458,10 +482,13 @@ class ExecutionQueue extends EventEmitter {
       return;
     }
 
-    const taskItems = (tasksToEnqueue || [])
+    const candidateItems = (tasksToEnqueue || [])
       .map(buildTaskItem)
-      .filter((taskItem) => taskItem.taskId !== undefined && !this._shouldSkipTask(taskItem.taskId))
-      .sort((a, b) => b.priority - a.priority);
+      .filter((taskItem) => taskItem.taskId !== undefined && !this._shouldSkipTask(taskItem.taskId));
+
+    // #1057 — tier + aged score instead of a bare static-priority sort.
+    this.priorityScheduler.promoteAged(candidateItems);
+    const taskItems = this.priorityScheduler.order(candidateItems);
 
     this.depth = taskItems.length;
 

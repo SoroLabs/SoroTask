@@ -1,3 +1,0 @@
-Auto-merging contract/src/lib.rs
-CONFLICT (content): Merge conflict in contract/src/lib.rs
-Automatic merge failed; fix conflicts and then commit the result.

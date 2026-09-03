@@ -125,9 +125,26 @@ describe('MultiRegionRPCClient', () => {
     expect(Array.isArray(heatmap)).toBe(true);
     expect(heatmap.length).toBe(2);
     expect(heatmap[0]).toHaveProperty('avgLatencyMs');
+    expect(heatmap[0]).toHaveProperty('rollingOneMinuteLatencyMs');
     expect(heatmap[0]).toHaveProperty('status');
   });
 
+  test('tracks rolling 1-minute response latency matrix for each endpoint', async () => {
+    const client = new MultiRegionRPCClient(['https://a.example'], {
+      serverFactory: createFakeServerFactory({
+        'https://a.example': {
+          getNetwork: async () => ({ passphrase: 'A' }),
+        },
+      }),
+    });
+
+    client.markSuccess(0, 150);
+    client.markSuccess(0, 250);
+
+    const heatmap = client.getLatencyHeatmap();
+    expect(heatmap[0].rollingOneMinuteLatencyMs).toBe(200);
+    expect(heatmap[0].rollingSamplesCount).toBe(2);
+    expect(heatmap[0].status).toBe('HEALTHY');
   test('routes transaction submissions to fastest healthy endpoint after scoring', async () => {
     const submissions = [];
     const client = new MultiRegionRPCClient(['https://slow.example', 'https://fast.example'], {
