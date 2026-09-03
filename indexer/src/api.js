@@ -143,10 +143,21 @@ function createExpressApp() {
   const schema = makeExecutableSchema({ typeDefs, resolvers });
   app.locals.graphqlSchema = schema;
 
+const {
+  createDepthRule,
+  createComplexityLimitRule,
+  createPaginationBoundsRule,
+} = require('./graphql/complexity');
+
   const server = new ApolloServer({
     schema,
     context: createContext,
     introspection: true,
+    validationRules: [
+      createDepthRule(5),
+      createComplexityLimitRule(1000),
+      createPaginationBoundsRule(50),
+    ],
   });
 
   app.locals.graphqlReady = server
