@@ -14,8 +14,8 @@ soroban-sdk = "27.0.2"
 [dev-dependencies]
 soroban-sdk = { version = "27.0.2", features = ["testutils"] }
 proptest = "1.5.0"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+rand = "0.9"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
