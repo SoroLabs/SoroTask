@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { WidgetSkeleton } from "@/components/skeletons";
+import { ErrorBoundary } from "@/app/components/ErrorBoundary";
 
 export type WidgetStatus = "loading" | "empty" | "error" | "success";
 export type WidgetSize = "small" | "medium" | "large";
@@ -27,16 +28,14 @@ export type WidgetGridProps = {
 
 const STORAGE_KEY_DEFAULT = "sorotask.dashboard.config.v1";
 
-function ensureValidOrder(
-  order: string[],
-  defaultOrder: string[]
-): string[] {
+function ensureValidOrder(order: string[], defaultOrder: string[]): string[] {
   const known = new Set(defaultOrder);
   const deduped = order.filter(
-    (widgetId, index) => known.has(widgetId) && order.indexOf(widgetId) === index
+    (widgetId, index) =>
+      known.has(widgetId) && order.indexOf(widgetId) === index,
   );
   const missing = defaultOrder.filter(
-    (widgetId) => !deduped.includes(widgetId)
+    (widgetId) => !deduped.includes(widgetId),
   );
   return [...deduped, ...missing];
 }
@@ -44,7 +43,7 @@ function ensureValidOrder(
 function reorderWidgets(
   order: string[],
   fromId: string,
-  toId: string
+  toId: string,
 ): string[] {
   if (fromId === toId) {
     return order;
@@ -90,7 +89,10 @@ export function WidgetGrid({
   widgetRegistry,
   storageKey = STORAGE_KEY_DEFAULT,
 }: WidgetGridProps) {
-  const defaultOrder = useMemo(() => Object.keys(widgetRegistry), [widgetRegistry]);
+  const defaultOrder = useMemo(
+    () => Object.keys(widgetRegistry),
+    [widgetRegistry],
+  );
   const [order, setOrder] = useState<string[]>(defaultOrder);
   const [hiddenIds, setHiddenIds] = useState<string[]>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -107,7 +109,9 @@ export function WidgetGrid({
       const parsed = JSON.parse(raw) as DashboardConfig;
       setOrder(ensureValidOrder(parsed.widgetOrder ?? [], defaultOrder));
       setHiddenIds(
-        (parsed.hiddenWidgetIds ?? []).filter((id) => defaultOrder.includes(id))
+        (parsed.hiddenWidgetIds ?? []).filter((id) =>
+          defaultOrder.includes(id),
+        ),
       );
     } catch {
       setOrder(defaultOrder);
@@ -130,7 +134,7 @@ export function WidgetGrid({
 
   const visibleWidgets = useMemo(
     () => order.filter((widgetId) => !hiddenIds.includes(widgetId)),
-    [hiddenIds, order]
+    [hiddenIds, order],
   );
 
   return (
@@ -157,7 +161,7 @@ export function WidgetGrid({
                   onChange={(event) => {
                     if (event.target.checked) {
                       setHiddenIds((current) =>
-                        current.filter((id) => id !== widgetId)
+                        current.filter((id) => id !== widgetId),
                       );
                     } else {
                       setHiddenIds((current) => [...current, widgetId]);
@@ -184,7 +188,9 @@ export function WidgetGrid({
               onDragOver={(event) => event.preventDefault()}
               onDrop={() => {
                 if (draggingId) {
-                  setOrder((current) => reorderWidgets(current, draggingId, widget.id));
+                  setOrder((current) =>
+                    reorderWidgets(current, draggingId, widget.id),
+                  );
                 }
                 setDraggingId(null);
               }}
@@ -201,9 +207,7 @@ export function WidgetGrid({
                   <h3 className="text-lg font-medium text-slate-100">
                     {widget.title}
                   </h3>
-                  <p className="text-xs text-slate-300">
-                    {widget.description}
-                  </p>
+                  <p className="text-xs text-slate-300">{widget.description}</p>
                 </div>
                 <span
                   id={`widget-status-${widget.id}`}
@@ -215,7 +219,9 @@ export function WidgetGrid({
               {status === "loading" ? (
                 <WidgetSkeleton size={widget.defaultSize} />
               ) : (
-                widget.render()
+                <ErrorBoundary section={`widget-${widget.id}`}>
+                  {widget.render()}
+                </ErrorBoundary>
               )}
             </article>
           );

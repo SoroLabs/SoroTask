@@ -42,17 +42,32 @@ test("stellar RPC driver normalizes classic transaction events", () => {
   assert.equal(event.ledger_sequence, 12345);
 });
 
-test("soroban RPC driver normalizes contract events", () => {
+test("stellar RPC driver normalizes classic mainnet events", () => {
+  const event = stellarRpcDriver.normalize({
+    chain_id: CHAIN_IDS.STELLAR_CLASSIC,
+    tx_hash: "classic_tx_789",
+    ledger: 99999,
+    type: "payment",
+    account: "GCLASSIC",
+  });
+
+  assert.equal(event.chain_id, CHAIN_IDS.STELLAR_CLASSIC);
+  assert.equal(event.tx_hash, "classic_tx_789");
+  assert.equal(event.driver, DRIVER_NAMES.STELLAR_RPC);
+});
+
+test("soroban RPC driver normalizes contract events on mainnet", () => {
   const event = sorobanRpcDriver.normalize({
+    chain_id: CHAIN_IDS.SOROBAN_MAINNET,
     ledger: 999,
     contract_id: "C123",
     event_name: "KeeperPaid",
-    tx_hash: "0xsoroban",
+    tx_hash: "0xsoroban_mainnet",
     task_id: 7,
   });
 
-  assert.equal(event.chain_id, CHAIN_IDS.SOROBAN_TESTNET);
-  assert.equal(event.tx_hash, "0xsoroban");
+  assert.equal(event.chain_id, CHAIN_IDS.SOROBAN_MAINNET);
+  assert.equal(event.tx_hash, "0xsoroban_mainnet");
   assert.equal(event.event_name, "KeeperPaid");
   assert.equal(event.payload.task_id, 7);
 });

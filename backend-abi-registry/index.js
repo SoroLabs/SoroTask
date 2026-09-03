@@ -1,6 +1,7 @@
 const parser = require('./parser');
 const registry = require('./registry');
 const errorHandler = require('./errorHandler');
+const errorCodes = require('./errorCodes');
 const Monitor = require('./monitor');
 const { AbiCache } = require('./abiCache');
 
@@ -28,6 +29,14 @@ class ABIRegistryService {
   
   getErrorHandler() {
     return errorHandler;
+  }
+
+  getErrorCodes() {
+    return errorCodes;
+  }
+
+  decodeErrorCode(code) {
+    return errorCodes.decodeErrorCode(code);
   }
 
   async getABI(contractId, wasmHash, fetchABI) {

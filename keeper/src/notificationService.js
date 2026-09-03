@@ -14,6 +14,7 @@
 
 const { createLogger } = require('./logger');
 const { withRetry, _ErrorClassification } = require('./retry.js');
+const { safeFetch } = require('./ssrfGuard');
 
 const logger = createLogger('notification-service');
 
@@ -343,7 +344,9 @@ class NotificationService {
         const timeoutId = setTimeout(() => controller.abort(), this.config.webhookTimeout);
         
         try {
-          const response = await fetch(endpoint, {
+          // SSRF filter (Issue #1056): webhook endpoints are user-supplied,
+          // so this must not be a bare fetch — see src/ssrfGuard.js.
+          const response = await safeFetch(endpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

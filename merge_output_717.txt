@@ -1,5 +1,0 @@
-Auto-merging frontend/app/components/AppProviders.tsx
-CONFLICT (content): Merge conflict in frontend/app/components/AppProviders.tsx
-Auto-merging frontend/app/layout.tsx
-CONFLICT (content): Merge conflict in frontend/app/layout.tsx
-Automatic merge failed; fix conflicts and then commit the result.

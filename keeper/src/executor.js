@@ -9,6 +9,7 @@ const {
 const { withRetry, ErrorClassification } = require("./retry.js");
 const { createLogger } = require("./logger.js");
 const { createStructuredError, fromError } = require("./structuredErrors.js");
+const { getExecutionCoordinator } = require("./coordinator.js");
 
 const POLL_ATTEMPTS = 30;
 const POLL_INTERVAL_MS = 2000;
@@ -182,9 +183,17 @@ function normalizeSubmissionError(error, fallbackCode, correlationId) {
 
 async function executeTaskOnce(
   taskId,
-  { server, keypair, account, contractId, networkPassphrase, correlationId, logger: customLogger, dueTime, metricsServer, config, hsmSigner },
+  { server, keypair, account, contractId, networkPassphrase, correlationId, logger: customLogger, dueTime, metricsServer, config, hsmSigner, fencingToken, lockToken, coordinator: customCoordinator },
 ) {
   const taskLogger = customLogger || logger;
+
+  // ── Fencing token guard: abort if lock is stale before doing any network work ──
+  const coord = customCoordinator || getExecutionCoordinator();
+  if (fencingToken != null) {
+    coord.assertValidExecution(taskId, fencingToken, lockToken, correlationId);
+    taskLogger.debug('Fencing token validated before simulation', { taskId, fencingToken, correlationId });
+  }
+
   const contract = new Contract(contractId);
   const taskIdScVal = xdr.ScVal.scvU64(
     xdr.Uint64.fromString(taskId.toString()),
@@ -219,6 +228,12 @@ async function executeTaskOnce(
 
   const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
 
+  // ── Fencing token guard: abort before signing — catches GC-pause races ──
+  if (fencingToken != null) {
+    coord.assertValidExecution(taskId, fencingToken, lockToken, correlationId);
+    taskLogger.debug('Fencing token validated before signing', { taskId, fencingToken, correlationId });
+  }
+
   if (hsmSigner) {
     await hsmSigner.signTransaction(preparedTx);
   } else {
@@ -249,6 +264,14 @@ async function executeTaskOnce(
         thresholdSeconds: latenessThreshold,
       });
     }
+  }
+
+  // ── Fencing token guard: final check before hitting the network ──
+  // This is the last chance to abort if the lock expired or was superseded
+  // during simulation / signing (e.g. after a node GC pause).
+  if (fencingToken != null) {
+    coord.assertValidExecution(taskId, fencingToken, lockToken, correlationId);
+    taskLogger.debug('Fencing token validated before sendTransaction', { taskId, fencingToken, correlationId });
   }
 
   let sendResult;

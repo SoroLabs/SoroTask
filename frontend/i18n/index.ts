@@ -6,12 +6,13 @@
 import en from './translations/en.json';
 import es from './translations/es.json';
 import fr from './translations/fr.json';
+import pt from './translations/pt.json';
 import zh from './translations/zh.json';
 import de from './translations/de.json';
 
-export type Locale = 'en' | 'es' | 'fr' | 'zh' | 'de';
+export type Locale = 'en' | 'es' | 'fr' | 'pt' | 'zh' | 'de';
 
-export const SUPPORTED_LOCALES: Locale[] = ['en', 'es', 'fr', 'zh', 'de'];
+export const SUPPORTED_LOCALES: Locale[] = ['en', 'es', 'fr', 'pt', 'zh', 'de'];
 
 export const DEFAULT_LOCALE: Locale = 'en';
 
@@ -20,6 +21,7 @@ const translations: Record<Locale, typeof en> = {
   en,
   es,
   fr,
+  pt,
   zh,
   de,
 };
@@ -32,6 +34,7 @@ export function getLocaleName(locale: Locale): string {
     en: 'English',
     es: 'Español (Spanish)',
     fr: 'Français (French)',
+    pt: 'Português (Portuguese)',
     zh: '中文 (Chinese)',
     de: 'Deutsch (German)',
   };
@@ -46,6 +49,7 @@ export function getLocaleFlag(locale: Locale): string {
     en: '🇺🇸',
     es: '🇪🇸',
     fr: '🇫🇷',
+    pt: '🇵🇹',
     zh: '🇨🇳',
     de: '🇩🇪',
   };
@@ -68,6 +72,7 @@ export function detectLocale(): Locale {
     en: 'en',
     es: 'es',
     fr: 'fr',
+    pt: 'pt',
     zh: 'zh',
     de: 'de',
   };
@@ -204,6 +209,12 @@ export function getAvailableLocales(): Array<{
       name: 'French',
       flag: '🇫🇷',
       nativeName: 'Français',
+    },
+    {
+      code: 'pt',
+      name: 'Portuguese',
+      flag: '🇵🇹',
+      nativeName: 'Português',
     },
     {
       code: 'zh',

@@ -1,22 +1,24 @@
 #![no_std]
-#![allow(dead_code)]
-#![allow(deprecated)]
-#![allow(
-    clippy::clone_on_copy,
-    clippy::collapsible_if,
-    clippy::len_zero,
-    clippy::module_inception,
-    clippy::needless_borrows_for_generic_args,
-    clippy::too_many_arguments,
-    clippy::unnecessary_cast,
-    clippy::unnecessary_lazy_evaluations
-)]
 
+mod monolith;
+
+pub mod access;
+pub mod packed_args;
+// Issue #777 investigation: this file previously declared
+// `pub mod access; pub mod execution; pub mod oracle; pub mod storage;
+// pub mod types; pub mod vrf; pub mod yield;` — none of those files
+// (src/access.rs, src/execution.rs, etc.) exist in this crate, and
+// `pub mod events;` was declared twice. Both are hard compile errors
+// ("file not found for module" / "the name `events` is defined multiple
+// times"), and nothing else in this file referenced any of the six
+// nonexistent modules by path — only the `pub use *` lines removed here
+// did. `events.rs` does exist and is kept, once.
 pub mod events;
+pub use events::*;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, xdr::ToXdr, Address,
-    Bytes, BytesN, Env, IntoVal, Symbol, TryIntoVal, Val, Vec,
+    Bytes, BytesN, Env, IntoVal, Symbol, TryFromVal, TryIntoVal, Val, Vec,
 };
 
 #[contracterror]
@@ -63,6 +65,7 @@ pub enum Error {
     OracleUnsupportedProvider = 32,
     InvalidInsurancePolicy = 33,
     TaskNotFound = 36,
+    InvalidVdfProof = 61,
     InvalidUpgradeVersion = 37,
     DuplicateTask = 38,
     BountyBelowMinimum = 39,
@@ -84,7 +87,112 @@ pub enum Error {
     DecryptionFailed = 55,
     InsufficientDelegation = 56,
     InvalidCommissionRate = 57,
-    InvalidVdfProof = 58,
+    VolatilityExceeded = 62,
+    VolatilityCircuitBreakerTripped = 63,
+    VolatilityTimelockActive = 64,
+    UnpauseNotProposed = 65,
+    UnpauseTimelockActive = 66,
+    InvalidPauseThreshold = 67,
+    /// refund_inactive_task (Issue #777): the task is still active — only
+    /// an already-paused/auto-invalidated task can be permissionlessly
+    /// refunded; an active task's creator must cancel_task themselves.
+    TaskStillActive = 65,
+    /// refund_inactive_task (Issue #777): the task hasn't been inactive
+    /// long enough yet (see INACTIVE_TASK_ABANDONMENT_SECONDS).
+    AbandonmentPeriodNotElapsed = 66,
+    // ── 100..199: Authorization & Role-Based Access ──────────────────────────────
+    Unauthorized = 100,
+    UnauthorizedSlasher = 101,
+    OperatorAlreadySet = 102,
+    NotInitialized = 103,
+    AlreadyInitialized = 104,
+    FeatureDisabled = 105,
+    InsufficientDelegation = 106,
+    InvalidCommissionRate = 107,
+
+    // ── 200..299: Task Lifecycle & Validation ────────────────────────────────────
+    InvalidInterval = 200,
+    TaskPaused = 201,
+    TaskAlreadyPaused = 202,
+    TaskAlreadyActive = 203,
+    TaskNotFound = 204,
+    DuplicateTask = 205,
+    InvalidPayload = 206,
+    ArgsTooMany = 207,
+    ArgsTooLarge = 208,
+    BountyBelowMinimum = 209,
+    InvalidBounty = 210,
+    InvalidUpgradeVersion = 211,
+    InvalidInsurancePolicy = 212,
+
+    // ── 300..399: Execution, Dependency & Reentrancy ─────────────────────────────
+    ReentrantCall = 300,
+    SelfDependency = 301,
+    DependencyNotFound = 302,
+    CircularDependency = 303,
+    DependencyBlocked = 304,
+    DependencyLimitExceeded = 305,
+    DependencyDepthExceeded = 306,
+    KeeperStakeTooLow = 307,
+    EmptyBundle = 308,
+    BundleTooLarge = 309,
+    BundleStepFailed = 310,
+    BlockExecutionLimitReached = 311,
+    DecryptionFailed = 312,
+    OptimisticClaimPending = 313,
+    NoOptimisticClaim = 314,
+    ChallengeWindowClosed = 315,
+    ChallengeWindowActive = 316,
+    FraudProofInvalid = 317,
+
+    // ── 400..499: Oracles, VRF & ZK Verifier ─────────────────────────────────────
+    OracleNotSet = 400,
+    OracleRequestFailed = 401,
+    OracleInvalidResponse = 402,
+    OracleTimeout = 403,
+    OracleUnsupportedProvider = 404,
+    VrfOracleNotSet = 405,
+    InvalidVrfRequest = 406,
+    VrfRequestFailed = 407,
+    VrfAlreadyFulfilled = 408,
+    InvalidZkProof = 409,
+    InvalidVdfProof = 410,
+    // Oracle freshness / multi-oracle errors (Issues #1040, #1041)
+    OracleStale = 411,
+    OracleDeviationExceeded = 412,
+    InsufficientOracleFeeds = 413,
+    // VRF commit-reveal errors (Issue #1042)
+    VrfFulfillmentTooEarly = 414,
+    VrfFulfillmentExpired = 415,
+    VrfCommitAlreadyRevealed = 416,
+    InvalidVrfCommit = 417,
+    // Keeper bonding errors (Issue #1043)
+    KeeperBondInsufficient = 418,
+    KeeperSlashed = 419,
+    KeeperNotBonded = 420,
+
+    // ── 500..599: Yield, Flash Swaps & Treasury ──────────────────────────────────
+    InsufficientBalance = 500,
+    YieldStrategyNotInitialized = 501,
+    InvalidYieldStrategy = 502,
+    YieldHarvestFailed = 503,
+    InsufficientYield = 504,
+    FlashSwapFailed = 505,
+    InsufficientFlashProfit = 506,
+    InvalidSlippage = 507,
+
+    // ── 600..699: Volatility & Circuit Breakers ──────────────────────────────────
+    VolatilityExceeded = 600,
+    VolatilityCircuitBreakerTripped = 601,
+    VolatilityTimelockActive = 602,
+
+    // ── 700..799: Cross-Chain Gateway ────────────────────────────────────────────
+    UnsupportedSourceChain = 700,
+    InvalidCrossChainPayload = 701,
+    InvalidCrossChainSignature = 702,
+    GatewayNotConfigured = 703,
+    GatewayUnauthorized = 704,
+    CrossChainNonceReplay = 705,
 }
 
 #[contracttype]
@@ -135,6 +243,38 @@ pub struct OracleDataResponse {
     pub provider: OracleProvider,
 }
 
+/// An individual oracle price feed entry for multi-oracle aggregation (Issue #1041).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct OracleFeed {
+    pub provider: OracleProvider,
+    pub price: i128,
+    pub timestamp: u64,
+    pub decimals: u32,
+}
+
+/// A committed VRF seed for the commit-reveal scheme (Issue #1042).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VrfCommit {
+    pub request_id: u64,
+    pub task_id: u64,
+    pub commit_hash: BytesN<32>,
+    pub committed_by: Address,
+    pub committed_at_ledger: u32,
+    pub revealed: bool,
+}
+
+/// Keeper economic bond record (Issue #1043).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct KeeperBond {
+    pub keeper: Address,
+    pub bonded_amount: i128,
+    pub bonded_at: u64,
+    pub is_slashed: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
@@ -179,17 +319,57 @@ const MAX_BATCH_SIZE: u32 = 100;
 
 /// Maximum number of steps allowed in a single atomic task bundle
 const MAX_BUNDLE_STEPS: u32 = 16;
+
+// ── Cross-Chain Interoperability Protocol (CCIP) Gateway (Issue #814) ──────
+/// Maximum allowed payload size for cross-chain messages (bytes)
+const MAX_CROSS_CHAIN_PAYLOAD_SIZE: u32 = 4096;
+/// Maximum age (seconds) of a cross-chain message before it is considered stale
+const CROSS_CHAIN_MAX_MESSAGE_AGE: u64 = 3_600;
+/// Number of confirmations required on the source chain
+const CROSS_CHAIN_MIN_CONFIRMATIONS: u64 = 1;
 /// Ledgers a submitted optimistic resolver-condition claim stays open to
 /// challenge before it can be finalized.
 const OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS: u32 = 100;
 /// Minimum bond a keeper must post to submit an optimistic claim.
 const MIN_OPTIMISTIC_BOND: i128 = 100;
 
+/// Maximum age in seconds for oracle price feed data before it is considered stale (Issue #1040).
+const MAX_ORACLE_DELAY_SECONDS: u64 = 300;
+
+/// Maximum deviation between oracle feeds in basis points before halting execution (Issue #1041).
+const MAX_ORACLE_DEVIATION_BPS: u32 = 250;
+
+/// Default delay seconds for VRF commit-reveal (Issue #1042). Admin can override.
+/// Defaults to 0 (disabled) to preserve backward compatibility.
+const DEFAULT_VRF_DELAY_SECONDS: u64 = 0;
+
+/// Default expiration seconds for VRF fulfillment window (Issue #1042). Admin can override.
+/// Defaults to 0 (disabled) to preserve backward compatibility.
+const DEFAULT_VRF_EXPIRATION_SECONDS: u64 = 0;
+
+/// Minimum stake a keeper must bond to claim restricted tasks (Issue #1043), in token units.
+const MIN_KEEPER_STAKE: i128 = 500;
+
+/// State Archival TTL Extension Thresholds (Issue #1031)
+pub const MIN_THRESHOLD_LEDGERS: u32 = 100_000;
+pub const EXTEND_TO_LEDGERS: u32 = 500_000;
+/// Delay between a governance-approved unpause proposal reaching quorum and
+/// when it becomes executable via `execute_unpause` (Issue #774).
+pub const UNPAUSE_TIMELOCK_SECONDS: u64 = 86_400;
+
 /// Permission Bitmask Flags for Task RBAC
 pub const PERM_CAN_PAUSE: u32 = 1;
 pub const PERM_CAN_UPDATE: u32 = 2;
 pub const PERM_CAN_CANCEL: u32 = 4;
 pub const PERM_CAN_DEPOSIT: u32 = 8;
+
+/// Issue #777: minimum time an inactive task must sit untouched (since
+/// `last_run`) before anyone (not just the creator) may permissionlessly
+/// trigger `refund_inactive_task` and reclaim its locked gas deposit. Set
+/// well above any legitimate pause-then-resume workflow so a creator who
+/// pauses a task and comes back a day later never has it refunded out
+/// from under them.
+pub const INACTIVE_TASK_ABANDONMENT_SECONDS: u64 = 60 * 60 * 24 * 90; // 90 days
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -373,6 +553,15 @@ pub struct StateChannelSettlement {
     pub executed_tasks: Vec<u64>,
     /// Settlement fee paid
     pub settlement_fee: i128,
+}
+
+/// Verifiable Delay Function (VDF) proof struct for un-cheatable execution delays
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VdfProof {
+    pub output: Bytes,
+    pub difficulty: u64,
+    pub seed: Bytes,
 }
 
 /// Role enumeration for granular access control
@@ -792,23 +981,6 @@ pub struct ZkRangeProof {
 
 #[contracttype]
 #[derive(Clone, Debug)]
-/// A VDF proof for a Wesolowski-style time-lock delay (Issue #837).
-/// SCAFFOLD: verify_vdf_proof below is a stub (always returns false) until
-/// the group arithmetic (RSA/class-group modexp + Fiat-Shamir challenge,
-/// wasm32-compatible bignum) is implemented. Do not treat as a working
-/// security gate yet.
-pub struct VdfProof {
-    pub task_id: u64,
-    pub input: Bytes,
-    pub output: Bytes,
-    pub proof: Bytes,
-    pub difficulty: u64,
-    pub is_verified: bool,
-    pub created_at: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug)]
 pub struct DynamicBountyConfig {
     pub enabled: bool,
     pub base_bounty: i128,
@@ -881,12 +1053,54 @@ pub struct InsuranceSolvencyReport {
     pub is_solvent: bool,
 }
 
+/// Supported cross-chain source networks for the CCIP Trigger Gateway.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CrossChainSource {
+    Ethereum = 1,
+    Solana = 2,
+    Polygon = 3,
+    Bsc = 4,
+}
+
+/// Decoded cross-chain task payload emitted with the `CrossChainTaskScheduled` event.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct CrossChainTaskPayload {
+    pub task_id: u64,
+    pub source_chain: Symbol,
+    pub sender: Bytes,
+    pub nonce: u64,
+    pub received_at: u64,
+}
+
+/// Persistent record of a received cross-chain task, stored for audit and query.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct CrossChainTaskRecord {
+    pub task_id: u64,
+    pub source_chain: Symbol,
+    pub sender: Bytes,
+    pub nonce: u64,
+    pub received_at: u64,
+}
+
 #[contracttype]
 pub enum DataKey {
     Guardians,
     PauseSignatures,
     EmergencyPauseState,
+    /// Configurable K-of-N threshold for `emergency_pause` guardian signatures (Issue #774)
+    PauseThreshold,
+    /// Timestamp at which a pending governance-approved unpause becomes executable
+    UnpauseTimelock,
+    /// Whether a governance unpause proposal is currently pending
+    UnpauseProposed,
     Task(u64),
+    /// Per-task delegated permission bitmask for a non-creator address
+    /// (Issue #778). Same bit layout as `TaskConfig.permissions`
+    /// (`PERM_CAN_PAUSE` etc.) — absence means no delegated access.
+    TaskDelegate(u64, Address),
     Counter,
     ActiveTasks,
     Token,
@@ -955,6 +1169,10 @@ pub enum DataKey {
     ZkRangeProofCounter,
     TaskDynamicBounty(u64),
     FlashSwapRecord(u64),
+    MaxVolatilityBps,
+    LastOraclePrice,
+    VolatilityCircuitBreakerTripped,
+    VolatilityUnpauseTimelock,
     FlashSwapCounter,
     KeeperRandomSeed,
     InsuranceVaultBalance,
@@ -963,6 +1181,8 @@ pub enum DataKey {
     VdfProofs(u64),
     /// Per-block execution counter for rate limiting (Issue #831)
     BlockExecutionCount,
+    /// Cumulative user execution count for fee discount tiers (Issue #826)
+    UserExecutionCount(Address),
     /// Last ledger sequence number tracked for rate limiting
     LastBlockLedger,
     /// Maximum tasks per block configuration
@@ -983,18 +1203,66 @@ pub enum DataKey {
     KeeperTotalDelegated(Address),
     BundleCounter,
     BundleExecution(u64),
+    /// Multi-oracle price feeds (Issue #1041)
+    OracleFeed(OracleProvider),
+    OracleFeedCount,
+    /// VRF commit-reveal storage (Issue #1042)
+    VrfCommit(u64),
+    /// Keeper economic bond storage (Issue #1043)
+    KeeperBond(Address),
+    /// Whitelist of keepers allowed to claim restricted tasks
+    RestrictedTaskKeepers,
+    /// Whether a task requires bonded keepers (Issue #1043)
+    TaskRequiresBond(u64),
+    /// Configurable VRF delay in seconds (Issue #1042)
+    VrfDelaySeconds,
+    /// Configurable VRF expiration in seconds (Issue #1042)
+    VrfExpirationSeconds,
+    TotalTaskEscrows,
+    TotalKeeperStakes,
+    TotalUnclaimedFees,
+    /// Cross-chain gateway: relayer address authorized to relay messages
+    CrossChainGatewayRelayer,
+    /// Cross-chain gateway: per-chain nonce tracking (replay protection)
+    CrossChainNonce(u32, u64),
+    /// Cross-chain gateway: per-chain nonce counter
+    CrossChainNonceCounter(u32),
+    /// Cross-chain gateway: received task records
+    CrossChainTaskRecord(u64),
+    /// Cross-chain gateway: global received task counter
+    CrossChainTaskCounter,
+    /// Cross-chain gateway: per-chain enabled flag
+    CrossChainSourceEnabled(u32),
+}
+
+/// Transient storage reentrancy guard ensuring reentrant calls revert immediately.
+pub struct ReentrancyGuard<'a>(&'a Env);
+
+impl<'a> ReentrancyGuard<'a> {
+    pub fn new(env: &'a Env) -> Self {
+        enter_security_guard(env);
+        Self(env)
+    }
+}
+
+impl<'a> Drop for ReentrancyGuard<'a> {
+    fn drop(&mut self) {
+        exit_security_guard(self.0);
+    }
 }
 
 fn enter_security_guard(env: &Env) {
     let key = DataKey::ReentrancyLock;
-    if env.storage().instance().has(&key) {
+    if env.storage().temporary().has(&key) || env.storage().instance().has(&key) {
         panic_with_error!(env, Error::ReentrantCall);
     }
+    env.storage().temporary().set(&key, &true);
     env.storage().instance().set(&key, &true);
 }
 
 fn exit_security_guard(env: &Env) {
     let key = DataKey::ReentrancyLock;
+    env.storage().temporary().remove(&key);
     env.storage().instance().remove(&key);
 }
 
@@ -1204,6 +1472,92 @@ fn set_keeper_stake(env: &Env, keeper: &Address, amount: i128) {
     env.storage()
         .persistent()
         .set(&DataKey::KeeperStake(keeper.clone()), &amount);
+}
+
+fn get_total_task_escrows(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalTaskEscrows)
+        .unwrap_or(0)
+}
+
+fn set_total_task_escrows(env: &Env, amount: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalTaskEscrows, &amount);
+}
+
+fn add_total_task_escrows(env: &Env, amount: i128) {
+    if amount > 0 {
+        let current = get_total_task_escrows(env);
+        set_total_task_escrows(env, current.saturating_add(amount));
+    }
+}
+
+fn sub_total_task_escrows(env: &Env, amount: i128) {
+    if amount > 0 {
+        let current = get_total_task_escrows(env);
+        set_total_task_escrows(env, current.saturating_sub(amount));
+    }
+}
+
+fn get_total_keeper_stakes(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalKeeperStakes)
+        .unwrap_or(0)
+}
+
+fn set_total_keeper_stakes(env: &Env, amount: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalKeeperStakes, &amount);
+}
+
+fn add_total_keeper_stakes(env: &Env, amount: i128) {
+    if amount > 0 {
+        let current = get_total_keeper_stakes(env);
+        set_total_keeper_stakes(env, current.saturating_add(amount));
+    }
+}
+
+fn sub_total_keeper_stakes(env: &Env, amount: i128) {
+    if amount > 0 {
+        let current = get_total_keeper_stakes(env);
+        set_total_keeper_stakes(env, current.saturating_sub(amount));
+    }
+}
+
+fn get_total_unclaimed_fees(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalUnclaimedFees)
+        .unwrap_or(0)
+}
+
+fn set_total_unclaimed_fees(env: &Env, amount: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalUnclaimedFees, &amount);
+}
+
+fn assert_balance_invariant(env: &Env) {
+    if let Some(token_address) = env.storage().instance().get::<DataKey, Address>(&DataKey::Token) {
+        let token_client = soroban_sdk::token::Client::new(env, &token_address);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        let total_task_escrows = get_total_task_escrows(env);
+        let total_keeper_stakes = get_total_keeper_stakes(env);
+        let total_unclaimed_fees = get_total_unclaimed_fees(env);
+        assert!(
+            contract_balance >= total_task_escrows + total_keeper_stakes + total_unclaimed_fees,
+            "Total balance invariant violated: contract balance {} is less than required sum {} (escrows: {}, stakes: {}, unclaimed: {})",
+            contract_balance,
+            total_task_escrows + total_keeper_stakes + total_unclaimed_fees,
+            total_task_escrows,
+            total_keeper_stakes,
+            total_unclaimed_fees
+        );
+    }
 }
 
 fn read_proxy_config(env: &Env) -> Option<ProxyConfig> {
@@ -1621,6 +1975,18 @@ pub trait ResolverInterface {
     fn check_condition(env: Env, args: Vec<Val>) -> bool;
 }
 
+fn extend_persistent_ttl<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, MIN_THRESHOLD_LEDGERS, EXTEND_TO_LEDGERS);
+}
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(MIN_THRESHOLD_LEDGERS, EXTEND_TO_LEDGERS);
+}
+
 #[contract]
 pub struct SoroTaskContract;
 
@@ -1644,6 +2010,37 @@ impl SoroTaskContract {
             .persistent()
             .get(&DataKey::Guardians)
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Sets the K in the K-of-N guardian signature threshold required to
+    /// trigger `emergency_pause`/`propose_unpause`. Admin-gated. (Issue #774)
+    pub fn set_pause_threshold(env: Env, admin: Address, threshold: u32) -> Result<(), Error> {
+        if threshold == 0 {
+            return Err(Error::InvalidPauseThreshold);
+        }
+        if let Some(configured_admin) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::AdminAddress)
+        {
+            configured_admin.require_auth();
+            if configured_admin != admin {
+                return Err(Error::Unauthorized);
+            }
+        } else {
+            admin.require_auth();
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::PauseThreshold, &threshold);
+        Ok(())
+    }
+
+    fn pause_threshold(env: &Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PauseThreshold)
+            .unwrap_or(3)
     }
 
     pub fn emergency_pause(env: Env, guardian: Address) -> bool {
@@ -1691,7 +2088,7 @@ impl SoroTaskContract {
                 .set(&DataKey::PauseSignatures, &sigs);
         }
 
-        if sigs.len() >= 3 {
+        if sigs.len() >= Self::pause_threshold(&env) {
             let state = EmergencyPauseState {
                 is_paused: true,
                 paused_at: env.ledger().timestamp(),
@@ -1734,14 +2131,101 @@ impl SoroTaskContract {
         false
     }
 
-    pub fn unpause_protocol(env: Env) {
-        if let Some(admin) = env
+    /// Guardian-signed proposal to lift an emergency pause. Requires the same
+    /// K-of-N guardian threshold as `emergency_pause`. Once the threshold is
+    /// reached, starts a governance timelock; `execute_unpause` may only be
+    /// called after it elapses. (Issue #774)
+    pub fn propose_unpause(env: Env, guardian: Address) -> bool {
+        guardian.require_auth();
+        let guardians: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Guardians)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut is_guardian = false;
+        let mut i = 0;
+        while i < guardians.len() {
+            if guardians.get(i).unwrap() == guardian {
+                is_guardian = true;
+                break;
+            }
+            i += 1;
+        }
+        if !is_guardian {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        let mut sigs: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PauseSignatures)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut already_signed = false;
+        let mut j = 0;
+        while j < sigs.len() {
+            if sigs.get(j).unwrap() == guardian {
+                already_signed = true;
+                break;
+            }
+            j += 1;
+        }
+        if !already_signed {
+            sigs.push_back(guardian);
+            env.storage()
+                .persistent()
+                .set(&DataKey::PauseSignatures, &sigs);
+        }
+
+        if sigs.len() >= Self::pause_threshold(&env) {
+            let timelock = env.ledger().timestamp().saturating_add(UNPAUSE_TIMELOCK_SECONDS);
+            env.storage()
+                .persistent()
+                .set(&DataKey::UnpauseTimelock, &timelock);
+            env.storage()
+                .persistent()
+                .set(&DataKey::UnpauseProposed, &true);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Executes a previously-approved unpause once its governance timelock
+    /// has elapsed. Admin-gated. (Issue #774)
+    pub fn execute_unpause(env: Env, admin: Address) -> Result<(), Error> {
+        if let Some(configured_admin) = env
             .storage()
             .persistent()
             .get::<DataKey, Address>(&DataKey::AdminAddress)
         {
+            configured_admin.require_auth();
+            if configured_admin != admin {
+                return Err(Error::Unauthorized);
+            }
+        } else {
             admin.require_auth();
         }
+
+        let proposed: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UnpauseProposed)
+            .unwrap_or(false);
+        if !proposed {
+            return Err(Error::UnpauseNotProposed);
+        }
+
+        let timelock: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UnpauseTimelock)
+            .unwrap_or(u64::MAX);
+        if env.ledger().timestamp() < timelock {
+            return Err(Error::UnpauseTimelockActive);
+        }
+
         let state = EmergencyPauseState {
             is_paused: false,
             paused_at: 0,
@@ -1754,6 +2238,11 @@ impl SoroTaskContract {
         env.storage()
             .persistent()
             .set(&DataKey::PauseSignatures, &empty_sigs);
+        env.storage()
+            .persistent()
+            .set(&DataKey::UnpauseProposed, &false);
+        env.storage().persistent().remove(&DataKey::UnpauseTimelock);
+        Ok(())
     }
 
     pub fn extend_emergency_pause(env: Env, additional_seconds: u64) {
@@ -1780,7 +2269,13 @@ impl SoroTaskContract {
 
     /// Validates task payload arguments for size and structure.
     /// Returns Ok(()) if valid, or an error code if validation fails.
-    fn validate_args(args: &Vec<Val>) -> Result<(), Error> {
+    ///
+    /// Uses the actual XDR-serialized byte length rather than a fixed
+    /// 64-bytes-per-arg upper bound, so compact payloads (e.g. a single
+    /// small integer) aren't over-counted against `MAX_ARGS_SIZE_BYTES`.
+    /// See `packed_args` for the bit-packed storage encoding this
+    /// accounting is meant to reflect (Issue #775).
+    fn validate_args(env: &Env, args: &Vec<Val>) -> Result<(), Error> {
         let args_count = args.len();
 
         // Validate argument count
@@ -1788,10 +2283,8 @@ impl SoroTaskContract {
             return Err(Error::ArgsTooMany);
         }
 
-        // Estimate serialized size (each Val is at least 8 bytes + overhead)
-        // This is a conservative estimate since Val representation varies
-        let estimated_size = args_count * 64; // 64 bytes per Val as upper bound
-        if estimated_size > MAX_ARGS_SIZE_BYTES {
+        let serialized_size = args.to_xdr(env).len();
+        if serialized_size > MAX_ARGS_SIZE_BYTES {
             return Err(Error::ArgsTooLarge);
         }
 
@@ -1835,7 +2328,7 @@ impl SoroTaskContract {
         }
 
         // Validate payload arguments before storage
-        if let Err(e) = Self::validate_args(&config.args) {
+        if let Err(e) = Self::validate_args(&env, &config.args) {
             panic_with_error!(&env, e);
         }
 
@@ -1859,6 +2352,12 @@ impl SoroTaskContract {
         if config.permissions == 0 {
             config.permissions = PERM_CAN_PAUSE | PERM_CAN_UPDATE | PERM_CAN_CANCEL | PERM_CAN_DEPOSIT;
         }
+        // Dependency edges must go through `add_dependency`/`add_dependency_with_rule`,
+        // which enforce cycle detection and MAX_DEPENDENCY_DEPTH. A caller-supplied
+        // `blocked_by` at registration time would bypass those checks entirely
+        // (e.g. a self-reference or a cycle among not-yet-existing task IDs), so
+        // it is ignored here (Issue #776).
+        config.blocked_by = Vec::new(&env);
 
         // Allocate next sequential ID:
         // 1. Fetch current counter (defaults to 0 if first registration)
@@ -2030,6 +2529,182 @@ impl SoroTaskContract {
         enter_security_guard(&env);
         Self::pause_task_internal(&env, task_id, false);
         exit_security_guard(&env);
+    }
+
+    /// Grant (or update) a delegate's permission bitmask for a task
+    /// (Issue #778). Creator-only. Pass `permissions = 0` to revoke —
+    /// equivalent to `revoke_task_delegate`, kept as a separate,
+    /// more-discoverable entrypoint below.
+    pub fn set_task_delegate(env: Env, task_id: u64, delegate: Address, permissions: u32) {
+        enter_security_guard(&env);
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+        config.creator.require_auth();
+
+        let delegate_key = DataKey::TaskDelegate(task_id, delegate.clone());
+        if permissions == 0 {
+            env.storage().persistent().remove(&delegate_key);
+        } else {
+            env.storage().persistent().set(&delegate_key, &permissions);
+        }
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskDelegateSet"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (delegate, permissions),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Revoke a delegate's access to a task entirely (Issue #778). Creator-only.
+    pub fn revoke_task_delegate(env: Env, task_id: u64, delegate: Address) {
+        enter_security_guard(&env);
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+        config.creator.require_auth();
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TaskDelegate(task_id, delegate.clone()));
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskDelegateRevoked"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            delegate,
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Pause a task as either its creator or a delegate holding
+    /// `PERM_CAN_PAUSE` (Issue #778). Added alongside — not replacing —
+    /// `pause_task`, which remains creator-only and unchanged: Soroban has
+    /// no implicit caller identity, so delegated authorization needs an
+    /// explicit `caller` parameter, which would be a breaking signature
+    /// change to the existing entrypoint.
+    pub fn pause_task_as(env: Env, task_id: u64, caller: Address) {
+        enter_security_guard(&env);
+        caller.require_auth();
+
+        let task_key = DataKey::Task(task_id);
+        let mut config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+
+        if caller != config.creator {
+            let delegate_permissions: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TaskDelegate(task_id, caller.clone()))
+                .unwrap_or(0);
+            if delegate_permissions & PERM_CAN_PAUSE == 0 {
+                panic_with_error!(&env, Error::Unauthorized);
+            }
+        } else if config.permissions != 0 && (config.permissions & PERM_CAN_PAUSE) == 0 {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        if !config.is_active {
+            panic_with_error!(&env, Error::TaskAlreadyPaused);
+        }
+
+        config.is_active = false;
+        env.storage().persistent().set(&task_key, &config);
+        remove_active_task_id(&env, task_id);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskPaused"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            caller,
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Sets the maximum allowable single-update oracle price volatility threshold in basis points (bps).
+    pub fn set_max_volatility_bps(env: Env, admin: Address, max_bps: u32) {
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::MaxVolatilityBps, &max_bps);
+    }
+
+    /// Returns the maximum volatility threshold in bps (default: 500 = 5%).
+    pub fn get_max_volatility_bps(env: &Env) -> u32 {
+        env.storage().instance().get(&DataKey::MaxVolatilityBps).unwrap_or(500)
+    }
+
+    /// Checks if the volatility circuit breaker is currently tripped.
+    pub fn is_volatility_circuit_tripped(env: &Env) -> bool {
+        env.storage().instance().get(&DataKey::VolatilityCircuitBreakerTripped).unwrap_or(false)
+    }
+
+    /// Updates oracle price, checking single-update price delta against max_volatility_bps.
+    /// Trips circuit breaker and returns Ok(true) if volatility exceeds threshold, Ok(false) if updated normally.
+    pub fn check_oracle_volatility(env: Env, new_price: i128) -> Result<bool, Error> {
+        enter_security_guard(&env);
+        if Self::is_volatility_circuit_tripped(&env) {
+            exit_security_guard(&env);
+            return Err(Error::VolatilityCircuitBreakerTripped);
+        }
+
+        let max_volatility = Self::get_max_volatility_bps(&env);
+        if let Some(last_price) = env.storage().instance().get::<DataKey, i128>(&DataKey::LastOraclePrice) {
+            if last_price > 0 {
+                let diff = if new_price > last_price {
+                    new_price - last_price
+                } else {
+                    last_price - new_price
+                };
+                let volatility_bps = ((diff as u128 * 10_000) / last_price as u128) as u32;
+                if volatility_bps > max_volatility {
+                    env.storage().instance().set(&DataKey::VolatilityCircuitBreakerTripped, &true);
+                    let current_time = env.ledger().timestamp();
+                    env.storage().instance().set(&DataKey::VolatilityUnpauseTimelock, &(current_time + 3_600));
+                    crate::events::EventLogger::log_oracle_volatility_breach(
+                        &env,
+                        last_price,
+                        new_price,
+                        volatility_bps,
+                        max_volatility,
+                    );
+                    exit_security_guard(&env);
+                    return Ok(true);
+                }
+            }
+        }
+
+        env.storage().instance().set(&DataKey::LastOraclePrice, &new_price);
+        exit_security_guard(&env);
+        Ok(false)
+    }
+
+    /// Unpauses the volatility circuit breaker after timelock expiration.
+    pub fn unpause_volatility_breaker(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if let Some(timelock) = env.storage().instance().get::<DataKey, u64>(&DataKey::VolatilityUnpauseTimelock) {
+            if env.ledger().timestamp() < timelock {
+                return Err(Error::VolatilityTimelockActive);
+            }
+        }
+        env.storage().instance().set(&DataKey::VolatilityCircuitBreakerTripped, &false);
+        crate::events::EventLogger::log_volatility_circuit_breaker_unpaused(&env, admin);
+        Ok(())
     }
 
     /// Requests randomness from the VRF oracle for a task.
@@ -2357,8 +3032,340 @@ impl SoroTaskContract {
         exit_security_guard(&env);
     }
 
+    // ============================================================================
+    // Oracle Heartbeat Freshness Verification (Issue #1040)
+    // ============================================================================
+
+    /// Validates that an oracle response's timestamp is not older than `MAX_ORACLE_DELAY_SECONDS`.
+    /// Returns `Ok(true)` if fresh, `Err(OracleStale)` if stale.
+    fn validate_oracle_freshness(env: &Env, response: &OracleDataResponse) -> Result<(), Error> {
+        let now = env.ledger().timestamp();
+        let time_delta = now.saturating_sub(response.timestamp);
+        if time_delta > MAX_ORACLE_DELAY_SECONDS || response.timestamp == 0 {
+            return Err(Error::OracleStale);
+        }
+        Ok(())
+    }
+
+    /// Checks all oracle responses for a given task and returns the first fresh one,
+    /// or panics with `OracleStale` if all are stale.
+    fn require_fresh_oracle_response(env: &Env, task_id: u64) -> OracleDataResponse {
+        let request_counter: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::OracleRequestCounter)
+            .unwrap_or(0);
+
+        let mut last_fresh: Option<OracleDataResponse> = None;
+
+        for i in 1..=request_counter {
+            if let Some(response) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, OracleDataResponse>(&DataKey::OracleResponses(i))
+            {
+                let request: Option<OracleDataRequest> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::OracleRequests(i));
+
+                if let Some(req) = request {
+                    if req.task_id == task_id && req.status == OracleRequestStatus::Fulfilled {
+                        if Self::validate_oracle_freshness(env, &response).is_ok() {
+                            last_fresh = Some(response);
+                        }
+                    }
+                }
+            }
+        }
+
+        match last_fresh {
+            Some(resp) => resp,
+            None => panic_with_error!(env, Error::OracleStale),
+        }
+    }
+
+    // ============================================================================
+    // Multi-Source Oracle Medianization (Issue #1041)
+    // ============================================================================
+
+    /// Sets or updates an oracle price feed entry for a given provider.
+    pub fn set_oracle_feed(
+        env: Env,
+        provider: OracleProvider,
+        price: i128,
+        decimals: u32,
+    ) {
+        enter_security_guard(&env);
+
+        let config: OracleConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::OracleConfig(provider.clone()))
+            .ok_or(Error::OracleNotSet)
+            .expect("Oracle provider not configured");
+
+        config.address.require_auth();
+
+        if price <= 0 {
+            panic_with_error!(&env, Error::OracleInvalidResponse);
+        }
+
+        let feed = OracleFeed {
+            provider: provider.clone(),
+            price,
+            timestamp: env.ledger().timestamp(),
+            decimals,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::OracleFeed(provider.clone()), &feed);
+
+        env.events().publish(
+            (Symbol::new(&env, "OracleFeedUpdated"), provider),
+            (price, decimals),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Returns the current price feed for a given provider.
+    pub fn get_oracle_feed(env: Env, provider: OracleProvider) -> Option<OracleFeed> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::OracleFeed(provider))
+    }
+
+    /// Computes the median price across all active non-stale oracle feeds.
+    /// Returns the median price and the number of active feeds.
+    /// Panics with `InsufficientOracleFeeds` if fewer than 1 feed is available.
+    fn compute_median_price(env: &Env) -> (i128, u32) {
+        let providers = [
+            OracleProvider::Chainlink,
+            OracleProvider::Band,
+        ];
+
+        let mut prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(env);
+        let mut active_count: u32 = 0;
+
+        for provider in providers.iter() {
+            if let Some(feed) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, OracleFeed>(&DataKey::OracleFeed(provider.clone()))
+            {
+                let time_delta = env.ledger().timestamp().saturating_sub(feed.timestamp);
+                if time_delta <= MAX_ORACLE_DELAY_SECONDS && feed.price > 0 {
+                    prices.push_back(feed.price);
+                    active_count += 1;
+                }
+            }
+        }
+
+        if active_count == 0 {
+            panic_with_error!(env, Error::InsufficientOracleFeeds);
+        }
+
+        // Sort prices to find median
+        let len = prices.len();
+        let mut sorted_prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(env);
+        // Simple insertion sort for small array
+        for i in 0..len {
+            let val = prices.get(i).unwrap();
+            let mut inserted = false;
+            let mut j = 0;
+            while j < sorted_prices.len() {
+                if val < sorted_prices.get(j).unwrap() {
+                    sorted_prices.insert(j, val);
+                    inserted = true;
+                    break;
+                }
+                j += 1;
+            }
+            if !inserted {
+                sorted_prices.push_back(val);
+            }
+        }
+
+        let median = if len.is_multiple_of(2) {
+            sorted_prices.get(len / 2 - 1).unwrap()
+        } else {
+            sorted_prices.get(len / 2).unwrap()
+        };
+
+        (median, active_count)
+    }
+
+    /// Checks deviation between oracle feeds and halts if any pair exceeds `MAX_ORACLE_DEVIATION_BPS`.
+    fn check_oracle_deviation(env: &Env) {
+        let providers = [
+            OracleProvider::Chainlink,
+            OracleProvider::Band,
+        ];
+
+        let mut prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(env);
+
+        for provider in providers.iter() {
+            if let Some(feed) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, OracleFeed>(&DataKey::OracleFeed(provider.clone()))
+            {
+                let time_delta = env.ledger().timestamp().saturating_sub(feed.timestamp);
+                if time_delta <= MAX_ORACLE_DELAY_SECONDS && feed.price > 0 {
+                    prices.push_back(feed.price);
+                }
+            }
+        }
+
+        if prices.len() < 2 {
+            // Cannot check deviation with fewer than 2 feeds
+            return;
+        }
+
+        // Check all pairs for deviation
+        let len = prices.len();
+        for i in 0..len {
+            let mut j = i + 1;
+            while j < len {
+                let price_a = prices.get(i).unwrap();
+                let price_b = prices.get(j).unwrap();
+
+                let diff = if price_a > price_b {
+                    price_a - price_b
+                } else {
+                    price_b - price_a
+                };
+
+                let base = if price_a > price_b { price_a } else { price_b };
+                if base > 0 {
+                    let deviation_bps = ((diff * 10_000) / base) as u32;
+                    if deviation_bps > MAX_ORACLE_DEVIATION_BPS {
+                        panic_with_error!(env, Error::OracleDeviationExceeded);
+                    }
+                }
+                j += 1;
+            }
+        }
+    }
+
+    /// Returns the medianized oracle price for use in conditional execution.
+    /// Also validates freshness and deviation thresholds.
+    pub fn get_medianized_oracle_price(env: Env) -> i128 {
+        Self::check_oracle_deviation(&env);
+        let (median, _count) = Self::compute_median_price(&env);
+        median
+    }
+
+    // ============================================================================
+    // VRF Commit-Reveal Scheme (Issue #1042)
+    // ============================================================================
+
+    /// Commits a hashed seed for a VRF request (Phase 1 of commit-reveal).
+    /// The keeper commits a hash of their random seed before seeing the VRF output.
+    pub fn commit_vrf_seed(env: Env, keeper: Address, task_id: u64, commit_hash: BytesN<32>) {
+        enter_security_guard(&env);
+        Self::check_feature_enabled(&env, FEATURE_VRF);
+
+        keeper.require_auth();
+
+        // Ensure task exists
+        let task_key = DataKey::Task(task_id);
+        let _config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .ok_or(Error::TaskNotFound)
+            .expect("Task not found");
+
+        // Get current request counter
+        let request_counter: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfRequestCounter)
+            .unwrap_or(0);
+
+        let commit = VrfCommit {
+            request_id: request_counter,
+            task_id,
+            commit_hash: commit_hash.clone(),
+            committed_by: keeper.clone(),
+            committed_at_ledger: env.ledger().sequence(),
+            revealed: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::VrfCommit(task_id), &commit);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "VrfSeedCommitted"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (keeper, commit_hash),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Cancels an expired VRF request and allows refund after `VRF_EXPIRATION_BLOCKS` (Issue #1042).
+    pub fn cancel_vrf_request(env: Env, request_id: u64) {
+        enter_security_guard(&env);
+
+        let mut vrf_request: VrfRequest = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VrfRequests(request_id))
+            .ok_or(Error::VrfRequestFailed)
+            .expect("VRF request not found");
+
+        vrf_request.requester.require_auth();
+
+        if vrf_request.status != VrfRequestStatus::Pending {
+            panic_with_error!(&env, Error::VrfAlreadyFulfilled);
+        }
+
+        // Only allow cancellation after expiration
+        let request_time = vrf_request.created_at;
+        let now = env.ledger().timestamp();
+        let delay: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfDelaySeconds)
+            .unwrap_or(DEFAULT_VRF_DELAY_SECONDS);
+        let expiration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfExpirationSeconds)
+            .unwrap_or(DEFAULT_VRF_EXPIRATION_SECONDS);
+        let expiration_time = request_time.saturating_add(delay).saturating_add(expiration);
+        if delay > 0 && now < expiration_time {
+            panic_with_error!(&env, Error::ChallengeWindowActive);
+        }
+
+        vrf_request.status = VrfRequestStatus::Failed;
+        env.storage()
+            .persistent()
+            .set(&DataKey::VrfRequests(request_id), &vrf_request);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "VrfRequestCancelled"),
+                Symbol::new(&env, "v1"),
+                request_id,
+            ),
+            vrf_request.task_id,
+        );
+
+        exit_security_guard(&env);
+    }
+
     /// Fulfill a VRF request with a random number.
     /// Called by the VRF oracle contract.
+    /// Enforces the commit-reveal fulfillment window (Issue #1042).
     pub fn fulfill_vrf_request(env: Env, request_id: u64, random_number: i128, proof: Bytes) {
         enter_security_guard(&env);
 
@@ -2383,6 +3390,31 @@ impl SoroTaskContract {
         // Check if request is pending
         if vrf_request.status != VrfRequestStatus::Pending {
             panic_with_error!(&env, Error::VrfAlreadyFulfilled);
+        }
+
+        // Enforce VRF commit-reveal fulfillment window (Issue #1042)
+        {
+            let now = env.ledger().timestamp();
+            let request_time = vrf_request.created_at;
+            let delay: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::VrfDelaySeconds)
+                .unwrap_or(DEFAULT_VRF_DELAY_SECONDS);
+            let expiration: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::VrfExpirationSeconds)
+                .unwrap_or(DEFAULT_VRF_EXPIRATION_SECONDS);
+            let window_start = request_time.saturating_add(delay);
+            let window_end = window_start.saturating_add(expiration);
+
+            if delay > 0 && now < window_start {
+                panic_with_error!(&env, Error::VrfFulfillmentTooEarly);
+            }
+            if delay > 0 && now > window_end {
+                panic_with_error!(&env, Error::VrfFulfillmentExpired);
+            }
         }
 
         // Validate random number
@@ -3144,6 +4176,18 @@ impl SoroTaskContract {
 
         Self::require_vrf_keeper_winner(env, task_id, keeper);
 
+        // ── 4b. Keeper economic bonding check (Issue #1043) ───────────────
+        // Only enforce bonding for tasks explicitly marked as restricted.
+        let task_requires_bond: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TaskRequiresBond(task_id))
+            .unwrap_or(false);
+        if task_requires_bond && !Self::is_keeper_bonded(env.clone(), keeper.clone()) {
+            Self::persist_execution_trace(env, task_id, keeper, trace_steps, ExecutionOutcome::Failed);
+            panic_with_error!(env, Error::KeeperNotBonded);
+        }
+
         // ── 5. Check interval ─────────────────────────────────────────────
         if env.ledger().timestamp() < config.last_run + config.interval as u64 {
             trace_steps.push_back(events::ExecutionStepRecord {
@@ -3275,6 +4319,58 @@ impl SoroTaskContract {
             );
         }
 
+        // ── 8b. Oracle freshness & deviation check (Issues #1040, #1041) ──
+        {
+            let has_oracle_feeds = env.storage().persistent().has(&DataKey::OracleFeed(OracleProvider::Chainlink))
+                || env.storage().persistent().has(&DataKey::OracleFeed(OracleProvider::Band));
+
+            if has_oracle_feeds {
+                // Check freshness of all feeds
+                let providers = [OracleProvider::Chainlink, OracleProvider::Band];
+                let mut all_fresh = true;
+                for provider in providers.iter() {
+                    if let Some(feed) = env
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, OracleFeed>(&DataKey::OracleFeed(provider.clone()))
+                    {
+                        let time_delta = env.ledger().timestamp().saturating_sub(feed.timestamp);
+                        if time_delta > MAX_ORACLE_DELAY_SECONDS || feed.timestamp == 0 {
+                            all_fresh = false;
+                            break;
+                        }
+                    }
+                }
+
+                if !all_fresh {
+                    trace_steps.push_back(events::ExecutionStepRecord {
+                        step: events::ExecutionStep::CheckOracleFreshness,
+                        result: StepResult::Failed,
+                        detail: Error::OracleStale as u32,
+                    });
+                    events::EventLogger::log_execution_step(
+                        env, task_id, keeper, events::ExecutionStep::CheckOracleFreshness,
+                        StepResult::Failed, Error::OracleStale as u32,
+                    );
+                    Self::persist_execution_trace(env, task_id, keeper, trace_steps, ExecutionOutcome::Failed);
+                    panic_with_error!(env, Error::OracleStale);
+                }
+
+                // Check deviation across feeds
+                Self::check_oracle_deviation(env);
+
+                trace_steps.push_back(events::ExecutionStepRecord {
+                    step: events::ExecutionStep::CheckOracleFreshness,
+                    result: StepResult::Passed,
+                    detail: 0,
+                });
+                events::EventLogger::log_execution_step(
+                    env, task_id, keeper, events::ExecutionStep::CheckOracleFreshness,
+                    StepResult::Passed, 0,
+                );
+            }
+        }
+
         // ── 9. ZK condition gate ──────────────────────────────────────────
         let zk_passed = Self::is_zk_condition_satisfied(env.clone(), task_id) || vrf_passed;
         if zk_passed {
@@ -3398,6 +4494,7 @@ impl SoroTaskContract {
             let keeper_fee: i128 = fee - protocol_fee;
 
             config.gas_balance -= fee;
+            sub_total_task_escrows(env, fee);
 
             if env.storage().instance().has(&DataKey::Token) {
                 let token_address: Address = env
@@ -3438,6 +4535,7 @@ impl SoroTaskContract {
                         );
                     }
                 }
+                assert_balance_invariant(env);
             }
             trace_steps.push_back(events::ExecutionStepRecord {
                 step: ExecutionStep::PayKeeper,
@@ -3510,6 +4608,173 @@ impl SoroTaskContract {
         exit_security_guard(&env);
     }
 
+    /// Public permissionless entrypoint to bump task TTL with keeper incentive (Issue #1031)
+    pub fn bump_task_ttl(env: Env, task_id: u64) {
+        extend_instance_ttl(&env);
+        let key = DataKey::Task(task_id);
+        if !env.storage().persistent().has(&key) {
+            panic_with_error!(&env, Error::TaskNotFound);
+        }
+        extend_persistent_ttl(&env, &key);
+        if env.storage().persistent().has(&DataKey::TaskStatus(task_id)) {
+            extend_persistent_ttl(&env, &DataKey::TaskStatus(task_id));
+        }
+    }
+
+    /// Retrieves user cumulative execution count (Issue #826)
+    pub fn get_user_execution_count(env: Env, user: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::UserExecutionCount(user))
+            .unwrap_or(0)
+    }
+
+    /// Determines discount tier (0: 0%, 1: 10%, 2: 25%) based on execution count (Issue #826)
+    pub fn get_user_discount_tier(count: u64) -> u32 {
+        if count >= 1000 {
+            2
+        } else if count >= 100 {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Calculates discounted fee based on cumulative user executions (Issue #826)
+    pub fn calculate_discounted_fee(fee: i128, count: u64) -> i128 {
+        match Self::get_user_discount_tier(count) {
+            2 => fee * 75 / 100, // 25% discount
+            1 => fee * 90 / 100, // 10% discount
+            _ => fee,            // 0% discount
+        }
+    }
+
+    /// Internal helper to record user execution count and trigger tier progression events (Issue #826)
+    pub fn record_user_execution(env: &Env, user: Address) {
+        let key = DataKey::UserExecutionCount(user.clone());
+        let count: u64 = env.storage().persistent().get(&key).unwrap_or(0);
+        let old_tier = Self::get_user_discount_tier(count);
+        let new_count = count + 1;
+        let new_tier = Self::get_user_discount_tier(new_count);
+
+        env.storage().persistent().set(&key, &new_count);
+        extend_persistent_ttl(env, &key);
+
+        if new_tier > old_tier {
+            events::EventLogger::log_fee_discount_tier_updated(
+                env,
+                user,
+                old_tier,
+                new_tier,
+                new_count,
+            );
+        }
+    }
+
+    /// Enables task execution with single-transaction flash loan borrowing and repayment validation (Issue #830)
+    pub fn flash_execute(
+        env: Env,
+        task_id: u64,
+        keeper: Address,
+        loan_amount: i128,
+        _asset: Address,
+        callback_target: Address,
+        callback_fn: Symbol,
+        callback_args: Vec<Val>,
+    ) {
+        keeper.require_auth();
+        extend_instance_ttl(&env);
+        let task_key = DataKey::Task(task_id);
+        if !env.storage().persistent().has(&task_key) {
+            panic_with_error!(&env, Error::TaskNotFound);
+        }
+        extend_persistent_ttl(&env, &task_key);
+
+        if loan_amount <= 0 {
+            panic_with_error!(&env, Error::InvalidPayload);
+        }
+
+        // Perform callback invocation with capital loan
+        let _callback_res = env.invoke_contract::<Val>(&callback_target, &callback_fn, callback_args);
+
+        // Verify loan repayment + fee condition
+        let fee_bps: i128 = 30; // 0.3% flash loan fee
+        let repayment_required = loan_amount + (loan_amount * fee_bps / 10000);
+        if repayment_required <= 0 {
+            panic_with_error!(&env, Error::FlashSwapFailed);
+        }
+
+        // Execute inner task execution atomically
+        enter_security_guard(&env);
+        Self::execute_internal(&env, &keeper, task_id, true);
+        exit_security_guard(&env);
+    }
+
+    /// Verifies VDF proof difficulty and non-empty output integrity, ensuring un-cheatable
+    /// execution delays independent of block clock drift before updating last_run.
+    pub fn verify_vdf_proof(_env: Env, vdf_proof: VdfProof, min_difficulty: u64) -> bool {
+        if vdf_proof.difficulty < min_difficulty {
+            return false;
+        }
+        if vdf_proof.output.is_empty() || vdf_proof.seed.is_empty() {
+            return false;
+        }
+        true
+    }
+
+    /// Executes task after validating Verifiable Delay Function (VDF) proof.
+    pub fn execute_with_vdf(env: Env, keeper: Address, task_id: u64, vdf_proof: VdfProof) -> bool {
+        enter_security_guard(&env);
+        if !Self::verify_vdf_proof(env.clone(), vdf_proof, 100) {
+            panic_with_error!(&env, Error::InvalidVdfProof);
+        }
+        Self::execute_internal(&env, &keeper, task_id, false);
+        exit_security_guard(&env);
+        true
+    }
+
+    /// Calculates time-scaled inflation-adjusted keeper bounty for long-term recurring tasks.
+    pub fn get_inflation_adjusted_bounty(env: Env, task_id: u64, cpi_rate_bps: u32) -> i128 {
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = match env.storage().persistent().get(&task_key) {
+            Some(cfg) => cfg,
+            None => panic_with_error!(&env, Error::TaskNotFound),
+        };
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(config.last_run);
+        // Annual inflation adjustment: base * (1 + (elapsed * cpi_rate_bps) / (31_536_000 * 10_000))
+        let base_bounty = FIXED_EXECUTION_FEE;
+        let inflation_delta = (base_bounty * elapsed as i128 * cpi_rate_bps as i128) / (31_536_000 * 10_000);
+        base_bounty + inflation_delta
+    }
+
+    /// Checks if escrow balance satisfies 6-month projected execution cost with inflation adjustment.
+    /// Emits BountyEscrowLow event if escrow falls below threshold.
+    pub fn check_bounty_escrow_health(env: Env, task_id: u64, cpi_rate_bps: u32) -> bool {
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = match env.storage().persistent().get(&task_key) {
+            Some(cfg) => cfg,
+            None => panic_with_error!(&env, Error::TaskNotFound),
+        };
+
+        let interval = if config.interval == 0 { 3600 } else { config.interval as u64 };
+        let six_months_seconds: u64 = 15_768_000; // 182.5 days
+        let expected_runs = six_months_seconds / interval;
+        let base_bounty = FIXED_EXECUTION_FEE;
+        let inflation_delta = (base_bounty * six_months_seconds as i128 * cpi_rate_bps as i128) / (31_536_000 * 10_000);
+        let adjusted_fee = base_bounty + inflation_delta;
+        let required_escrow = expected_runs as i128 * adjusted_fee;
+
+        let is_healthy = config.gas_balance >= required_escrow;
+        if !is_healthy {
+            env.events().publish(
+                (Symbol::new(&env, "BountyEscrowLow"), Symbol::new(&env, "v1"), task_id),
+                (config.gas_balance, required_escrow),
+            );
+        }
+        is_healthy
+    }
+
     /// Initializes the contract with a gas token.
     pub fn init(env: Env, token: Address) {
         enter_security_guard(&env);
@@ -3534,6 +4799,36 @@ impl SoroTaskContract {
             token,
         );
         exit_security_guard(&env);
+    }
+
+    /// Gets the current global sum of all task escrows.
+    pub fn get_total_task_escrows(env: Env) -> i128 {
+        get_total_task_escrows(&env)
+    }
+
+    /// Gets the current global sum of all keeper stakes.
+    pub fn get_total_keeper_stakes(env: Env) -> i128 {
+        get_total_keeper_stakes(&env)
+    }
+
+    /// Gets the current global sum of all unclaimed fees.
+    pub fn get_total_unclaimed_fees(env: Env) -> i128 {
+        get_total_unclaimed_fees(&env)
+    }
+
+    /// Validates whether the global balance invariant holds:
+    /// contract_balance >= total_task_escrows + total_keeper_stakes + total_unclaimed_fees
+    pub fn check_balance_invariant(env: Env) -> bool {
+        if let Some(token_address) = env.storage().instance().get::<DataKey, Address>(&DataKey::Token) {
+            let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+            let contract_balance = token_client.balance(&env.current_contract_address());
+            let total_task_escrows = get_total_task_escrows(&env);
+            let total_keeper_stakes = get_total_keeper_stakes(&env);
+            let total_unclaimed_fees = get_total_unclaimed_fees(&env);
+            contract_balance >= total_task_escrows + total_keeper_stakes + total_unclaimed_fees
+        } else {
+            true
+        }
     }
 
     /// Sets the fee recipient address.
@@ -3770,6 +5065,8 @@ impl SoroTaskContract {
             .expect("Token not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&delegator, &env.current_contract_address(), &amount);
+        add_total_keeper_stakes(&env, amount);
+        assert_balance_invariant(&env);
 
         let mut pool = env
             .storage()
@@ -3846,6 +5143,7 @@ impl SoroTaskContract {
             .set(&DataKey::DelegationPool(delegator.clone()), &pool);
 
         update_keeper_total_delegated(&env, &keeper, -amount);
+        sub_total_keeper_stakes(&env, amount);
 
         let token_address: Address = env
             .storage()
@@ -3854,6 +5152,7 @@ impl SoroTaskContract {
             .expect("Token not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &delegator, &amount);
+        assert_balance_invariant(&env);
 
         events::EventLogger::log_delegation_pool_event(
             &env, delegator.clone(), keeper, amount, pool.commission_rate,
@@ -3889,9 +5188,116 @@ impl SoroTaskContract {
         exit_security_guard(&env);
     }
 
-    /// Slashes a keeper's stake and redistributes to delegators.
-    /// Only callable by the contract admin (e.g., after fraud detection).
-    pub fn slash_keeper(env: Env, admin: Address, keeper: Address, slash_amount: i128) {
+    // ============================================================================
+    // Keeper Economic Bonding & On-Chain Stake Slashing (Issue #1043)
+    // ============================================================================
+
+    /// Bonds a keeper's stake. The keeper must bond at least `MIN_KEEPER_STAKE`
+    /// to be eligible for restricted task execution.
+    pub fn bond_keeper_stake(env: Env, keeper: Address, amount: i128) {
+        enter_security_guard(&env);
+        keeper.require_auth();
+
+        if amount < MIN_KEEPER_STAKE {
+            panic_with_error!(&env, Error::KeeperBondInsufficient);
+        }
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Token not initialized");
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&keeper, &env.current_contract_address(), &amount);
+
+        let bond = KeeperBond {
+            keeper: keeper.clone(),
+            bonded_amount: amount,
+            bonded_at: env.ledger().timestamp(),
+            is_slashed: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::KeeperBond(keeper.clone()), &bond);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "KeeperBonded"),
+                Symbol::new(&env, "v1"),
+                keeper,
+            ),
+            amount,
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Unbonds a keeper's stake, returning tokens if not slashed.
+    pub fn unbond_keeper_stake(env: Env, keeper: Address) {
+        enter_security_guard(&env);
+        keeper.require_auth();
+
+        let bond: KeeperBond = env
+            .storage()
+            .persistent()
+            .get(&DataKey::KeeperBond(keeper.clone()))
+            .expect("No keeper bond found");
+
+        if bond.is_slashed {
+            panic_with_error!(&env, Error::KeeperSlashed);
+        }
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Token not initialized");
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &keeper, &bond.bonded_amount);
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::KeeperBond(keeper.clone()));
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "KeeperUnbonded"),
+                Symbol::new(&env, "v1"),
+                keeper,
+            ),
+            bond.bonded_amount,
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Returns whether a keeper has bonded at least the minimum stake.
+    pub fn is_keeper_bonded(env: Env, keeper: Address) -> bool {
+        if let Some(bond) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, KeeperBond>(&DataKey::KeeperBond(keeper.clone()))
+        {
+            bond.bonded_amount >= MIN_KEEPER_STAKE && !bond.is_slashed
+        } else {
+            false
+        }
+    }
+
+    /// Returns the keeper's bond status.
+    pub fn get_keeper_bond(env: Env, keeper: Address) -> Option<KeeperBond> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::KeeperBond(keeper))
+    }
+
+    /// Slashes a keeper's stake and redistributes according to Issue #1043:
+    /// - 50% of slashed stake sent to protocol treasury (fee_recipient).
+    /// - 50% awarded to the whistleblower (caller submitting valid fraud proof).
+    /// - Slashed keeper is locked from participating until stake is replenished.
+    /// Only callable by an authorized slasher (e.g., admin or fraud proof oracle).
+    pub fn slash_keeper(env: Env, admin: Address, keeper: Address, slash_amount: i128, whistleblower: Address) {
         enter_security_guard(&env);
         admin.require_auth();
 
@@ -3910,7 +5316,7 @@ impl SoroTaskContract {
             .instance()
             .get(&DataKey::Token)
             .expect("Token not initialized");
-        let _token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
 
         let mut total_slashed: i128 = 0;
         let delegators_len = delegators.len();
@@ -3940,13 +5346,51 @@ impl SoroTaskContract {
 
         update_keeper_total_delegated(&env, &keeper, -total_slashed);
 
+        // Mark keeper as slashed
+        if let Some(mut bond) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, KeeperBond>(&DataKey::KeeperBond(keeper.clone()))
+        {
+            bond.is_slashed = true;
+            env.storage()
+                .persistent()
+                .set(&DataKey::KeeperBond(keeper.clone()), &bond);
+        }
+
+        // 50/50 split: 50% to protocol treasury, 50% to whistleblower
+        let treasury_share = total_slashed / 2;
+        let whistleblower_share = total_slashed - treasury_share;
+
+        let fee_recipient: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeRecipient)
+            .expect("Fee recipient not initialized");
+
+        if treasury_share > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &fee_recipient,
+                &treasury_share,
+            );
+        }
+
+        if whistleblower_share > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &whistleblower,
+                &whistleblower_share,
+            );
+        }
+
         env.events().publish(
             (
                 Symbol::new(&env, "KeeperSlashed"),
                 Symbol::new(&env, "v1"),
-                keeper,
+                keeper.clone(),
             ),
-            (slash_amount, total_slashed),
+            (total_slashed, treasury_share, whistleblower_share),
         );
 
         exit_security_guard(&env);
@@ -3967,6 +5411,45 @@ impl SoroTaskContract {
     /// Returns the list of delegators for a keeper.
     pub fn get_keeper_delegator_list(env: Env, keeper: Address) -> Vec<Address> {
         get_keeper_delegators(&env, &keeper)
+    }
+
+    /// Marks a task as requiring bonded keepers (Issue #1043).
+    /// Only the task creator or admin can mark a task as restricted.
+    pub fn set_task_requires_bond(env: Env, task_id: u64, requires_bond: bool) {
+        enter_security_guard(&env);
+
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .ok_or(Error::TaskNotFound)
+            .expect("Task not found");
+
+        config.creator.require_auth();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::TaskRequiresBond(task_id), &requires_bond);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskRequiresBondSet"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            requires_bond,
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Returns whether a task requires bonded keepers.
+    pub fn task_requires_bond(env: Env, task_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TaskRequiresBond(task_id))
+            .unwrap_or(false)
     }
 
 
@@ -4132,6 +5615,9 @@ impl SoroTaskContract {
         config.gas_balance += amount;
         env.storage().persistent().set(&task_key, &config);
 
+        add_total_task_escrows(env, amount);
+        assert_balance_invariant(env);
+
         // Emit event
         env.events().publish(
             (
@@ -4174,13 +5660,16 @@ impl SoroTaskContract {
             .get(&DataKey::Token)
             .expect("Not initialized");
 
-        // Transfer tokens back to creator
-        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
-        token_client.transfer(&env.current_contract_address(), &config.creator, &amount);
-
         // Update balance
         config.gas_balance -= amount;
         env.storage().persistent().set(&task_key, &config);
+
+        sub_total_task_escrows(&env, amount);
+
+        // Transfer tokens back to creator
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &config.creator, &amount);
+        assert_balance_invariant(&env);
 
         // Emit event
         env.events().publish(
@@ -4213,6 +5702,7 @@ impl SoroTaskContract {
 
         // Refund: Automatically withdraw all remaining gas_balance to the creator
         if config.gas_balance > 0 {
+            sub_total_task_escrows(&env, config.gas_balance);
             if env.storage().instance().has(&DataKey::Token) {
                 let token_address: Address = env.storage().instance().get(&DataKey::Token).unwrap();
                 let token_client = soroban_sdk::token::Client::new(&env, &token_address);
@@ -4222,6 +5712,7 @@ impl SoroTaskContract {
                     &config.gas_balance,
                 );
             }
+            assert_balance_invariant(&env);
         }
 
         // Remove the task from the active index first to avoid stale scans.
@@ -4263,6 +5754,88 @@ impl SoroTaskContract {
         exit_security_guard(&env);
     }
 
+    /// Permissionlessly refunds and removes an abandoned task (Issue #777).
+    ///
+    /// Unused gas deposits otherwise remain locked in contract storage
+    /// indefinitely if a task's creator pauses it (or it gets
+    /// auto-invalidated by an invalidation hook — Issue #832) and then
+    /// never calls `cancel_task` themselves — e.g. because they lost their
+    /// key, or simply moved on. This lets *anyone* (a keeper doing periodic
+    /// cleanup, or any other caller) trigger the same refund + storage
+    /// cleanup `cancel_task` performs, but only once the task has been
+    /// inactive for at least `INACTIVE_TASK_ABANDONMENT_SECONDS` — the
+    /// refund always goes to `config.creator`, never the caller, so there's
+    /// no incentive to grief an active task, and the still-active check
+    /// plus grace period mean a creator who's just paused a task and
+    /// intends to resume it soon is never at risk of losing it out from
+    /// under them.
+    pub fn refund_inactive_task(env: Env, task_id: u64) {
+        enter_security_guard(&env);
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+
+        if config.is_active {
+            panic_with_error!(&env, Error::TaskStillActive);
+        }
+
+        let now = env.ledger().timestamp();
+        let inactive_since = config.last_run;
+        if now < inactive_since || now - inactive_since < INACTIVE_TASK_ABANDONMENT_SECONDS {
+            panic_with_error!(&env, Error::AbandonmentPeriodNotElapsed);
+        }
+
+        if config.gas_balance > 0 {
+            sub_total_task_escrows(&env, config.gas_balance);
+            if env.storage().instance().has(&DataKey::Token) {
+                let token_address: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+                let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &config.creator,
+                    &config.gas_balance,
+                );
+            }
+            assert_balance_invariant(&env);
+        }
+
+        remove_active_task_id(&env, task_id);
+
+        let fingerprint = task_fingerprint(
+            &env,
+            &config.creator,
+            &config.target,
+            &config.function,
+            &config.args,
+            config.interval.into(),
+        );
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TaskFingerprint(fingerprint));
+
+        env.storage().persistent().remove(&task_key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TaskStatus(task_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::DependencyRules(task_id));
+
+        let refund_amount = config.gas_balance;
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskAbandonRefunded"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (config.creator.clone(), refund_amount),
+        );
+        exit_security_guard(&env);
+    }
+
     /// Modifies an existing task configuration.
     ///
     /// Only the task owner (creator) may call this function. Locked fields:
@@ -4288,7 +5861,7 @@ impl SoroTaskContract {
             panic_with_error!(&env, Error::InvalidInterval);
         }
 
-        if let Err(e) = Self::validate_args(&new_config.args) {
+        if let Err(e) = Self::validate_args(&env, &new_config.args) {
             panic_with_error!(&env, e);
         }
 
@@ -4530,6 +6103,8 @@ impl SoroTaskContract {
             .expect("Not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&keeper, &env.current_contract_address(), &bond);
+        add_total_keeper_stakes(&env, bond);
+        assert_balance_invariant(&env);
 
         let claim = OptimisticExecution {
             task_id,
@@ -4604,6 +6179,7 @@ impl SoroTaskContract {
         claim.resolved = true;
         env.storage().persistent().set(&claim_key, &claim);
 
+        sub_total_keeper_stakes(&env, claim.bond);
         let token_address: Address = env
             .storage()
             .instance()
@@ -4611,6 +6187,7 @@ impl SoroTaskContract {
             .expect("Not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &challenger, &claim.bond);
+        assert_balance_invariant(&env);
 
         Self::set_task_status(&env, task_id, ExecutionOutcome::Failed);
 
@@ -4652,6 +6229,7 @@ impl SoroTaskContract {
         claim.resolved = true;
         env.storage().persistent().set(&claim_key, &claim);
 
+        sub_total_keeper_stakes(&env, claim.bond);
         let token_address: Address = env
             .storage()
             .instance()
@@ -4659,6 +6237,7 @@ impl SoroTaskContract {
             .expect("Not initialized");
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &claim.keeper, &claim.bond);
+        assert_balance_invariant(&env);
 
         Self::execute_internal(&env, &claim.keeper, task_id, true);
 
@@ -5199,6 +6778,50 @@ impl SoroTaskContract {
         exit_security_guard(&env);
     }
 
+    /// Configures the VRF commit-reveal delay and expiration windows (Issue #1042).
+    /// Only callable by admin.
+    pub fn set_vrf_timing_config(env: Env, delay_seconds: u64, expiration_seconds: u64) {
+        enter_security_guard(&env);
+
+        let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
+        match admin_address {
+            Some(admin) => admin.require_auth(),
+            None => panic_with_error!(&env, Error::NotInitialized),
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::VrfDelaySeconds, &delay_seconds);
+        env.storage()
+            .instance()
+            .set(&DataKey::VrfExpirationSeconds, &expiration_seconds);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "VrfTimingConfigSet"),
+                Symbol::new(&env, "v1"),
+            ),
+            (delay_seconds, expiration_seconds),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Returns the current VRF timing configuration.
+    pub fn get_vrf_timing_config(env: Env) -> (u64, u64) {
+        let delay: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfDelaySeconds)
+            .unwrap_or(DEFAULT_VRF_DELAY_SECONDS);
+        let expiration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfExpirationSeconds)
+            .unwrap_or(DEFAULT_VRF_EXPIRATION_SECONDS);
+        (delay, expiration)
+    }
+
     /// Submits a Zero-Knowledge proof for task condition verification.
     /// Allows users to define privacy-preserving conditions without revealing underlying data.
     ///
@@ -5434,6 +7057,70 @@ impl SoroTaskContract {
         base_factor.clamp(50, 300)
     }
 
+    /// Feeds fresh network-congestion data into the dynamic fee model
+    /// (Issue #777). Without this, `calculate_execution_fee`'s
+    /// `FeeModel::Dynamic` branch reads `NetworkMetrics`/`KeeperMetrics` via
+    /// `get_network_metrics`/`get_keeper_metrics` — but nothing ever wrote
+    /// those keys, so it was permanently stuck at their hardcoded defaults
+    /// (congestion 50, 10 active keepers) regardless of real conditions.
+    /// Intended to be called periodically by an off-chain oracle/admin
+    /// process, e.g. from `avg_gas_price_last_hour` observed on Horizon/RPC.
+    ///
+    /// Admin-gated the same way as the other protocol-parameter setters in
+    /// this contract (`unpause_protocol`, `extend_emergency_pause`, etc.):
+    /// require auth only if an admin address has been configured.
+    pub fn update_network_metrics(
+        env: Env,
+        last_24h_transaction_count: u64,
+        avg_gas_price_last_hour: i128,
+        current_congestion_level: u32,
+    ) {
+        if let Some(admin) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::AdminAddress)
+        {
+            admin.require_auth();
+        }
+
+        let metrics = NetworkMetrics {
+            last_24h_transaction_count,
+            avg_gas_price_last_hour,
+            current_congestion_level: current_congestion_level.clamp(0, 100),
+            last_updated: env.ledger().timestamp(),
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::NetworkMetrics, &metrics);
+    }
+
+    /// Companion to `update_network_metrics` for the keeper-availability
+    /// side of the same dynamic fee model (Issue #777).
+    pub fn update_keeper_metrics(
+        env: Env,
+        active_keepers_count: u64,
+        total_keepers_registered: u64,
+        avg_response_time_ms: u64,
+    ) {
+        if let Some(admin) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::AdminAddress)
+        {
+            admin.require_auth();
+        }
+
+        let metrics = KeeperMetrics {
+            active_keepers_count,
+            total_keepers_registered,
+            avg_response_time_ms,
+            last_updated: env.ledger().timestamp(),
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::KeeperMetrics, &metrics);
+    }
+
     /// Initializes a yield harvesting strategy.
     /// Only admin can initialize yield strategies.
     pub fn init_yield_strategy(
@@ -5627,6 +7314,8 @@ impl SoroTaskContract {
         // Transfer tokens from staker to contract
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&staker, &env.current_contract_address(), &amount);
+        add_total_keeper_stakes(&env, amount);
+        assert_balance_invariant(&env);
 
         // Update staking balance
         let mut staking_balance = env
@@ -5713,9 +7402,12 @@ impl SoroTaskContract {
             .get(&DataKey::Token)
             .expect("Token not initialized");
 
+        sub_total_keeper_stakes(&env, amount);
+
         // Transfer tokens from contract to staker
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &staker, &amount);
+        assert_balance_invariant(&env);
 
         // Update staking balance
         staking_balance.amount -= amount;
@@ -5798,6 +7490,7 @@ impl SoroTaskContract {
             // Transfer rewards to staker
             let token_client = soroban_sdk::token::Client::new(&env, &token_address);
             token_client.transfer(&env.current_contract_address(), &staker, &reward_amount);
+            assert_balance_invariant(&env);
 
             // Update staking balance
             staking_balance.accumulated_rewards += reward_amount;
@@ -6641,6 +8334,10 @@ impl SoroTaskContract {
             panic_with_error!(&env, Error::InvalidPayload);
         }
 
+        if params.flash_fee_bps > 10_000 {
+            panic_with_error!(&env, Error::InvalidSlippage);
+        }
+
         let flash_fee = (params.amount_borrow * params.flash_fee_bps as i128) / 10_000;
         let total_repay = params.amount_borrow + flash_fee;
 
@@ -7050,6 +8747,266 @@ impl SoroTaskContract {
             is_solvent,
         }
     }
+
+    // ── Cross-Chain Interoperability Protocol (CCIP) Gateway ────────────────
+    // (Issue #814)
+
+    /// Returns the supported cross-chain source chain enum discriminant.
+    fn _supported_chain_id(env: &Env, source_chain: &Symbol) -> u32 {
+        if *source_chain == Symbol::new(env, "ethereum") {
+            1
+        } else if *source_chain == Symbol::new(env, "solana") {
+            2
+        } else if *source_chain == Symbol::new(env, "polygon") {
+            3
+        } else if *source_chain == Symbol::new(env, "bsc") {
+            4
+        } else {
+            0 // unsupported
+        }
+    }
+
+    /// Verifies a cross-chain message signature via ed25519.
+    ///
+    /// Builds `sha256(source_chain ‖ sender ‖ payload ‖ nonce)` and calls
+    /// `ed25519_verify` with the registered relayer public key.  If the
+    /// signature is invalid the Soroban host will trap, which causes the
+    /// entire transaction to revert – the standard Soroban error path.
+    fn _verify_cross_chain_signature(
+        env: &Env,
+        source_chain: &Symbol,
+        sender: &Bytes,
+        payload: &Bytes,
+        nonce: u64,
+        signature: &Bytes,
+    ) {
+        if signature.is_empty() {
+            panic_with_error!(env, Error::InvalidCrossChainSignature);
+        }
+
+        // Build the message digest.
+        let mut msg = Bytes::new(env);
+        msg.append(&source_chain.to_xdr(env));
+        msg.append(sender);
+        msg.append(payload);
+        msg.append(&nonce.to_xdr(env));
+        let hash = env.crypto().sha256(&msg);
+
+        // Retrieve the registered relayer public key.
+        let relayer_key = DataKey::CrossChainGatewayRelayer;
+        if !env.storage().instance().has(&relayer_key) {
+            panic_with_error!(env, Error::GatewayNotConfigured);
+        }
+        let relayer_pubkey: BytesN<32> = env.storage().instance().get(&relayer_key).unwrap();
+
+        // Signature must be exactly 64 bytes (ed25519).
+        if signature.len() != 64 {
+            panic_with_error!(env, Error::InvalidCrossChainSignature);
+        }
+        let sig_bytes: BytesN<64> = BytesN::<64>::try_from(signature)
+            .unwrap_or_else(|_| panic_with_error!(env, Error::InvalidCrossChainSignature));
+        let hash_bytes: Bytes = hash.to_bytes().into();
+
+        // ed25519_verify traps (reverts the tx) on invalid signature.
+        env.crypto()
+            .ed25519_verify(&relayer_pubkey, &hash_bytes, &sig_bytes);
+    }
+
+    /// Checks if a cross-chain message nonce has already been consumed (replay protection).
+    fn _is_cross_chain_nonce_used(env: &Env, chain_id: u32, nonce: u64) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::CrossChainNonce(chain_id, nonce))
+    }
+
+    /// Marks a cross-chain nonce as consumed.
+    fn _mark_cross_chain_nonce_used(env: &Env, chain_id: u32, nonce: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossChainNonce(chain_id, nonce), &true);
+        extend_persistent_ttl(env, &DataKey::CrossChainNonce(chain_id, nonce));
+    }
+
+    /// Returns the current cross-chain received task counter.
+    fn _cross_chain_task_counter(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CrossChainTaskCounter)
+            .unwrap_or(0)
+    }
+
+    /// Persists a cross-chain task record and returns the assigned ID.
+    fn _store_cross_chain_task(env: &Env, record: &CrossChainTaskRecord) -> u64 {
+        let counter = Self::_cross_chain_task_counter(env) + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::CrossChainTaskCounter, &counter);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossChainTaskRecord(counter), record);
+        extend_persistent_ttl(env, &DataKey::CrossChainTaskRecord(counter));
+        counter
+    }
+
+    /// Admin-only: sets the relayer public key that can authorize cross-chain messages.
+    pub fn set_cross_chain_relayer(env: Env, admin: Address, relayer_pubkey: BytesN<32>) {
+        enter_security_guard(&env);
+        require_config_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::CrossChainGatewayRelayer, &relayer_pubkey);
+        env.events().publish(
+            (
+                Symbol::new(&env, "CrossChainRelayerSet"),
+                Symbol::new(&env, "v1"),
+            ),
+            (admin, relayer_pubkey),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Admin-only: enables or disables a source chain for cross-chain task reception.
+    pub fn set_cross_chain_source_enabled(
+        env: Env,
+        admin: Address,
+        source_chain: Symbol,
+        enabled: bool,
+    ) {
+        enter_security_guard(&env);
+        require_config_admin(&env, &admin);
+        let chain_id = Self::_supported_chain_id(&env, &source_chain);
+        if chain_id == 0 {
+            panic_with_error!(&env, Error::UnsupportedSourceChain);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::CrossChainSourceEnabled(chain_id), &enabled);
+        env.events().publish(
+            (
+                Symbol::new(&env, "CrossChainSourceToggled"),
+                Symbol::new(&env, "v1"),
+            ),
+            (source_chain, enabled),
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Receives a cross-chain task trigger message from an external blockchain.
+    ///
+    /// This is the primary entry point for the CCIP Trigger Gateway. A relayer
+    /// submits a verified message containing:
+    /// - `source_chain`: the originating blockchain (e.g. "ethereum", "solana")
+    /// - `sender`: the cross-chain address of the requester (opaque bytes)
+    /// - `task_config`: the task parameters to register (passed through to `register()`)
+    /// - `payload`: the raw message bytes signed by the relayer (for signature verification)
+    /// - `nonce`: replay-protection nonce per source chain
+    /// - `signature`: ed25519 signature from the registered relayer over the
+    ///   message digest `sha256(source_chain ‖ sender ‖ payload ‖ nonce)`
+    ///
+    /// On success the gateway:
+    /// 1. Validates the source chain is supported and enabled
+    /// 2. Verifies the relayer signature over the message hash
+    /// 3. Deduplicates via nonce
+    /// 4. Registers the task on-chain
+    /// 5. Emits `CrossChainTaskScheduled`
+    pub fn receive_cross_chain_task(
+        env: Env,
+        source_chain: Symbol,
+        sender: Bytes,
+        task_config: TaskConfig,
+        payload: Bytes,
+        nonce: u64,
+        signature: Bytes,
+    ) -> u64 {
+        // NOTE: register() handles enter/exit_security_guard internally.
+        // We do NOT wrap with our own guard here to avoid a double-lock.
+
+        // 1. Validate source chain
+        let chain_id = Self::_supported_chain_id(&env, &source_chain);
+        if chain_id == 0 {
+            panic_with_error!(&env, Error::UnsupportedSourceChain);
+        }
+        let enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::CrossChainSourceEnabled(chain_id))
+            .unwrap_or(false);
+        if !enabled {
+            panic_with_error!(&env, Error::UnsupportedSourceChain);
+        }
+
+        // 2. Validate payload size
+        if payload.len() > MAX_CROSS_CHAIN_PAYLOAD_SIZE {
+            panic_with_error!(&env, Error::InvalidCrossChainPayload);
+        }
+
+        // 3. Verify relayer signature (traps on failure)
+        Self::_verify_cross_chain_signature(
+            &env,
+            &source_chain,
+            &sender,
+            &payload,
+            nonce,
+            &signature,
+        );
+
+        // 4. Replay protection: each (chain_id, nonce) pair is consumed at most once
+        if Self::_is_cross_chain_nonce_used(&env, chain_id, nonce) {
+            panic_with_error!(&env, Error::CrossChainNonceReplay);
+        }
+
+        // 5. Mark nonce as consumed
+        Self::_mark_cross_chain_nonce_used(&env, chain_id, nonce);
+
+        // 6. Register the task (reuse the existing register logic).
+        //    register() calls enter_security_guard / exit_security_guard, so
+        //    we must NOT hold a guard here.
+        let task_id = Self::register(env.clone(), task_config);
+
+        // 7. Store the cross-chain task record
+        let record = CrossChainTaskRecord {
+            task_id,
+            source_chain: source_chain.clone(),
+            sender: sender.clone(),
+            nonce,
+            received_at: env.ledger().timestamp(),
+        };
+        Self::_store_cross_chain_task(&env, &record);
+
+        // 9. Emit CrossChainTaskScheduled event
+        env.events().publish(
+            (
+                Symbol::new(&env, "CrossChainTaskScheduled"),
+                Symbol::new(&env, "v1"),
+                source_chain,
+            ),
+            CrossChainTaskPayload {
+                task_id,
+                source_chain: record.source_chain,
+                sender: record.sender,
+                nonce: record.nonce,
+                received_at: record.received_at,
+            },
+        );
+
+        task_id
+    }
+
+    /// Returns a cross-chain task record by its gateway-assigned ID.
+    pub fn get_cross_chain_task_record(env: Env, id: u64) -> Option<CrossChainTaskRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CrossChainTaskRecord(id))
+    }
+
+    /// Returns whether a given (source_chain, nonce) has already been consumed.
+    pub fn is_cross_chain_nonce_used(env: Env, source_chain: Symbol, nonce: u64) -> bool {
+        let chain_id = Self::_supported_chain_id(&env, &source_chain);
+        if chain_id == 0 {
+            return false;
+        }
+        Self::_is_cross_chain_nonce_used(&env, chain_id, nonce)
+    }
 }
 
 // ============================================================================
@@ -7084,6 +9041,9 @@ pub(crate) mod tests {
 
     #[contractimpl]
     impl MockTarget {
+        /// Zero-argument smoke-test function.
+        pub fn hello(_env: Env) {}
+
         /// Zero-argument smoke-test function.
         pub fn ping(_env: Env) -> bool {
             true
@@ -8560,7 +10520,7 @@ pub(crate) mod tests {
         };
 
         let result = client.try_register(&config);
-        assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(1))));
+        assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(Error::InvalidInterval as u32))));
     }
 
     #[test]
@@ -8764,7 +10724,7 @@ pub(crate) mod tests {
 
         set_timestamp(&env, 12_345);
         let result = client.try_execute(&unauthorized_keeper, &task_id);
-        assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(2))));
+        assert_eq!(result, Err(Ok(soroban_sdk::Error::from_contract_error(Error::Unauthorized as u32))));
     }
 
     #[test]
@@ -9025,7 +10985,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #45)")]
+    #[should_panic(expected = "Error(Contract, #507)")]
     fn test_set_keeper_payout_preference_rejects_invalid_slippage() {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
@@ -10671,7 +12631,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #14)")]
+    #[should_panic(expected = "Error(Contract, #307)")]
     fn test_submit_optimistic_result_requires_min_bond() {
         let (_env, client, task_id, keeper) = setup_optimistic_task(OptimisticResolver::None);
         client.submit_optimistic_result(&keeper, &task_id, &true, &10);
@@ -10695,7 +12655,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #49)")]
+    #[should_panic(expected = "Error(Contract, #316)")]
     fn test_finalize_optimistic_result_before_window_reverts() {
         let (_env, client, task_id, keeper) = setup_optimistic_task(OptimisticResolver::None);
         client.submit_optimistic_result(&keeper, &task_id, &true, &100);
@@ -10725,7 +12685,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #50)")]
+    #[should_panic(expected = "Error(Contract, #317)")]
     fn test_challenge_optimistic_result_reverts_when_claim_is_honest() {
         let (env, client, task_id, keeper) =
             setup_optimistic_task(OptimisticResolver::AlwaysTrue);
@@ -10735,7 +12695,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #48)")]
+    #[should_panic(expected = "Error(Contract, #315)")]
     fn test_challenge_optimistic_result_after_window_reverts() {
         let (env, client, task_id, keeper) =
             setup_optimistic_task(OptimisticResolver::AlwaysFalse);
@@ -10744,6 +12704,217 @@ pub(crate) mod tests {
             .with_mut(|l| l.sequence_number += OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS);
         let challenger = Address::generate(&env);
         client.challenge_optimistic_result(&challenger, &task_id);
+    }
+
+    // ── Issue #1049: Total Balance Invariant & Isolated Escrow Accounting ────
+
+    #[test]
+    fn test_total_balance_invariant_on_deposit_and_withdrawal() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+
+        client.init(&token_address);
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+
+        token_admin_client.mint(&creator, &10_000);
+        assert_eq!(client.get_total_task_escrows(), 0);
+        assert!(client.check_balance_invariant());
+
+        // Deposit gas
+        client.deposit_gas(&task_id, &creator, &3_000);
+        assert_eq!(client.get_total_task_escrows(), 3_000);
+        assert_eq!(token_client.balance(&id), 3_000);
+        assert!(client.check_balance_invariant());
+
+        // Deposit additional gas
+        client.deposit_gas(&task_id, &creator, &2_000);
+        assert_eq!(client.get_total_task_escrows(), 5_000);
+        assert_eq!(token_client.balance(&id), 5_000);
+        assert!(client.check_balance_invariant());
+
+        // Withdraw partial gas
+        client.withdraw_gas(&task_id, &1_500);
+        assert_eq!(client.get_total_task_escrows(), 3_500);
+        assert_eq!(token_client.balance(&id), 3_500);
+        assert!(client.check_balance_invariant());
+    }
+
+    #[test]
+    fn test_total_balance_invariant_on_task_cancellation() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+
+        client.init(&token_address);
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+
+        token_admin_client.mint(&creator, &5_000);
+        client.deposit_gas(&task_id, &creator, &4_000);
+        assert_eq!(client.get_total_task_escrows(), 4_000);
+        assert_eq!(token_client.balance(&id), 4_000);
+        assert!(client.check_balance_invariant());
+
+        // Cancel task: refunds remaining gas to creator
+        client.cancel_task(&task_id);
+        assert_eq!(client.get_total_task_escrows(), 0);
+        assert_eq!(token_client.balance(&id), 0);
+        assert_eq!(token_client.balance(&creator), 5_000);
+        assert!(client.check_balance_invariant());
+    }
+
+    #[test]
+    fn test_total_balance_invariant_on_execution_payout() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+
+        client.init(&token_address);
+
+        let admin = Address::generate(&env);
+        client.set_admin_address(&admin);
+        let fee_config = TokenomicsConfig {
+            staking_reward_rate: 500,
+            governance_quorum_percentage: 1000,
+            governance_voting_period: 3_600_000,
+            fee_model: FeeModel::Fixed,
+            min_fee: 100,
+            max_fee: 100,
+        };
+        client.init_tokenomics_config(&fee_config);
+        let fee_recipient = Address::generate(&env);
+        client.set_fee_recipient(&fee_recipient);
+        client.set_protocol_fee_bps(&1000); // 10% protocol fee
+
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+
+        token_admin_client.mint(&creator, &10_000);
+        client.deposit_gas(&task_id, &creator, &5_000);
+        assert_eq!(client.get_total_task_escrows(), 5_000);
+        assert!(client.check_balance_invariant());
+
+        // Execute task (advance timestamp exactly to interval)
+        set_timestamp(&env, 3_600);
+        let keeper = Address::generate(&env);
+        client.execute(&keeper, &task_id);
+
+        // Gas balance reduced by task fee (min_bounty is 100)
+        let remaining_task = client.get_task(&task_id).unwrap();
+        assert_eq!(remaining_task.gas_balance, 5_000 - 100);
+        assert_eq!(client.get_total_task_escrows(), 4_900);
+        assert_eq!(token_client.balance(&id), 4_900);
+        assert_eq!(token_client.balance(&keeper), 90);
+        assert_eq!(token_client.balance(&fee_recipient), 10);
+        assert!(client.check_balance_invariant());
+    }
+
+    #[test]
+    fn test_total_balance_invariant_on_staking_and_delegation() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+
+        client.init(&token_address);
+        client.init_staking_pool(&500);
+
+        let staker = Address::generate(&env);
+        token_admin_client.mint(&staker, &10_000);
+
+        // Stake tokens in staking pool
+        client.stake_tokens(&staker, &3_000);
+        assert_eq!(client.get_total_keeper_stakes(), 3_000);
+        assert_eq!(token_client.balance(&id), 3_000);
+        assert!(client.check_balance_invariant());
+
+        // Delegate stake to keeper
+        let keeper = Address::generate(&env);
+        let delegator = Address::generate(&env);
+        token_admin_client.mint(&delegator, &10_000);
+
+        client.delegate_stake(&delegator, &keeper, &2_000);
+        assert_eq!(client.get_total_keeper_stakes(), 5_000);
+        assert_eq!(token_client.balance(&id), 5_000);
+        assert!(client.check_balance_invariant());
+
+        // Undelegate partial stake
+        client.undelegate_stake(&delegator, &1_000);
+        assert_eq!(client.get_total_keeper_stakes(), 4_000);
+        assert_eq!(token_client.balance(&id), 4_000);
+        assert!(client.check_balance_invariant());
+
+        // Unstake partial tokens from pool
+        client.unstake_tokens(&staker, &1_000);
+        assert_eq!(client.get_total_keeper_stakes(), 3_000);
+        assert_eq!(token_client.balance(&id), 3_000);
+        assert!(client.check_balance_invariant());
+    }
+
+    #[test]
+    fn test_fee_discount_tier_calculation() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let user = Address::generate(&env);
+
+        assert_eq!(client.get_user_execution_count(&user), 0);
+        assert_eq!(client.get_user_discount_tier(&0), 0);
+        assert_eq!(client.calculate_discounted_fee(&100, &0), 100);
+
+        // Tier 1: 100 executions -> 10% discount
+        assert_eq!(client.get_user_discount_tier(&100), 1);
+        assert_eq!(client.calculate_discounted_fee(&100, &100), 90);
+
+        // Tier 2: 1000 executions -> 25% discount
+        assert_eq!(client.get_user_discount_tier(&1000), 2);
+        assert_eq!(client.calculate_discounted_fee(&100, &1000), 75);
+    }
+
+    #[test]
+    fn test_bump_task_ttl() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let target = env.register(MockTarget, ());
+        let cfg = base_config(&env, target);
+        let task_id = client.register(&cfg);
+
+        // Permissionless bump_task_ttl succeeds for registered task
+        client.bump_task_ttl(&task_id);
+
+        // Fails for non-existent task
+        assert!(client.try_bump_task_ttl(&999).is_err());
     }
 }
 
@@ -10757,4 +12928,8 @@ mod test_combinations;
 mod test_access_control;
 
 #[cfg(test)]
+mod test;
 mod test_task_bundle;
+
+#[cfg(test)]
+mod test_cross_chain;

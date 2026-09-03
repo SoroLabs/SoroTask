@@ -8,6 +8,7 @@ const { runStaleTaskCleanup } = require("./staleTasks");
 const { startApiServer } = require("./api");
 const { broadcastEvent } = require("./wsServer");
 const { computeAndStoreLedgerMerkle } = require("./merkleStore");
+const { LedgerAuditor, ensureAuditSchema } = require("./ledgerAuditor");
 const { scheduleArchival } = require("./archival");
 const { pubsub, EVENT_ADDED } = require("./graphql/pubsub");
 const { LedgerHashValidator } = require("./ledgerHashValidator");
@@ -21,6 +22,8 @@ const {
   getWritePool,
   getReadPools,
 } = require("./graphql/db");
+const { WebhookDispatcher } = require("./webhooks/dispatcher");
+const { ParallelLedgerParser } = require("./parallelParser");
 
 // Configuration
 const RPC_URL = "https://soroban-testnet.stellar.org"; // Change as needed
@@ -33,6 +36,7 @@ const STALE_CLEANUP_INTERVAL_MS = 86400000; // 24 hours
 const rpc = new SorobanRpc.Server(RPC_URL);
 const contract = new Contract(CONTRACT_ID);
 
+// Database connection is handled by the PostgreSQL pool in ./graphql/db.js (Issue #1064)
 // Initialize ledger hash validator for reorg detection (Issue #1065)
 const ledgerHashValidator = new LedgerHashValidator({
   rpc,
@@ -79,6 +83,41 @@ const gapDetector = new LedgerGapDetector({
       `Cache flushed to prevent stale reads.`
     );
   },
+});
+
+// Issue #798: real-time webhook dispatch to task creators on execution/cancel.
+// Dispatches (with HMAC signature + exponential backoff) whenever a task's
+// creator registered a webhook_url. Failures never break event ingestion.
+const webhookDispatcher = new WebhookDispatcher();
+
+async function dispatchTaskWebhook({ name, taskId, data, ledgerSequence }) {
+  if (name !== "TaskExecuted" && name !== "TaskCancelled") return;
+  if (!taskId) return;
+  try {
+    const task = await getIndexedTask(taskId);
+    if (!task || !task.webhook_url) return;
+    await webhookDispatcher.dispatch({
+      destinationId: `${taskId}`, // scoped so circuit breaking is per-destination
+      url: task.webhook_url,
+      secretKey: task.webhook_secret_key || undefined,
+      body: {
+        event: name,
+        taskId,
+        creator: data && data.creator ? data.creator : task.creator,
+        ledgerSequence: ledgerSequence || null,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    console.warn(`[Webhook] Delivery to task ${taskId} failed: ${err.message}`);
+  }
+}
+
+// Issue #797: multi-threaded parallel parsing pipeline. A worker-thread pool
+// divides the ledger sequence range across workers; events are then committed
+// to the DB in a single transaction before per-event side effects run.
+const parallelLedgerParser = new ParallelLedgerParser({
+  concurrency: Math.max(2, parseInt(process.env.PARSE_CONCURRENCY, 10) || 4),
 });
 
 // Event handler mapping
@@ -190,6 +229,10 @@ async function handleEvent(event) {
     }
   );
   stmt.finalize();
+
+  // Issue #798: notify the task creator in real time (HMAC-signed) when their
+  // task is executed or cancelled on-chain.
+  await dispatchTaskWebhook({ name, taskId, data: JSON.parse(dataJson || "{}"), ledgerSequence: event.ledgerSequence });
 
   // After storing event, reconcile this task to ensure state is correct
   if (taskId) {
@@ -475,6 +518,17 @@ async function poll() {
     }
 
     const touchedLedgers = new Set();
+
+    // Issue #797: parse this batch across a worker-thread pool (dividing the
+    // ledger sequence range) and commit with a single-transaction insert before
+    // running per-event side effects. handleEvent below re-inserts with
+    // INSERT OR IGNORE, so the UNIQUE constraint dedups and nothing is stored
+    // twice.
+    if (response.events.length > 0) {
+      const parsedBatch = await parallelLedgerParser.parseBatch(response.events);
+      await parallelLedgerParser.batchWriteToDb(db, parsedBatch, CONTRACT_ID);
+    }
+
     for (const event of response.events) {
       await handleEvent(event);
       touchedLedgers.add(event.ledgerSequence);
@@ -587,6 +641,20 @@ if (!handleCLI()) {
   // Start periodic reconciliation
   console.log("Starting periodic reconciliation (every 5 minutes)...");
   setInterval(reconcileAll, RECONCILE_INTERVAL_MS);
+
+  // Issue #800: background ledger integrity audit — recompute per-ledger Merkle
+  // roots and alert operators the moment the store diverges from what was
+  // anchored at ingest time (catches silent corruption / parser bugs).
+  ensureAuditSchema(dbDeps).catch((err) => {
+    console.error("[LedgerAuditor] Schema init error:", err.message);
+  });
+  const ledgerAuditor = new LedgerAuditor({
+    deps: dbDeps,
+    rpc,
+    intervalMs: Number(process.env.AUDIT_INTERVAL_MS || 15 * 60 * 1000),
+    maxLedgers: Number(process.env.AUDIT_MAX_LEDGERS || 64),
+  });
+  ledgerAuditor.start();
 
   // Start synthetic transaction monitoring for end-to-end ingestion health
   const syntheticMonitor = new SyntheticMonitor({

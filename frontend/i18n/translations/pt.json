@@ -1,0 +1,96 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "Conectar Carteira",
+    "close": "Fechar",
+    "cancel": "Cancelar",
+    "save": "Salvar",
+    "edit": "Editar",
+    "delete": "Excluir",
+    "loading": "Carregando...",
+    "error": "Erro",
+    "success": "Sucesso",
+    "warning": "Aviso",
+    "no_data": "Nenhum dado disponível"
+  },
+  "calendar": {
+    "title": "Calendário de Agendamento de Tarefas",
+    "today": "Hoje",
+    "previous_month": "Mês anterior",
+    "next_month": "Próximo mês",
+    "timezone": "Fuso horário",
+    "legend": {
+      "today": "Hoje",
+      "task_with_deadline": "Tarefa com prazo",
+      "multiple_tasks": "Várias tarefas na mesma data",
+      "past_deadline": "Prazo expirado"
+    },
+    "selected_date_title": "Tarefas em {date}",
+    "no_tasks_scheduled": "Nenhuma tarefa agendada",
+    "schedule_calendar": "Calendário de Agendamento"
+  },
+  "calendar_day": {
+    "more_button": "+{count} mais",
+    "tasks_label": "{count} tarefa{plural}"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "{count} tarefa{plural} agendada(s)",
+    "click_task_to_view": "Clique na tarefa para ver os detalhes"
+  },
+  "task_detail": {
+    "title": "Detalhes da Tarefa",
+    "status": "Status",
+    "contract_address": "Endereço do Contrato",
+    "description": "Descrição",
+    "schedule_settings": "Configurações de Agendamento",
+    "execution_interval": "Intervalo de Execução",
+    "gas_balance": "Saldo de Gás",
+    "next_execution": "Próxima Execução",
+    "deadline": "Prazo",
+    "due_date": "Data de Vencimento",
+    "time_until_deadline": "Tempo até o Prazo",
+    "due_today": "Vence Hoje!",
+    "overdue_by": "Atrasado por {days} dia{plural}",
+    "days_remaining": "{days} dia{plural} restante(s)",
+    "created": "Criado",
+    "timezone_label": "Fuso horário",
+    "tags": "Tags",
+    "edit_task": "Editar Tarefa",
+    "view_logs": "Ver Logs",
+    "status_pending": "Pendente",
+    "status_active": "Ativa",
+    "status_completed": "Concluída",
+    "status_failed": "Falhou",
+    "status_paused": "Pausada"
+  },
+  "forms": {
+    "create_automation_task": "Criar Tarefa de Automação",
+    "your_tasks": "Suas Tarefas",
+    "target_contract_address": "Endereço do Contrato Alvo",
+    "contract_placeholder": "C...",
+    "function_name": "Nome da Função",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "Intervalo (segundos)",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "Saldo de Gás (XLM)",
+    "gas_balance_placeholder": "10",
+    "register_task": "Registrar Tarefa",
+    "no_tasks_registered_yet": "Nenhuma tarefa registrada ainda."
+  },
+  "execution_logs": {
+    "title": "Logs de Execução",
+    "task_id": "ID da Tarefa",
+    "target": "Alvo",
+    "keeper": "Guardião",
+    "status": "Status",
+    "timestamp": "Data/Hora",
+    "status_success": "Sucesso",
+    "mins_ago": "há {mins} min"
+  },
+  "formatting": {
+    "hours_short": "h",
+    "seconds_short": "s",
+    "interval_display": "{hours}h ({seconds} segundos)",
+    "xlm_unit": "XLM"
+  }
+}

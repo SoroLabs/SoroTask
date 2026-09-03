@@ -7,7 +7,11 @@ const {
   DEFAULT_MAX_ATTEMPTS,
 } = require("../src/webhooks/backoff");
 const { CircuitBreakerRegistry } = require("../src/webhooks/circuitBreaker");
-const { WebhookDispatcher } = require("../src/webhooks/dispatcher");
+const {
+  WebhookDispatcher,
+  signWebhookPayload,
+  SIGNATURE_HEADER,
+} = require("../src/webhooks/dispatcher");
 const {
   resetDeadLetterStore,
   listDeadLetters,
@@ -30,6 +34,51 @@ test("attempt schedule includes five attempts", () => {
   assert.equal(schedule.length, 5);
   assert.equal(schedule[0].attempt, 1);
   assert.equal(schedule[4].attempt, 5);
+});
+
+test("dispatcher signs payload with HMAC-SHA256 when a secret key is registered", async () => {
+  const calls = [];
+  const dispatcher = new WebhookDispatcher({
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200 };
+    },
+    sleep: async () => {},
+  });
+
+  const body = { hello: "world" };
+  await dispatcher.dispatch({
+    destinationId: "dest-signed",
+    url: "https://example.com/hook",
+    body,
+    secretKey: "super-secret",
+  });
+
+  assert.equal(calls.length, 1);
+  const sentHeaders = calls[0].init.headers;
+  const payload = calls[0].init.body;
+  assert.ok(sentHeaders[SIGNATURE_HEADER]);
+  const expected = signWebhookPayload(payload, "super-secret");
+  assert.equal(sentHeaders[SIGNATURE_HEADER], expected);
+});
+
+test("dispatcher omits signature header when no secret key is configured", async () => {
+  const calls = [];
+  const dispatcher = new WebhookDispatcher({
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200 };
+    },
+    sleep: async () => {},
+  });
+
+  await dispatcher.dispatch({
+    destinationId: "dest-unsigned",
+    url: "https://example.com/hook",
+    body: { plain: true },
+  });
+
+  assert.equal(calls[0].init.headers[SIGNATURE_HEADER], undefined);
 });
 
 test("dispatcher succeeds on first attempt", async () => {

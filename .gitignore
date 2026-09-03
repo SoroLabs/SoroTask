@@ -83,3 +83,9 @@ docker-compose.*.override.yml
 # Test snapshots
 __snapshots__/
 *.snap
+
+# Git merge conflict dumps & temporary test scripts
+conflicts_*.txt
+merge_output_*.txt
+test-rpc.js
+

@@ -1,12 +1,30 @@
+const { createHmac } = require("node:crypto");
 const { DEFAULT_MAX_ATTEMPTS, computeBackoffDelayMs } = require("./backoff");
 const { CircuitBreakerRegistry } = require("./circuitBreaker");
 const { storeDeadLetter } = require("./deadLetterStore");
+
+const SIGNATURE_HEADER = "x-sorotask-signature";
+const SIGNATURE_PREFIX = "sha256=";
+
+/**
+ * Sign a webhook payload with HMAC-SHA256 using the destination's secret key.
+ * Returns undefined when no secret key is configured, so the caller can skip
+ * the signature header entirely for unauthenticated webhooks.
+ * @param {string} payload JSON string to sign
+ * @param {string} secretKey base64 secret key registered by the task creator
+ * @returns {string | undefined}
+ */
+function signWebhookPayload(payload, secretKey) {
+  if (!secretKey) return undefined;
+  return `${SIGNATURE_PREFIX}${createHmac("sha256", secretKey).update(payload).digest("hex")}`;
+}
 
 /**
  * @typedef {object} WebhookDeliveryRequest
  * @property {string} destinationId
  * @property {string} url
  * @property {object} body
+ * @property {string} [secretKey] - Optional base64 secret used to HMAC-sign the payload
  */
 
 class WebhookDispatcher {
@@ -25,9 +43,16 @@ class WebhookDispatcher {
   }
 
   async dispatch(request) {
-    const { destinationId, url, body } = request;
+    const { destinationId, url, body, secretKey } = request;
     if (!destinationId || !url) {
       throw new Error("destinationId and url are required");
+    }
+
+    const payload = JSON.stringify(body);
+    const signature = signWebhookPayload(payload, secretKey);
+    const headers = { "Content-Type": "application/json" };
+    if (signature) {
+      headers[SIGNATURE_HEADER] = signature;
     }
 
     if (this.circuitBreaker.isOpen(destinationId)) {
@@ -55,8 +80,8 @@ class WebhookDispatcher {
       try {
         const response = await this.fetchImpl(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          headers,
+          body: payload,
         });
         if (!response.ok) {
           throw new Error(`Webhook returned HTTP ${response.status}`);
@@ -82,4 +107,4 @@ class WebhookDispatcher {
   }
 }
 
-module.exports = { WebhookDispatcher };
+module.exports = { WebhookDispatcher, signWebhookPayload, SIGNATURE_HEADER, SIGNATURE_PREFIX };

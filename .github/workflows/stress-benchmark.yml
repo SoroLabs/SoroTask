@@ -1,0 +1,32 @@
+name: End-to-End Stress & Chaos Engineering Benchmark Suite
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  stress-benchmark:
+    name: Stress & Chaos Load Benchmark Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Run End-to-End Stress & Chaos Benchmark Suite
+        run: |
+          node tests/stress/load_stress_suite.js
+
+      - name: Upload Benchmark Report Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-benchmark-report
+          path: tests/stress/stress-benchmark-report.json

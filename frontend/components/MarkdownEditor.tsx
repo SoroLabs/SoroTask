@@ -1,6 +1,7 @@
-'use client';
+"use client";
 
-import React, { useState, useCallback, useId } from 'react';
+import React, { useState, useCallback, useId } from "react";
+import { sanitizeHtml } from "@/src/lib/sanitize";
 
 // ---------------------------------------------------------------------------
 // Minimal inline syntax highlighter — no external runtime required.
@@ -11,15 +12,15 @@ import React, { useState, useCallback, useId } from 'react';
 
 function escapeHtml(text: string): string {
   return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /** Very lightweight tokeniser — good enough for task instructions. */
 function renderMarkdown(raw: string): string {
-  const lines = raw.split('\n');
+  const lines = raw.split("\n");
   const out: string[] = [];
   let i = 0;
 
@@ -35,8 +36,10 @@ function renderMarkdown(raw: string): string {
         codeLines.push(escapeHtml(lines[i]));
         i++;
       }
-      const langAttr = lang ? ` data-lang="${escapeHtml(lang)}"` : '';
-      out.push(`<pre class="md-code-block"${langAttr}><code>${codeLines.join('\n')}</code></pre>`);
+      const langAttr = lang ? ` data-lang="${escapeHtml(lang)}"` : "";
+      out.push(
+        `<pre class="md-code-block"${langAttr}><code>${codeLines.join("\n")}</code></pre>`,
+      );
       i++;
       continue;
     }
@@ -45,14 +48,18 @@ function renderMarkdown(raw: string): string {
     const headingMatch = line.match(/^(#{1,6})\s+(.*)/);
     if (headingMatch) {
       const level = headingMatch[1].length;
-      out.push(`<h${level} class="md-h${level}">${inlineRender(headingMatch[2])}</h${level}>`);
+      out.push(
+        `<h${level} class="md-h${level}">${inlineRender(headingMatch[2])}</h${level}>`,
+      );
       i++;
       continue;
     }
 
     // Blockquote
     if (/^>/.test(line)) {
-      out.push(`<blockquote class="md-blockquote">${inlineRender(line.slice(1).trim())}</blockquote>`);
+      out.push(
+        `<blockquote class="md-blockquote">${inlineRender(line.slice(1).trim())}</blockquote>`,
+      );
       i++;
       continue;
     }
@@ -66,7 +73,9 @@ function renderMarkdown(raw: string): string {
 
     // Ordered list item
     if (/^\d+\.\s/.test(line)) {
-      out.push(`<li class="md-li">${inlineRender(line.replace(/^\d+\.\s/, '').trim())}</li>`);
+      out.push(
+        `<li class="md-li">${inlineRender(line.replace(/^\d+\.\s/, "").trim())}</li>`,
+      );
       i++;
       continue;
     }
@@ -79,7 +88,7 @@ function renderMarkdown(raw: string): string {
     }
 
     // Empty line → paragraph break
-    if (line.trim() === '') {
+    if (line.trim() === "") {
       out.push('<p class="md-p"></p>');
       i++;
       continue;
@@ -90,23 +99,28 @@ function renderMarkdown(raw: string): string {
     i++;
   }
 
-  return out.join('\n');
+  return out.join("\n");
 }
 
 function inlineRender(text: string): string {
-  return escapeHtml(text)
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>')
-    // Bold + italic
-    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-    // Bold
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    // Italic
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    // Strikethrough
-    .replace(/~~(.+?)~~/g, '<del>$1</del>')
-    // Links
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  return (
+    escapeHtml(text)
+      // Inline code
+      .replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>')
+      // Bold + italic
+      .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
+      // Bold
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      // Italic
+      .replace(/\*(.+?)\*/g, "<em>$1</em>")
+      // Strikethrough
+      .replace(/~~(.+?)~~/g, "<del>$1</del>")
+      // Links
+      .replace(
+        /\[([^\]]+)\]\(([^)]+)\)/g,
+        '<a class="md-link" href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+      )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -126,19 +140,31 @@ interface MarkdownEditorProps {
   minHeight?: number;
 }
 
-type Tab = 'write' | 'preview';
+type Tab = "write" | "preview";
 
-const TOOLBAR_ACTIONS: Array<{ label: string; title: string; prefix: string; suffix: string; multiline?: boolean }> = [
-  { label: 'B', title: 'Bold', prefix: '**', suffix: '**' },
-  { label: 'I', title: 'Italic', prefix: '*', suffix: '*' },
-  { label: '~~', title: 'Strikethrough', prefix: '~~', suffix: '~~' },
-  { label: '<>', title: 'Inline code', prefix: '`', suffix: '`' },
-  { label: '```', title: 'Code block', prefix: '```\n', suffix: '\n```', multiline: true },
-  { label: 'H1', title: 'Heading 1', prefix: '# ', suffix: '' },
-  { label: 'H2', title: 'Heading 2', prefix: '## ', suffix: '' },
-  { label: '—', title: 'Horizontal rule', prefix: '\n---\n', suffix: '' },
-  { label: '>', title: 'Blockquote', prefix: '> ', suffix: '' },
-  { label: '• ', title: 'List item', prefix: '- ', suffix: '' },
+const TOOLBAR_ACTIONS: Array<{
+  label: string;
+  title: string;
+  prefix: string;
+  suffix: string;
+  multiline?: boolean;
+}> = [
+  { label: "B", title: "Bold", prefix: "**", suffix: "**" },
+  { label: "I", title: "Italic", prefix: "*", suffix: "*" },
+  { label: "~~", title: "Strikethrough", prefix: "~~", suffix: "~~" },
+  { label: "<>", title: "Inline code", prefix: "`", suffix: "`" },
+  {
+    label: "```",
+    title: "Code block",
+    prefix: "```\n",
+    suffix: "\n```",
+    multiline: true,
+  },
+  { label: "H1", title: "Heading 1", prefix: "# ", suffix: "" },
+  { label: "H2", title: "Heading 2", prefix: "## ", suffix: "" },
+  { label: "—", title: "Horizontal rule", prefix: "\n---\n", suffix: "" },
+  { label: ">", title: "Blockquote", prefix: "> ", suffix: "" },
+  { label: "• ", title: "List item", prefix: "- ", suffix: "" },
 ];
 
 /**
@@ -149,13 +175,13 @@ const TOOLBAR_ACTIONS: Array<{ label: string; title: string; prefix: string; suf
  * Drop-in replacement for a plain <textarea> in task instruction fields.
  */
 export default function MarkdownEditor({
-  value = '',
+  value = "",
   onChange,
-  placeholder = 'Write task instructions using **Markdown**…\n\nTip: wrap code in ```backticks```',
-  label = 'Task instructions',
+  placeholder = "Write task instructions using **Markdown**…\n\nTip: wrap code in ```backticks```",
+  label = "Task instructions",
   minHeight = 200,
 }: MarkdownEditorProps) {
-  const [activeTab, setActiveTab] = useState<Tab>('write');
+  const [activeTab, setActiveTab] = useState<Tab>("write");
   const [internalValue, setInternalValue] = useState(value);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const editorId = useId();
@@ -168,7 +194,7 @@ export default function MarkdownEditor({
       if (!onChange) setInternalValue(v);
       onChange?.(v);
     },
-    [onChange]
+    [onChange],
   );
 
   /** Insert markup around the current selection or at the cursor. */
@@ -188,27 +214,28 @@ export default function MarkdownEditor({
       // Restore selection inside the newly inserted markup
       requestAnimationFrame(() => {
         ta.focus();
-        const cursorPos = start + prefix.length + selected.length + suffix.length;
+        const cursorPos =
+          start + prefix.length + selected.length + suffix.length;
         ta.setSelectionRange(cursorPos, cursorPos);
       });
     },
-    [onChange]
+    [onChange],
   );
 
   return (
-    <div className="md-editor-root" style={{ fontFamily: 'inherit' }}>
+    <div className="md-editor-root" style={{ fontFamily: "inherit" }}>
       {/* Tab bar */}
       <div
         role="tablist"
         aria-label={`${label} editor tabs`}
         className="md-editor-tabs"
         style={{
-          display: 'flex',
-          borderBottom: '1px solid #3f3f46',
+          display: "flex",
+          borderBottom: "1px solid #3f3f46",
           marginBottom: 0,
         }}
       >
-        {(['write', 'preview'] as Tab[]).map((tab) => (
+        {(["write", "preview"] as Tab[]).map((tab) => (
           <button
             key={tab}
             role="tab"
@@ -217,14 +244,17 @@ export default function MarkdownEditor({
             id={`${editorId}-tab-${tab}`}
             onClick={() => setActiveTab(tab)}
             style={{
-              padding: '6px 16px',
+              padding: "6px 16px",
               fontSize: 13,
               fontWeight: activeTab === tab ? 600 : 400,
-              background: 'transparent',
-              border: 'none',
-              borderBottom: activeTab === tab ? '2px solid #3b82f6' : '2px solid transparent',
-              color: activeTab === tab ? '#e4e4e7' : '#71717a',
-              cursor: 'pointer',
+              background: "transparent",
+              border: "none",
+              borderBottom:
+                activeTab === tab
+                  ? "2px solid #3b82f6"
+                  : "2px solid transparent",
+              color: activeTab === tab ? "#e4e4e7" : "#71717a",
+              cursor: "pointer",
               marginBottom: -1,
             }}
           >
@@ -233,13 +263,13 @@ export default function MarkdownEditor({
         ))}
 
         {/* Toolbar (only in write mode) */}
-        {activeTab === 'write' && (
+        {activeTab === "write" && (
           <div
             style={{
-              display: 'flex',
+              display: "flex",
               gap: 2,
-              marginLeft: 'auto',
-              alignItems: 'center',
+              marginLeft: "auto",
+              alignItems: "center",
               paddingRight: 4,
             }}
           >
@@ -250,15 +280,15 @@ export default function MarkdownEditor({
                 type="button"
                 onClick={() => applyToolbarAction(action.prefix, action.suffix)}
                 style={{
-                  padding: '2px 7px',
+                  padding: "2px 7px",
                   fontSize: 11,
                   fontWeight: 600,
-                  background: '#27272a',
-                  border: '1px solid #3f3f46',
+                  background: "#27272a",
+                  border: "1px solid #3f3f46",
                   borderRadius: 4,
-                  color: '#a1a1aa',
-                  cursor: 'pointer',
-                  fontFamily: 'monospace',
+                  color: "#a1a1aa",
+                  cursor: "pointer",
+                  fontFamily: "monospace",
                 }}
               >
                 {action.label}
@@ -273,7 +303,7 @@ export default function MarkdownEditor({
         role="tabpanel"
         id={`${editorId}-panel-write`}
         aria-labelledby={`${editorId}-tab-write`}
-        hidden={activeTab !== 'write'}
+        hidden={activeTab !== "write"}
       >
         <textarea
           ref={textareaRef}
@@ -284,20 +314,20 @@ export default function MarkdownEditor({
           placeholder={placeholder}
           spellCheck
           style={{
-            width: '100%',
+            width: "100%",
             minHeight,
-            padding: '12px',
-            background: '#18181b',
-            color: '#e4e4e7',
-            border: '1px solid #3f3f46',
-            borderTop: 'none',
-            borderRadius: '0 0 6px 6px',
+            padding: "12px",
+            background: "#18181b",
+            color: "#e4e4e7",
+            border: "1px solid #3f3f46",
+            borderTop: "none",
+            borderRadius: "0 0 6px 6px",
             fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
             fontSize: 13,
             lineHeight: 1.6,
-            resize: 'vertical',
-            outline: 'none',
-            boxSizing: 'border-box',
+            resize: "vertical",
+            outline: "none",
+            boxSizing: "border-box",
           }}
         />
       </div>
@@ -307,24 +337,27 @@ export default function MarkdownEditor({
         role="tabpanel"
         id={`${editorId}-panel-preview`}
         aria-labelledby={`${editorId}-tab-preview`}
-        hidden={activeTab !== 'preview'}
+        hidden={activeTab !== "preview"}
       >
         <div
           className="md-preview"
           style={{
             minHeight,
-            padding: '12px',
-            background: '#18181b',
-            color: '#e4e4e7',
-            border: '1px solid #3f3f46',
-            borderTop: 'none',
-            borderRadius: '0 0 6px 6px',
+            padding: "12px",
+            background: "#18181b",
+            color: "#e4e4e7",
+            border: "1px solid #3f3f46",
+            borderTop: "none",
+            borderRadius: "0 0 6px 6px",
             fontSize: 14,
             lineHeight: 1.7,
-            overflowX: 'auto',
+            overflowX: "auto",
           }}
-          // Safe: renderMarkdown escapes all user input before emitting HTML tags
-          dangerouslySetInnerHTML={{ __html: currentValue.trim() ? renderMarkdown(currentValue) : '<p style="color:#71717a">Nothing to preview yet.</p>' }}
+          dangerouslySetInnerHTML={{
+            __html: currentValue.trim()
+              ? sanitizeHtml(renderMarkdown(currentValue))
+              : '<p style="color:#71717a">Nothing to preview yet.</p>',
+          }}
         />
       </div>
 

@@ -32,12 +32,78 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /generate-proof/plonk:
+    post:
+      operationId: generateProofPlonk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200': { description: PLONK proof generated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /verify-proof/plonk:
+    post:
+      operationId: verifyProofPlonk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200': { description: PLONK proof verified }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /proofs/async:
+    post:
+      operationId: createAsyncProofJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AsyncProofRequest'
+      responses:
+        '202':
+          description: Proof job queued. Poll or stream for progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsyncProofJob'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { description: Constraint unsatisfied }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /proofs/{job_id}/stream:
+    get:
+      operationId: streamAsyncProofJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: The job_id returned by POST /proofs/async
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Server-Sent Events (SSE) stream with status, progress and final proof payload
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '404': { description: Job not found }
   /health:
     get:
       operationId: health
       responses:
         '200': { description: Healthy }
         '503': { description: Unavailable }
+  /metrics:
+    get:
+      operationId: metrics
+      responses:
+        '200': { description: Prometheus metrics }
 components:
   schemas:
     GenerateProofRequest:
@@ -89,6 +155,26 @@ components:
         pi_b: { type: array, minItems: 2, maxItems: 2, items: { type: array, minItems: 2, maxItems: 2, items: { type: string, minLength: 1 } } }
         pi_c: { type: array, minItems: 2, maxItems: 2, items: { type: string, minLength: 1 } }
         publicSignals: { type: array, items: { type: string, minLength: 1 } }
+    AsyncProofRequest:
+      type: object
+      additionalProperties: false
+      required: [taskCondition, clientData]
+      properties:
+        requestId: { type: string, format: uuid }
+        taskId: { type: integer, format: int64, minimum: 1 }
+        circuitId: { type: string, minLength: 1 }
+        circuitVersion: { type: string }
+        taskCondition: { $ref: '#/components/schemas/TaskCondition' }
+        clientData: { $ref: '#/components/schemas/ClientData' }
+    AsyncProofJob:
+      type: object
+      required: [jobId, status, taskId, createdAt]
+      properties:
+        jobId: { type: string, format: uuid }
+        status: { type: string, enum: [queued, processing, completed, failed] }
+        taskId: { type: integer }
+        createdAt: { type: string, format: date-time }
+        pollUrl: { type: string }
     ProblemDetails:
       type: object
       required: [type, title, status, detail]

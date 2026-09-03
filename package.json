@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "prepare": "husky || true",
+    "check:conflict-markers": "./scripts/check-conflict-markers.sh",
     "bundle:audit": "tsx scripts/bundle-audit.ts"
   },
   "devDependencies": {
