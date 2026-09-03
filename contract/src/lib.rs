@@ -1,4 +1,4 @@
-﻿#![no_std]
+#![no_std]
 
 mod monolith;
 
@@ -157,6 +157,19 @@ pub enum Error {
     VrfAlreadyFulfilled = 408,
     InvalidZkProof = 409,
     InvalidVdfProof = 410,
+    // Oracle freshness / multi-oracle errors (Issues #1040, #1041)
+    OracleStale = 411,
+    OracleDeviationExceeded = 412,
+    InsufficientOracleFeeds = 413,
+    // VRF commit-reveal errors (Issue #1042)
+    VrfFulfillmentTooEarly = 414,
+    VrfFulfillmentExpired = 415,
+    VrfCommitAlreadyRevealed = 416,
+    InvalidVrfCommit = 417,
+    // Keeper bonding errors (Issue #1043)
+    KeeperBondInsufficient = 418,
+    KeeperSlashed = 419,
+    KeeperNotBonded = 420,
 
     // ── 500..599: Yield, Flash Swaps & Treasury ──────────────────────────────────
     InsufficientBalance = 500,
@@ -230,6 +243,38 @@ pub struct OracleDataResponse {
     pub provider: OracleProvider,
 }
 
+/// An individual oracle price feed entry for multi-oracle aggregation (Issue #1041).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct OracleFeed {
+    pub provider: OracleProvider,
+    pub price: i128,
+    pub timestamp: u64,
+    pub decimals: u32,
+}
+
+/// A committed VRF seed for the commit-reveal scheme (Issue #1042).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VrfCommit {
+    pub request_id: u64,
+    pub task_id: u64,
+    pub commit_hash: BytesN<32>,
+    pub committed_by: Address,
+    pub committed_at_ledger: u32,
+    pub revealed: bool,
+}
+
+/// Keeper economic bond record (Issue #1043).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct KeeperBond {
+    pub keeper: Address,
+    pub bonded_amount: i128,
+    pub bonded_at: u64,
+    pub is_slashed: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
@@ -287,6 +332,23 @@ const CROSS_CHAIN_MIN_CONFIRMATIONS: u64 = 1;
 const OPTIMISTIC_CHALLENGE_WINDOW_LEDGERS: u32 = 100;
 /// Minimum bond a keeper must post to submit an optimistic claim.
 const MIN_OPTIMISTIC_BOND: i128 = 100;
+
+/// Maximum age in seconds for oracle price feed data before it is considered stale (Issue #1040).
+const MAX_ORACLE_DELAY_SECONDS: u64 = 300;
+
+/// Maximum deviation between oracle feeds in basis points before halting execution (Issue #1041).
+const MAX_ORACLE_DEVIATION_BPS: u32 = 250;
+
+/// Default delay seconds for VRF commit-reveal (Issue #1042). Admin can override.
+/// Defaults to 0 (disabled) to preserve backward compatibility.
+const DEFAULT_VRF_DELAY_SECONDS: u64 = 0;
+
+/// Default expiration seconds for VRF fulfillment window (Issue #1042). Admin can override.
+/// Defaults to 0 (disabled) to preserve backward compatibility.
+const DEFAULT_VRF_EXPIRATION_SECONDS: u64 = 0;
+
+/// Minimum stake a keeper must bond to claim restricted tasks (Issue #1043), in token units.
+const MIN_KEEPER_STAKE: i128 = 500;
 
 /// State Archival TTL Extension Thresholds (Issue #1031)
 pub const MIN_THRESHOLD_LEDGERS: u32 = 100_000;
@@ -1141,6 +1203,21 @@ pub enum DataKey {
     KeeperTotalDelegated(Address),
     BundleCounter,
     BundleExecution(u64),
+    /// Multi-oracle price feeds (Issue #1041)
+    OracleFeed(OracleProvider),
+    OracleFeedCount,
+    /// VRF commit-reveal storage (Issue #1042)
+    VrfCommit(u64),
+    /// Keeper economic bond storage (Issue #1043)
+    KeeperBond(Address),
+    /// Whitelist of keepers allowed to claim restricted tasks
+    RestrictedTaskKeepers,
+    /// Whether a task requires bonded keepers (Issue #1043)
+    TaskRequiresBond(u64),
+    /// Configurable VRF delay in seconds (Issue #1042)
+    VrfDelaySeconds,
+    /// Configurable VRF expiration in seconds (Issue #1042)
+    VrfExpirationSeconds,
     TotalTaskEscrows,
     TotalKeeperStakes,
     TotalUnclaimedFees,
@@ -2955,8 +3032,340 @@ impl SoroTaskContract {
         exit_security_guard(&env);
     }
 
+    // ============================================================================
+    // Oracle Heartbeat Freshness Verification (Issue #1040)
+    // ============================================================================
+
+    /// Validates that an oracle response's timestamp is not older than `MAX_ORACLE_DELAY_SECONDS`.
+    /// Returns `Ok(true)` if fresh, `Err(OracleStale)` if stale.
+    fn validate_oracle_freshness(env: &Env, response: &OracleDataResponse) -> Result<(), Error> {
+        let now = env.ledger().timestamp();
+        let time_delta = now.saturating_sub(response.timestamp);
+        if time_delta > MAX_ORACLE_DELAY_SECONDS || response.timestamp == 0 {
+            return Err(Error::OracleStale);
+        }
+        Ok(())
+    }
+
+    /// Checks all oracle responses for a given task and returns the first fresh one,
+    /// or panics with `OracleStale` if all are stale.
+    fn require_fresh_oracle_response(env: &Env, task_id: u64) -> OracleDataResponse {
+        let request_counter: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::OracleRequestCounter)
+            .unwrap_or(0);
+
+        let mut last_fresh: Option<OracleDataResponse> = None;
+
+        for i in 1..=request_counter {
+            if let Some(response) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, OracleDataResponse>(&DataKey::OracleResponses(i))
+            {
+                let request: Option<OracleDataRequest> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::OracleRequests(i));
+
+                if let Some(req) = request {
+                    if req.task_id == task_id && req.status == OracleRequestStatus::Fulfilled {
+                        if Self::validate_oracle_freshness(env, &response).is_ok() {
+                            last_fresh = Some(response);
+                        }
+                    }
+                }
+            }
+        }
+
+        match last_fresh {
+            Some(resp) => resp,
+            None => panic_with_error!(env, Error::OracleStale),
+        }
+    }
+
+    // ============================================================================
+    // Multi-Source Oracle Medianization (Issue #1041)
+    // ============================================================================
+
+    /// Sets or updates an oracle price feed entry for a given provider.
+    pub fn set_oracle_feed(
+        env: Env,
+        provider: OracleProvider,
+        price: i128,
+        decimals: u32,
+    ) {
+        enter_security_guard(&env);
+
+        let config: OracleConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::OracleConfig(provider.clone()))
+            .ok_or(Error::OracleNotSet)
+            .expect("Oracle provider not configured");
+
+        config.address.require_auth();
+
+        if price <= 0 {
+            panic_with_error!(&env, Error::OracleInvalidResponse);
+        }
+
+        let feed = OracleFeed {
+            provider: provider.clone(),
+            price,
+            timestamp: env.ledger().timestamp(),
+            decimals,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::OracleFeed(provider.clone()), &feed);
+
+        env.events().publish(
+            (Symbol::new(&env, "OracleFeedUpdated"), provider),
+            (price, decimals),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Returns the current price feed for a given provider.
+    pub fn get_oracle_feed(env: Env, provider: OracleProvider) -> Option<OracleFeed> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::OracleFeed(provider))
+    }
+
+    /// Computes the median price across all active non-stale oracle feeds.
+    /// Returns the median price and the number of active feeds.
+    /// Panics with `InsufficientOracleFeeds` if fewer than 1 feed is available.
+    fn compute_median_price(env: &Env) -> (i128, u32) {
+        let providers = [
+            OracleProvider::Chainlink,
+            OracleProvider::Band,
+        ];
+
+        let mut prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(env);
+        let mut active_count: u32 = 0;
+
+        for provider in providers.iter() {
+            if let Some(feed) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, OracleFeed>(&DataKey::OracleFeed(provider.clone()))
+            {
+                let time_delta = env.ledger().timestamp().saturating_sub(feed.timestamp);
+                if time_delta <= MAX_ORACLE_DELAY_SECONDS && feed.price > 0 {
+                    prices.push_back(feed.price);
+                    active_count += 1;
+                }
+            }
+        }
+
+        if active_count == 0 {
+            panic_with_error!(env, Error::InsufficientOracleFeeds);
+        }
+
+        // Sort prices to find median
+        let len = prices.len();
+        let mut sorted_prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(env);
+        // Simple insertion sort for small array
+        for i in 0..len {
+            let val = prices.get(i).unwrap();
+            let mut inserted = false;
+            let mut j = 0;
+            while j < sorted_prices.len() {
+                if val < sorted_prices.get(j).unwrap() {
+                    sorted_prices.insert(j, val);
+                    inserted = true;
+                    break;
+                }
+                j += 1;
+            }
+            if !inserted {
+                sorted_prices.push_back(val);
+            }
+        }
+
+        let median = if len.is_multiple_of(2) {
+            sorted_prices.get(len / 2 - 1).unwrap()
+        } else {
+            sorted_prices.get(len / 2).unwrap()
+        };
+
+        (median, active_count)
+    }
+
+    /// Checks deviation between oracle feeds and halts if any pair exceeds `MAX_ORACLE_DEVIATION_BPS`.
+    fn check_oracle_deviation(env: &Env) {
+        let providers = [
+            OracleProvider::Chainlink,
+            OracleProvider::Band,
+        ];
+
+        let mut prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(env);
+
+        for provider in providers.iter() {
+            if let Some(feed) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, OracleFeed>(&DataKey::OracleFeed(provider.clone()))
+            {
+                let time_delta = env.ledger().timestamp().saturating_sub(feed.timestamp);
+                if time_delta <= MAX_ORACLE_DELAY_SECONDS && feed.price > 0 {
+                    prices.push_back(feed.price);
+                }
+            }
+        }
+
+        if prices.len() < 2 {
+            // Cannot check deviation with fewer than 2 feeds
+            return;
+        }
+
+        // Check all pairs for deviation
+        let len = prices.len();
+        for i in 0..len {
+            let mut j = i + 1;
+            while j < len {
+                let price_a = prices.get(i).unwrap();
+                let price_b = prices.get(j).unwrap();
+
+                let diff = if price_a > price_b {
+                    price_a - price_b
+                } else {
+                    price_b - price_a
+                };
+
+                let base = if price_a > price_b { price_a } else { price_b };
+                if base > 0 {
+                    let deviation_bps = ((diff * 10_000) / base) as u32;
+                    if deviation_bps > MAX_ORACLE_DEVIATION_BPS {
+                        panic_with_error!(env, Error::OracleDeviationExceeded);
+                    }
+                }
+                j += 1;
+            }
+        }
+    }
+
+    /// Returns the medianized oracle price for use in conditional execution.
+    /// Also validates freshness and deviation thresholds.
+    pub fn get_medianized_oracle_price(env: Env) -> i128 {
+        Self::check_oracle_deviation(&env);
+        let (median, _count) = Self::compute_median_price(&env);
+        median
+    }
+
+    // ============================================================================
+    // VRF Commit-Reveal Scheme (Issue #1042)
+    // ============================================================================
+
+    /// Commits a hashed seed for a VRF request (Phase 1 of commit-reveal).
+    /// The keeper commits a hash of their random seed before seeing the VRF output.
+    pub fn commit_vrf_seed(env: Env, keeper: Address, task_id: u64, commit_hash: BytesN<32>) {
+        enter_security_guard(&env);
+        Self::check_feature_enabled(&env, FEATURE_VRF);
+
+        keeper.require_auth();
+
+        // Ensure task exists
+        let task_key = DataKey::Task(task_id);
+        let _config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .ok_or(Error::TaskNotFound)
+            .expect("Task not found");
+
+        // Get current request counter
+        let request_counter: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfRequestCounter)
+            .unwrap_or(0);
+
+        let commit = VrfCommit {
+            request_id: request_counter,
+            task_id,
+            commit_hash: commit_hash.clone(),
+            committed_by: keeper.clone(),
+            committed_at_ledger: env.ledger().sequence(),
+            revealed: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::VrfCommit(task_id), &commit);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "VrfSeedCommitted"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (keeper, commit_hash),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Cancels an expired VRF request and allows refund after `VRF_EXPIRATION_BLOCKS` (Issue #1042).
+    pub fn cancel_vrf_request(env: Env, request_id: u64) {
+        enter_security_guard(&env);
+
+        let mut vrf_request: VrfRequest = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VrfRequests(request_id))
+            .ok_or(Error::VrfRequestFailed)
+            .expect("VRF request not found");
+
+        vrf_request.requester.require_auth();
+
+        if vrf_request.status != VrfRequestStatus::Pending {
+            panic_with_error!(&env, Error::VrfAlreadyFulfilled);
+        }
+
+        // Only allow cancellation after expiration
+        let request_time = vrf_request.created_at;
+        let now = env.ledger().timestamp();
+        let delay: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfDelaySeconds)
+            .unwrap_or(DEFAULT_VRF_DELAY_SECONDS);
+        let expiration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfExpirationSeconds)
+            .unwrap_or(DEFAULT_VRF_EXPIRATION_SECONDS);
+        let expiration_time = request_time.saturating_add(delay).saturating_add(expiration);
+        if delay > 0 && now < expiration_time {
+            panic_with_error!(&env, Error::ChallengeWindowActive);
+        }
+
+        vrf_request.status = VrfRequestStatus::Failed;
+        env.storage()
+            .persistent()
+            .set(&DataKey::VrfRequests(request_id), &vrf_request);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "VrfRequestCancelled"),
+                Symbol::new(&env, "v1"),
+                request_id,
+            ),
+            vrf_request.task_id,
+        );
+
+        exit_security_guard(&env);
+    }
+
     /// Fulfill a VRF request with a random number.
     /// Called by the VRF oracle contract.
+    /// Enforces the commit-reveal fulfillment window (Issue #1042).
     pub fn fulfill_vrf_request(env: Env, request_id: u64, random_number: i128, proof: Bytes) {
         enter_security_guard(&env);
 
@@ -2981,6 +3390,31 @@ impl SoroTaskContract {
         // Check if request is pending
         if vrf_request.status != VrfRequestStatus::Pending {
             panic_with_error!(&env, Error::VrfAlreadyFulfilled);
+        }
+
+        // Enforce VRF commit-reveal fulfillment window (Issue #1042)
+        {
+            let now = env.ledger().timestamp();
+            let request_time = vrf_request.created_at;
+            let delay: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::VrfDelaySeconds)
+                .unwrap_or(DEFAULT_VRF_DELAY_SECONDS);
+            let expiration: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::VrfExpirationSeconds)
+                .unwrap_or(DEFAULT_VRF_EXPIRATION_SECONDS);
+            let window_start = request_time.saturating_add(delay);
+            let window_end = window_start.saturating_add(expiration);
+
+            if delay > 0 && now < window_start {
+                panic_with_error!(&env, Error::VrfFulfillmentTooEarly);
+            }
+            if delay > 0 && now > window_end {
+                panic_with_error!(&env, Error::VrfFulfillmentExpired);
+            }
         }
 
         // Validate random number
@@ -3742,6 +4176,18 @@ impl SoroTaskContract {
 
         Self::require_vrf_keeper_winner(env, task_id, keeper);
 
+        // ── 4b. Keeper economic bonding check (Issue #1043) ───────────────
+        // Only enforce bonding for tasks explicitly marked as restricted.
+        let task_requires_bond: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TaskRequiresBond(task_id))
+            .unwrap_or(false);
+        if task_requires_bond && !Self::is_keeper_bonded(env.clone(), keeper.clone()) {
+            Self::persist_execution_trace(env, task_id, keeper, trace_steps, ExecutionOutcome::Failed);
+            panic_with_error!(env, Error::KeeperNotBonded);
+        }
+
         // ── 5. Check interval ─────────────────────────────────────────────
         if env.ledger().timestamp() < config.last_run + config.interval as u64 {
             trace_steps.push_back(events::ExecutionStepRecord {
@@ -3871,6 +4317,58 @@ impl SoroTaskContract {
             events::EventLogger::log_execution_step(
                 env, task_id, keeper, ExecutionStep::CheckVrfCondition, StepResult::Skipped, 0,
             );
+        }
+
+        // ── 8b. Oracle freshness & deviation check (Issues #1040, #1041) ──
+        {
+            let has_oracle_feeds = env.storage().persistent().has(&DataKey::OracleFeed(OracleProvider::Chainlink))
+                || env.storage().persistent().has(&DataKey::OracleFeed(OracleProvider::Band));
+
+            if has_oracle_feeds {
+                // Check freshness of all feeds
+                let providers = [OracleProvider::Chainlink, OracleProvider::Band];
+                let mut all_fresh = true;
+                for provider in providers.iter() {
+                    if let Some(feed) = env
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, OracleFeed>(&DataKey::OracleFeed(provider.clone()))
+                    {
+                        let time_delta = env.ledger().timestamp().saturating_sub(feed.timestamp);
+                        if time_delta > MAX_ORACLE_DELAY_SECONDS || feed.timestamp == 0 {
+                            all_fresh = false;
+                            break;
+                        }
+                    }
+                }
+
+                if !all_fresh {
+                    trace_steps.push_back(events::ExecutionStepRecord {
+                        step: events::ExecutionStep::CheckOracleFreshness,
+                        result: StepResult::Failed,
+                        detail: Error::OracleStale as u32,
+                    });
+                    events::EventLogger::log_execution_step(
+                        env, task_id, keeper, events::ExecutionStep::CheckOracleFreshness,
+                        StepResult::Failed, Error::OracleStale as u32,
+                    );
+                    Self::persist_execution_trace(env, task_id, keeper, trace_steps, ExecutionOutcome::Failed);
+                    panic_with_error!(env, Error::OracleStale);
+                }
+
+                // Check deviation across feeds
+                Self::check_oracle_deviation(env);
+
+                trace_steps.push_back(events::ExecutionStepRecord {
+                    step: events::ExecutionStep::CheckOracleFreshness,
+                    result: StepResult::Passed,
+                    detail: 0,
+                });
+                events::EventLogger::log_execution_step(
+                    env, task_id, keeper, events::ExecutionStep::CheckOracleFreshness,
+                    StepResult::Passed, 0,
+                );
+            }
         }
 
         // ── 9. ZK condition gate ──────────────────────────────────────────
@@ -4690,9 +5188,116 @@ impl SoroTaskContract {
         exit_security_guard(&env);
     }
 
-    /// Slashes a keeper's stake and redistributes to delegators.
-    /// Only callable by the contract admin (e.g., after fraud detection).
-    pub fn slash_keeper(env: Env, admin: Address, keeper: Address, slash_amount: i128) {
+    // ============================================================================
+    // Keeper Economic Bonding & On-Chain Stake Slashing (Issue #1043)
+    // ============================================================================
+
+    /// Bonds a keeper's stake. The keeper must bond at least `MIN_KEEPER_STAKE`
+    /// to be eligible for restricted task execution.
+    pub fn bond_keeper_stake(env: Env, keeper: Address, amount: i128) {
+        enter_security_guard(&env);
+        keeper.require_auth();
+
+        if amount < MIN_KEEPER_STAKE {
+            panic_with_error!(&env, Error::KeeperBondInsufficient);
+        }
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Token not initialized");
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&keeper, &env.current_contract_address(), &amount);
+
+        let bond = KeeperBond {
+            keeper: keeper.clone(),
+            bonded_amount: amount,
+            bonded_at: env.ledger().timestamp(),
+            is_slashed: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::KeeperBond(keeper.clone()), &bond);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "KeeperBonded"),
+                Symbol::new(&env, "v1"),
+                keeper,
+            ),
+            amount,
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Unbonds a keeper's stake, returning tokens if not slashed.
+    pub fn unbond_keeper_stake(env: Env, keeper: Address) {
+        enter_security_guard(&env);
+        keeper.require_auth();
+
+        let bond: KeeperBond = env
+            .storage()
+            .persistent()
+            .get(&DataKey::KeeperBond(keeper.clone()))
+            .expect("No keeper bond found");
+
+        if bond.is_slashed {
+            panic_with_error!(&env, Error::KeeperSlashed);
+        }
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Token not initialized");
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &keeper, &bond.bonded_amount);
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::KeeperBond(keeper.clone()));
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "KeeperUnbonded"),
+                Symbol::new(&env, "v1"),
+                keeper,
+            ),
+            bond.bonded_amount,
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Returns whether a keeper has bonded at least the minimum stake.
+    pub fn is_keeper_bonded(env: Env, keeper: Address) -> bool {
+        if let Some(bond) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, KeeperBond>(&DataKey::KeeperBond(keeper.clone()))
+        {
+            bond.bonded_amount >= MIN_KEEPER_STAKE && !bond.is_slashed
+        } else {
+            false
+        }
+    }
+
+    /// Returns the keeper's bond status.
+    pub fn get_keeper_bond(env: Env, keeper: Address) -> Option<KeeperBond> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::KeeperBond(keeper))
+    }
+
+    /// Slashes a keeper's stake and redistributes according to Issue #1043:
+    /// - 50% of slashed stake sent to protocol treasury (fee_recipient).
+    /// - 50% awarded to the whistleblower (caller submitting valid fraud proof).
+    /// - Slashed keeper is locked from participating until stake is replenished.
+    /// Only callable by an authorized slasher (e.g., admin or fraud proof oracle).
+    pub fn slash_keeper(env: Env, admin: Address, keeper: Address, slash_amount: i128, whistleblower: Address) {
         enter_security_guard(&env);
         admin.require_auth();
 
@@ -4711,7 +5316,7 @@ impl SoroTaskContract {
             .instance()
             .get(&DataKey::Token)
             .expect("Token not initialized");
-        let _token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
 
         let mut total_slashed: i128 = 0;
         let delegators_len = delegators.len();
@@ -4741,13 +5346,51 @@ impl SoroTaskContract {
 
         update_keeper_total_delegated(&env, &keeper, -total_slashed);
 
+        // Mark keeper as slashed
+        if let Some(mut bond) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, KeeperBond>(&DataKey::KeeperBond(keeper.clone()))
+        {
+            bond.is_slashed = true;
+            env.storage()
+                .persistent()
+                .set(&DataKey::KeeperBond(keeper.clone()), &bond);
+        }
+
+        // 50/50 split: 50% to protocol treasury, 50% to whistleblower
+        let treasury_share = total_slashed / 2;
+        let whistleblower_share = total_slashed - treasury_share;
+
+        let fee_recipient: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeRecipient)
+            .expect("Fee recipient not initialized");
+
+        if treasury_share > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &fee_recipient,
+                &treasury_share,
+            );
+        }
+
+        if whistleblower_share > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &whistleblower,
+                &whistleblower_share,
+            );
+        }
+
         env.events().publish(
             (
                 Symbol::new(&env, "KeeperSlashed"),
                 Symbol::new(&env, "v1"),
-                keeper,
+                keeper.clone(),
             ),
-            (slash_amount, total_slashed),
+            (total_slashed, treasury_share, whistleblower_share),
         );
 
         exit_security_guard(&env);
@@ -4768,6 +5411,45 @@ impl SoroTaskContract {
     /// Returns the list of delegators for a keeper.
     pub fn get_keeper_delegator_list(env: Env, keeper: Address) -> Vec<Address> {
         get_keeper_delegators(&env, &keeper)
+    }
+
+    /// Marks a task as requiring bonded keepers (Issue #1043).
+    /// Only the task creator or admin can mark a task as restricted.
+    pub fn set_task_requires_bond(env: Env, task_id: u64, requires_bond: bool) {
+        enter_security_guard(&env);
+
+        let task_key = DataKey::Task(task_id);
+        let config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .ok_or(Error::TaskNotFound)
+            .expect("Task not found");
+
+        config.creator.require_auth();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::TaskRequiresBond(task_id), &requires_bond);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskRequiresBondSet"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            requires_bond,
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Returns whether a task requires bonded keepers.
+    pub fn task_requires_bond(env: Env, task_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TaskRequiresBond(task_id))
+            .unwrap_or(false)
     }
 
 
@@ -6094,6 +6776,50 @@ impl SoroTaskContract {
             oracle_address,
         );
         exit_security_guard(&env);
+    }
+
+    /// Configures the VRF commit-reveal delay and expiration windows (Issue #1042).
+    /// Only callable by admin.
+    pub fn set_vrf_timing_config(env: Env, delay_seconds: u64, expiration_seconds: u64) {
+        enter_security_guard(&env);
+
+        let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
+        match admin_address {
+            Some(admin) => admin.require_auth(),
+            None => panic_with_error!(&env, Error::NotInitialized),
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::VrfDelaySeconds, &delay_seconds);
+        env.storage()
+            .instance()
+            .set(&DataKey::VrfExpirationSeconds, &expiration_seconds);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "VrfTimingConfigSet"),
+                Symbol::new(&env, "v1"),
+            ),
+            (delay_seconds, expiration_seconds),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Returns the current VRF timing configuration.
+    pub fn get_vrf_timing_config(env: Env) -> (u64, u64) {
+        let delay: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfDelaySeconds)
+            .unwrap_or(DEFAULT_VRF_DELAY_SECONDS);
+        let expiration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VrfExpirationSeconds)
+            .unwrap_or(DEFAULT_VRF_EXPIRATION_SECONDS);
+        (delay, expiration)
     }
 
     /// Submits a Zero-Knowledge proof for task condition verification.

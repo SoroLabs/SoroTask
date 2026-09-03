@@ -38,6 +38,7 @@ pub enum ExecutionStep {
     CallTarget = 13,
     PayKeeper = 14,
     UpdateState = 15,
+    CheckOracleFreshness = 16,
 }
 
 /// Result of a single execution step.
