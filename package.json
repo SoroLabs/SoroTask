@@ -10,7 +10,7 @@
   "devDependencies": {
     "eslint": "^10.9.1",
     "husky": "^9.1.7",
-    "lint-staged": "^17.2.0",
+    "lint-staged": "^17.4.1",
     "prettier": "^3.9.6",
     "tsx": "npm:tsx@latest"
   }
