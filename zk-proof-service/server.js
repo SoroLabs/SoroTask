@@ -40,9 +40,17 @@ const problem = (res, status, title, detail, errors) => res.status(status).type(
   ...(errors ? { errors } : {}),
 });
 
+function resolveApiToken(options = {}) {
+  const token = options.apiToken ?? process.env.ZK_PROOF_API_TOKEN;
+  if (!token && process.env.NODE_ENV === 'production') {
+    throw new Error('ZK_PROOF_API_TOKEN must be configured when NODE_ENV=production');
+  }
+  return token;
+}
+
 function createApp(zkService, options = {}) {
   const app = express();
-  const apiToken = options.apiToken ?? process.env.ZK_PROOF_API_TOKEN;
+  const apiToken = resolveApiToken(options);
   const version = options.version ?? SERVICE_VERSION;
   const startTime = options.startTime ?? Date.now();
   const eciesPrivateKey = options.eciesPrivateKey ?? process.env.ECIES_PRIVATE_KEY;
@@ -94,7 +102,8 @@ function createApp(zkService, options = {}) {
   }
 
   const authenticate = (req, res, next) => {
-    if (!apiToken || req.path === '/health') return next();
+    if (req.path === '/health') return next();
+    if (!apiToken) return problem(res, 401, 'Unauthorized', 'A valid bearer token is required.');
     const header = req.headers.authorization || '';
     if (header !== `Bearer ${apiToken}`) return problem(res, 401, 'Unauthorized', 'A valid bearer token is required.');
     next();
@@ -664,6 +673,10 @@ function createApp(zkService, options = {}) {
 }
 
 async function createServer(options = {}) {
+  // Issue #758: fail fast when auth is misconfigured in production instead of
+  // silently disabling authentication on every endpoint.
+  resolveApiToken(options);
+
   const zkService = options.zkService || new ZKProofService(options.workerCount || CPU_CONCURRENCY, options);
   if (!options.skipInitialize && typeof zkService?.initialize === 'function') {
     zkService.initialize();
