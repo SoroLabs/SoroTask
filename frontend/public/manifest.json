@@ -1,23 +1,56 @@
 {
-  "name": "Ignition Pay & Workspace",
-  "short_name": "Ignition",
-  "description": "Progressive Web App for off-chain task tracking, payments, and dashboard management.",
+  "id": "/",
+  "name": "SoroTask — Automate on Stellar",
+  "short_name": "SoroTask",
+  "description": "SoroTask lets you pay a small XLM fee to Keepers that watch the network and run your Soroban contract calls on schedule.",
+  "lang": "en",
+  "dir": "auto",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "categories": ["finance", "productivity", "utilities"],
+  "background_color": "#0a0a0a",
   "theme_color": "#3b82f6",
   "icons": [
     {
       "src": "/icons/icon-192x192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "/icons/icon-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Create task",
+      "short_name": "New task",
+      "description": "Register a new recurring Soroban task",
+      "url": "/tasks/create"
+    },
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "description": "View task status and keeper metrics",
+      "url": "/dashboard"
+    },
+    {
+      "name": "Template marketplace",
+      "short_name": "Templates",
+      "description": "Fork a community task template",
+      "url": "/marketplace/templates"
     }
   ]
 }

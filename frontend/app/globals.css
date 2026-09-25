@@ -1,18 +1,63 @@
 @import "tailwindcss";
 
-:root {
+/* ===========================================================================
+   Theme tokens (#1241)
+
+   Every colour a component can reference is defined in ALL THREE themes. The
+   previous version only defined the `[data-theme="dark"]` block, so in light
+   mode `var(--bg-surface)` and friends resolved to nothing and components fell
+   back to inherited values — which is what the failing contrast audits on custom
+   components were picking up.
+
+   `src/lib/theme/themeEngine.ts` mirrors these values in TypeScript so the
+   ratios can be asserted in a unit test. Change one, change both.
+   =========================================================================== */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
   --background: var(--theme-background, var(--fallback-bg, #ffffff));
   --foreground: var(--theme-foreground, var(--fallback-fg, #171717));
+
+  --bg-base: #ffffff;
+  --bg-surface: #f9fafb;
+  --bg-elevated: #f3f4f6;
+  --bg-overlay: rgba(23, 23, 23, 0.5);
+
+  --border: #d4d4d8;
+  --border-subtle: #e4e4e7;
+
+  --text-primary: #171717;
+  --text-secondary: #404040;
+  --text-muted: #595959;
+
+  --accent: #1d4ed8;
+  --accent-hover: #1e40af;
+  --accent-foreground: #ffffff;
+  --accent-shadow: rgba(29, 78, 216, 0.2);
+
+  --status-success: #14532d;
+  --status-warning: #713f12;
+  --status-error: #991b1b;
+
+  --input-bg: #ffffff;
+  --input-border: #86868e;
+  --input-text: #171717;
+
   /* Focus ring tokens – single source of truth */
-  --focus-ring-color: #3b82f6;
+  --focus-ring-color: #1d4ed8;
   --focus-ring-offset: 3px;
   --focus-ring-width: 3px;
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
+
   --background: var(--theme-background, var(--fallback-bg, #0a0a0a));
   --foreground: var(--theme-foreground, var(--fallback-fg, #ededed));
-  --bg-base: #09090b;
+
+  --bg-base: #0a0a0a;
   --bg-surface: #18181b;
   --bg-elevated: #27272a;
   --bg-overlay: rgba(9, 9, 11, 0.6);
@@ -22,14 +67,58 @@
 
   --text-primary: #fafafa;
   --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
+  --text-muted: #909098;
 
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
+  --accent: #60a5fa;
+  --accent-hover: #93c5fd;
+  --accent-foreground: #0a0a0a;
   --accent-shadow: rgba(59, 130, 246, 0.25);
 
-  --input-bg: #09090b;
-  --input-border: #3f3f46;
+  --status-success: #86efac;
+  --status-warning: #fcd34d;
+  --status-error: #fca5a5;
+
+  --input-bg: #0a0a0a;
+  --input-border: #75757e;
+  --input-text: #fafafa;
+
+  --focus-ring-color: #60a5fa;
+}
+
+/* High-contrast OLED: pure black so unlit pixels draw no power, with every
+   text pair held to WCAG AAA (7:1) rather than AA. */
+[data-theme="oled"] {
+  color-scheme: dark;
+
+  --background: var(--theme-background, var(--fallback-bg, #000000));
+  --foreground: var(--theme-foreground, var(--fallback-fg, #ffffff));
+
+  --bg-base: #000000;
+  --bg-surface: #0a0a0a;
+  --bg-elevated: #171717;
+  --bg-overlay: rgba(0, 0, 0, 0.8);
+
+  --border: #a3a3a3;
+  --border-subtle: #52525b;
+
+  --text-primary: #ffffff;
+  --text-secondary: #e5e5e5;
+  --text-muted: #d4d4d8;
+
+  --accent: #93c5fd;
+  --accent-hover: #bfdbfe;
+  --accent-foreground: #000000;
+  --accent-shadow: rgba(147, 197, 253, 0.35);
+
+  --status-success: #bbf7d0;
+  --status-warning: #fde68a;
+  --status-error: #fecaca;
+
+  --input-bg: #000000;
+  --input-border: #a3a3a3;
+  --input-text: #ffffff;
+
+  --focus-ring-color: #93c5fd;
 }
 
 /* ── Tailwind theme bridge ────────────────────────────────── */
@@ -40,19 +129,27 @@
   --font-mono: "Consolas", "SFMono-Regular", monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-    --focus-ring-color: #60a5fa;
-  }
-}
+/* No system-preference block any more: `data-theme` is always resolved before
+   paint by app/theme-init.tsx, so honouring the OS here as well would let a
+   stale media query override an explicit user choice. */
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: "Segoe UI", "Inter", system-ui, sans-serif;
   min-height: 100vh;
+  /* Theme changes swap a large number of custom properties at once. Letting
+     that animate produces a visible "sweep" across the page, which is the
+     other half of the perceived flicker. */
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+/* Applied for one frame by next-themes' `disableTransitionOnChange`, which sets
+   this attribute around the swap. */
+html[data-theme-transition] *,
+html[data-theme-transition] *::before,
+html[data-theme-transition] *::after {
+  transition: none !important;
 }
 
 img {
@@ -156,4 +253,41 @@ input[type="checkbox"] {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border-width: 0;
+}
+
+/* ─── Right-to-left layout (#1242) ──────────────────────────────────────
+   `dir="rtl"` is set on <html> by LocaleContext when an RTL locale is
+   selected. Everything below is expressed with logical properties so the
+   existing LTR markup mirrors without needing a parallel set of rules.
+   `dir` also flips most flex/grid and text alignment automatically, so only
+   the genuinely direction-dependent utilities are listed here. */
+[dir="rtl"] {
+  text-align: right;
+}
+
+/* `border-inline-start` mirrors for the one place a physical side is hardcoded
+   in a component: the skip-to-content link. */
+[dir="rtl"] .skip-nav {
+  left: auto;
+  right: -9999px;
+}
+
+[dir="rtl"] .skip-nav:focus-visible {
+  left: auto;
+  right: 1rem;
+}
+
+/* Monospace contract addresses and hashes are LTR even in an RTL paragraph,
+   or the trailing characters visually reorder. */
+[dir="rtl"] .font-mono {
+  direction: ltr;
+  unicode-bidi: embed;
+  text-align: inherit;
+}
+
+/* Collapse the language picker chevron to the leading edge under RTL; it is
+   positioned with `right` in the component. */
+[dir="rtl"] #language-selector {
+  padding-left: 2rem;
+  padding-right: 0.75rem;
 }
