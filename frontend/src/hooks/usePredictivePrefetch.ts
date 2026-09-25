@@ -2,14 +2,29 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import { useRoutePrefetcher, type RouteQueryResolver } from "@/src/hooks/useRoutePrefetcher";
 import { PrefetchManager } from "@/src/lib/predictive-prefetch/prefetch-manager";
 import { DEFAULT_PREFETCH_CONFIG } from "@/src/lib/predictive-prefetch/types";
 import type { PrefetchConfig, PrefetchItem, PrefetchMetrics, PredictionResult, FlowSession } from "@/src/lib/predictive-prefetch/types";
 
 interface UsePredictivePrefetchOptions {
   config?: Partial<PrefetchConfig>;
+  /**
+   * Overrides how a predicted route is fetched.
+   *
+   * Leave unset in the app: the default now wires the prediction through
+   * `useRoutePrefetcher`, which prefetches the route bundle *and* its query
+   * data. It used to default to `() => {}`, so every prediction the engine
+   * computed was discarded and nothing was ever actually prefetched
+   * (Issue #1254).
+   *
+   * Pass a spy here in tests, or a no-op to observe predictions without
+   * issuing requests.
+   */
   prefetchFn?: (route: string) => void;
   enabled?: boolean;
+  /** Query dependencies to warm alongside each predicted route. */
+  resolveQueries?: RouteQueryResolver;
 }
 
 interface UsePredictivePrefetchReturn {
@@ -26,8 +41,9 @@ interface UsePredictivePrefetchReturn {
 export function usePredictivePrefetch(
   options: UsePredictivePrefetchOptions = {},
 ): UsePredictivePrefetchReturn {
-  const { config, prefetchFn, enabled = true } = options;
+  const { config, prefetchFn, enabled = true, resolveQueries } = options;
   const pathname = usePathname();
+  const { prefetchRoute } = useRoutePrefetcher({ resolveQueries, enabled });
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [predictions, setPredictions] = useState<PredictionResult | null>(null);
@@ -47,6 +63,12 @@ export function usePredictivePrefetch(
 
   const managerRef = useRef<PrefetchManager | null>(null);
   const previousPathRef = useRef<string | null>(null);
+  // The manager is built once and holds the learned transition matrix, so the
+  // prefetch callback is reached through a ref rather than being baked in —
+  // rebuilding the manager to pick up a new callback would throw that history
+  // away on every render.
+  const prefetchRouteRef = useRef(prefetchRoute);
+  prefetchRouteRef.current = prefetchRoute;
 
   useEffect(() => {
     if (!enabled) {
@@ -58,7 +80,8 @@ export function usePredictivePrefetch(
 
     try {
       if (!managerRef.current) {
-        const defaultPrefetchFn = prefetchFn || (() => {});
+        // Route through the real prefetcher unless the caller supplied its own.
+        const defaultPrefetchFn = prefetchFn ?? ((route: string) => prefetchRouteRef.current(route));
         const manager = new PrefetchManager(defaultPrefetchFn, config);
         managerRef.current = manager;
 
