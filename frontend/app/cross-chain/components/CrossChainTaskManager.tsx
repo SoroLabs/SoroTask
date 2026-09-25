@@ -2,6 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { useCrossChainTasks } from '../useCrossChainTasks';
+import BridgeLifecycleTracker from './BridgeLifecycleTracker';
 import { CrossChainTaskRow } from './CrossChainTaskRow';
 import { NETWORKS, type NetworkId, type CrossChainTaskStatus } from '../types';
 import { StateProofVerifierPanel } from './StateProofVerifierPanel';
@@ -166,6 +167,20 @@ export function CrossChainTaskManager() {
                 );
               })}
             </div>
+          )}
+        </section>
+
+        {/* Message lifecycle per task (Issue #1252). Rendered per task rather
+            than as one aggregate view: "where is my message" is a question
+            about one message, and averaging several hides the stuck one. */}
+        <section aria-label="Cross-chain message lifecycles" className="space-y-4">
+          <h2 className="text-sm font-semibold text-neutral-300">Message Lifecycle</h2>
+          {tasks.length === 0 ? (
+            <p className="text-xs text-neutral-600">No tasks to track.</p>
+          ) : (
+            tasks.map((task) => (
+              <BridgeLifecycleTracker key={task.id} task={task} events={bridgeEvents} />
+            ))
           )}
         </section>
 
