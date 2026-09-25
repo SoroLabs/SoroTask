@@ -157,3 +157,45 @@ input[type="checkbox"] {
   white-space: nowrap;
   border-width: 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * Adaptive visual quality (Issue #1253)
+ *
+ * The quality guard writes `data-quality-tier` onto <html> when sustained
+ * frame rate drops. Switching effects off here rather than in each component
+ * means an animated element added later is covered without touching it, and
+ * one style recalculation replaces a re-render of every subscriber.
+ *
+ * `reduced` removes motion and blur, which are the expensive parts. `minimal`
+ * additionally drops shadows and gradients, which cost on paint rather than
+ * on composite and only matter on the slowest devices.
+ * ------------------------------------------------------------------------- */
+
+:root[data-quality-tier="reduced"] *,
+:root[data-quality-tier="minimal"] * {
+  /* Not `animation: none` — that would collapse elements whose layout depends
+     on an animation's fill mode. A negligible duration ends them immediately
+     in their final state instead. */
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+:root[data-quality-tier="reduced"] *,
+:root[data-quality-tier="minimal"] * {
+  backdrop-filter: none !important;
+}
+
+:root[data-quality-tier="minimal"] * {
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+/* The gradient and dot-grid backdrops used across the app are decorative;
+   at the minimal tier they are the cheapest thing to drop. */
+:root[data-quality-tier="minimal"] [class*="bg-[linear-gradient"],
+:root[data-quality-tier="minimal"] [class*="bg-[radial-gradient"] {
+  background-image: none !important;
+}
