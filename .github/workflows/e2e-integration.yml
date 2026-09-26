@@ -179,3 +179,22 @@ jobs:
           echo "--- keeper.log ---"; tail -50 /tmp/keeper.log || true
           echo "--- indexer.log ---"; tail -50 /tmp/indexer.log || true
           echo "--- zk.log ---"; tail -50 /tmp/zk.log || true
+
+  disaster-recovery-drill:
+    name: Automated Point-In-Time Restore Drill (#1217)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Run PITR Backup Script (self-test)
+        run: |
+          chmod +x scripts/backup/*.sh
+          bash scripts/backup/db_pitr_backup.sh --test
+
+      - name: Run Disaster Recovery Restore Drill
+        # Recovers the database from the base snapshot, replays archived WAL
+        # segments to a target recovery point, verifies every artifact against
+        # the SHA-256 manifest (zero data loss), and asserts the RTO SLA.
+        run: bash scripts/backup/dr_restore_drill.sh
