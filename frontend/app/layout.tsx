@@ -6,6 +6,7 @@ import { AIAssistantProvider } from "@/components/AIAssistant";
 import { ClientInit } from "./ClientInit";
 import { ErrorBoundary } from "@sentry/nextjs";
 import { ThemeProvider } from "next-themes";
+import Link from "next/link";
 
 function GlobalErrorFallback({ error, resetError }: any) {
   return (
@@ -36,7 +37,6 @@ export const viewport: Viewport = {
   themeColor: "#0f172a",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
 };
 
 
@@ -46,13 +46,34 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="antialiased">
+      <body className="min-h-dvh w-full overflow-x-clip antialiased">
         <ErrorBoundary fallback={GlobalErrorFallback}>
           <ThemeProvider attribute="data-theme" defaultTheme="system" enableSystem>
             <AIAssistantProvider>
               <AppProviders>
                 <CommandPalette />
-                {children}
+                <div className="min-h-dvh w-full overflow-x-clip pb-16 md:pb-0">
+                  {children}
+                  <nav
+                    aria-label="Mobile navigation"
+                    className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-neutral-800 bg-neutral-950/95 pb-[env(safe-area-inset-bottom)] text-neutral-300 backdrop-blur md:hidden"
+                  >
+                    {[
+                      ["Tasks", "/tasks"],
+                      ["Board", "/board"],
+                      ["Keepers", "/keepers"],
+                      ["Settings", "/settings"],
+                    ].map(([label, href]) => (
+                      <Link
+                        key={href}
+                        href={href}
+                        className="flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 px-1 py-2 text-xs font-medium active:bg-neutral-800"
+                      >
+                        <span className="truncate">{label}</span>
+                      </Link>
+                    ))}
+                  </nav>
+                </div>
               </AppProviders>
             </AIAssistantProvider>
           </ThemeProvider>

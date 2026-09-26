@@ -57,6 +57,7 @@ export default function SplitPaneLayout({ children }: SplitPaneLayoutProps) {
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastFocusedElementRef = useRef<HTMLElement | null>(null);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // ── URL sync ──────────────────────────────────────────────────────────────
 
@@ -149,6 +150,22 @@ export default function SplitPaneLayout({ children }: SplitPaneLayoutProps) {
       lastFocusedElementRef.current = null;
     }
   }, [closeDetailPane]);
+
+  const handleSheetTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    if (touch) touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }, []);
+
+  const handleSheetTouchEnd = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const start = touchStartRef.current;
+    const touch = event.changedTouches[0];
+    touchStartRef.current = null;
+    if (!start || !touch) return;
+
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (deltaX > 90 && Math.abs(deltaX) > Math.abs(deltaY) * 1.25) handleClose();
+  }, [handleClose]);
 
   const handleEscape = useCallback(
     (e: KeyboardEvent) => {
@@ -253,6 +270,8 @@ export default function SplitPaneLayout({ children }: SplitPaneLayoutProps) {
       {showSheet && (
         <div
           className="fixed inset-0 bg-neutral-900 z-50"
+          onTouchStart={handleSheetTouchStart}
+          onTouchEnd={handleSheetTouchEnd}
           style={{
             animation: "slideInRight 300ms ease-out",
           }}
