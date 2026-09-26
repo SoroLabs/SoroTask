@@ -15,6 +15,9 @@ jobs:
       soroban-rpc:
         image: stellar/quickstart:testing
         ports:
+          # stellar/quickstart publishes every HTTP surface (Horizon, Soroban
+          # RPC, and Friendbot) on container port 8000; mapping 8000→8000 is
+          # the only port mapping needed (#1213).
           - 8000:8000
         args:
           - --local
@@ -41,31 +44,24 @@ jobs:
           targets: wasm32-unknown-unknown, wasm32v1-none
 
       - name: Install Stellar CLI
+        # Two-variant install chain, not a suppression: if both variants fail
+        # the step (and the job) fails (#1213).
         run: |
-          cargo install --locked stellar-cli --features opt || cargo install --locked stellar-cli || true
+          cargo install --locked stellar-cli --features opt || cargo install --locked stellar-cli
 
-      - name: Install root dependencies
-        run: npm ci || npm install
-
-      - name: Install keeper dependencies
-        run: cd keeper && npm ci || npm install
-
-      - name: Install indexer dependencies
-        run: cd indexer && npm ci || npm install
-
-      - name: Install zk-proof-service dependencies
-        run: cd zk-proof-service && npm ci || npm install
-
-      - name: Install frontend dependencies & Playwright
-        run: |
-          cd frontend
-          npm ci || npm install
-          npx playwright install --with-deps chromium
+      - name: Install Root Dependencies (npm workspaces)
+        # #1218: the repository is an npm workspace root — one install covers
+        # keeper, indexer, zk-proof-service, frontend, and backend-abi-registry.
+        # npm install (not npm ci) is required so the lockfile gains its
+        # workspace entries on first run.
+        run: npm install
 
       - name: Build Smart Contracts
+        # Two-target build chain, not a suppression: if both targets fail the
+        # job fails (#1213).
         run: |
           cd contract
-          cargo build --target wasm32v1-none --release || cargo build --target wasm32-unknown-unknown --release || true
+          cargo build --target wasm32v1-none --release || cargo build --target wasm32-unknown-unknown --release
 
       - name: Wait for Soroban RPC
         run: |
@@ -82,9 +78,26 @@ jobs:
           done
 
       - name: Deploy Contracts & Initialize Environment
+        # No suppression (#1213): contract setup failure must fail the job.
+        # The script prints `CONTRACT_ID: <id>`; the last one is the deployed
+        # SoroTask contract, exported for the e2e suite and keeper env.
         run: |
           chmod +x scripts/setup-contracts.sh
-          ./scripts/setup-contracts.sh || echo "Contract setup initialized."
+          OUTPUT="$(./scripts/setup-contracts.sh)"
+          echo "$OUTPUT"
+          CONTRACT_ID="$(printf '%s\n' "$OUTPUT" | sed -n 's/^CONTRACT_ID: //p' | tail -1)"
+          if [ -z "$CONTRACT_ID" ]; then
+            echo "::error::setup-contracts.sh did not report CONTRACT_ID"
+            exit 1
+          fi
+          echo "CONTRACT_ID=$CONTRACT_ID" >> "$GITHUB_ENV"
+
+      - name: Generate & Fund Keeper Identity
+        run: |
+          SECRET="$(node -e "console.log(require('./keeper/node_modules/@stellar/stellar-sdk').Keypair.random().secret())")"
+          ADDRESS="$(node -e "console.log(require('./keeper/node_modules/@stellar/stellar-sdk').Keypair.fromSecret('$SECRET').publicKey())")"
+          curl -fsS "http://localhost:8000/friendbot?addr=$ADDRESS" > /dev/null
+          echo "KEEPER_SECRET=$SECRET" >> "$GITHUB_ENV"
 
       - name: Run Keeper Unit & E2E Tests
         run: |
@@ -99,13 +112,70 @@ jobs:
       - name: Run ZK Proof Service Tests
         run: |
           cd zk-proof-service
-          npm test || node server.test.js || true
+          npm test
+
+      - name: Start Keeper Service (background)
+        run: |
+          cd keeper
+          SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc \
+          NETWORK_PASSPHRASE='Standalone Network ; February 2017' \
+          CONTRACT_ID="$CONTRACT_ID" \
+          METRICS_PORT=3000 \
+          POLLING_INTERVAL_MS=5000 \
+          npm start > /tmp/keeper.log 2>&1 &
+
+      - name: Start Indexer Service (background)
+        run: |
+          cd indexer
+          SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc \
+          NETWORK_PASSPHRASE='Standalone Network ; February 2017' \
+          CONTRACT_ID="$CONTRACT_ID" \
+          DATABASE_URL=./indexer.db \
+          PORT=4000 \
+          node src/index.js > /tmp/indexer.log 2>&1 &
+
+      - name: Start ZK Proof Service (background)
+        run: |
+          cd zk-proof-service
+          PORT=3100 \
+          node server.js > /tmp/zk.log 2>&1 &
+
+      - name: Wait for Services
+        run: |
+          for url in \
+            http://localhost:3000/health \
+            http://localhost:4000/api/health \
+            http://localhost:3100/health; do
+            echo "Waiting for $url ..."
+            for i in {1..30}; do
+              if curl -fsS "$url" > /dev/null 2>&1; then
+                echo "Service ready: $url"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "::error::Service did not become healthy: $url"
+                exit 1
+              fi
+              sleep 3
+            done
+          done
 
       - name: Run E2E Integration Suite Verification
+        # Strict (#1213): the suite exits non-zero when any service, the RPC,
+        # or the end-to-end pipeline verification fails.
         run: |
+          SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc \
           node scripts/run-e2e-integration.js
 
       - name: Run Frontend Playwright E2E Integration Tests
         run: |
           cd frontend
-          npm run test:e2e || npx playwright test || true
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+      - name: Collect Service Logs
+        if: failure()
+        run: |
+          echo "--- keeper.log ---"; tail -50 /tmp/keeper.log || true
+          echo "--- indexer.log ---"; tail -50 /tmp/indexer.log || true
+          echo "--- zk.log ---"; tail -50 /tmp/zk.log || true
