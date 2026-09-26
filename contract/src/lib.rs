@@ -1,6 +1,7 @@
 #![no_std]
 
 mod monolith;
+pub mod rate_limiter;
 
 pub mod access;
 pub mod packed_args;
@@ -1028,6 +1029,8 @@ pub enum DataKey {
     Task(u64),
     TaskMeta(u64),
     TaskPayload(u64),
+    /// Leaky bucket keyed by target contract address (Issue #1192).
+    TargetInvocationBucket(Address),
     TaskStats(u64),
     StorageSchemaVersion,
     UpgradeProposal,
@@ -4401,6 +4404,18 @@ impl SoroTaskContract {
 
             // ── 13. Cross-contract call ─────────────────────────────────
             if !executed_yield_strategy {
+                // Throttling skips this execution without charging task funds
+                // or slashing keeper stake.
+                if !rate_limiter::allow_invocation(env, &config.target) {
+                    Self::persist_execution_trace(
+                        env,
+                        task_id,
+                        keeper,
+                        trace_steps,
+                        ExecutionOutcome::Skipped,
+                    );
+                    return;
+                }
                 env.invoke_contract::<Val>(&config.target, &config.function, config.args.clone());
             }
             trace_steps.push_back(events::ExecutionStepRecord {
