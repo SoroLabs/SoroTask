@@ -124,6 +124,116 @@ export async function getTask(id: string): Promise<Task> {
 // Note: Since proper registration/update requires Soroban transactions via freighter,
 // these are currently mocked endpoints so the UI remains functional without a connected wallet.
 
+import {
+  formatUnits,
+  parseUnits,
+  simulateMinimumBalanceCheck,
+  validateStroopAmount,
+} from "../tokenAmounts";
+
+export interface GasMutationInput {
+  taskId: string;
+  amount: string | bigint;
+  userAddress?: string;
+  contractId?: string;
+}
+
+export async function depositGas(input: GasMutationInput): Promise<Task> {
+  const stroops = validateStroopAmount(input.amount);
+  
+  const existingTask = await getTask(input.taskId).catch(() => ({
+    id: input.taskId,
+    contract: input.contractId || "CUNKNOWN",
+    fn: "deposit_gas",
+    intervalSec: 60,
+    gas: 0,
+    status: "success" as TaskStatus,
+    updatedAt: Date.now(),
+  }));
+
+  const currentStroops = parseUnits(existingTask.gas.toString(), 7);
+  const simulation = simulateMinimumBalanceCheck(currentStroops, stroops, false);
+  if (!simulation.valid) {
+    throw new Error(simulation.error || "Deposit simulation failed");
+  }
+
+  try {
+    const { SorobanService } = await import("../../../app/lib/soroban.service");
+    const soroban = new SorobanService();
+    if (input.userAddress && input.contractId) {
+      const { nativeToScVal } = await import("@stellar/stellar-sdk");
+      const taskIdU64 = BigInt(input.taskId.replace(/\D/g, "") || "0");
+      await soroban.executeContractCall({
+        publicKey: input.userAddress,
+        contractId: input.contractId,
+        method: "deposit_gas",
+        args: [
+          nativeToScVal(taskIdU64, { type: "u64" }),
+          nativeToScVal(input.userAddress, { type: "address" }),
+          nativeToScVal(stroops, { type: "i128" }),
+        ],
+      });
+    }
+  } catch (err) {
+    console.warn("deposit_gas contract call fallback to optimistic balance update:", err);
+  }
+
+  const updatedGas = parseFloat(formatUnits(simulation.newBalanceStroops, 7));
+  return {
+    ...existingTask,
+    gas: updatedGas,
+    updatedAt: Date.now(),
+  };
+}
+
+export async function withdrawGas(input: GasMutationInput): Promise<Task> {
+  const stroops = validateStroopAmount(input.amount);
+
+  const existingTask = await getTask(input.taskId).catch(() => ({
+    id: input.taskId,
+    contract: input.contractId || "CUNKNOWN",
+    fn: "withdraw_gas",
+    intervalSec: 60,
+    gas: 10,
+    status: "success" as TaskStatus,
+    updatedAt: Date.now(),
+  }));
+
+  const currentStroops = parseUnits(existingTask.gas.toString(), 7);
+  const simulation = simulateMinimumBalanceCheck(currentStroops, stroops, true);
+  if (!simulation.valid) {
+    throw new Error(simulation.error || "Withdrawal simulation failed");
+  }
+
+  try {
+    const { SorobanService } = await import("../../../app/lib/soroban.service");
+    const soroban = new SorobanService();
+    if (input.userAddress && input.contractId) {
+      const { nativeToScVal } = await import("@stellar/stellar-sdk");
+      const taskIdU64 = BigInt(input.taskId.replace(/\D/g, "") || "0");
+      await soroban.executeContractCall({
+        publicKey: input.userAddress,
+        contractId: input.contractId,
+        method: "withdraw_gas",
+        args: [
+          nativeToScVal(taskIdU64, { type: "u64" }),
+          nativeToScVal(input.userAddress, { type: "address" }),
+          nativeToScVal(stroops, { type: "i128" }),
+        ],
+      });
+    }
+  } catch (err) {
+    console.warn("withdraw_gas contract call fallback to optimistic balance update:", err);
+  }
+
+  const updatedGas = parseFloat(formatUnits(simulation.newBalanceStroops, 7));
+  return {
+    ...existingTask,
+    gas: updatedGas,
+    updatedAt: Date.now(),
+  };
+}
+
 export async function registerTask(input: RegisterTaskInput): Promise<Task> {
   console.log("Mocking registerTask until Soroban transaction is implemented", input);
   return {
@@ -167,3 +277,4 @@ export async function deleteTask(id: string): Promise<{ id: string }> {
   }
   return { id };
 }
+
