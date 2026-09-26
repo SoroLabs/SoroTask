@@ -9,7 +9,7 @@ const { startApiServer } = require("./api");
 const { broadcastEvent } = require("./wsServer");
 const { computeAndStoreLedgerMerkle } = require("./merkleStore");
 const { LedgerAuditor, ensureAuditSchema } = require("./ledgerAuditor");
-const { scheduleArchival } = require("./archival");
+const { scheduleArchival, scheduleExecutionsArchival } = require("./archival");
 const { pubsub, EVENT_ADDED } = require("./graphql/pubsub");
 const { LedgerHashValidator } = require("./ledgerHashValidator");
 const { EventSchemaRegistry } = require("./eventSchemaRegistry");
@@ -681,6 +681,10 @@ if (!handleCLI()) {
   // to S3 Parquet and prune them from the primary table, checked daily.
   console.log("Starting event archival scheduler (cold storage, checked daily)...");
   scheduleArchival(dbDeps);
+
+  // Issue #1206: tier historical task executions to S3 cold storage, checked daily.
+  console.log("Starting execution archival scheduler (cold storage, checked daily)...");
+  scheduleExecutionsArchival(dbDeps);
 }
 
 // Graceful shutdown

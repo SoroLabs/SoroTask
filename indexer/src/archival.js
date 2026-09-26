@@ -138,10 +138,146 @@ function scheduleArchival(deps, intervalMs = 24 * 60 * 60 * 1000) {
   }, intervalMs);
 }
 
+
+/**
+ * S3 cold-storage tiering for historical task executions (issue #1206).
+ *
+ * Mirrors the event archival flow above: rows older than the retention
+ * cutoff are exported to Parquet under `executions/year=YYYY/month=MM/`,
+ * uploaded to S3, then pruned from the primary `executions` hypertable.
+ * `created_at` (see migration 006) is the tiering key, so retention is
+ * measured from when the execution row was ingested.
+ */
+
+const EXECUTION_CUTOFF_DAYS = Number(
+  process.env.EXECUTION_ARCHIVAL_CUTOFF_DAYS || ARCHIVAL_CUTOFF_DAYS,
+);
+const EXECUTION_BATCH_LIMIT = Number(process.env.EXECUTION_ARCHIVAL_BATCH_LIMIT || 50000);
+
+function executionCutoffTimestamp(now = Date.now()) {
+  const cutoffMs = now - EXECUTION_CUTOFF_DAYS * 24 * 60 * 60 * 1000;
+  return new Date(cutoffMs).toISOString().slice(0, 19).replace("T", " ");
+}
+
+async function findArchivableExecutions({ queryAll }, now = Date.now()) {
+  return queryAll(
+    `SELECT id, task_id, keeper_address, tx_hash, status, fee_paid,
+            ledger_sequence, error_message, executed_at, created_at
+     FROM executions
+     WHERE created_at < ?
+     ORDER BY created_at ASC
+     LIMIT ?`,
+    [executionCutoffTimestamp(now), EXECUTION_BATCH_LIMIT],
+  );
+}
+
+async function writeExecutionsParquetFile(executions, filePath) {
+  const parquet = require("parquetjs-lite");
+  const schema = new parquet.ParquetSchema({
+    id: { type: "INT64" },
+    task_id: { type: "INT64" },
+    keeper_address: { type: "UTF8" },
+    tx_hash: { type: "UTF8" },
+    status: { type: "UTF8" },
+    fee_paid: { type: "DOUBLE" },
+    ledger_sequence: { type: "INT64" },
+    error_message: { type: "UTF8" },
+    executed_at: { type: "UTF8" },
+    created_at: { type: "UTF8" },
+  });
+  const writer = await parquet.ParquetWriter.openFile(schema, filePath, {
+    compression: "SNAPPY",
+  });
+  for (const row of executions) {
+    await writer.appendRow({
+      id: BigInt(row.id),
+      task_id: BigInt(row.task_id),
+      keeper_address: row.keeper_address,
+      tx_hash: row.tx_hash,
+      status: row.status,
+      fee_paid: Number(row.fee_paid),
+      ledger_sequence: row.ledger_sequence === null ? BigInt(0) : BigInt(row.ledger_sequence),
+      error_message: row.error_message,
+      executed_at: String(row.executed_at),
+      created_at: String(row.created_at),
+    });
+  }
+  await writer.close();
+}
+
+/** Uploads an executions Parquet file to S3 and returns the stored key. */
+async function uploadExecutionsToS3(filePath, now = Date.now()) {
+  const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+  const date = new Date(now);
+  const key = `executions/year=${date.getUTCFullYear()}/month=${String(
+    date.getUTCMonth() + 1,
+  ).padStart(2, "0")}/${path.basename(filePath)}`;
+
+  const client = new S3Client({ region: process.env.AWS_REGION || "us-east-1" });
+  await client.send(
+    new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      Body: fs.createReadStream(filePath),
+      ContentType: "application/vnd.apache.parquet",
+    }),
+  );
+  return key;
+}
+
+/**
+ * Runs one executions tiering pass: rows past the retention window are
+ * written to Parquet, uploaded to S3, then pruned from `executions`.
+ * No-ops (`{archived: 0}`) when nothing is eligible yet; `writeParquet`
+ * and `upload` are injectable for tests like `archiveOldEvents`.
+ */
+async function archiveExecutions(
+  deps,
+  { now = Date.now(), writeParquet = writeExecutionsParquetFile, upload = uploadExecutionsToS3 } = {},
+) {
+  const executions = await findArchivableExecutions(deps, now);
+  if (executions.length === 0) {
+    return { archived: 0, s3Key: null };
+  }
+
+  const tempFilePath = path.join(os.tmpdir(), `executions_archive_${now}.parquet`);
+  await writeParquet(executions, tempFilePath);
+
+  let s3Key;
+  try {
+    s3Key = await upload(tempFilePath, now);
+  } finally {
+    if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+  }
+
+  const ids = executions.map((e) => e.id);
+  const placeholders = ids.map(() => "?").join(",");
+  await deps.queryRun(`DELETE FROM executions WHERE id IN (${placeholders})`, ids);
+
+  return { archived: executions.length, s3Key };
+}
+
+/**
+ * Schedules the executions tiering pass alongside the events archival
+ * sweep (issue #1206). Runs daily by default, right after the event pass.
+ */
+function scheduleExecutionsArchival(deps, intervalMs = 24 * 60 * 60 * 1000) {
+  return setInterval(() => {
+    archiveExecutions(deps).catch((err) => {
+      console.error("Execution archival run failed:", err.message);
+    });
+  }, intervalMs);
+}
+
 module.exports = {
   ARCHIVAL_CUTOFF_DAYS,
   cutoffTimestamp,
   findArchivableEvents,
   archiveOldEvents,
   scheduleArchival,
+  EXECUTION_CUTOFF_DAYS,
+  executionCutoffTimestamp,
+  findArchivableExecutions,
+  archiveExecutions,
+  scheduleExecutionsArchival,
 };
