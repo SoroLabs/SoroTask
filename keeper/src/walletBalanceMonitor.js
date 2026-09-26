@@ -22,6 +22,13 @@
  *   PAGERDUTY_ALERT_KEY               - PagerDuty integration key
  *   DISCORD_WALLET_ALERT_WEBHOOK      - Discord webhook URL
  *   TELEGRAM_WALLET_ALERT_WEBHOOK     - Telegram bot webhook URL
+ *
+ * Sliding burn-rate monitoring (issue #1215):
+ *   WALLET_BURN_RATE_WINDOW_MS        - Sliding window for the burn rate
+ *                                       (default: 3600000 = 1 hour)
+ *   WALLET_RUNWAY_PAUSE_HOURS         - Pause low-margin tasks when the
+ *                                       projected runway falls below this
+ *                                       (default: 6 hours)
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -34,6 +41,9 @@ const WARNING_THRESHOLD_DEFAULT = 50;
 const CRITICAL_THRESHOLD_DEFAULT = 20;
 const CHECK_INTERVAL_MS_DEFAULT = 60000;
 const SWEEP_TARGET_AMOUNT_XLM_DEFAULT = 100;
+const DEFAULT_BURN_RATE_WINDOW_MS = 3600000;
+const DEFAULT_RUNWAY_PAUSE_HOURS = 6;
+const MS_PER_HOUR = 3600000;
 
 /**
  * WalletBalanceMonitor
@@ -75,6 +85,11 @@ class WalletBalanceMonitor {
     this._lastAlertTimestamp = 0;
     this._alertDebounceMs = parseInt(process.env.WALLET_ALERT_DEBOUNCE_MS, 10) || 300000;
     this._sweepInProgress = false;
+
+    // Sliding burn-rate tracking (issue #1215)
+    this.burnRateWindowMs = parseInt(process.env.WALLET_BURN_RATE_WINDOW_MS, 10) || DEFAULT_BURN_RATE_WINDOW_MS;
+    this.runwayPauseHours = parseFloat(process.env.WALLET_RUNWAY_PAUSE_HOURS) || DEFAULT_RUNWAY_PAUSE_HOURS;
+    this._balanceSamples = []; // [{ timestamp, balance }]
   }
 
   /**
@@ -137,6 +152,10 @@ class WalletBalanceMonitor {
         discord: !!this.discordWebhook,
         telegram: !!this.telegramWebhook,
       },
+      burnRateXlmPerHour: this.getBurnRateXlmPerHour(),
+      runwayHours: this.getRunwayHours(),
+      liquidityPressure: this.getLiquidityPressure(),
+      lowLiquidityPauseActive: this.isLowLiquidityPauseActive(),
     };
   }
 
@@ -149,6 +168,106 @@ class WalletBalanceMonitor {
   }
 
   /**
+   * Record a balance sample for the sliding burn-rate window (issue #1215).
+   * Samples older than the window are dropped.
+   * @param {number} balance
+   * @private
+   */
+  _recordBalanceSample(balance) {
+    const now = Date.now();
+    this._balanceSamples.push({ timestamp: now, balance });
+
+    const windowStart = now - this.burnRateWindowMs;
+    while (this._balanceSamples.length > 0 && this._balanceSamples[0].timestamp < windowStart) {
+      this._balanceSamples.shift();
+    }
+  }
+
+  /**
+   * Sliding-window XLM burn rate in XLM per hour (issue #1215).
+   *
+   * Computed from the oldest vs newest sample inside the window, so short
+   * spikes average out the same way fee burning accrues: monotonically
+   * drained balances produce a positive rate.
+   *
+   * @returns {number|null} XLM/hour drained (positive), or null when fewer
+   *   than two samples are inside the window.
+   */
+  getBurnRateXlmPerHour() {
+    if (this._balanceSamples.length < 2) {
+      return null;
+    }
+
+    const oldest = this._balanceSamples[0];
+    const newest = this._balanceSamples[this._balanceSamples.length - 1];
+    const elapsedHours = (newest.timestamp - oldest.timestamp) / MS_PER_HOUR;
+    if (elapsedHours <= 0) {
+      return null;
+    }
+
+    return (oldest.balance - newest.balance) / elapsedHours;
+  }
+
+  /**
+   * Projected hours until the keeper hits the critical threshold at the
+   * current sliding burn rate (issue #1215). `null` when the burn rate is
+   * unknown or non-positive.
+   * @returns {number|null}
+   */
+  getRunwayHours() {
+    const burnRate = this.getBurnRateXlmPerHour();
+    if (burnRate === null || burnRate <= 0) {
+      return null;
+    }
+
+    const balance = this._lastBalance;
+    if (balance === null || balance === undefined) {
+      return null;
+    }
+
+    return (balance - this.criticalThreshold) / burnRate;
+  }
+
+  /**
+   * Current liquidity pressure: 'ok', 'warning' (below warning threshold or
+   * projected to deplete within 3x the pause runway), or 'critical'
+   * (balance below critical threshold or projected depletion inside the
+   * pause window).
+   * @returns {'ok'|'warning'|'critical'|'unknown'}
+   */
+  getLiquidityPressure() {
+    if (this._lastBalance === null || this._lastBalance === undefined) {
+      return 'unknown';
+    }
+    if (this._lastBalance < this.criticalThreshold) {
+      return 'critical';
+    }
+
+    const runway = this.getRunwayHours();
+    if (runway !== null && runway < this.runwayPauseHours) {
+      return 'critical';
+    }
+    if (this._lastBalance < this.warningThreshold) {
+      return 'warning';
+    }
+    if (runway !== null && runway < this.runwayPauseHours * 3) {
+      return 'warning';
+    }
+    return 'ok';
+  }
+
+  /**
+   * True when projected gas depletion inside the pause window means the
+   * keeper should stop spending fees on low-margin tasks (issue #1215).
+   * Task selection consults this via the `liquidityPauseFilter`.
+   * @returns {boolean}
+   */
+  isLowLiquidityPauseActive() {
+    const pressure = this.getLiquidityPressure();
+    return pressure === 'critical';
+  }
+
+  /**
    * Internal balance check loop iteration.
    * @private
    */
@@ -156,6 +275,7 @@ class WalletBalanceMonitor {
     try {
       const balance = await this.getBalanceFn(this.publicKey, this.server);
       this._lastBalance = balance;
+      this._recordBalanceSample(balance);
 
       if (balance < this.criticalThreshold) {
         logger.warn('CRITICAL: XLM balance below critical threshold', {

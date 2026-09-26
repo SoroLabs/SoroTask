@@ -379,7 +379,51 @@ class TaskFilterChain {
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
 /**
- * Create the default filter chain with all six built-in filters wired in
+ * Filter 6 — Liquidity pause guard (issue #1215).
+ *
+ * Under critical liquidity pressure (keeper XLM balance projected to hit the
+ * critical threshold inside the pause runway, per the sliding burn-rate
+ * monitor), low-margin tasks are paused: spending fees on them accelerates
+ * depletion for little bounty return. High-margin tasks keep running so the
+ * keeper keeps earning while it conserves gas.
+ *
+ * Pass-through when no liquidity monitor is supplied in the filter context,
+ * so existing deployments are unaffected until they wire one in.
+ */
+function liquidityPauseFilter(taskId, context) {
+  const monitor = context && context.liquidityMonitor;
+  if (!monitor || typeof monitor.isLowLiquidityPauseActive !== 'function') {
+    return { pass: true, reason: 'no_liquidity_monitor' };
+  }
+
+  if (!monitor.isLowLiquidityPauseActive()) {
+    return { pass: true, reason: 'liquidity_ok' };
+  }
+
+  const isTaskLowMargin = context && context.isTaskLowMargin;
+  if (typeof isTaskLowMargin !== 'function') {
+    // The profitability gate stays the margin authority; without margin data
+    // the liquidity pressure alone must not skip tasks.
+    return { pass: true, reason: 'no_margin_data' };
+  }
+
+  if (!isTaskLowMargin(taskId)) {
+    return { pass: true, reason: 'margin_ok' };
+  }
+
+  return {
+    pass: false,
+    reason: 'liquidity_pause_low_margin',
+    meta: {
+      liquidityPressure: typeof monitor.getLiquidityPressure === 'function'
+        ? monitor.getLiquidityPressure()
+        : 'critical',
+    },
+  };
+}
+
+/**
+ * Create the default filter chain with all built-in filters wired in
  * the correct order.
  *
  * Options map directly to filter context fields; any omitted option simply
@@ -401,6 +445,7 @@ function createDefaultFilterChain(options = {}) {
     .addFilter('cachedTimingFilter', cachedTimingFilter)
     .addFilter('idempotencyLockFilter', idempotencyLockFilter)
     .addFilter('circuitBreakerFilter', circuitBreakerFilter)
+    .addFilter('liquidityPauseFilter', liquidityPauseFilter)
     .addFilter('quarantineFilter', quarantineFilter);
 
   return chain;
@@ -419,5 +464,6 @@ module.exports = {
   cachedTimingFilter,
   idempotencyLockFilter,
   circuitBreakerFilter,
+  liquidityPauseFilter,
   quarantineFilter,
 };

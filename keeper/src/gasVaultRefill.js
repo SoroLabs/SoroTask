@@ -48,6 +48,149 @@ const DEFAULT_CHECK_INTERVAL_MS = 60000;
 const DEFAULT_COOLDOWN_MS = 600000;
 const STROOPS_PER_XLM = 10_000_000;
 
+/**
+ * TreasuryRefillChannel — automated treasury top-up over a multisig signing
+ * channel (issue #1215).
+ *
+ * When the swap-based refill path has no usable source balance, the keeper
+ * submits a refill REQUEST to the treasury contract instead of silently
+ * starving. Configuration (all optional; the channel stays a no-op until
+ * configured):
+ *
+ *   TREASURY_CONTRACT_ID             - Treasury (multisig-governed) contract ID
+ *   TREASURY_REFILL_FUNCTION         - Contract fn to invoke (default: request_refill)
+ *   TREASURY_REFILL_TARGET           - Refill recipient (default: keeper's own key)
+ *   TREASURY_REFILL_SIGNER_SECRETS   - Comma-separated signer secret keys
+ *   TREASURY_REFILL_MIN_SIGNATURES   - Quorum required to submit (default: all)
+ *
+ * The request is a Soroban contract invocation signed by a quorum of the
+ * configured signers — Soroban multi-sig transactions carry every signer's
+ * auth entry, so the treasury's K-of-N threshold can accept the refill.
+ */
+class TreasuryRefillChannel {
+  /**
+   * @param {object} options
+   * @param {SorobanRpc.Server} options.server
+   * @param {string} options.keeperPublicKey
+   * @param {string[]} [options.signerSecrets]
+   * @param {number} [options.minSignatures]
+   * @param {string} [options.treasuryContractId]
+   * @param {string} [options.refillFunction]
+   * @param {string} [options.networkPassphrase]
+   * @param {object} [options.logger]
+   * @param {object} [options.metrics] - Optional `{ increment(key) }`.
+   */
+  constructor(options = {}) {
+    this.server = options.server;
+    this.keeperPublicKey = options.keeperPublicKey;
+    this.signerSecrets = options.signerSecrets || [];
+    this.minSignatures = options.minSignatures ?? this.signerSecrets.length;
+    this.treasuryContractId = options.treasuryContractId || null;
+    this.refillFunction = options.refillFunction || 'request_refill';
+    this.networkPassphrase = options.networkPassphrase || Networks.FUTURENET;
+    this.logger = options.logger || createLogger('treasury-refill');
+    this.metrics = options.metrics || null;
+  }
+
+  static fromEnv(server, keeperPublicKey, logger) {
+    const signerSecrets = (process.env.TREASURY_REFILL_SIGNER_SECRETS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const minSignatures = parseInt(process.env.TREASURY_REFILL_MIN_SIGNATURES, 10) || signerSecrets.length;
+
+    return new TreasuryRefillChannel({
+      server,
+      keeperPublicKey,
+      signerSecrets,
+      minSignatures,
+      treasuryContractId: process.env.TREASURY_CONTRACT_ID || null,
+      refillFunction: process.env.TREASURY_REFILL_FUNCTION || 'request_refill',
+      networkPassphrase: process.env.NETWORK_PASSPHRASE || Networks.FUTURENET,
+      logger,
+    });
+  }
+
+  get isConfigured() {
+    return Boolean(
+      this.treasuryContractId && this.signerSecrets.length > 0 && this.minSignatures > 0,
+    );
+  }
+
+  /**
+   * Submit an automated top-up request to the treasury contract.
+   *
+   * @param {object} params
+   * @param {number} params.amountXlm - Refill amount in XLM.
+   * @param {string} [params.reason] - Free-form reason recorded in the request.
+   * @returns {Promise<{ requested: boolean, reason?: string, txHash?: string }>}
+   */
+  async requestTopUp({ amountXlm, reason = 'keeper_gas_low' } = {}) {
+    if (!this.isConfigured) {
+      return { requested: false, reason: 'not_configured' };
+    }
+
+    if (this.signerSecrets.length < this.minSignatures) {
+      return { requested: false, reason: 'insufficient_signers' };
+    }
+
+    return this._submit({ amountXlm, reason });
+  }
+
+  /**
+   * Builds the refill invocation, signs it with a quorum of the configured
+   * signers, and submits it. Injectable-free by design: tests stub this
+   * method the same way they stub `GasVaultRefillMonitor._executeSwap`.
+   * @private
+   */
+  async _submit({ amountXlm, reason }) {
+    const { Keypair, TransactionBuilder, Account } = require('@stellar/stellar-sdk');
+
+    const signers = this.signerSecrets.slice(0, Math.max(this.minSignatures, 1))
+      .map((secret) => Keypair.fromSecret(secret));
+    const payer = signers[0];
+
+    const account = await this.server.getAccount(payer.publicKey());
+    const treasury = new Contract(this.treasuryContractId);
+
+    const amountStroops = BigInt(Math.floor(amountXlm * STROOPS_PER_XLM));
+    const tx = new TransactionBuilder(new Account(account.accountId(), account.sequenceNumber()), {
+      fee: (Number(BASE_FEE) * signers.length).toString(),
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(
+        treasury.call(
+          this.refillFunction,
+          Address.fromString(this.keeperPublicKey).toScVal(),
+          xdr.ScVal.scvI128(xdr.Int128.fromString(amountStroops.toString())),
+          xdr.ScVal.scvString(reason),
+        ),
+      )
+      .setTimeout(60)
+      .build();
+
+    // Multisig channel: every quorum signer authorizes the same transaction.
+    for (const signer of signers) {
+      tx.sign(signer);
+    }
+
+    const sendResult = await this.server.sendTransaction(tx);
+    if (sendResult.status === 'ERROR') {
+      throw new Error(`Treasury refill request failed: ${JSON.stringify(sendResult.errorResult)}`);
+    }
+
+    this.metrics?.increment?.('treasuryRefillRequestTotal');
+    this.logger.info('Treasury refill request submitted', {
+      txHash: sendResult.hash,
+      amountXlm,
+      signers: signers.length,
+      reason,
+    });
+
+    return { requested: true, txHash: sendResult.hash, signers: signers.length };
+  }
+}
+
 class GasVaultRefillMonitor {
   /**
    * @param {object} options
@@ -65,8 +208,13 @@ class GasVaultRefillMonitor {
    * @param {number} [options.cooldownMs]
    * @param {number} [options.checkIntervalMs]
    * @param {string} [options.networkPassphrase]
-   * @param {object} [options.logger]
    * @param {object} [options.metrics] - Optional `{ increment(key) }`.
+   * @param {TreasuryRefillChannel} [options.treasuryChannel] - Multisig
+   *   treasury top-up fallback used when no source asset can be swapped
+   *   (issue #1215).
+   * @param {TreasuryRefillChannel} [options.treasuryChannel] - Multisig
+   *   treasury top-up fallback used when no source asset can be swapped
+   *   (issue #1215).
    */
   constructor(options = {}) {
     this.server = options.server;
@@ -85,6 +233,7 @@ class GasVaultRefillMonitor {
     this.logger = options.logger || createLogger('gas-vault-refill');
     this.metrics = options.metrics || null;
 
+    this.treasuryChannel = options.treasuryChannel || null;
     this._intervalHandle = null;
     this._lastSwapAt = 0;
     this._swapInProgress = false;
@@ -169,7 +318,51 @@ class GasVaultRefillMonitor {
       }
     }
 
-    return { triggered: false, reason: 'no_usable_source_balance', xlmBalance };
+    const treasuryFallback = await this.requestTreasuryTopUp(xlmBalance);
+    if (treasuryFallback.triggered) {
+      return { triggered: true, reason: 'treasury_refill_requested', treasury: treasuryFallback.treasury };
+    }
+
+    return {
+      triggered: false,
+      reason: treasuryFallback.reason === 'treasury_not_configured'
+        ? 'no_usable_source_balance'
+        : treasuryFallback.reason,
+      xlmBalance,
+    };
+  }
+
+  /**
+   * Automated treasury top-up fallback (issue #1215): when no source asset
+   * can be swapped for XLM, submit a refill request to the configured
+   * treasury contract over the multisig signing channel. A no-op unless a
+   * `treasuryChannel` was wired in by the deployment.
+   *
+   * @param {number} xlmBalance
+   * @returns {Promise<{ triggered: boolean, reason?: string, treasury?: object }>}
+   */
+  async requestTreasuryTopUp(xlmBalance) {
+    if (!this.treasuryChannel || !this.treasuryChannel.isConfigured) {
+      return { triggered: false, reason: 'treasury_not_configured' };
+    }
+
+    const shortfallXlm = Math.max(this.targetBalanceXlm - xlmBalance, 0);
+    if (shortfallXlm <= 0) {
+      return { triggered: false, reason: 'above_target' };
+    }
+
+    try {
+      const result = await this.treasuryChannel.requestTopUp({
+        amountXlm: shortfallXlm,
+        reason: `keeper_balance_${xlmBalance.toFixed(2)}_xlm`,
+      });
+      this.metrics?.increment?.('treasuryRefillRequestedTotal');
+      return { triggered: true, treasury: result };
+    } catch (error) {
+      this.metrics?.increment?.('treasuryRefillRequestFailedTotal');
+      this.logger.error('Treasury refill request failed', { error: error.message });
+      return { triggered: false, reason: 'treasury_request_failed', error: error.message };
+    }
   }
 
   /**
@@ -229,4 +422,4 @@ class GasVaultRefillMonitor {
   }
 }
 
-module.exports = { GasVaultRefillMonitor, STROOPS_PER_XLM };
+module.exports = { GasVaultRefillMonitor, TreasuryRefillChannel, STROOPS_PER_XLM };

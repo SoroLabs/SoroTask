@@ -75,3 +75,85 @@ describe('GasVaultRefillMonitor', () => {
     expect(monitor._executeSwap).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('TreasuryRefillChannel (issue #1215)', () => {
+  const { TreasuryRefillChannel } = require('./gasVaultRefill');
+
+  function channelOptions(overrides = {}) {
+    return {
+      server: {},
+      keeperPublicKey: 'GKEEPER',
+      signerSecrets: ['S1', 'S2', 'S3'],
+      minSignatures: 2,
+      treasuryContractId: 'CTREASURY',
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+      metrics: { increment: jest.fn() },
+      ...overrides,
+    };
+  }
+
+  test('is a no-op when the treasury contract or signers are not configured', async () => {
+    const withoutContract = new TreasuryRefillChannel(
+      channelOptions({ treasuryContractId: null }),
+    );
+    await expect(withoutContract.requestTopUp({ amountXlm: 10 })).resolves.toEqual({
+      requested: false,
+      reason: 'not_configured',
+    });
+
+    const withoutSigners = new TreasuryRefillChannel(
+      channelOptions({ signerSecrets: [], minSignatures: 0 }),
+    );
+    const result = await withoutSigners.requestTopUp({ amountXlm: 10 });
+    expect(result).toEqual({ requested: false, reason: 'not_configured' });
+  });
+
+  test('rejects when fewer signers than the quorum are configured', async () => {
+    const channel = new TreasuryRefillChannel(
+      channelOptions({ signerSecrets: ['S1'], minSignatures: 2 }),
+    );
+    const result = await channel.requestTopUp({ amountXlm: 10 });
+    expect(result).toEqual({ requested: false, reason: 'insufficient_signers' });
+  });
+
+  test('submits a quorum-signed refill request', async () => {
+    const channel = new TreasuryRefillChannel(
+      channelOptions({ signerSecrets: ['S1', 'S2', 'S3'], minSignatures: 2 }),
+    );
+    channel._submit = jest.fn().mockResolvedValue({ requested: true, txHash: 'treasury-tx', signers: 2 });
+
+    const result = await channel.requestTopUp({ amountXlm: 70, reason: 'keeper_gas_low' });
+
+    expect(result).toEqual({ requested: true, txHash: 'treasury-tx', signers: 2 });
+    expect(channel._submit).toHaveBeenCalledWith(
+      expect.objectContaining({ amountXlm: 70, reason: 'keeper_gas_low' }),
+    );
+  });
+
+  test('the monitor falls back to the treasury channel when no source asset can be swapped', async () => {
+    const treasuryChannel = new TreasuryRefillChannel(channelOptions({}));
+    treasuryChannel.requestTopUp = jest.fn().mockResolvedValue({ requested: true, txHash: 'treasury-tx', signers: 2 });
+
+    const monitor = new GasVaultRefillMonitor(
+      baseOptions({ treasuryChannel, getSourceAssetBalance: async () => 0 }),
+    );
+
+    const result = await monitor.checkAndRefill();
+
+    expect(result.triggered).toBe(true);
+    expect(result.reason).toBe('treasury_refill_requested');
+    expect(result.treasury.txHash).toBe('treasury-tx');
+    expect(treasuryChannel.requestTopUp).toHaveBeenCalledWith(
+      expect.objectContaining({ amountXlm: 70 }), // target 100 - balance 10
+    );
+  });
+
+  test('the monitor reports no_usable_source_balance when no treasury channel is wired', async () => {
+    const monitor = new GasVaultRefillMonitor(
+      baseOptions({ getSourceAssetBalance: async () => 0 }),
+    );
+
+    const result = await monitor.checkAndRefill();
+    expect(result).toEqual({ triggered: false, reason: 'no_usable_source_balance', xlmBalance: 10 });
+  });
+});
