@@ -326,6 +326,68 @@ class GasForecaster {
   }
 
   /**
+   * Read current base fee from RPC and apply a 20% buffer.
+   * @param {number|string} rpcBaseFee 
+   * @returns {number}
+   */
+  getBufferedBaseFee(rpcBaseFee) {
+    const fee = Number(rpcBaseFee) || 100;
+    return Math.ceil(fee * 1.20);
+  }
+
+  /**
+   * Track fee distributions over the last 10 ledgers to calculate p50, p90, and p99 percentiles.
+   * @param {Array<Array<number>>} last10LedgersFees 
+   * @returns {{ p50: number, p90: number, p99: number }}
+   */
+  analyzeLedgerFeePercentiles(last10LedgersFees = []) {
+    const flatFees = last10LedgersFees.flat().map(Number).filter(n => Number.isFinite(n) && n > 0);
+    if (flatFees.length === 0) {
+      return { p50: 100, p90: 100, p99: 100 };
+    }
+    flatFees.sort((a, b) => a - b);
+    const count = flatFees.length;
+
+    return {
+      p50: flatFees[Math.floor(count * 0.50)] || flatFees[0],
+      p90: flatFees[Math.min(Math.floor(count * 0.90), count - 1)] || flatFees[count - 1],
+      p99: flatFees[Math.min(Math.floor(count * 0.99), count - 1)] || flatFees[count - 1],
+    };
+  }
+
+  /**
+   * Automatically bump transaction fee if unconfirmed after 2 ledgers.
+   * @param {number} currentFee 
+   * @param {number} unconfirmedLedgerCount 
+   * @param {boolean} isTimeCritical 
+   * @param {Array<Array<number>>} recentLedgerFees 
+   * @returns {number} Escalated fee
+   */
+  escalateUnconfirmedTransactionFee(currentFee, unconfirmedLedgerCount, isTimeCritical = false, recentLedgerFees = []) {
+    const fee = Number(currentFee) || 100;
+
+    if (unconfirmedLedgerCount < 2) {
+      // 20% buffer on initial submission
+      return this.getBufferedBaseFee(fee);
+    }
+
+    const percentiles = this.analyzeLedgerFeePercentiles(recentLedgerFees);
+    const bumpMultiplier = 1 + ((unconfirmedLedgerCount - 1) * 0.25);
+    const targetPercentile = isTimeCritical ? percentiles.p99 : percentiles.p90;
+
+    const escalatedFee = Math.max(Math.ceil(fee * bumpMultiplier), targetPercentile);
+
+    this.logger.warn('Priority Fee Escalator triggered for unconfirmed transaction', {
+      initialFee: fee,
+      unconfirmedLedgers: unconfirmedLedgerCount,
+      isTimeCritical,
+      escalatedFee,
+    });
+
+    return Math.ceil(escalatedFee);
+  }
+
+  /**
    * Clear historical data for a task (e.g., when task is deregistered).
    * @param {number|string} taskId
    */
@@ -346,3 +408,4 @@ class GasForecaster {
 }
 
 module.exports = { GasForecaster };
+
