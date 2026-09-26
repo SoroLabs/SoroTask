@@ -26,9 +26,10 @@ const ALLOWED_TAGS = [
   "hr",
   "span",
   "div",
+  "img",
 ];
 
-const ALLOWED_ATTR = ["href", "target", "rel", "class", "data-lang"];
+const ALLOWED_ATTR = ["href", "target", "rel", "class", "data-lang", "src", "alt", "title"];
 
 /**
  * Sanitizes an HTML string to prevent XSS.
@@ -49,6 +50,7 @@ export function sanitizeHtml(dirty: string): string {
   return DOMPurify.sanitize(dirty, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
     ADD_ATTR: ["target"],
     FORCE_BODY: false,
     RETURN_DOM: false,
