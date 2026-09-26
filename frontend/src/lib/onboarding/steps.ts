@@ -34,4 +34,10 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     targetSelector: '[data-onboarding="wallet"]',
     route: "/settings",
   },
+  {
+    id: "sandbox",
+    title: "Practice in the task sandbox",
+    body: "Try funding a demo balance, selecting a mock contract, and executing a task without connecting a wallet or spending real tokens.",
+    route: "/sandbox",
+  },
 ];
