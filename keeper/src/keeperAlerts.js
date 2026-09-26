@@ -162,6 +162,28 @@ async function sendPagerDutyAlert(routingKey, message, details = {}, severity = 
 }
 
 /**
+ * Send a Telegram alert via bot webhook (issue #1204).
+ *
+ * `TELEGRAM_WALLET_ALERT_WEBHOOK`-style bot webhook URLs are supported: the
+ * payload is a plain Markdown text message, matching the format the
+ * wallet balance monitor already uses.
+ */
+async function sendTelegramAlert(telegramWebhookUrl, message, details = {}, severity = 'critical') {
+  if (!telegramWebhookUrl) return;
+  const text =
+    `*SoroTask Keeper Alert (${severity})*\n${message}\n` +
+    Object.entries(details)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n');
+  try {
+    await postJson(telegramWebhookUrl, JSON.stringify({ text, parse_mode: 'Markdown' }));
+    logger.info('Telegram alert sent', { message });
+  } catch (err) {
+    logger.error('Failed to send Telegram alert', { error: err.message });
+  }
+}
+
+/**
  * KeeperAlertManager fans a single alert condition out to every configured
  * channel (Slack webhook, Discord webhook, PagerDuty routing key), and
  * rate-limits repeated alerts of the same kind so a persistent or flapping
@@ -173,6 +195,8 @@ class KeeperAlertManager {
     this.discordWebhookUrl = options.discordWebhookUrl || process.env.DISCORD_WEBHOOK_URL || null;
     this.pagerDutyRoutingKey =
       options.pagerDutyRoutingKey || process.env.PAGERDUTY_ROUTING_KEY || null;
+    this.telegramWebhookUrl =
+      options.telegramWebhookUrl || process.env.ALERT_TELEGRAM_WEBHOOK || null;
 
     // Backwards-compatible single-URL option: routed by isDiscordUrl sniffing.
     this.webhookUrl =
@@ -233,7 +257,19 @@ class KeeperAlertManager {
         sendPagerDutyAlert(this.pagerDutyRoutingKey, message, { dedupKey: kind, ...details }, severity),
       );
     }
+    if (this.telegramWebhookUrl) {
+      tasks.push(sendTelegramAlert(this.telegramWebhookUrl, message, details, severity));
+    }
     await Promise.all(tasks);
+  }
+
+  /**
+   * Fan a one-off alert out to every configured channel (rate-limited by
+   * `kind`). Used by callers such as the dead-letter quarantine engine to
+   * reuse the same fan-out and rate limiting as the built-in conditions.
+   */
+  async notify(kind, message, details = {}, severity = 'critical') {
+    return this._dispatch(kind, message, details, severity);
   }
 
   recordSuccess() {
@@ -353,4 +389,10 @@ class KeeperAlertManager {
   }
 }
 
-module.exports = { KeeperAlertManager, sendAlert, sendPagerDutyAlert, postWebhook };
+module.exports = {
+  KeeperAlertManager,
+  sendAlert,
+  sendPagerDutyAlert,
+  sendTelegramAlert,
+  postWebhook,
+};
