@@ -1,26 +1,7 @@
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
 
-const cspHeader = `
-  default-src 'self';
-  script-src 'self' 'unsafe-inline' 'unsafe-eval';
-  style-src 'self' 'unsafe-inline';
-  img-src 'self' blob: data: https:;
-  font-src 'self' data:;
-  connect-src 'self' https://*.stellar.org https://*.soroban.org https://soroban-testnet.stellar.org https://horizon-testnet.stellar.org wss://*.stellar.org http://localhost:* ws://localhost:*;
-  frame-ancestors 'none';
-  object-src 'none';
-  base-uri 'self';
-  form-action 'self';
-`
-  .replace(/\s{2,}/g, " ")
-  .trim();
-
 const securityHeaders = [
-  {
-    key: "Content-Security-Policy",
-    value: cspHeader,
-  },
   {
     key: "X-Frame-Options",
     value: "DENY",
@@ -47,6 +28,7 @@ const nextConfig: NextConfig = {
   turbopack: {},
   experimental: {
     useTypeScriptCli: true,
+    sri: { algorithm: "sha384" },
   },
   typescript: {
     ignoreBuildErrors: true,
