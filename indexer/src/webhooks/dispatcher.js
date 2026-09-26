@@ -2,6 +2,7 @@ const { createHmac } = require("node:crypto");
 const { DEFAULT_MAX_ATTEMPTS, computeBackoffDelayMs } = require("./backoff");
 const { CircuitBreakerRegistry } = require("./circuitBreaker");
 const { storeDeadLetter } = require("./deadLetterStore");
+const { assertPublicHttpUrl, SsrfError } = require("./ssrfGuard");
 
 const SIGNATURE_HEADER = "x-sorotask-signature";
 const SIGNATURE_PREFIX = "sha256=";
@@ -34,18 +35,40 @@ class WebhookDispatcher {
    * @param {CircuitBreakerRegistry} [options.circuitBreaker]
    * @param {number} [options.maxAttempts]
    * @param {(ms:number)=>Promise<void>} [options.sleep]
+   * @param {object} [options.ssrf] - Options forwarded to assertPublicHttpUrl
+   *   (e.g. `{ resolve: true }` to also DNS-validate hostnames).
    */
   constructor(options = {}) {
     this.fetchImpl = options.fetchImpl || global.fetch;
     this.circuitBreaker = options.circuitBreaker || new CircuitBreakerRegistry();
     this.maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     this.sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.ssrfOptions = options.ssrf ?? {};
   }
 
   async dispatch(request) {
     const { destinationId, url, body, secretKey } = request;
     if (!destinationId || !url) {
       throw new Error("destinationId and url are required");
+    }
+
+    // SSRF guard (#1208): reject private/loopback/link-local targets before
+    // any network activity. Rejections are dead-lettered for auditability and
+    // never retried.
+    try {
+      await assertPublicHttpUrl(url, this.ssrfOptions);
+    } catch (ssrfError) {
+      if (ssrfError instanceof SsrfError) {
+        storeDeadLetter({
+          destinationId,
+          url,
+          body,
+          attempts: 0,
+          error: ssrfError.message,
+          reason: "ssrf_rejected",
+        });
+      }
+      throw ssrfError;
     }
 
     const payload = JSON.stringify(body);
