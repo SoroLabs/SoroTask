@@ -41,18 +41,43 @@ class ProverJobQueue {
     }
   }
 
-  async add(id, data) {
+  async add(id, data, options = {}) {
+    // #1210 — job prioritization: lower `priority` value = more urgent
+    // (BullMQ semantics, 0 is the default). Time-sensitive tasks (e.g. health
+    // checks blocked behind heavy proofs) should use a low priority value.
+    const priority = Number.isFinite(options.priority) ? options.priority : 0;
+
     if (this.queue) {
-      await this.queue.add('prove', data, {
-        jobId: id,
-        removeOnComplete: { age: 86400 },
-        removeOnFail: { age: 604800 },
-      });
+      await this.queue.add(
+        'prove',
+        { ...data, priority },
+        {
+          jobId: id,
+          priority,
+          removeOnComplete: { age: 86400 },
+          removeOnFail: { age: 604800 },
+        },
+      );
       return;
     }
 
-    this.localQueue.push({ id, data });
+    this._insertLocal({ id, data, priority });
     this._drainLocal();
+  }
+
+  /**
+   * Inserts a job keeping the local queue ordered by ascending priority
+   * (lower value first); FIFO within the same priority.
+   */
+  _insertLocal(entry) {
+    let insertAt = this.localQueue.length;
+    for (let index = 0; index < this.localQueue.length; index += 1) {
+      if (this.localQueue[index].priority > entry.priority) {
+        insertAt = index;
+        break;
+      }
+    }
+    this.localQueue.splice(insertAt, 0, entry);
   }
 
   async get(id) {
