@@ -3,7 +3,11 @@ set -e
 
 # ==============================================================================
 # compile-circuits.sh
-# Automated Circom compilation pipeline to generate WASM and zkey files
+# Automated Circom compilation pipeline to generate WASM and zkey files, plus
+# a native Soroban Groth16 verifier WASM per circuit (#1209).
+#
+# Requirements: circom, snarkjs (via npx), rustup with the
+# wasm32-unknown-unknown target installed.
 # ==============================================================================
 
 echo "Starting Circom compilation pipeline..."
@@ -54,16 +58,31 @@ for circuit_file in "$CIRCUITS_DIR"/*.circom; do
     
     # 4. Export verification key
     echo "Exporting verification key..."
-    npx snarkjs zkey export verificationkey "$BUILD_DIR/${circuit_name}_final.zkey" "$BUILD_DIR/${circuit_name}_verification_key.json"
-    
-    # 5. Generate Solidity verifier
-    echo "Generating Solidity verifier..."
-    npx snarkjs zkey export solidityverifier "$BUILD_DIR/${circuit_name}_final.zkey" "$BUILD_DIR/${circuit_name}Verifier.sol"
+    npx snarkjs zkey export verificationkey "$BUILD_DIR/$circuit_name_final.zkey" "$BUILD_DIR/${circuit_name}_verification_key.json"
 
-    # NOTE: Soroban verifiers can be generated using a Rust-based toolchain
-    # (e.g. from snarkjs output). This pipeline acts as the foundation.
-    
-    echo "$circuit_name successfully compiled and artifacts generated."
+    # 5. Generate the native Soroban verifier (#1209)
+    #    Replaces the EVM `solidityverifier` export: the Groth16 verifying-key
+    #    constants are extracted into a generated Rust crate (arkworks/bn254 +
+    #    soroban-sdk), unit-tested, and compiled to a deployable WASM.
+    echo "Generating Soroban verifier crate..."
+    node "$ROOT_DIR/scripts/generate-soroban-verifier.js" \
+        "$BUILD_DIR/${circuit_name}_verification_key.json" \
+        "$BUILD_DIR/soroban-verifier/$circuit_name"
+
+    echo "Running automated Rust tests for the Soroban verifier..."
+    (cd "$BUILD_DIR/soroban-verifier/$circuit_name" && cargo test)
+
+    echo "Compiling Soroban verifier to WASM..."
+    (cd "$BUILD_DIR/soroban-verifier/$circuit_name" && cargo build --release --target wasm32-unknown-unknown)
+
+    mkdir -p "$BUILD_DIR/verifiers/$circuit_name"
+    cp "$BUILD_DIR/soroban-verifier/$circuit_name/target/wasm32-unknown-unknown/release/soroban_zk_verifier.wasm" \
+       "$BUILD_DIR/verifiers/$circuit_name/soroban_zk_verifier.wasm"
+    # Keep a well-known path pointing at the most recent verifier build.
+    cp "$BUILD_DIR/verifiers/$circuit_name/soroban_zk_verifier.wasm" \
+       "$BUILD_DIR/soroban_zk_verifier.wasm"
+
+    echo "$circuit_name successfully compiled and artifacts generated (Soroban verifier WASM included)."
 done
 
 echo "Circom compilation pipeline completed successfully."
