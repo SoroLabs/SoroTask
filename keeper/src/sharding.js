@@ -1,6 +1,7 @@
 const crypto = require('crypto');
+const EventEmitter = require('events');
 
-const DEFAULT_VIRTUAL_NODE_COUNT = 150;
+const DEFAULT_VIRTUAL_NODE_COUNT = 128;
 
 function normalizeShardConfig(config = {}) {
   const shardCount = Number.isFinite(config.shardCount) && config.shardCount > 0
@@ -167,6 +168,208 @@ function filterTasksByHashRing(taskIds, ring, selfNodeId) {
   };
 }
 
+
+/**
+ * Redis heartbeat discovery for hash-ring keepers (issue #1205).
+ *
+ * Each keeper periodically writes a heartbeat key with a short TTL; the set
+ * of live keepers is therefore always current without any gossip protocol.
+ * The registry only requires an ioredis-compatible client — no new
+ * dependencies.
+ */
+class RedisShardRegistry {
+  constructor(options = {}) {
+    this.redis = options.redis;
+    this.nodeId = options.nodeId;
+    this.heartbeatTtlMs = options.heartbeatTtlMs || 15000;
+    this.keyPrefix = options.keyPrefix || 'sorotask:shard:heartbeat';
+  }
+
+  keyFor(nodeId) {
+    return `${this.keyPrefix}:${nodeId}`;
+  }
+
+  /**
+   * Writes this keeper's heartbeat. Call it on an interval shorter than
+   * `heartbeatTtlMs` so a live keeper never disappears from the ring.
+   */
+  async register() {
+    if (!this.redis || !this.nodeId) {
+      return false;
+    }
+    await this.redis.set(
+      this.keyFor(this.nodeId),
+      JSON.stringify({ nodeId: this.nodeId, at: Date.now() }),
+      'PX',
+      this.heartbeatTtlMs
+    );
+    return true;
+  }
+
+  /**
+   * Returns the node ids of every keeper whose heartbeat key is still
+   * alive. Nodes that crashed stopped refreshing their keys, so they
+   * vanish from the list and their partition is absorbed automatically
+   * once the ring rebuilds.
+   */
+  async discoverNodes() {
+    if (!this.redis) {
+      return [];
+    }
+    const pattern = `${this.keyPrefix}:*`;
+    const keys = await this.redis.keys(pattern);
+    if (keys.length === 0) {
+      return [];
+    }
+    const values = await this.redis.mget(...keys);
+    const nodeIds = [];
+    for (const value of values) {
+      if (!value) continue;
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed?.nodeId) {
+          nodeIds.push(parsed.nodeId);
+        }
+      } catch (e) {
+        // Corrupt heartbeat payloads are ignored; the TTL will reclaim them.
+      }
+    }
+    return nodeIds.sort();
+  }
+}
+
+/**
+ * Pure helper: snapshot of `{ taskId -> owner }` for the given task ids.
+ */
+function snapshotRingAssignments(ring, taskIds) {
+  const assignments = {};
+  for (const taskId of taskIds || []) {
+    assignments[taskId] = ring.getNode(taskId);
+  }
+  return assignments;
+}
+
+/**
+ * Pure helper: how many tasks changed owner between two snapshots. The
+ * Ketama ring guarantees this stays around 1/n per membership change, well
+ * under the <10% rebalance target of issue #1205.
+ */
+function computeRebalanceMetrics(before, after) {
+  const ids = Object.keys(after);
+  let moved = 0;
+  for (const taskId of ids) {
+    if (before && before[taskId] !== after[taskId]) {
+      moved++;
+    }
+  }
+  return {
+    totalTasks: ids.length,
+    movedTasks: moved,
+    movedRatio: ids.length === 0 ? 0 : moved / ids.length,
+  };
+}
+
+/**
+ * Event-driven hash-ring membership for a single keeper process (issue
+ * #1205).
+ *
+ * Wires the {@link ConsistentHashRing} to {@link RedisShardRegistry}
+ * heartbeats: `syncMembership()` refreshes the live node set, and every
+ * membership change emits `membership:changed` with the before/after
+ * snapshots and rebalance metrics so callers (see
+ * `ExecutionCoordinator.attachShardRing`) can drain affected in-flight
+ * work without double execution.
+ */
+class ShardHashRingManager extends EventEmitter {
+  constructor(options = {}) {
+    super();
+    this.nodeId = options.nodeId || 'keeper-standalone';
+    this.registry = options.registry || null;
+    this.ring = new ConsistentHashRing({
+      virtualNodeCount: options.virtualNodeCount,
+    });
+    this.syncIntervalMs = options.syncIntervalMs || 5000;
+    this.lastAssignments = null;
+    this.syncTimer = null;
+    this.lastEvent = null;
+  }
+
+  /**
+   * Rebuilds the ring from the registry's live node list. Emits
+   * `membership:changed` with rebalance metrics when membership changed.
+   */
+  async syncMembership(taskIds = []) {
+    const liveNodes = this.registry ? await this.registry.discoverNodes() : [this.nodeId];
+    if (liveNodes.length === 0) {
+      liveNodes.push(this.nodeId);
+    }
+
+    const current = new Set(this.ring.getNodes());
+    const next = new Set(liveNodes);
+    const added = liveNodes.filter((n) => !current.has(n));
+    const removed = Array.from(current).filter((n) => !next.has(n));
+
+    if (added.length === 0 && removed.length === 0) {
+      return { added, removed, changed: false };
+    }
+
+    const before = snapshotRingAssignments(this.ring, taskIds);
+
+    // Partition absorption: removing the failed keeper's virtual nodes
+    // makes every one of its keys re-resolve to its ring successor, so the
+    // work is redistributed automatically with no task loss or overlap.
+    this.ring.rebuildFromNodeIds(liveNodes);
+
+    const after = snapshotRingAssignments(this.ring, taskIds);
+    const rebalance = computeRebalanceMetrics(before, after);
+    this.lastAssignments = after;
+    this.lastEvent = { added, removed, rebalance, nodes: liveNodes };
+    this.emit('membership:changed', this.lastEvent);
+    return { added, removed, changed: true, rebalance, nodes: liveNodes };
+  }
+
+  /** Owns `taskId` on the current ring? */
+  isTaskOwned(taskId, selfNodeId = this.nodeId) {
+    return this.ring.getNode(taskId) === selfNodeId;
+  }
+
+  /** Splits `taskIds` into owned/skipped based on the current ring. */
+  filterTasks(taskIds, selfNodeId = this.nodeId) {
+    return filterTasksByHashRing(taskIds, this.ring, selfNodeId);
+  }
+
+  /** Registers this node and starts periodic membership sync. */
+  async start({ heartbeatIntervalMs = 5000 } = {}) {
+    if (this.registry) {
+      await this.registry.register();
+      this.heartbeatTimer = setInterval(() => {
+        this.registry.register().catch(() => {});
+      }, heartbeatIntervalMs);
+      if (typeof this.heartbeatTimer.unref === 'function') {
+        this.heartbeatTimer.unref();
+      }
+    }
+    await this.syncMembership();
+    this.syncTimer = setInterval(() => {
+      this.syncMembership().catch(() => {});
+    }, this.syncIntervalMs);
+    if (typeof this.syncTimer.unref === 'function') {
+      this.syncTimer.unref();
+    }
+  }
+
+  stop() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer);
+      this.syncTimer = null;
+    }
+  }
+}
+
 module.exports = {
   normalizeShardConfig,
   getTaskShard,
@@ -174,4 +377,9 @@ module.exports = {
   filterTasksForShard,
   ConsistentHashRing,
   filterTasksByHashRing,
+  DEFAULT_VIRTUAL_NODE_COUNT,
+  RedisShardRegistry,
+  ShardHashRingManager,
+  snapshotRingAssignments,
+  computeRebalanceMetrics,
 };

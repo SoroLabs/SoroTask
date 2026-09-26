@@ -150,6 +150,88 @@ class ExecutionCoordinator {
   getHighestFencingToken(taskId) {
     return this.highestFencingTokens.get(String(taskId)) || 0;
   }
+
+  /**
+   * Attach a hash-ring workload sharder built on Redis heartbeat
+   * discovery (issue #1205).
+   *
+   * The ring manager owns membership: keepers register via Redis
+   * heartbeats, and when a node stops responding its partition is
+   * automatically absorbed by the adjacent keepers (consistent hashing,
+   * so adding/removing a node reassigns only ~1/n of tasks). The
+   * coordinator's redlock + fencing tokens (see `registerLock`) remain
+   * the double-execution guard while the ring rebalances.
+   *
+   * @param {import('./sharding').ShardHashRingManager} shardRing
+   * @param {object} [options]
+   * @param {string[]} [options.taskIds] Sample task ids used to compute
+   *   rebalance metrics emitted with `membership:changed`.
+   * @returns {import('./sharding').ShardHashRingManager}
+   */
+  attachShardRing(shardRing, { taskIds = [] } = {}) {
+    this.shardRing = shardRing;
+    this.shardRingSampleTaskIds = taskIds;
+
+    shardRing.on('membership:changed', (event) => {
+      this.logger.info('Keeper hash ring membership changed', {
+        added: event.added,
+        removed: event.removed,
+        movedTasks: event.rebalance?.movedTasks,
+        totalTasks: event.rebalance?.totalTasks,
+        movedRatio: event.rebalance?.movedRatio,
+      });
+    });
+
+    return this.shardRing;
+  }
+
+  /**
+   * Start the attached ring (heartbeats + periodic membership sync).
+   * @param {object} [options]
+   */
+  async startShardRing(options) {
+    if (!this.shardRing) {
+      return null;
+    }
+    await this.shardRing.start(options);
+    return this.shardRing;
+  }
+
+  /**
+   * Stop the attached ring (clears its timers).
+   */
+  stopShardRing() {
+    if (this.shardRing) {
+      this.shardRing.stop();
+    }
+  }
+
+  /**
+   * Filter task ids down to the ones this keeper owns on the current
+   * hash ring. Tasks owned by other live keepers are skipped; tasks of
+   * keepers that failed are absorbed automatically by the ring rebuild
+   * (issue #1205).
+   *
+   * @param {string[]|number[]} taskIds
+   * @returns {object} `{ ownedTaskIds, skippedTaskIds, owners, nodeCount }`
+   */
+  filterTasksForShardExecution(taskIds) {
+    if (!this.shardRing) {
+      return {
+        ownedTaskIds: Array.isArray(taskIds) ? [...taskIds] : [],
+        skippedTaskIds: [],
+        owners: {},
+        nodeCount: 1,
+        shardLabel: 'hashring:standalone',
+      };
+    }
+
+    // Keep the sample list used for rebalance metrics fresh with the ids
+    // actually flowing through the pipeline.
+    this.shardRingSampleTaskIds = taskIds;
+
+    return this.shardRing.filterTasks(taskIds, this.shardRing.nodeId);
+  }
 }
 
 let defaultCoordinator = null;
