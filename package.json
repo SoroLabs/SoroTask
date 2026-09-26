@@ -2,10 +2,19 @@
   "name": "sorotask",
   "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "frontend",
+    "keeper",
+    "indexer",
+    "zk-proof-service",
+    "backend-abi-registry"
+  ],
   "scripts": {
     "prepare": "husky || true",
     "check:conflict-markers": "./scripts/check-conflict-markers.sh",
-    "bundle:audit": "tsx scripts/bundle-audit.ts"
+    "bundle:audit": "tsx scripts/bundle-audit.ts",
+    "test": "npm test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
   },
   "devDependencies": {
     "eslint": "^10.9.1",
