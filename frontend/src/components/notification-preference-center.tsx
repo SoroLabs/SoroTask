@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useContext, useEffect, useMemo, useState, useTransition } from "react";
+import { AuthContext } from "@/context/AuthContext";
 import {
   defaultNotificationPreferences,
   getActiveDeliveryChannels,
@@ -15,6 +16,12 @@ import {
   type NotificationChannel,
   type NotificationPreferences,
 } from "../lib/notification-preferences";
+import {
+  encryptChannelSecret,
+  resolveChannelUrl,
+  sendChannelTestPing,
+  type ExternalChannelId,
+} from "../lib/notification-secrets";
 
 type SimulationEntry = {
   id: number;
@@ -44,6 +51,18 @@ const channelCopy: Record<
   email: {
     label: "Email summaries",
     description: "Deliver important alerts and digests outside the app.",
+  },
+  webhook: {
+    label: "Webhook",
+    description: "POST execution alerts to your own HTTP endpoint.",
+  },
+  telegram: {
+    label: "Telegram bot",
+    description: "Deliver alerts through a Telegram bot sendMessage URL.",
+  },
+  discord: {
+    label: "Discord webhook",
+    description: "Deliver alerts into a Discord channel webhook.",
   },
 };
 
@@ -133,6 +152,11 @@ function buildSimulationEntry(
 }
 
 export function NotificationPreferenceCenter() {
+  // Read the auth context directly (instead of useAuth) so the preference
+  // center also renders for signed-out users; the wallet public key is only
+  // required when encrypting channel secrets (issue #1263).
+  const auth = useContext(AuthContext);
+  const user = auth?.user ?? null;
   const [draft, setDraft] = useState<NotificationPreferences>(
     defaultNotificationPreferences,
   );
@@ -154,6 +178,20 @@ export function NotificationPreferenceCenter() {
     setSaveMessage(
       initialPreferences.updatedAt ? "Preferences loaded" : "Using smart defaults",
     );
+    setExternalEndpointDrafts({
+      webhook: {
+        url: initialPreferences.externalEndpoints.webhook.url,
+        secret: "",
+      },
+      telegram: {
+        url: initialPreferences.externalEndpoints.telegram.url,
+        secret: "",
+      },
+      discord: {
+        url: initialPreferences.externalEndpoints.discord.url,
+        secret: "",
+      },
+    });
   }, []);
 
   useEffect(() => {
@@ -171,7 +209,18 @@ export function NotificationPreferenceCenter() {
 
   const dirty =
     JSON.stringify(draft.channels) !== JSON.stringify(saved.channels) ||
-    JSON.stringify(draft.categories) !== JSON.stringify(saved.categories);
+    JSON.stringify(draft.categories) !== JSON.stringify(saved.categories) ||
+    JSON.stringify(draft.categoryChannels) !==
+      JSON.stringify(saved.categoryChannels) ||
+    JSON.stringify(draft.externalEndpoints) !==
+      JSON.stringify(saved.externalEndpoints);
+
+  const [externalEndpointDrafts, setExternalEndpointDrafts] = useState<
+    Record<ExternalChannelId, { url: string; secret: string }>
+  >({ webhook: { url: "", secret: "" }, telegram: { url: "", secret: "" }, discord: { url: "", secret: "" } });
+  const [pingResults, setPingResults] = useState<
+    Partial<Record<ExternalChannelId, { ok: boolean; detail: string }>>
+  >({});
 
   const groupedCategories = useMemo(() => {
     return notificationCategories.reduce<
@@ -191,17 +240,86 @@ export function NotificationPreferenceCenter() {
     return Object.values(draft.channels).filter(Boolean).length;
   }, [draft.channels]);
 
-  const savePreferences = () => {
-    startTransition(() => {
+  const savePreferences = async () => {
+    startTransition(async () => {
       try {
-        const next = saveNotificationPreferences(draft);
+        const walletPublicKey = user?.address ?? "";
+        const externalEndpoints = { ...draft.externalEndpoints };
+
+        for (const channel of ["webhook", "telegram", "discord"] as ExternalChannelId[]) {
+          const endpointDraft = externalEndpointDrafts[channel];
+          const url = resolveChannelUrl(channel, endpointDraft).trim();
+          if (!endpointDraft.secret) {
+            // Keep the previously stored secret when the field is untouched.
+            externalEndpoints[channel] = {
+              url: externalEndpoints[channel].url || url,
+              secret: externalEndpoints[channel].secret,
+            };
+            continue;
+          }
+          if (!walletPublicKey) {
+            setSaveMessage("Connect a wallet to encrypt channel secrets");
+            return;
+          }
+          externalEndpoints[channel] = {
+            url: url,
+            secret: await encryptChannelSecret(endpointDraft.secret, walletPublicKey),
+          };
+        }
+
+        const draftToSave = { ...draft, externalEndpoints };
+        const next = saveNotificationPreferences(draftToSave);
         setDraft(next);
         setSaved(next);
+        setExternalEndpointDrafts({
+          webhook: { url: next.externalEndpoints.webhook.url, secret: "" },
+          telegram: { url: next.externalEndpoints.telegram.url, secret: "" },
+          discord: { url: next.externalEndpoints.discord.url, secret: "" },
+        });
         setSaveMessage("Preferences saved successfully");
       } catch {
         setSaveMessage("Saving failed. Please try again.");
       }
     });
+  };
+
+  const runTestPing = async (channel: ExternalChannelId) => {
+    const endpointDraft = externalEndpointDrafts[channel];
+    const url = resolveChannelUrl(channel, endpointDraft);
+    const result = await sendChannelTestPing(channel, url);
+    setPingResults((current) => ({
+      ...current,
+      [channel]: {
+        ok: result.ok,
+        detail: result.ok
+          ? `Test ping delivered${result.status ? ` (HTTP ${result.status})` : ""}`
+          : `Test ping failed: ${result.error ?? `HTTP ${result.status ?? "error"}`}`,
+      },
+    }));
+  };
+
+  const toggleCategoryChannel = (
+    category: NotificationCategoryId,
+    channel: NotificationChannel,
+  ) => {
+    setDraft((current) => {
+      const override = current.categoryChannels[category];
+      const channels = new Set(override ?? []);
+      if (channels.has(channel)) {
+        channels.delete(channel);
+      } else {
+        channels.add(channel);
+      }
+      // An empty override clears back to global routing.
+      return {
+        ...current,
+        categoryChannels: {
+          ...current.categoryChannels,
+          [category]: channels.size > 0 ? [...channels] : undefined,
+        },
+      };
+    });
+    setSaveMessage("Unsaved changes ready");
   };
 
   const requestPermission = async () => {
@@ -353,6 +471,87 @@ export function NotificationPreferenceCenter() {
               </div>
             </div>
 
+            <p className="mt-8 text-xs uppercase tracking-[0.24em] text-teal-200/70">
+              Multi-channel endpoints (webhook / Telegram / Discord)
+            </p>
+            <div className="mt-3 grid gap-4 md:grid-cols-3">
+              {(["webhook", "telegram", "discord"] as ExternalChannelId[]).map((channel) => {
+                const ping = pingResults[channel];
+                return (
+                  <div
+                    key={`endpoint-${channel}`}
+                    className="rounded-3xl border border-white/10 bg-white/[0.03] p-4"
+                  >
+                    <div className="space-y-3">
+                      <span className="text-sm font-semibold text-white">
+                        {channelCopy[channel].label}
+                      </span>
+                      <input
+                        aria-label={`${channelCopy[channel].label} endpoint URL`}
+                        type="url"
+                        placeholder="https://…"
+                        value={externalEndpointDrafts[channel].url}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setExternalEndpointDrafts((current) => ({
+                            ...current,
+                            [channel]: { ...current[channel], url: value },
+                          }));
+                          setDraft((current) => ({
+                            ...current,
+                            channels: { ...current.channels, [channel]: true },
+                          }));
+                          setSaveMessage("Unsaved changes ready");
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
+                      />
+                      <input
+                        aria-label={`${channelCopy[channel].label} secret`}
+                        type="password"
+                        placeholder={
+                          draft.externalEndpoints[channel].secret
+                            ? "Secret stored (encrypted) — enter to replace"
+                            : "Secret (encrypted with your wallet key)"
+                        }
+                        value={externalEndpointDrafts[channel].secret}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setExternalEndpointDrafts((current) => ({
+                            ...current,
+                            [channel]: { ...current[channel], secret: value },
+                          }));
+                          if (value) {
+                            setDraft((current) => ({
+                              ...current,
+                              channels: { ...current.channels, [channel]: true },
+                            }));
+                            setSaveMessage("Unsaved changes ready");
+                          }
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => runTestPing(channel)}
+                        className="w-full rounded-full border border-teal-300/30 px-4 py-2 text-sm font-medium text-teal-100 transition hover:bg-teal-300/10"
+                      >
+                        Send test ping
+                      </button>
+                      {ping ? (
+                        <span
+                          className={`block text-xs ${
+                            ping.ok ? "text-emerald-300" : "text-rose-300"
+                          }`}
+                        >
+                          {ping.detail}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
             <div className="mt-6 grid gap-4 md:grid-cols-3">
               {(Object.keys(channelCopy) as NotificationChannel[]).map((channel) => {
                 const blocked =
@@ -489,6 +688,35 @@ export function NotificationPreferenceCenter() {
                               <p className="text-xs uppercase tracking-[0.18em] text-slate-400">
                                 Live routing
                               </p>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {(Object.keys(channelCopy) as NotificationChannel[]).map(
+                                  (channel) => {
+                                    const override =
+                                      draft.categoryChannels[category.id];
+                                    const selected = override
+                                      ? override.includes(channel)
+                                      : false;
+                                    return (
+                                      <button
+                                        key={`route-${category.id}-${channel}`}
+                                        type="button"
+                                        aria-pressed={selected}
+                                        aria-label={`Route ${category.label} via ${channelCopy[channel].label}`}
+                                        onClick={() =>
+                                          toggleCategoryChannel(category.id, channel)
+                                        }
+                                        className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                                          selected
+                                            ? "bg-teal-300 text-slate-950"
+                                            : "bg-white/8 text-slate-300 hover:bg-white/12"
+                                        }`}
+                                      >
+                                        {channelCopy[channel].label}
+                                      </button>
+                                    );
+                                  },
+                                )}
+                              </div>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {activeChannels.length > 0 ? (
                                   activeChannels.map((channel) => (

@@ -1,7 +1,13 @@
 export const NOTIFICATION_PREFERENCES_STORAGE_KEY =
   "sorotask.notification-preferences";
 
-export type NotificationChannel = "inApp" | "browser" | "email";
+export type NotificationChannel = "inApp" | "browser" | "email" | "webhook" | "telegram" | "discord";
+
+/** Channels that deliver to services the user configures (issue #1263). */
+export type ExternalNotificationChannel = Exclude<
+  NotificationChannel,
+  "inApp" | "browser" | "email"
+>;
 
 export type NotificationCategoryId =
   | "taskFailed"
@@ -16,9 +22,22 @@ export type BrowserPermissionState =
   | NotificationPermission
   | "unsupported";
 
+export type ExternalChannelEndpoint = {
+  url: string;
+  /** Optional secret, stored encrypted with the user's wallet public key
+   *  (see notification-secrets.ts, issue #1263). */
+  secret: string;
+};
+
 export type NotificationPreferences = {
   channels: Record<NotificationChannel, boolean>;
   categories: Record<NotificationCategoryId, boolean>;
+  /** Per-category granular routing: when set, only the listed channels are
+   *  used for that category; null/absent falls back to every enabled
+   *  channel (issue #1263). */
+  categoryChannels: Partial<Record<NotificationCategoryId, NotificationChannel[]>>;
+  /** Delivery endpoints for the external channels. */
+  externalEndpoints: Record<ExternalNotificationChannel, ExternalChannelEndpoint>;
   updatedAt: string | null;
 };
 
@@ -90,11 +109,26 @@ export const notificationCategories: NotificationCategoryDefinition[] = [
   },
 ];
 
+export const externalNotificationChannels: ExternalNotificationChannel[] = [
+  "webhook",
+  "telegram",
+  "discord",
+];
+
+const emptyExternalEndpoints = (): Record<ExternalNotificationChannel, ExternalChannelEndpoint> => ({
+  webhook: { url: "", secret: "" },
+  telegram: { url: "", secret: "" },
+  discord: { url: "", secret: "" },
+});
+
 export const defaultNotificationPreferences: NotificationPreferences = {
   channels: {
     inApp: true,
     browser: true,
     email: false,
+    webhook: false,
+    telegram: false,
+    discord: false,
   },
   categories: {
     taskFailed: true,
@@ -105,6 +139,8 @@ export const defaultNotificationPreferences: NotificationPreferences = {
     executionSkipped: true,
     weeklyDigest: false,
   },
+  categoryChannels: {},
+  externalEndpoints: emptyExternalEndpoints(),
   updatedAt: null,
 };
 
@@ -131,6 +167,13 @@ export function loadNotificationPreferences(): NotificationPreferences {
       categories: {
         ...defaultNotificationPreferences.categories,
         ...parsed.categories,
+      },
+      categoryChannels: isPlainObject(parsed.categoryChannels)
+        ? (parsed.categoryChannels as NotificationPreferences["categoryChannels"])
+        : {},
+      externalEndpoints: {
+        ...emptyExternalEndpoints(),
+        ...safeEndpoints(parsed.externalEndpoints),
       },
       updatedAt:
         typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
@@ -166,6 +209,39 @@ export function getBrowserPermissionState(): BrowserPermissionState {
   return window.Notification.permission;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function safeEndpoints(
+  value: unknown,
+): Partial<Record<ExternalNotificationChannel, ExternalChannelEndpoint>> {
+  if (!isPlainObject(value)) return {};
+  const out: Partial<Record<ExternalNotificationChannel, ExternalChannelEndpoint>> = {};
+  for (const channel of externalNotificationChannels) {
+    const entry = value[channel];
+    if (isPlainObject(entry)) {
+      out[channel] = {
+        url: typeof entry.url === "string" ? entry.url : "",
+        secret: typeof entry.secret === "string" ? entry.secret : "",
+      };
+    }
+  }
+  return out;
+}
+
+/** True when an external channel has enough configuration to deliver. */
+export function isExternalChannelConfigured(
+  channel: NotificationChannel,
+  preferences: Pick<NotificationPreferences, "externalEndpoints">,
+): boolean {
+  if (channel === "inApp" || channel === "browser" || channel === "email") {
+    return true;
+  }
+  const endpoint = preferences.externalEndpoints?.[channel];
+  return Boolean(endpoint && endpoint.url.trim());
+}
+
 export function getActiveDeliveryChannels(
   preferences: NotificationPreferences,
   categoryId: NotificationCategoryId,
@@ -175,19 +251,37 @@ export function getActiveDeliveryChannels(
     return [];
   }
 
-  return (Object.keys(preferences.channels) as NotificationChannel[]).filter(
-    (channel) => {
-      if (!preferences.channels[channel]) {
-        return false;
-      }
+  // Granular routing (issue #1263): per-category overrides win over the
+  // global channel switches.
+  const override = preferences.categoryChannels?.[categoryId];
+  const candidates = (override ?? Object.keys(preferences.channels)) as NotificationChannel[];
 
-      if (channel === "browser") {
-        return permission === "granted";
-      }
+  return candidates.filter((channel) => {
+    if (override && !preferences.channels[channel]) {
+      // An override may only route through channels that are enabled
+      // globally as well — the global switch is the master kill-switch.
+      return false;
+    }
+    if (!preferences.channels[channel]) {
+      return false;
+    }
 
-      return true;
-    },
-  );
+    if (channel === "browser") {
+      return permission === "granted";
+    }
+
+    if (isExternalChannel(channel)) {
+      return isExternalChannelConfigured(channel, preferences);
+    }
+
+    return true;
+  });
+}
+
+function isExternalChannel(
+  channel: NotificationChannel,
+): channel is ExternalNotificationChannel {
+  return channel === "webhook" || channel === "telegram" || channel === "discord";
 }
 
 export function getBlockedDeliveryChannels(
