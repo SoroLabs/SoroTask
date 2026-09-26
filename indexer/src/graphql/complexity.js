@@ -36,6 +36,18 @@ const MAX_COMPLEXITY = 1000;
 const MAX_PAGINATION_LIMIT = 50;
 
 /**
+ * Machine-readable error code for complexity-defense rejections
+ * (issue #1207). Nested/oversized queries are rejected with this code
+ * before any database access occurs.
+ */
+const GRAPHQL_COMPLEXITY_EXCEEDED = 'GRAPHQL_COMPLEXITY_EXCEEDED';
+
+function withComplexityErrorCode(error) {
+  error.extensions = { ...(error.extensions || {}), code: GRAPHQL_COMPLEXITY_EXCEEDED };
+  return error;
+}
+
+/**
  * Custom estimator calculating cost based on pagination arguments (first, limit).
  */
 function paginationComplexityEstimator() {
@@ -50,9 +62,19 @@ function paginationComplexityEstimator() {
 
 /**
  * Validation rule enforcing query depth <= 5.
+ *
+ * Wraps `graphql-depth-limit` so depth violations are also tagged with the
+ * machine-readable `GRAPHQL_COMPLEXITY_EXCEEDED` code (issue #1207).
  */
 function createDepthRule(maxDepth = MAX_DEPTH) {
-  return depthLimit(maxDepth);
+  const rule = depthLimit(maxDepth);
+  return function DepthLimitRule(context) {
+    const originalReportError = context.reportError.bind(context);
+    context.reportError = (error) => {
+      originalReportError(withComplexityErrorCode(error));
+    };
+    return rule(context);
+  };
 }
 
 /**
@@ -67,8 +89,10 @@ function createComplexityLimitRule(maxComplexity = MAX_COMPLEXITY) {
       simpleEstimator({ defaultComplexity: 1 }),
     ],
     createError: (max, actual) => {
-      return new GraphQLError(
-        `Query complexity of ${actual} exceeds maximum allowed complexity of ${max}.`
+      return withComplexityErrorCode(
+        new GraphQLError(
+          `Query complexity of ${actual} exceeds maximum allowed complexity of ${max}.`
+        )
       );
     },
   });
@@ -101,17 +125,21 @@ function createPaginationBoundsRule(maxLimit = MAX_PAGINATION_LIMIT) {
             const val = parseInt(arg.value.value, 10);
             if (val > maxLimit) {
               context.reportError(
-                new GraphQLError(
-                  `Pagination limit on field "${fieldName}" cannot exceed ${maxLimit} (requested: ${val}).`,
-                  [node]
+                withComplexityErrorCode(
+                  new GraphQLError(
+                    `Pagination limit on field "${fieldName}" cannot exceed ${maxLimit} (requested: ${val}).`,
+                    [node]
+                  )
                 )
               );
             }
             if (val < 1) {
               context.reportError(
-                new GraphQLError(
-                  `Pagination limit on field "${fieldName}" must be at least 1 (requested: ${val}).`,
-                  [node]
+                withComplexityErrorCode(
+                  new GraphQLError(
+                    `Pagination limit on field "${fieldName}" must be at least 1 (requested: ${val}).`,
+                    [node]
+                  )
                 )
               );
             }
@@ -135,8 +163,10 @@ function validatePaginationBounds(args = {}, defaultLimit = 50, maxLimit = 50) {
 
   limit = Number(limit);
   if (isNaN(limit) || limit < 1 || limit > maxLimit) {
-    throw new GraphQLError(
-      `Pagination bounds violation: limit/first must be between 1 and ${maxLimit} (got: ${args.first ?? args.limit}).`
+    throw withComplexityErrorCode(
+      new GraphQLError(
+        `Pagination bounds violation: limit/first must be between 1 and ${maxLimit} (got: ${args.first ?? args.limit}).`
+      )
     );
   }
 
@@ -186,6 +216,7 @@ module.exports = {
   MAX_DEPTH,
   MAX_COMPLEXITY,
   MAX_PAGINATION_LIMIT,
+  GRAPHQL_COMPLEXITY_EXCEEDED,
   createDepthRule,
   createComplexityLimitRule,
   createPaginationBoundsRule,
