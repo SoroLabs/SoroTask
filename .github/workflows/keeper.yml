@@ -1,0 +1,45 @@
+name: Keeper CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  keeper:
+    name: Keeper lint / test / coverage
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: keeper
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: keeper/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Lint (ESLint flat config)
+        run: npm run lint
+
+      - name: Run Tests
+        run: npm test
+
+      - name: Run Tests with Coverage
+        run: npm run test:coverage
+
+      - name: Upload Coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          directory: keeper/coverage
+          fail_ci_if_error: false
