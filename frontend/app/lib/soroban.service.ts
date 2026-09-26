@@ -1,11 +1,10 @@
 import {
-  rpc,
   TransactionBuilder,
-  Networks,
   Account,
   Contract,
-  xdr
-} from "@stellar/stellar-sdk";
+  xdr,
+} from "@stellar/stellar-sdk/base";
+import * as rpc from "@stellar/stellar-sdk/rpc";
 import { signTransaction } from "@stellar/freighter-api";
 import { EXPECTED_NETWORK_PASSPHRASE } from "./wallet";
 

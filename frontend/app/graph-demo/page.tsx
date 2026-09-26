@@ -1,12 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import TaskDependencyGraph from "@/src/components/TaskDependencyGraph";
+import dynamic from "next/dynamic";
 import TaskDependencyManager, {
   type Task as ManagerTask,
 } from "@/components/TaskDependencyManager";
 import { useTaskStore } from "@/src/store/taskStore";
 import type { Task, TaskDependency } from "@/src/types/task";
+
+const TaskDependencyGraph = dynamic(
+  () => import("@/src/components/TaskDependencyGraph"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex min-h-80 items-center justify-center rounded-xl border border-neutral-800 text-sm text-neutral-400">
+        Loading dependency graph…
+      </div>
+    ),
+  },
+);
 
 const TASK_TITLES = [
   "Provision infrastructure",

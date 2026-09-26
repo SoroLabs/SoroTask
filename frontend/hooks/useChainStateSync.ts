@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { rpc } from '@stellar/stellar-sdk';
+import * as rpc from '@stellar/stellar-sdk/rpc';
 
 export interface ChainState {
   ledgerSequence: number;

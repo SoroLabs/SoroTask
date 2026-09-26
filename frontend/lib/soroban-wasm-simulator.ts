@@ -7,14 +7,12 @@
  */
 
 import {
-  rpc,
   TransactionBuilder,
-  Networks,
   Account,
   Contract,
   xdr,
-  SorobanDataBuilder,
-} from '@stellar/stellar-sdk';
+} from '@stellar/stellar-sdk/base';
+import * as rpc from '@stellar/stellar-sdk/rpc';
 
 export interface SimulationResult {
   success: boolean;
