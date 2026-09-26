@@ -31,6 +31,10 @@ describe('ProverJobQueue prioritization (#1210)', () => {
       },
     });
 
+    // Occupancy job: starts immediately, keeping the worker busy while the
+    // remaining jobs are queued and sorted.
+    await queue.add('blocker', { id: 'blocker' });
+
     // Enqueue out of order; lower value = more urgent.
     await queue.add('job-low', { id: 'low' }, { priority: 50 });
     await queue.add('job-urgent', { id: 'urgent' }, { priority: 0 });
@@ -40,7 +44,7 @@ describe('ProverJobQueue prioritization (#1210)', () => {
     release();
     await new Promise((resolve) => setTimeout(resolve, 25));
 
-    expect(processed).toEqual(['urgent', 'default', 'mid', 'low']);
+    expect(processed).toEqual(['blocker', 'urgent', 'default', 'mid', 'low']);
     await queue.close();
   });
 

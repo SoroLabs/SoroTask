@@ -12,6 +12,7 @@ const { ensureSchema, buildMerkleProofResponse } = require('./merkleStore');
 const { metricsHandler } = require('./metrics');
 const { createRateLimiter } = require('./rateLimiter');
 const { traceContextMiddleware } = require('../../scripts/traceContext');
+const { requestSpanMiddleware, getTrace } = require('./otel');
 const { openApiSpec } = require('./openapi');
 
 const DEFAULT_PORT = 4000;
@@ -23,9 +24,22 @@ const DEFAULT_PORT = 4000;
 function registerRestRoutes(app, deps = dbHelpers) {
   // Attach W3C TraceContext middleware
   app.use(traceContextMiddleware('indexer'));
+  // #1211 — OpenTelemetry-compatible request spans (parented by the incoming
+  // W3C traceparent) recorded per request for distributed tracing.
+  app.use(requestSpanMiddleware('sorotask-indexer'));
 
   // Metrics endpoint
   app.get('/metrics', metricsHandler);
+
+  // #1211 — distributed trace lookup for operators (single trace across
+  // frontend -> indexer -> keeper -> Soroban RPC).
+  app.get('/api/traces/:traceId', (req, res) => {
+    const spans = getTrace(req.params.traceId);
+    if (!spans) {
+      return res.status(404).json({ error: 'Trace not found', traceId: req.params.traceId });
+    }
+    return res.json({ traceId: req.params.traceId, spans });
+  });
 
   // Health and protected endpoint routes for REST API
   app.get('/api/health', (req, res) => {

@@ -8,6 +8,7 @@ const {
 } = require("@stellar/stellar-sdk");
 const { withRetry, ErrorClassification } = require("./retry.js");
 const { createLogger } = require("./logger.js");
+const { withSpan } = require("./otel.js");
 const { createStructuredError, fromError } = require("./structuredErrors.js");
 const { getExecutionCoordinator } = require("./coordinator.js");
 
@@ -213,7 +214,12 @@ async function executeTaskOnce(
   let simResult;
   try {
     taskLogger.debug("Simulating task execution", { taskId, correlationId });
-    simResult = await server.simulateTransaction(tx);
+    // #1211 — Soroban RPC requests participate in the distributed trace.
+    simResult = await withSpan(
+      "soroban.simulate_transaction",
+      () => server.simulateTransaction(tx),
+      { task_id: taskId.toString(), correlation_id: correlationId ?? "" },
+    );
   } catch (error) {
     throw normalizeSubmissionError(error, "NETWORK_ERROR", correlationId);
   }
@@ -277,7 +283,19 @@ async function executeTaskOnce(
   let sendResult;
   try {
     taskLogger.debug("Submitting transaction", { taskId, correlationId });
-    sendResult = await server.sendTransaction(preparedTx);
+    // #1211 — the submission span carries the txHash so the keeper side of
+    // the trace can be joined with the indexer's record of the transaction.
+    //
+    // Memo propagation note (#1211): Soroban transactions do not support a
+    // memo field (unlike Stellar classic), so the trace ID cannot ride in
+    // the envelope. Correlation is achieved through W3C traceparent headers
+    // on the HTTP layer and by tagging the resulting txHash on this span;
+    // the indexer indexes by txHash, closing the loop.
+    sendResult = await withSpan(
+      "soroban.send_transaction",
+      () => server.sendTransaction(preparedTx),
+      { task_id: taskId.toString(), correlation_id: correlationId ?? "" },
+    );
   } catch (error) {
     recordLateness('failure');
     throw normalizeSubmissionError(error, "NETWORK_ERROR");
