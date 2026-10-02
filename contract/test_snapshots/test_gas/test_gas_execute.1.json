@@ -98,7 +98,7 @@
                         "symbol": "gas_balance"
                       },
                       "val": {
-                        "i128": "1000"
+                        "i128": "0"
                       }
                     },
                     {
@@ -240,7 +240,7 @@
     ]
   ],
   "ledger": {
-    "protocol_version": 27,
+    "protocol_version": 28,
     "sequence_number": 0,
     "timestamp": 99999,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -683,7 +683,7 @@
                                 "symbol": "detail"
                               },
                               "val": {
-                                "u32": 199
+                                "u32": 300
                               }
                             },
                             {
@@ -811,7 +811,7 @@
                                 "symbol": "detail"
                               },
                               "val": {
-                                "u32": 199
+                                "u32": 300
                               }
                             },
                             {
@@ -905,6 +905,62 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "TargetInvocationBucket"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "accumulated_calls"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "call_ledgers"
+                    },
+                    "val": {
+                      "vec": [
+                        {
+                          "u32": 0
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_call_ledger"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 100000
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Task"
                   },
                   {
@@ -952,7 +1008,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "1801"
+                      "i128": "700"
                     }
                   },
                   {
@@ -1033,6 +1089,33 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "TaskEscrow"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "i128": "700"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "TaskFingerprint"
                   },
                   {
@@ -1091,7 +1174,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "1801"
+                      "i128": "700"
                     }
                   },
                   {
@@ -1326,7 +1409,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "a41146d7d116b29faf18d228425fa97194e16df1d4f3e5d4f51c58ca557fcc6d"
                   },
                   "storage": [
                     {
@@ -1374,7 +1457,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "801"
+                        "i128": "700"
                       }
                     }
                   ]
@@ -1418,7 +1501,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "0d6d61ed9340595cb73d424cebeddb6def971a72143eafd77ef9806c3724701a"
                   },
                   "storage": null
                 }
@@ -1514,7 +1597,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "801"
+                      "i128": "700"
                     }
                   },
                   {
@@ -1618,7 +1701,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "199"
+                      "i128": "300"
                     }
                   },
                   {
@@ -1754,8 +1837,22 @@
           "data": {
             "contract_code": {
               "ext": "v0",
-              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-              "code": ""
+              "hash": "0d6d61ed9340595cb73d424cebeddb6def971a72143eafd77ef9806c3724701a",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f4341414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414149544134"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
+              "ext": "v0",
+              "hash": "a41146d7d116b29faf18d228425fa97194e16df1d4f3e5d4f51c58ca557fcc6d",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f4341414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414144324b4d"
             }
           },
           "ext": "v0"
@@ -1769,7 +1866,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -1848,7 +1945,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -1927,7 +2024,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2006,7 +2103,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2085,7 +2182,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2164,7 +2261,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2243,7 +2340,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2322,7 +2419,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2401,7 +2498,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2480,7 +2577,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2501,7 +2598,7 @@
                     "symbol": "detail"
                   },
                   "val": {
-                    "u32": 199
+                    "u32": 300
                   }
                 },
                 {
@@ -2559,7 +2656,90 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "FeeBreakdown"
+              },
+              {
+                "symbol": "v1"
+              },
+              {
+                "u64": "1"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "base_fee"
+                  },
+                  "val": {
+                    "i128": "300"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "cpu_cost"
+                  },
+                  "val": {
+                    "i128": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "cpu_instructions"
+                  },
+                  "val": {
+                    "u64": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "mem_cost"
+                  },
+                  "val": {
+                    "i128": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "memory_bytes"
+                  },
+                  "val": {
+                    "u64": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "priority_tip"
+                  },
+                  "val": {
+                    "i128": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "total"
+                  },
+                  "val": {
+                    "i128": "300"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2638,7 +2818,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2717,7 +2897,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2795,8 +2975,91 @@
     {
       "event": {
         "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "type": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "FeeBreakdown"
+              },
+              {
+                "symbol": "v1"
+              },
+              {
+                "u64": "1"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "base_fee"
+                  },
+                  "val": {
+                    "i128": "300"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "cpu_cost"
+                  },
+                  "val": {
+                    "i128": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "cpu_instructions"
+                  },
+                  "val": {
+                    "u64": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "mem_cost"
+                  },
+                  "val": {
+                    "i128": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "memory_bytes"
+                  },
+                  "val": {
+                    "u64": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "priority_tip"
+                  },
+                  "val": {
+                    "i128": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "total"
+                  },
+                  "val": {
+                    "i128": "300"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
         "contract_id": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2814,7 +3077,7 @@
               }
             ],
             "data": {
-              "i128": "199"
+              "i128": "300"
             }
           }
         }
@@ -2825,7 +3088,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2846,7 +3109,7 @@
                     "symbol": "detail"
                   },
                   "val": {
-                    "u32": 199
+                    "u32": 300
                   }
                 },
                 {
@@ -2904,7 +3167,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -2983,7 +3246,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -3003,7 +3266,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "199"
+                  "i128": "300"
                 }
               ]
             }

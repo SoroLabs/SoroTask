@@ -22,6 +22,7 @@ pub mod admin;
 pub mod upgrade;
 
 pub use storage::{TaskMeta, TaskPayload, TaskStats};
+pub use gas::{GasMeter, FeeBreakdown, EscrowManager, update_gas_rates, get_gas_rates};
 pub use upgrade::{UpgradeProposal, UPGRADE_TIMELOCK_SECONDS};
 
 use soroban_sdk::{
@@ -1078,6 +1079,12 @@ pub enum DataKey {
     NetworkMetrics,
     KeeperMetrics,
     AdminAddress,
+    /// Gas metering configuration (Issue #1176)
+    GasCpuRate,
+    GasMemRate,
+    BaseFee,
+    TotalTaskEscrows,
+    TaskEscrow(u64),
     ProxyConfig,
     UpgradeRecord(u64),
     StateChannel(u64),
@@ -1153,7 +1160,6 @@ pub enum DataKey {
     VrfDelaySeconds,
     /// Configurable VRF expiration in seconds (Issue #1042)
     VrfExpirationSeconds,
-    TotalTaskEscrows,
     TotalKeeperStakes,
     TotalUnclaimedFees,
     /// Cross-chain gateway: relayer address authorized to relay messages
@@ -1172,6 +1178,8 @@ pub enum DataKey {
 
 /// Transient storage reentrancy guard ensuring reentrant calls revert immediately.
 pub struct ReentrancyGuard<'a>(&'a Env);
+
+pub mod gas;
 
 impl<'a> ReentrancyGuard<'a> {
     pub fn new(env: &'a Env) -> Self {
@@ -2266,7 +2274,7 @@ impl SoroTaskContract {
             panic_with_error!(&env, Error::InvalidInterval);
         }
 
-        if config.gas_balance < get_min_bounty(&env) {
+        if config.gas_balance > 0 && config.gas_balance < get_min_bounty(&env) {
             panic_with_error!(&env, Error::BountyBelowMinimum);
         }
 
@@ -2322,6 +2330,17 @@ impl SoroTaskContract {
         env.storage().persistent().set(&DataKey::Counter, &counter);
 
         save_task(&env, counter, &config);
+
+        // Lock initial gas balance as escrow and transfer tokens if token is initialized
+        if config.gas_balance > 0 {
+            gas::EscrowManager::lock_escrow(&env, counter, config.gas_balance);
+            // Transfer tokens from creator to contract if token is initialized
+            if let Some(token_address) = env.storage().instance().get::<DataKey, Address>(&DataKey::Token) {
+                let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+                token_client.transfer(&config.creator, &env.current_contract_address(), &config.gas_balance);
+            }
+        }
+
         env.storage().persistent().set(
             &DataKey::TaskStatus(counter),
             &TaskExecutionStatus {
@@ -4026,6 +4045,10 @@ impl SoroTaskContract {
             env, task_id, keeper, ExecutionStep::LoadTask, StepResult::Passed, 0,
         );
 
+        // ── Gas Meter: Initialize for dynamic fee calculation ──────────────────
+        // Pass task interval for base fee computation (shorter interval = higher base fee)
+        let gas_meter = gas::GasMeter::new(env, config.interval);
+
         // ── 3. Check invalidation hooks (Issue #832) ────────────────────
         if let Some(hook) = check_invalidation_hooks(env, &config.target) {
             config.is_active = false;
@@ -4325,8 +4348,21 @@ impl SoroTaskContract {
         }
 
         if zk_passed {
-            // ── 10. Fee calculation ─────────────────────────────────────
-            let fee: i128 = Self::calculate_execution_fee(env, &config);
+            // ── 10. Fee calculation (respects fee_model) ───────────────────
+            // Check fee model configuration
+            let fee_model: FeeModel = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenomicsConfig)
+                .map(|c: TokenomicsConfig| c.fee_model)
+                .unwrap_or(FeeModel::Dynamic);
+            
+            let fee: i128 = match fee_model {
+                FeeModel::Fixed => FIXED_EXECUTION_FEE,
+                FeeModel::Percentage | FeeModel::Dynamic => gas_meter.calculate_fee(env),
+            };
+            let fee_breakdown = gas_meter.fee_breakdown(env);
+            
             trace_steps.push_back(events::ExecutionStepRecord {
                 step: ExecutionStep::CalculateFee,
                 result: StepResult::Passed,
@@ -4334,6 +4370,16 @@ impl SoroTaskContract {
             });
             events::EventLogger::log_execution_step(
                 env, task_id, keeper, ExecutionStep::CalculateFee, StepResult::Passed, fee as u32,
+            );
+
+            // Log detailed fee breakdown
+            env.events().publish(
+                (
+                    Symbol::new(env, "FeeBreakdown"),
+                    Symbol::new(env, "v1"),
+                    task_id,
+                ),
+                fee_breakdown,
             );
 
             // ── 11. Balance check ────────────────────────────────────────
@@ -4436,8 +4482,20 @@ impl SoroTaskContract {
             let (protocol_fee, keeper_fee) = math::split_execution_fee(fee, protocol_fee_bps)
                 .unwrap_or((0, fee));
 
-            config.gas_balance -= fee;
-            sub_total_task_escrows(env, fee);
+            // Settle escrow: deduct consumed fee, refund remainder to task gas_balance
+            let (consumed, refund) = gas::EscrowManager::settle_escrow(env, task_id, fee);
+            config.gas_balance = refund; // Remaining escrow becomes new gas_balance
+
+            // Log detailed fee breakdown for transparency
+            let fee_breakdown = gas_meter.fee_breakdown(env);
+            env.events().publish(
+                (
+                    Symbol::new(env, "FeeBreakdown"),
+                    Symbol::new(env, "v1"),
+                    task_id,
+                ),
+                fee_breakdown,
+            );
 
             if env.storage().instance().has(&DataKey::Token) {
                 let token_address: Address = env
@@ -5616,7 +5674,9 @@ impl SoroTaskContract {
         config.gas_balance += amount;
         save_task(env, task_id, &config);
 
-        add_total_task_escrows(env, amount);
+        // Update escrow
+        gas::EscrowManager::lock_escrow(env, task_id, amount);
+        // Note: lock_escrow already updates TotalTaskEscrows internally
         assert_balance_invariant(env);
 
         // Emit event
@@ -5651,7 +5711,9 @@ impl SoroTaskContract {
         // Ensure only creator can withdraw
         config.creator.require_auth();
 
-        if config.gas_balance < amount {
+        // Check against escrow, not just gas_balance
+        let escrowed = gas::EscrowManager::get_escrow(&env, task_id);
+        if escrowed < amount {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
 
@@ -5661,11 +5723,10 @@ impl SoroTaskContract {
             .get(&DataKey::Token)
             .expect("Not initialized");
 
-        // Update balance
-        config.gas_balance -= amount;
+        // Update escrow
+        gas::EscrowManager::release_escrow(&env, task_id, amount);
+        config.gas_balance = gas::EscrowManager::get_escrow(&env, task_id);
         save_task(&env, task_id, &config);
-
-        sub_total_task_escrows(&env, amount);
 
         // Transfer tokens back to creator
         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
@@ -5696,18 +5757,9 @@ impl SoroTaskContract {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
-        // Refund: Automatically withdraw all remaining gas_balance to the creator
-        if config.gas_balance > 0 {
-            sub_total_task_escrows(&env, config.gas_balance);
-            if env.storage().instance().has(&DataKey::Token) {
-                let token_address: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-                let token_client = soroban_sdk::token::Client::new(&env, &token_address);
-                token_client.transfer(
-                    &env.current_contract_address(),
-                    &config.creator,
-                    &config.gas_balance,
-                );
-            }
+        // Refund: Use EscrowManager to refund full escrow to creator
+        let refunded = gas::EscrowManager::refund_escrow(&env, task_id, &config.creator);
+        if refunded > 0 {
             assert_balance_invariant(&env);
         }
 
@@ -5784,17 +5836,9 @@ impl SoroTaskContract {
             panic_with_error!(&env, Error::AbandonmentPeriodNotElapsed);
         }
 
-        if config.gas_balance > 0 {
-            sub_total_task_escrows(&env, config.gas_balance);
-            if env.storage().instance().has(&DataKey::Token) {
-                let token_address: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-                let token_client = soroban_sdk::token::Client::new(&env, &token_address);
-                token_client.transfer(
-                    &env.current_contract_address(),
-                    &config.creator,
-                    &config.gas_balance,
-                );
-            }
+        // Refund: Use EscrowManager to refund full escrow to creator
+        let refunded = gas::EscrowManager::refund_escrow(&env, task_id, &config.creator);
+        if refunded > 0 {
             assert_balance_invariant(&env);
         }
 

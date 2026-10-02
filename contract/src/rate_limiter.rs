@@ -57,7 +57,7 @@ pub fn allow_invocation(env: &Env, target: &Address) -> bool {
 #[cfg(test)]
 mod tests {
     use super::allow_invocation;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env};
 
     #[test]
     fn limits_each_target_and_leaks_capacity_over_time() {
