@@ -57,7 +57,6 @@ pub fn allow_invocation(env: &Env, target: &Address) -> bool {
 #[cfg(test)]
 mod tests {
     use super::allow_invocation;
-    use crate::SoroTaskContract;
     use soroban_sdk::{
         testutils::{Address as _, Ledger as _},
         Address, Env,

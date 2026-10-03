@@ -75,7 +75,7 @@ fn base_config(env: &Env, target: Address) -> TaskConfig {
         resolver: None,
         interval: 3_600,
         last_run: 0,
-        gas_balance: 1_000,
+        gas_balance: 0,  // Set to 0 to avoid requiring token transfer at registration
         whitelist: Vec::new(env),
         is_active: true,
         blocked_by: Vec::new(env),
@@ -186,12 +186,20 @@ fn test_register_accepts_bounty_at_minimum() {
     let (env, client) = setup_authed();
     let admin = Address::generate(&env);
     let target = env.register_contract(None, MockTarget);
-
-    client.init_proxy(&admin, &Address::generate(&env), &1);
+    
+    // Use a real token contract
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+    
+    client.init_proxy(&admin, &token_address, &1);
+    token_admin_client.mint(&admin, &2000); // Mint tokens to admin for gas
     client.set_min_bounty(&admin, &1_000);
 
     let mut cfg = base_config(&env, target);
     cfg.gas_balance = 1_000;
+    cfg.creator = admin.clone(); // Use admin as creator
 
     let task_id = client.register(&cfg);
     assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 1_000);
@@ -317,12 +325,22 @@ fn test_execute_non_whitelisted_keeper_rejected() {
 #[test]
 fn test_execute_whitelisted_keeper_succeeds() {
     let (env, client) = setup_authed();
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+    client.init(&token_id.address());
+
     let target = env.register_contract(None, MockTarget);
     let keeper = Address::generate(&env);
 
+    let creator = Address::generate(&env);
+    token_client.mint(&creator, &2000);
+    
     let mut cfg = base_config(&env, target);
+    cfg.creator = creator.clone();
     cfg.whitelist = vec![&env, keeper.clone()];
     let task_id = client.register(&cfg);
+    client.deposit_gas(&task_id, &creator, &2000);
 
     ts(&env, 3_600);
     client.execute(&keeper, &task_id);
@@ -333,11 +351,21 @@ fn test_execute_whitelisted_keeper_succeeds() {
 #[test]
 fn test_execute_empty_whitelist_allows_any_keeper() {
     let (env, client) = setup_authed();
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+    client.init(&token_id.address());
+
     let target = env.register_contract(None, MockTarget);
     let random_keeper = Address::generate(&env);
 
-    // whitelist is empty by default in base_config
-    let task_id = client.register(&base_config(&env, target));
+    let creator = Address::generate(&env);
+    token_client.mint(&creator, &2000);
+    
+    let mut cfg = base_config(&env, target);
+    cfg.creator = creator.clone();
+    let task_id = client.register(&cfg);
+    client.deposit_gas(&task_id, &creator, &2000);
 
     ts(&env, 3_600);
     client.execute(&random_keeper, &task_id);
@@ -398,7 +426,7 @@ fn test_deposit_gas_authorized_actor_succeeds() {
 
     token_admin_client.mint(&depositor, &500);
     client.deposit_gas(&task_id, &depositor, &500);
-    assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 1_500);
+    assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 500);
 }
 
 /// deposit_gas requires from.require_auth() — calling without auth panics.
@@ -446,7 +474,7 @@ fn test_withdraw_gas_authorized_actor_succeeds() {
     token_admin_client.mint(&creator, &500);
     client.deposit_gas(&task_id, &creator, &500);
     client.withdraw_gas(&task_id, &200);
-    assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 1_300);
+    assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 300);
 }
 
 /// A non-creator cannot withdraw gas — must be rejected.
@@ -464,12 +492,16 @@ fn test_withdraw_gas_non_creator_rejected() {
 #[test]
 fn test_withdraw_gas_edge_case_insufficient_balance() {
     let (env, client) = setup_authed();
-    let token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
     client.init(&token_id.address());
 
     let target = env.register_contract(None, MockTarget);
     let mut cfg = base_config(&env, target);
     cfg.gas_balance = 50;
+    let creator = cfg.creator.clone();
+    token_admin_client.mint(&creator, &100); // Mint tokens for initial gas_balance
     let task_id = client.register(&cfg);
 
     let result = client.try_withdraw_gas(&task_id, &100);
@@ -603,16 +635,24 @@ fn test_modify_task_cannot_transfer_ownership() {
     env.mock_all_auths();
     let id = env.register_contract(None, SoroTaskContract);
     let client = SoroTaskContractClient::new(&env, &id);
+    
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+    client.init(&token_id.address());
+
     let target = env.register_contract(None, MockTarget);
 
     let original_creator = Address::generate(&env);
     let new_creator = Address::generate(&env);
+    token_client.mint(&original_creator, &2000);
 
     let cfg = TaskConfig {
         creator: original_creator.clone(),
         ..base_config(&env, target.clone())
     };
     let task_id = client.register(&cfg);
+    client.deposit_gas(&task_id, &original_creator, &2000);
 
     let new_cfg = TaskConfig {
         creator: new_creator.clone(),

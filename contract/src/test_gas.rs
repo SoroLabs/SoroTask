@@ -36,7 +36,7 @@ fn base_config(env: &Env, target: Address) -> TaskConfig {
         resolver: None,
         interval: 3_600,
         last_run: 0,
-        gas_balance: 1_000,
+        gas_balance: 0,  // Set to 0 to avoid requiring token transfer at registration
         whitelist: Vec::new(env),
         is_active: true,
         blocked_by: Vec::new(env),
