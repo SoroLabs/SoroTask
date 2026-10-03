@@ -97,9 +97,7 @@ pub fn split_execution_fee(total: i128, protocol_fee_bps: u32) -> Result<(i128, 
     }
     let bps = protocol_fee_bps as i128;
     let protocol = FixedPoint128::div_ceil(total, bps, 10_000)?;
-    let keeper = total
-        .checked_sub(protocol)
-        .ok_or(MathError::Underflow)?;
+    let keeper = total.checked_sub(protocol).ok_or(MathError::Underflow)?;
     Ok((protocol, keeper))
 }
 
@@ -147,11 +145,7 @@ mod tests {
         while i < 1_000_000 {
             let fee = (i % 10_000) + 1;
             let (protocol, keeper) = split_execution_fee(fee, bps).unwrap();
-            assert_eq!(
-                protocol + keeper,
-                fee,
-                "dust at fee={fee} iteration={i}"
-            );
+            assert_eq!(protocol + keeper, fee, "dust at fee={fee} iteration={i}");
             i += 1;
         }
     }

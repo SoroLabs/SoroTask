@@ -52,15 +52,21 @@ class Monitor {
   }
 
   fetchMockDeployments() {
-    // Simulated new deployment
+    // Generate a syntactically valid Soroban C-strkey (56 chars, base-32 alphabet).
+    // Real deployments would come from scanning ledger events via the Soroban RPC.
+    const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let suffix = '';
+    for (let i = 0; i < 55; i++) {
+      suffix += BASE32_ALPHABET[Math.floor(Math.random() * BASE32_ALPHABET.length)];
+    }
     return [
       {
-        address: `C${Math.random().toString(36).substring(2, 15).toUpperCase()}`,
+        address: `C${suffix}`,
         data: {
           bytecode: '0x1234',
-          mockFunctions: [{ name: 'transfer', args: ['to', 'amount'] }]
-        }
-      }
+          mockFunctions: [{ name: 'transfer', args: ['to', 'amount'] }],
+        },
+      },
     ];
   }
 }

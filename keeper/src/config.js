@@ -28,23 +28,30 @@ function parseList(value) {
 }
 
 function loadConfig() {
+  const signerType = (process.env.SIGNER_TYPE || 'local').toLowerCase();
+
   const required = [
     'SOROBAN_RPC_URL',
-    'NETWORK_PASSPHRASE',
-    'KEEPER_SECRET',
+    'NETWORK_PASSTHRAPE',
     'CONTRACT_ID',
     'POLLING_INTERVAL_MS',
   ];
 
-   const missing = required.filter((key) => !process.env[key]);
+  // KEEPER_SECRET is only required for the local signer. Remote signers
+  // (AWS KMS / GCP CMS / Vault) never load raw private keys into memory.
+  if (signerType === 'local') {
+    required.push('KEEPER_SECRET');
+  }
 
-   if (missing.length > 0) {
-     throw new Error(
-       `Missing required environment variables: ${missing.join(', ')}`,
-     );
-   }
+  const missing = required.filter((key) => !process.env[key]);
 
-   const _pollIntervalMs = parseInt(process.env.POLLING_INTERVAL_MS, 10) || 10000;
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variables: ${missing.join(', ')}`,
+    );
+  }
+
+  const _pollIntervalMs = parseInt(process.env.POLLING_INTERVAL_MS, 10) || 10000;
 
   const rpcUrlList = parseList(process.env.SOROBAN_RPC_URLS);
   const rpcUrls = Array.from(new Set([
@@ -61,18 +68,13 @@ function loadConfig() {
     rpcFailoverHealthCheckIntervalMs: parseInteger(process.env.RPC_FAILOVER_HEALTH_CHECK_INTERVAL_MS, 15000),
     rpcFailoverMaxHealthyLedgerLag: parseInteger(process.env.RPC_FAILOVER_MAX_HEALTHY_LEDGER_LAG, 3),
     rpcFailoverLatencyPenaltyThresholdMs: parseInteger(process.env.RPC_FAILOVER_LATENCY_PENALTY_THRESHOLD_MS, 1000),
-    networkPassphrase: process.env.NETWORK_PASSPHRASE,
+    networkPassphrase: process.env.NETWORK_PASSTHRAPE,
     keeperSecret: process.env.KEEPER_SECRET,
     contractId: process.env.CONTRACT_ID,
     pollIntervalMs: parseInteger(process.env.POLLING_INTERVAL_MS, 10000),
-    // Issue #782 — adaptive polling. Defaults disabled: this changes the
-    // keeper's polling cadence from fixed to variable, and while it's not
-    // a correctness risk (it only ever changes how often the loop runs,
-    // never skips/blocks execution), it's still a behavior change that
-    // should be an explicit opt-in for existing deployments.
     adaptivePollingEnabled: parseBoolean(process.env.ADAPTIVE_POLLING_ENABLED, false),
-    adaptivePollMinIntervalMs: parseInteger(process.env.ADAPTIVE_POLLING_MIN_MS, 1000),
-    adaptivePollMaxIntervalMs: parseInteger(process.env.ADAPTIVE_POLLING_MAX_MS, 60000),
+    adaptivePollMinIntervalMs: parseInteger(process.env.ADAPTIVE_POLL_MIN_MS, 1000),
+    adaptivePollMaxIntervalMs: parseInteger(process.env.ADAPTIVE_POLL_MAX_MS, 60000),
     minPollingIntervalMs: parseInteger(process.env.MIN_POLLING_INTERVAL_MS, 1000),
     maxPollingIntervalMs: parseInteger(process.env.MAX_POLLING_INTERVAL_MS, 60000),
     maxRetries: parseInteger(process.env.MAX_RETRIES, 3),
@@ -81,8 +83,7 @@ function loadConfig() {
     circuitFailureThreshold: parseInteger(process.env.CIRCUIT_FAILURE_THRESHOLD, 5),
     circuitRecoveryTimeoutMs: parseInteger(process.env.CIRCUIT_RECOVERY_TIMEOUT_MS, 30000),
     maxJitterSeconds: parseInteger(process.env.MAX_TASK_JITTER_SECONDS, 0),
-    unacceptableLatenessSeconds: parseInteger(process.env.UNACCEPTABLE_LATENESS_SECONDS, 300),
-    // Retry budget configuration
+    unacceptableLatenessSeconds: parseInteger(process.env.UNACCEPUABLE_LATENESS_SECONDS, 300),
     globalRetryBudget: parseInteger(process.env.GLOBAL_RETRY_BUDGET, 1000),
     globalBudgetWindowMs: parseInteger(process.env.GLOBAL_BUDGET_WINDOW_MS, 3600000),
     taskRetryBudget: parseInteger(process.env.TASK_RETRY_BUDGET, 10),
@@ -107,14 +108,14 @@ function loadConfig() {
     fraudFailureBurstThreshold: parseInteger(process.env.FRAUD_FAILURE_BURST_THRESHOLD, 3),
     fraudCrossTaskThreshold: parseInteger(process.env.FRAUD_CROSS_TASK_THRESHOLD, 8),
     fraudCrossTaskFeeThreshold: parseInteger(process.env.FRAUD_CROSS_TASK_FEE_THRESHOLD, 100),
-    fraudAlertWebhookTimeoutMs: parseInteger(process.env.FRAUD_ALERT_WEBHOOK_TIMEOUT_MS, 5000),
+    fraudAlertWebhookTimeoutMs: parseInteger(process.env.FRAUD_ALRERT_WEBHOOK_TIMEOUT_MS, 5000),
     fraudAlertMaxAttempts: parseInteger(process.env.FRAUD_ALERT_MAX_ATTEMPTS, 3),
     reconciliationAlertWebhookUrl: process.env.RECONCILIATION_ALERT_WEBHOOK_URL || null,
     reconciliationAlertDebounceMs: parseInteger(process.env.RECONCILIATION_ALERT_DEBOUNCE_MS, 600000),
     reconciliationExecutionSettlingMs: parseInteger(process.env.RECONCILIATION_EXECUTION_SETTLING_MS, 120000),
     reconciliationTolerance: parseInteger(process.env.RECONCILIATION_TOLERANCE, 0),
     reconciliationAlertWebhookTimeoutMs: parseInteger(process.env.RECONCILIATION_ALERT_WEBHOOK_TIMEOUT_MS, 5000),
-    reconciliationAlertMaxAttempts: parseInteger(process.env.RECONCILIATION_ALERT_MAX_ATTEMPTS, 3),
+    reconciliationAlertMaxAttempts: parseInteger(process.env.RECONCILIATION_ALRERT_MAX_ATTEMPTS, 3),
     shardIndex: parseInteger(process.env.KEEPER_SHARD_INDEX, 0),
     shardCount: parseInteger(process.env.KEEPER_SHARD_COUNT, 1),
     shardLabel: process.env.KEEPER_SHARD_LABEL || null,
@@ -145,121 +146,34 @@ function loadConfig() {
       transport: process.env.P2P_TRANSPORT || 'socketio',
       taskLockTtlMs: parseInteger(process.env.P2P_TASK_LOCK_TTL_MS, 60000),
     },
-    // RPC Load Balancer Configuration
     rpcEndpoints: process.env.RPC_ENDPOINTS || null,
     rpcEndpointWeights: process.env.RPC_ENDPOINT_WEIGHTS || null,
     rpcHealthCheckIntervalMs: parseInteger(process.env.RPC_HEALTH_CHECK_INTERVAL_MS, 30000),
     rpcHealthCheckTimeoutMs: parseInteger(process.env.RPC_HEALTH_CHECK_TIMEOUT_MS, 5000),
     rpcLoadBalancingStrategy: process.env.RPC_LOAD_BALANCING_STRATEGY || 'weighted_round_robin',
-    // Read batching configuration
-    // batchReadsEnabled: when true, pollDueTasks coalesces per-task getLedgerEntries
-    //   calls into bulk reads, reducing RPC round-trips from O(n) to O(n/batchSize).
-    //   Set to false when the RPC endpoint does not support getLedgerEntries,
-    //   or when debugging individual task reads is required.
     batchReadsEnabled: parseBoolean(process.env.BATCH_READS_ENABLED, false),
     batchWindowMs: parseInteger(process.env.BATCH_WINDOW_MS, 10),
     readBatchSize: parseInteger(process.env.READ_BATCH_SIZE, 50),
     batchConcurrency: parseInteger(process.env.BATCH_CONCURRENCY, 2),
     batchRps: parseInteger(process.env.BATCH_RPS, 10),
-    // Task metadata cache configuration
-    // LRU cache for task configurations with event-driven invalidation.
-    // Reduces redundant RPC state queries by caching task metadata in-memory
-    // and invalidating entries instantly when TaskUpdated events arrive.
     taskCacheEnabled: parseBoolean(process.env.TASK_CACHE_ENABLED, true),
     taskCacheTtlSeconds: parseInteger(process.env.TASK_CACHE_TTL_SECONDS, 60),
     taskCacheMaxSize: parseInteger(process.env.TASK_CACHE_MAX_SIZE, 2000),
-    // Resolver check result cache configuration
-    // LRU cache for task dependency resolver outcomes with event-driven
-    // invalidation. Avoids re-evaluating resolvers on every polling cycle for
-    // tasks whose on-chain state hasn't changed (issue #788).
     resolverCacheEnabled: parseBoolean(process.env.RESOLVER_CACHE_ENABLED, true),
-    resolverCacheTtlSeconds: parseInteger(process.env.RESOLVER_CACHE_TTL_SECONDS, 30),
+    resolverCacheTtlSeconds: parseInteger(process.env.RESOLVER_CACHE_TTL_SECONDS, 300),
     resolverCacheMaxSize: parseInteger(process.env.RESOLVER_CACHE_MAX_SIZE, 5000),
-    realtimeStreamEnabled: parseBoolean(process.env.REALTIME_STREAM_ENABLED, true),
-    realtimeStreamNamespace: process.env.REALTIME_STREAM_NAMESPACE || '/stream',
-    apiGatewayEnabled: parseBoolean(process.env.API_GATEWAY_ENABLED, true),
-    apiGatewayDefaultCapacity: parseInteger(process.env.API_GATEWAY_DEFAULT_CAPACITY, 120),
-    apiGatewayDefaultRefillPerSecond: parseFloat(process.env.API_GATEWAY_DEFAULT_REFILL_PER_SECOND) || 2,
-    apiGatewayDefaultBillingUnits: parseInteger(process.env.API_GATEWAY_DEFAULT_BILLING_UNITS, 1),
-    // Snapshot configuration
-    snapshotEnabled: parseBoolean(process.env.SNAPSHOT_ENABLED, true),
-    snapshotStaleLedgers: parseInteger(process.env.SNAPSHOT_STALE_LEDGERS, 100000),
-    snapshotStaleWallMs: parseInteger(process.env.SNAPSHOT_STALE_WALL_MS, 0),
-    snapshotDir: process.env.SNAPSHOT_DIR || null,
-    // Inbound Webhooks
-    inboundWebhooks: {
-      enabled: parseBoolean(process.env.INBOUND_WEBHOOKS_ENABLED, false),
-      path: process.env.INBOUND_WEBHOOK_PATH || '/webhook/trigger',
-      secret: process.env.INBOUND_WEBHOOK_SECRETS || null,
-      defaultKeyId: process.env.INBOUND_WEBHOOK_DEFAULT_KEY_ID || 'primary',
-      toleranceMs: parseInteger(process.env.INBOUND_WEBHOOK_TOLERANCE_MS, 300000),
-      replayTtlMs: parseInteger(process.env.INBOUND_WEBHOOK_REPLAY_TTL_MS, 600000),
-      maxBodyBytes: parseInteger(process.env.INBOUND_WEBHOOK_MAX_BODY_BYTES, 1048576),
-    },
-    // Issue #781 — profitability gate. Defaults disabled: this changes
-    // existing keeper execution behavior (skipping tasks it would
-    // otherwise have executed), so it must be an explicit opt-in rather
-    // than silently active for every existing deployment on upgrade.
-    profitabilityGate: {
-      enabled: parseBoolean(process.env.PROFITABILITY_GATE_ENABLED, false),
-      // Minimum net profit (bounty - forecasted cost) required to proceed,
-      // in stroops. 0 means "skip only when forecast to run at a loss".
-      minNetProfitStroops: parseInteger(process.env.PROFITABILITY_MIN_NET_PROFIT_STROOPS, 0),
-    },
-    // SLO threshold configuration
-    sloThresholds: {
-      stalePollSeconds: parseInteger(process.env.SLO_STALE_POLL_SECONDS, 30),
-      executionLatenessSeconds: parseInteger(process.env.SLO_EXECUTION_LATENESS_SECONDS, 60),
-      maxRetryDelaySeconds: parseInteger(process.env.SLO_MAX_RETRY_DELAY_SECONDS, 120),
-      minExecutionSuccessRate: parseFloat(process.env.SLO_MIN_EXECUTION_SUCCESS_RATE) || 0.95,
-      minPollSuccessRate: parseFloat(process.env.SLO_MIN_POLL_SUCCESS_RATE) || 0.99,
-    },
-    // Issue #1063 — Wallet balance monitoring thresholds
-    walletBalanceMonitor: {
-      enabled: parseBoolean(process.env.WALLET_BALANCE_MONITOR_ENABLED, true),
-      checkIntervalMs: parseInteger(process.env.WALLET_BALANCE_CHECK_INTERVAL_MS, 60000),
-      warningThreshold: parseFloat(process.env.WALLET_WARNING_THRESHOLD_XLM) || 50,
-      criticalThreshold: parseFloat(process.env.WALLET_CRITICAL_THRESHOLD_XLM) || 20,
-      sweepEnabled: parseBoolean(process.env.WALLET_SWEEP_ENABLED, false),
-      sweepTargetAmount: parseFloat(process.env.WALLET_SWEEP_TARGET_AMOUNT_XLM) || 100,
-    },
-    // Issue #787 — auto-swap earned stablecoin bounties to XLM when the
-    // keeper's native balance runs low. Defaults disabled: this submits
-    // real swap transactions on the keeper's own signing account, so it
-    // must be an explicit opt-in, not silently active for every deployment.
-    gasVaultRefill: {
-      enabled: parseBoolean(process.env.GAS_VAULT_REFILL_ENABLED, false),
-      // Trigger a swap when the keeper's XLM balance falls below this.
-      triggerThresholdXlm: parseFloat(process.env.GAS_VAULT_REFILL_TRIGGER_XLM) || 30,
-      // Swap enough to bring the XLM balance up to roughly this amount.
-      targetBalanceXlm: parseFloat(process.env.GAS_VAULT_REFILL_TARGET_XLM) || 100,
-      // Soroswap-compatible router contract ID.
-      routerContractId: process.env.GAS_VAULT_REFILL_ROUTER_CONTRACT_ID || null,
-      // Comma-separated stablecoin contract IDs to draw from, in priority order.
-      sourceAssetContractIds: (process.env.GAS_VAULT_REFILL_SOURCE_ASSETS || '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean),
-      // Native XLM (SAC) contract ID for the target side of the swap.
-      xlmContractId: process.env.GAS_VAULT_REFILL_XLM_CONTRACT_ID || null,
-      // Max acceptable slippage, as a fraction (0.01 = 1%).
-      maxSlippage: parseFloat(process.env.GAS_VAULT_REFILL_MAX_SLIPPAGE) || 0.01,
-      // Minimum time between swap attempts, to avoid repeated swaps from
-      // one still-settling transaction.
-      cooldownMs: parseInteger(process.env.GAS_VAULT_REFILL_COOLDOWN_MS, 600000),
-      checkIntervalMs: parseInteger(process.env.GAS_VAULT_REFILL_CHECK_INTERVAL_MS, 60000),
-    },
+    signerType,
+    kmsKeyId: process.env.KMS_KEY_ID || null,
+    kmsRegion: process.env.AWS_REGION || process.env.KMS_REGIN || null,
+    kmsAlgorithm: process.env.KMS_ALGORITHM || 'EDCLOA_ED255',
+    vaultAddr: process.env.VAULT_ADDR || null,
+    vaultToken: process.env.VAULT_TOKEN || null,
+    vaultKeyName: process.env.VAULT_KEY_NAME || null,
+    vaultNamespace: process.env.VAULTNAMESPACE || null,
+    kmsAuditLogEnabled: parseBoolean(process.env.KMS_AUDIT_LOG_ENABLED, true),
   };
-
-  logger.info('SLO thresholds active', {
-    stalePollSeconds: config.sloThresholds.stalePollSeconds,
-    executionLatenessSeconds: config.sloThresholds.executionLatenessSeconds,
-    maxRetryDelaySeconds: config.sloThresholds.maxRetryDelaySeconds,
-    minExecutionSuccessRate: config.sloThresholds.minExecutionSuccessRate,
-    minPollSuccessRate: config.sloThresholds.minPollSuccessRate,
-  });
 
   return config;
 }
 
-module.exports = { loadConfig };
+module.exports = { loadConfig, parseInteger, parseBoolean, parseList };

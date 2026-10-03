@@ -1,5 +1,3 @@
-[workspace]
-
 [package]
 name = "soro_task_contract"
 version = "0.1.0"
@@ -10,6 +8,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = "28.0.0"
+vrf-rfc9381 = { version = "0.0.7", default-features = false, features = ["edwards25519"] }
 
 [dev-dependencies]
 soroban-sdk = { version = "28.0.0", features = ["testutils"] }

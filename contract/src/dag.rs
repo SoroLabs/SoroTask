@@ -5,7 +5,7 @@
 
 use soroban_sdk::{Env, Vec};
 
-use crate::Error;
+use crate::{DependencyOutcome, DependencyRule, Error, ExecutionOutcome, TaskExecutionStatus};
 
 /// Maximum transitive dependency depth (inclusive).
 pub const MAX_DEPENDENCY_DEPTH: u32 = 5;
@@ -21,9 +21,7 @@ pub fn get_parent_ids(env: &Env, task_id: u64) -> Vec<u64> {
 fn load_blocked_by(env: &Env, task_id: u64) -> Vec<u64> {
     crate::storage::load_task_meta(env, task_id)
         .map(|m| m.blocked_by)
-        .or_else(|| {
-            crate::storage::load_legacy_task(env, task_id).map(|c| c.blocked_by)
-        })
+        .or_else(|| crate::storage::load_legacy_task(env, task_id).map(|c| c.blocked_by))
         .unwrap_or_else(|| Vec::new(env))
 }
 
@@ -103,11 +101,7 @@ fn set_depth(depth_map: &mut Vec<(u64, u32)>, id: u64, depth: u32) {
 }
 
 /// Validates that adding a dependency respects parent count and depth limits.
-pub fn validate_new_dependency(
-    env: &Env,
-    task_id: u64,
-    new_parent: u64,
-) -> Result<(), Error> {
+pub fn validate_new_dependency(env: &Env, task_id: u64, new_parent: u64) -> Result<(), Error> {
     if task_id == new_parent {
         return Err(Error::SelfDependency);
     }
@@ -202,6 +196,164 @@ fn has_cycle_from(env: &Env, root: u64) -> bool {
         visited.push_back(node);
     }
     false
+}
+
+/// Validates all dependency rules for a task before execution.
+pub fn check_dependency_rules(env: &Env, task_id: u64) -> Result<(), Error> {
+    let rules = load_dependency_rules(env, task_id);
+    
+    for i in 0..rules.len() {
+        let rule = rules.get(i).unwrap();
+        
+        // Check if parent task exists
+        if !crate::task::task_exists(env, rule.task_id) {
+            return Err(Error::DependencyNotFound);
+        }
+        
+        // Load parent task status
+        let status = load_task_execution_status(env, rule.task_id);
+        
+        // Validate based on required outcome
+        match rule.required_outcome {
+            DependencyOutcome::AnyCompletion => {
+                if status.outcome == ExecutionOutcome::NeverRun {
+                    return Err(Error::DependencyBlocked);
+                }
+            }
+            DependencyOutcome::Success => {
+                if status.outcome != ExecutionOutcome::Success {
+                    return Err(Error::DependencyBlocked);
+                }
+            }
+            DependencyOutcome::Skipped => {
+                if status.outcome != ExecutionOutcome::Skipped {
+                    return Err(Error::DependencyBlocked);
+                }
+            }
+        }
+        
+        // Check minimum completion time
+        if status.completed_at < rule.min_completed_at {
+            return Err(Error::DependencyBlocked);
+        }
+    }
+    
+    Ok(())
+}
+
+/// Stores dependency rules for a task.
+pub fn save_dependency_rules(env: &Env, task_id: u64, rules: &Vec<DependencyRule>) {
+    env.storage()
+        .persistent()
+        .set(&crate::DataKey::DependencyRules(task_id), rules);
+}
+
+/// Loads dependency rules for a task.
+pub fn load_dependency_rules(env: &Env, task_id: u64) -> Vec<DependencyRule> {
+    env.storage()
+        .persistent()
+        .get(&crate::DataKey::DependencyRules(task_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Loads execution status for a task.
+fn load_task_execution_status(env: &Env, task_id: u64) -> TaskExecutionStatus {
+    env.storage()
+        .persistent()
+        .get(&crate::DataKey::TaskStatus(task_id))
+        .unwrap_or(TaskExecutionStatus {
+            outcome: ExecutionOutcome::NeverRun,
+            completed_at: 0,
+            run_count: 0,
+        })
+}
+
+/// Validates DAG on task registration with full cycle detection (Tarjan-inspired).
+pub fn validate_dag_on_registration(
+    env: &Env,
+    task_id: u64,
+    parent_ids: &Vec<u64>,
+) -> Result<(), Error> {
+    // Check parent count limit
+    if parent_ids.len() > MAX_PARENTS as u32 {
+        return Err(Error::DependencyLimitExceeded);
+    }
+    
+    // Validate each parent
+    for i in 0..parent_ids.len() {
+        let parent = parent_ids.get(i).unwrap();
+        
+        // Check self-dependency
+        if parent == task_id {
+            return Err(Error::SelfDependency);
+        }
+        
+        // Check if parent exists
+        if !crate::task::task_exists(env, parent) {
+            return Err(Error::DependencyNotFound);
+        }
+        
+        // Check for cycles
+        if would_create_cycle(env, task_id, parent) {
+            return Err(Error::CircularDependency);
+        }
+    }
+    
+    // Validate depth limit
+    if exceeds_depth_limit_with_parents(env, task_id, parent_ids) {
+        return Err(Error::DependencyDepthExceeded);
+    }
+    
+    Ok(())
+}
+
+/// Checks if adding parents would exceed depth limit.
+fn exceeds_depth_limit_with_parents(env: &Env, task_id: u64, parents: &Vec<u64>) -> bool {
+    let mut max_depth = 0u32;
+    
+    for i in 0..parents.len() {
+        let parent = parents.get(i).unwrap();
+        let depth = compute_depth_from(env, parent);
+        if depth > max_depth {
+            max_depth = depth;
+        }
+    }
+    
+    max_depth + 1 > MAX_DEPENDENCY_DEPTH
+}
+
+/// Computes the maximum depth from a given task following dependencies.
+fn compute_depth_from(env: &Env, task_id: u64) -> u32 {
+    let mut stack = Vec::new(env);
+    stack.push_back((task_id, 0u32));
+    
+    let mut max_depth = 0u32;
+    let mut visited = Vec::new(env);
+    
+    while stack.len() > 0 {
+        let (node, depth) = stack.pop_back().unwrap();
+        
+        if depth > MAX_DEPENDENCY_DEPTH {
+            return MAX_DEPENDENCY_DEPTH + 1;
+        }
+        
+        if depth > max_depth {
+            max_depth = depth;
+        }
+        
+        if visited.contains(&node) {
+            continue;
+        }
+        visited.push_back(node);
+        
+        let parents = load_blocked_by(env, node);
+        for j in 0..parents.len() {
+            let p = parents.get(j).unwrap();
+            stack.push_back((p, depth + 1));
+        }
+    }
+    
+    max_depth
 }
 
 #[cfg(test)]

@@ -12,6 +12,12 @@ const DATABASE_URL =
   process.env.POSTGRES_URL ||
   'postgresql://postgres:postgres@localhost:5432/sorotask_indexer';
 
+const migrationsConfig = {
+  directory: path.join(__dirname, 'migrations'),
+  tableName: 'knex_migrations',
+  disableTransactions: false,
+};
+
 module.exports = {
   development: {
     client: 'pg',
@@ -22,10 +28,7 @@ module.exports = {
       idleTimeoutMillis: parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS || '30000', 10),
       acquireTimeoutMillis: parseInt(process.env.DATABASE_CONN_TIMEOUT_MS || '10000', 10),
     },
-    migrations: {
-      directory: path.join(__dirname, 'migrations'),
-      tableName: 'knex_migrations',
-    },
+    migrations: migrationsConfig,
   },
 
   test: {
@@ -36,10 +39,7 @@ module.exports = {
       max: 10,
       idleTimeoutMillis: 10000,
     },
-    migrations: {
-      directory: path.join(__dirname, 'migrations'),
-      tableName: 'knex_migrations',
-    },
+    migrations: migrationsConfig,
   },
 
   production: {
@@ -51,9 +51,6 @@ module.exports = {
       idleTimeoutMillis: parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS || '30000', 10),
       acquireTimeoutMillis: parseInt(process.env.DATABASE_CONN_TIMEOUT_MS || '10000', 10),
     },
-    migrations: {
-      directory: path.join(__dirname, 'migrations'),
-      tableName: 'knex_migrations',
-    },
+    migrations: migrationsConfig,
   },
 };

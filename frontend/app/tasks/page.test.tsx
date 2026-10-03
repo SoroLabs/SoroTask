@@ -26,6 +26,27 @@ jest.mock("@/components/TaskCardWithSelection", () => ({
   ),
 }));
 
+jest.mock("@/app/tasks/bulk/TaskSelectableCard", () => ({
+  __esModule: true,
+  default: ({ task }: { task: { id: string } }) => (
+    <article data-testid="task-card">{task.id}</article>
+  ),
+}));
+
+jest.mock("@/app/tasks/bulk/BulkSelectAllBar", () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
+jest.mock("@/app/tasks/bulk/BatchActionConsole", () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
+jest.mock("@/app/tasks/bulk/bulkSelectionStore", () => ({
+  useTaskBulkSelection: jest.fn(() => []),
+}));
+
 const mockUseTasks = useTasks as jest.Mock;
 
 function makeTasks(count: number) {

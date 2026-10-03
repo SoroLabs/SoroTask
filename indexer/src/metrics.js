@@ -28,11 +28,37 @@ const eventsIndexedTotal = new client.Counter({
   labelNames: ['event_name'],
 });
 
+const syntheticCanaryHealthy = new client.Gauge({
+  name: 'indexer_synthetic_canary_healthy',
+  help: 'Whether the most recent end-to-end synthetic canary succeeded (1 = healthy, 0 = failed)',
+});
+
+const syntheticCanaryRunsTotal = new client.Counter({
+  name: 'indexer_synthetic_canary_runs_total',
+  help: 'Total number of completed synthetic canary runs',
+  labelNames: ['result'],
+});
+
+const syntheticCanaryDuration = new client.Histogram({
+  name: 'indexer_synthetic_canary_duration_seconds',
+  help: 'End-to-end synthetic canary duration in seconds',
+  buckets: [1, 5, 10, 30, 60, 120, 300, 600],
+});
+
+const syntheticCanaryLastSuccess = new client.Gauge({
+  name: 'indexer_synthetic_canary_last_success_timestamp_seconds',
+  help: 'Unix timestamp of the most recent successful synthetic canary run',
+});
+
 // Register metrics
 register.registerMetric(indexerLedgerHead);
 register.registerMetric(networkLedgerHead);
 register.registerMetric(indexerLagLedgers);
 register.registerMetric(eventsIndexedTotal);
+register.registerMetric(syntheticCanaryHealthy);
+register.registerMetric(syntheticCanaryRunsTotal);
+register.registerMetric(syntheticCanaryDuration);
+register.registerMetric(syntheticCanaryLastSuccess);
 
 /**
  * Updates ledger head metrics and computes current indexer lag.
@@ -61,6 +87,17 @@ function recordEventIndexed(eventName = 'unknown', count = 1) {
   eventsIndexedTotal.inc({ event_name: eventName }, count);
 }
 
+function recordSyntheticCanary({ success, durationMs }) {
+  syntheticCanaryHealthy.set(success ? 1 : 0);
+  syntheticCanaryRunsTotal.inc({ result: success ? 'success' : 'failure' });
+  if (Number.isFinite(durationMs) && durationMs >= 0) {
+    syntheticCanaryDuration.observe(durationMs / 1000);
+  }
+  if (success) {
+    syntheticCanaryLastSuccess.set(Date.now() / 1000);
+  }
+}
+
 /**
  * Express middleware handler for scraping Prometheus metrics.
  */
@@ -79,7 +116,12 @@ module.exports = {
   networkLedgerHead,
   indexerLagLedgers,
   eventsIndexedTotal,
+  syntheticCanaryHealthy,
+  syntheticCanaryRunsTotal,
+  syntheticCanaryDuration,
+  syntheticCanaryLastSuccess,
   updateLedgerMetrics,
   recordEventIndexed,
+  recordSyntheticCanary,
   metricsHandler,
 };

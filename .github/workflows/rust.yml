@@ -30,6 +30,9 @@ jobs:
             contract/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('contract/Cargo.lock') }}
 
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
       - name: Check Formatting
         run: cargo fmt --all --check
 
@@ -40,7 +43,16 @@ jobs:
         run: cargo test
 
       - name: Build WASM Release
-        run: cargo build --target wasm32v1-none --release || cargo build --target wasm32-unknown-unknown --release
+        run: |
+          cd contract
+          stellar contract build --locked
+          wasm_file="target/wasm32v1-none/release/soro_task_contract.wasm"
+          wasm_size=$(wc -c < "$wasm_file")
+          echo "Uncompressed contract WASM: ${wasm_size} bytes"
+          if [ "$wasm_size" -ge 131072 ]; then
+            echo "Contract WASM exceeds the 128 KiB budget"
+            exit 1
+          fi
 
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@v5

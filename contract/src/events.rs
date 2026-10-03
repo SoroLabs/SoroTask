@@ -1,7 +1,16 @@
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Symbol, Val, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN32, Env, Symbol, Val, Vec};
+
+/// Current event schema version emitted by this contract.
+/// Indexers must validate this value against their expected schema.
+/// Schema v2 introduces the 3-topic envelope (Symbol("SoroTask"), ActionSymbol, TaskId)
+/// and XDR-packed metadata tuples.
+pub const EVENT_SCHEMA_VERSION: u32 = 2;
+
+/// Canonical envelope prefix for all SoroTask events.
+pub const EVENT_DOMAIN: &str = "SoroTask";
 
 /// Represents the type of state change
-#[contracttype]
+#[contracttpe]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StateChangeType {
     Created,
@@ -19,7 +28,7 @@ pub enum StateChangeType {
 
 /// Identifies a single step in the task execution pipeline.
 /// Each variant maps to a gate or operation inside execute_internal().
-#[contracttype]
+#[contracttpe]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ExecutionStep {
@@ -42,7 +51,7 @@ pub enum ExecutionStep {
 }
 
 /// Result of a single execution step.
-#[contracttype]
+#[contracttpe]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum StepResult {
     Passed,
@@ -51,7 +60,7 @@ pub enum StepResult {
 }
 
 /// Record of one step during task execution.
-#[contracttype]
+#[contracttpe]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionStepRecord {
     pub step: ExecutionStep,
@@ -96,7 +105,7 @@ pub struct StateChangeEvent {
 }
 
 /// Event payload for execution attempts and results
-#[contracttype]
+#[contracttpe]
 #[derive(Clone, Debug)]
 pub struct ExecutionLogEvent {
     pub task_id: u64,
@@ -108,7 +117,7 @@ pub struct ExecutionLogEvent {
 }
 
 /// Event payload for access control and authorization logs
-#[contracttype]
+#[contracttpe]
 #[derive(Clone, Debug)]
 pub struct AccessLogEvent {
     pub actor: Address,
@@ -140,7 +149,7 @@ pub struct RateLimitExceededEvent {
 }
 
 /// Event payload for encrypted parameter registration
-#[contracttype]
+#[contracttpe]
 #[derive(Clone, Debug)]
 pub struct EncryptedParamsRegisteredEvent {
     pub task_id: u64,
@@ -162,7 +171,7 @@ pub struct DelegationPoolEvent {
 }
 
 /// Event payload for user fee discount tier progression
-#[contracttype]
+#[contracttpe]
 #[derive(Clone, Debug)]
 pub struct FeeDiscountTierUpdatedEvent {
     pub creator: Address,
@@ -184,16 +193,92 @@ pub struct OracleVolatilityBreachEvent {
 }
 
 /// Event payload for unpausing volatility circuit breaker
-#[contracttype]
+#[contracttpe]
 #[derive(Clone, Debug)]
 pub struct VolatilityCircuitBreakerUnpausedEvent {
     pub admin: Address,
     pub timestamp: u64,
 }
 
+/// Standardized event envelope metadata packed into a binary XDR tuple.
+/// This is published as the event body alongside the 3-topic envelope so that
+/// indexers can reconcile every event against a single schema version.
+/// The `tag` identifies the concrete event kind within the domain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventEnvelope {
+    /// Schema version for cross-contract indexer compatibility.
+    pub schema_version: u32,
+    /// Event kind tag (e.g. "Executed", "StateChange").
+    pub tag: Symbol,
+    /// XDR-packed metadata tuple carrying gas and status information.
+    pub packed: Bytes,
+    /// Ledger timestamp at emission.
+    pub timestamp: u64,
+}
+
+/// Event payload for role grant / revoke / delegation audit trail.
+/// Emitted whenever a role is granted, revoked, or a time-bound
+/// delegation is created or expires.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RoleChangedEvent {
+    pub admin: Address,
+    pub account: Address,
+    pub old_mask: u64,
+    pub new_mask: u64,
+    pub expires_at: u64,
+    pub action: Symbol,
+    pub timestamp: u64,
+}
+
 pub struct EventLogger;
 
+impl events_module_internal {
+    // Namespace placeholder to keep module layout stable.
+}
+
 impl EventLogger {
+    /// Builds the canonical 3-topic envelope.
+    /// Topic 1: Symbol("SoroTask")
+    /// Topic 2: Action Symbol (e.g. "StateChange")
+    /// Topic 3: TaskId (u64)
+    fn envelope_topics(env: &Env, action: &str, task_id: u64) -> (Symbol, Symbol, u64) {
+        (
+            Symbol::new(env, EVENT_DOMAIN),
+            Symbol::new(env, action),
+            task_id,
+        )
+    }
+
+    /// Packs a gas/status metadata tuple into XDR bytes.
+    /// Layout: (status: u32, gas_used: i128, extra: u32)
+    fn pack_metadata(env: &Env, status: u32, gas_used: i128, extra: u32) -> Bytes {
+        let tuple: (u32, i128, u32) = (status, gas_used, extra);
+        Bytes::from_val(env, &tuple)
+    }
+
+    /// Emits a standardized envelope with the given action, task_id and packed metadata.
+    fn emit(
+        env: &Env,
+        action: &str,
+        task_id: u64,
+        status: u32,
+        gas_used: i128,
+        extra: u32,
+    ) {
+        let timestamp = env.ledger().timestamp();
+        let packed = Self::pack_metadata(env, status, gas_used, extra);
+        let event_data = EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION,
+            tag: Symbol::new(env, action),
+            packed,
+            timestamp,
+        };
+        let topics = Self::envelope_topics(env, action, task_id);
+        env.events().publish(topics, event_data);
+    }
+
     /// Logs a user fee discount tier update
     pub fn log_fee_discount_tier_updated(
         env: &Env,
@@ -212,12 +297,13 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "sorotask"),
+            Symbol::new(env, EVENT_DOMAIN),
             Symbol::new(env, "fee_discount_tier"),
             creator,
         );
         env.events().publish(topics, event_data);
     }
+
     /// Logs a state change for off-chain indexers
     pub fn log_state_change(
         env: &Env,
@@ -240,7 +326,7 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "Task"),
+            Symbol::new(env, EVENT_DOMAIN),
             Symbol::new(env, "StateChange"),
             task_id,
         );
@@ -276,7 +362,7 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "Task"),
+            Symbol::new(env, EVENT_DOMAIN),
             Symbol::new(env, "Executed"),
             task_id,
         );
@@ -305,7 +391,7 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "Task"),
+            Symbol::new(env, EVENT_DOMAIN),
             Symbol::new(env, "StepExecuted"),
             task_id,
         );
@@ -332,7 +418,7 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "Auth"),
+            Symbol::new(env, EVENT_DOMAIN),
             Symbol::new(env, "Access"),
             actor,
         );
@@ -341,12 +427,7 @@ impl EventLogger {
 
     /// Logs a task invalidation event when an upstream protocol upgrade
     /// causes a registered task to become invalid.
-    pub fn log_task_invalidated(
-        env: &Env,
-        task_id: u64,
-        target_contract: Address,
-        reason: Symbol,
-    ) {
+    pub fn log_task_invalidated(env: &Env, task_id: u64, target_contract: Address, reason: Symbol) {
         let timestamp = env.ledger().timestamp();
         let event_data = TaskInvalidatedEvent {
             task_id,
@@ -356,7 +437,7 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "Task"),
+            Symbol::new(env, EVENT_DOMAIN),
             Symbol::new(env, "Invalidated"),
             task_id,
         );
@@ -380,7 +461,7 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "Task"),
+            Symbol::new(env, EVENT_DOMAIN),
             Symbol::new(env, "RateLimited"),
             task_id,
         );
@@ -403,7 +484,7 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "Task"),
+            Symbol::new(env, EVENT_DOMAIN),
             Symbol::new(env, "EncryptedParams"),
             task_id,
         );
@@ -430,7 +511,7 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "Stake"),
+            Symbol::new(env, EVENT_DOMAIN),
             action,
             keeper,
         );
@@ -454,8 +535,9 @@ impl EventLogger {
         };
 
         let topics = (
-            Symbol::new(env, "sorotask"),
+            Symbol::new(env, EVENT_DOMAIN),
             Symbol::new(env, "volatility_breach"),
+            0u64,
         );
         env.events().publish(topics, event_data);
     }
@@ -463,13 +545,57 @@ impl EventLogger {
     pub fn log_volatility_circuit_breaker_unpaused(env: &Env, admin: Address) {
         let timestamp = env.ledger().timestamp();
         let event_data = VolatilityCircuitBreakerUnpausedEvent {
-            admin,
+            admin: admin.clone(),
             timestamp,
         };
 
         let topics = (
-            Symbol::new(env, "sorotask"),
-            Symbol::new(env, "volatility_unpaused"),
+            Symbol::new(env, EVENT_DOMAIN),
+            Symbol::new(env, "volatility_circuit_unpaused"),
+            0u64,
+        );
+        env.events().publish(topics, event_data);
+    }
+
+    /// Emits a standardized envelope for an arbitrary action.
+    /// Used by callers that need to attach gas/status metadata to a mutation.
+    pub fn log_envelope(
+        env: &Env,
+        action: &str,
+        task_id: u64,
+        status: u32,
+        gas_used: i128,
+        extra: u32,
+    ) {
+        Self::emit(env, action, task_id, status, gas_used, extra);
+    }
+
+    /// Logs a role grant, revoke, or time-bound delegation change.
+    /// This provides the cryptographic audit trail for the RBAC system.
+    pub fn log_role_changed(
+        env: &Env,
+        admin: Address,
+        account: Address,
+        old_mask: u64,
+        new_mask: u64,
+        expires_at: u64,
+        action: Symbol,
+    ) {
+        let timestamp = env.ledger().timestamp();
+        let event_data = RoleChangedEvent {
+            admin: admin.clone(),
+            account: account.clone(),
+            old_mask,
+            new_mask,
+            expires_at,
+            action: action.clone(),
+            timestamp,
+        };
+
+        let topics = (
+            Symbol::new(env, "Role"),
+            action,
+            account,
         );
         env.events().publish(topics, event_data);
     }

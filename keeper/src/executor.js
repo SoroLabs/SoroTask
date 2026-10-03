@@ -3,7 +3,6 @@ const {
   xdr,
   TransactionBuilder,
   BASE_FEE,
-  Networks,
   rpc: SorobanRpc,
 } = require("@stellar/stellar-sdk");
 const { withRetry, ErrorClassification } = require("./retry.js");
@@ -62,7 +61,7 @@ function resultName(code) {
  * @param {number|bigint} taskId
  * @returns {Promise<object|null>} The parsed execution trace or null
  */
-async function getExecutionTrace(server, contractId, taskId) {
+async function getExecutionTrace(server, contractId, taskId, networkPassphrase) {
   try {
     const contract = new Contract(contractId);
     const taskIdScVal = xdr.ScVal.scvU64(
@@ -70,7 +69,7 @@ async function getExecutionTrace(server, contractId, taskId) {
     );
     const tx = new TransactionBuilder(null, {
       fee: BASE_FEE,
-      networkPassphrase: Networks.FUTURENET,
+      networkPassphrase,
     })
       .addOperation(contract.call("get_execution_trace", taskIdScVal))
       .setTimeout(30)
@@ -184,9 +183,10 @@ function normalizeSubmissionError(error, fallbackCode, correlationId) {
 
 async function executeTaskOnce(
   taskId,
-  { server, keypair, account, contractId, networkPassphrase, correlationId, logger: customLogger, dueTime, metricsServer, config, hsmSigner, fencingToken, lockToken, coordinator: customCoordinator },
+  { server, keypair, account, contractId, networkPassphrase: rawNetworkPassphrase, correlationId, logger: customLogger, dueTime, metricsServer, config, hsmSigner, fencingToken, lockToken, coordinator: customCoordinator },
 ) {
   const taskLogger = customLogger || logger;
+  const networkPassphrase = rawNetworkPassphrase || config?.networkPassphrase || process.env.NETWORK_PASSPHRASE;
 
   // ── Fencing token guard: abort if lock is stale before doing any network work ──
   const coord = customCoordinator || getExecutionCoordinator();
@@ -205,7 +205,7 @@ async function executeTaskOnce(
   const fee = Math.max(BASE_FEE, Math.round(BASE_FEE * multiplier));
   const tx = new TransactionBuilder(account, {
     fee,
-    networkPassphrase: networkPassphrase || Networks.FUTURENET,
+    networkPassphrase,
   })
     .addOperation(contract.call("execute", taskIdScVal))
     .setTimeout(30)
@@ -353,7 +353,7 @@ async function executeTaskOnce(
   // Capture execution trace from on-chain data for debugging
   let executionTrace = null;
   try {
-    executionTrace = await getExecutionTrace(server, contractId, taskId);
+    executionTrace = await getExecutionTrace(server, contractId, taskId, networkPassphrase);
     if (executionTrace) {
       taskLogger.debug("Execution trace captured", {
         taskId,
@@ -383,10 +383,11 @@ async function executeTaskOnce(
  */
 async function executeTask(
   taskId,
-  { server, keypair, account, contractId, networkPassphrase, correlationId, dueTime, metricsServer, config, hsmSigner },
+  { server, keypair, account, contractId, networkPassphrase: rawNetworkPassphrase, correlationId, dueTime, metricsServer, config, hsmSigner },
 ) {
   /** @type {{taskId, txHash: string|null, status: string, feePaid: number, error: string|null, ledger: number|null, closeTime: number|null}} */
   const taskLogger = correlationId ? logger.childWithTrace(correlationId) : logger;
+  const networkPassphrase = rawNetworkPassphrase || config?.networkPassphrase || process.env.NETWORK_PASSPHRASE;
   /** @type {{taskId, txHash: string|null, status: string, feePaid: number, error: string|null}} */
   const result = {
     taskId,

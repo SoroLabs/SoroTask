@@ -1,5 +1,6 @@
 "use client";
 
+import { Toaster } from "sonner";
 import { WalletProvider, useWallet } from "@/app/context/WalletContext";
 import { WalletConnectionModal } from "@/app/components/WalletConnectionModal";
 import { OnboardingProvider } from "@/src/components/onboarding/OnboardingProvider";
@@ -49,6 +50,21 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           </AuthProvider>
         </SessionProvider>
       </LocaleProvider>
+      {/* Mounted once here so every page can fire toasts (transaction
+          lifecycle, execution rollback, etc.) without its own <Toaster/>. */}
+      <Toaster
+        position="bottom-right"
+        theme="dark"
+        closeButton
+        richColors
+        toastOptions={{
+          style: {
+            background: "#1e293b",
+            borderColor: "#334155",
+            color: "#f8fafc",
+          },
+        }}
+      />
     </QueryClientProvider>
   );
 }

@@ -5,7 +5,10 @@ import { useState, useEffect, useMemo, useRef, Suspense } from "react";
 import { useTasks } from "@/src/hooks/tasks";
 import { useLayoutStore } from "@/src/store/layoutStore";
 import SplitPaneLayout from "@/src/components/layout/SplitPaneLayout";
-import TaskCardWithSelection from "@/components/TaskCardWithSelection";
+import TaskSelectableCard from "@/app/tasks/bulk/TaskSelectableCard";
+import BulkSelectAllBar from "@/app/tasks/bulk/BulkSelectAllBar";
+import BatchActionConsole from "@/app/tasks/bulk/BatchActionConsole";
+import { useTaskBulkSelection } from "@/app/tasks/bulk/bulkSelectionStore";
 import TaskSimulationWorkbench from "@/components/TaskSimulationWorkbench";
 import type { TaskFilters } from "@/src/lib/query/keys";
 import {
@@ -24,6 +27,7 @@ function TasksPageContent() {
   const { listScrollPosition, saveListScrollPosition } = useLayoutStore();
   const listRef = useRef<HTMLDivElement>(null);
   const finishRouteLoad = useRef(monitor.start("route_load"));
+  const selectedIds = useTaskBulkSelection((state) => state.selectedIds);
 
   const totalTasks = tasks?.length ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalTasks / TASKS_PER_PAGE));
@@ -126,6 +130,22 @@ function TasksPageContent() {
               className="bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-200 flex-1 max-w-md"
             />
           </div>
+
+          {/* Batch multi-select (#1265) */}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-700/50 bg-neutral-900/40 px-3 py-2">
+            <BulkSelectAllBar
+              pageTaskIds={paginatedTasks.map((task: any) => String(task.id))}
+              totalResults={totalTasks}
+            />
+            {selectedIds.length > 0 && (
+              <Link
+                href="/tasks/bulk"
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary-400 hover:text-primary-300 hover:underline"
+              >
+                Open batch console ({selectedIds.length})
+              </Link>
+            )}
+          </div>
         </div>
 
         {/* Task List */}
@@ -195,8 +215,9 @@ function TasksPageContent() {
           {!isLoading && tasks && tasks.length > 0 && (
             <div className="space-y-4">
               {paginatedTasks.map((task: any) => (
-                <TaskCardWithSelection key={task.id} task={task} />
+                <TaskSelectableCard key={task.id} task={task} />
               ))}
+              <BatchActionConsole tasks={tasks} />
             </div>
           )}
         </div>

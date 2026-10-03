@@ -60,6 +60,45 @@ function mapTask(gqlTask: any): Task {
   };
 }
 
+// Batch (multi-select) operations — see frontend/app/tasks/bulk/
+import { buildLifecycleBatch, buildRefillBatch } from "./batchOps";
+import type { ScVal } from "@stellar/stellar-sdk";
+
+export interface BatchContractCall {
+  method: string;
+  args: ScVal[];
+}
+
+export interface BatchTaskResult {
+  id: string;
+  status?: TaskStatus;
+}
+
+/** Extract the numeric u64 task id embedded in UI task ids ("task-12" -> 12n). */
+function toTaskIdU64(taskId: string): bigint {
+  return BigInt(taskId.replace(/\D/g, "") || "0");
+}
+
+async function runBatchContractCalls(
+  userAddress: string | undefined,
+  contractId: string | undefined,
+  calls: BatchContractCall[],
+  label: string,
+): Promise<void> {
+  if (!userAddress || !contractId || calls.length === 0) return;
+  try {
+    const { SorobanService } = await import("../../../app/lib/soroban.service");
+    const soroban = new SorobanService();
+    await soroban.executeBatchContractCalls({
+      publicKey: userAddress,
+      contractId,
+      calls,
+    });
+  } catch (err) {
+    console.warn(`${label} batch contract call failed:`, err);
+  }
+}
+
 export async function listTasks(filters: TaskFilters = {}): Promise<Task[]> {
   const query = `
     query GetTasks {
@@ -366,6 +405,103 @@ export async function cancelTask(id: string, userAddress?: string, contractId?: 
   }
 
   return { id };
+}
+
+export async function executeTask(
+  id: string,
+  userAddress?: string,
+  contractId?: string,
+): Promise<{ id: string; status: TaskStatus; txHash?: string }> {
+  if (userAddress && contractId) {
+    const { SorobanService } = await import("../../../app/lib/soroban.service");
+    const soroban = new SorobanService();
+    const { nativeToScVal } = await import("@stellar/stellar-sdk");
+    const taskIdU64 = BigInt(id.replace(/\D/g, "") || "0");
+    const response = await soroban.executeContractCall({
+      publicKey: userAddress,
+      contractId,
+      method: "execute_task",
+      args: [nativeToScVal(taskIdU64, { type: "u64" })],
+    });
+    return { id, status: "running", txHash: response.txHash };
+  }
+
+  return { id, status: "running" };
+
+// Batch lifecycle mutations — one atomic transaction per batch action
+
+export async function pauseTasksBulk(
+  taskIds: string[],
+  userAddress?: string,
+  contractId?: string,
+): Promise<BatchTaskResult[]> {
+  const ops = buildLifecycleBatch(taskIds, "pause");
+  if (userAddress && contractId) {
+    const { nativeToScVal } = await import("@stellar/stellar-sdk");
+    const calls = ops.map((op) => ({
+      method: op.method,
+      args: [nativeToScVal(toTaskIdU64(op.taskId), { type: "u64" })],
+    }));
+    await runBatchContractCalls(userAddress, contractId, calls, "pause_task");
+  }
+  return ops.map((op) => ({ id: op.taskId, status: "pending" }));
+}
+
+export async function resumeTasksBulk(
+  taskIds: string[],
+  userAddress?: string,
+  contractId?: string,
+): Promise<BatchTaskResult[]> {
+  const ops = buildLifecycleBatch(taskIds, "resume");
+  if (userAddress && contractId) {
+    const { nativeToScVal } = await import("@stellar/stellar-sdk");
+    const calls = ops.map((op) => ({
+      method: op.method,
+      args: [nativeToScVal(toTaskIdU64(op.taskId), { type: "u64" })],
+    }));
+    await runBatchContractCalls(userAddress, contractId, calls, "resume_task");
+  }
+  return ops.map((op) => ({ id: op.taskId, status: "running" }));
+}
+
+export async function cancelTasksBulk(
+  taskIds: string[],
+  userAddress?: string,
+  contractId?: string,
+): Promise<BatchTaskResult[]> {
+  const ops = buildLifecycleBatch(taskIds, "cancel");
+  if (userAddress && contractId) {
+    const { nativeToScVal } = await import("@stellar/stellar-sdk");
+    const calls = ops.map((op) => ({
+      method: op.method,
+      args: [nativeToScVal(toTaskIdU64(op.taskId), { type: "u64" })],
+    }));
+    await runBatchContractCalls(userAddress, contractId, calls, "cancel_task");
+  }
+  return ops.map((op) => ({ id: op.taskId }));
+}
+
+export async function refillTasksBulk(
+  taskIds: string[],
+  amount: string | bigint,
+  userAddress?: string,
+  contractId?: string,
+): Promise<BatchTaskResult[]> {
+  const stroops = validateStroopAmount(amount);
+  const ops = buildRefillBatch(taskIds);
+  if (userAddress && contractId) {
+    const { nativeToScVal } = await import("@stellar/stellar-sdk");
+    const calls = ops.map((op) => ({
+      method: op.method,
+      args: [
+        nativeToScVal(toTaskIdU64(op.taskId), { type: "u64" }),
+        nativeToScVal(userAddress, { type: "address" }),
+        nativeToScVal(stroops, { type: "i128" }),
+      ],
+    }));
+    await runBatchContractCalls(userAddress, contractId, calls, "deposit_gas");
+  }
+  return ops.map((op) => ({ id: op.taskId }));
 }
 
 export async function deleteTask(id: string): Promise<{ id: string }> {
