@@ -14,7 +14,9 @@ pub mod storage;
 pub mod task;
 pub mod upgrade;
 pub mod optimistic;
+pub mod state_channel;
 
+pub use state_channel::{ChannelCloseRequest, ChannelReceipt, ChannelState, ChannelStatus};
 pub use storage::{ExecutionLog, TaskMeta, TaskPayload, TaskStats};
 pub use gas::{GasMeter, FeeBreakdown, EscrowManager, update_gas_rates, get_gas_rates};
 pub use upgrade::{UpgradeProposal, UPGRADE_TIMELOCK_SECONDS};
@@ -125,6 +127,16 @@ pub enum Error {
     GatewayNotConfigured = 703,
     GatewayUnauthorized = 704,
     CrossChainNonceReplay = 705,
+    // State channel off-chain settlement engine errors (Issue #1185)
+    ChannelNotFound = 810,
+    ChannelNotActive = 811,
+    ChannelNonceNotMonotonic = 812,
+    ChannelInvalidSignature = 813,
+    ChannelChallengeWindowActive = 814,
+    ChannelChallengeWindowClosed = 815,
+    ChannelNotClosing = 816,
+    InvalidChannelParticipants = 817,
+    ChannelNotClosed = 818,
 }
 
 #[contracttype]
@@ -299,6 +311,15 @@ pub const EXTEND_TO_LEDGERS: u32 = 500_000;
 /// Delay between a governance-approved unpause proposal reaching quorum and
 /// when it becomes executable via `execute_unpause` (Issue #774).
 pub const UNPAUSE_TIMELOCK_SECONDS: u64 = 86_400;
+
+/// Issue #1177: emergency multi-sig unpause failsafe window.
+///
+/// When guardians activate `emergency_pause`, the paused state auto-lifts after
+/// this window and, more importantly, users may then reclaim their escrowed gas
+/// via `emergency_withdraw_gas` without any admin or guardian permission. This
+/// guarantees funds can never be frozen forever by a captured or unavailable
+/// guardian set.
+pub const EMERGENCY_UNPAUSE_FAILSAFE_SECONDS: u64 = 72 * 60 * 60;
 
 /// Permission Bitmask Flags for Task RBAC
 pub const PERM_CAN_PAUSE: u32 = 1;
@@ -1253,6 +1274,17 @@ pub enum DataKey {
     OptimisticClaimCounter,
     /// Fraud proofs for challenged claims
     FraudProof(u64),
+    /// Issue #1185: off-chain state channel engine state keyed by channel id.
+    ChannelState(u64),
+    /// Issue #1185: monotonically increasing channel id counter.
+    ChannelCounter,
+    /// Issue #1185: signed off-chain receipt keyed by (channel id, nonce).
+    ChannelReceipt(u64, u64),
+    /// Issue #1185: pending unilateral close request keyed by channel id.
+    ChannelClose(u64),
+    /// Issue #1177: immutable ledger-timestamp deadline for the emergency
+    /// unpause failsafe that unlocks `emergency_withdraw_gas`.
+    EmergencyPauseDeadline,
 }
 
 /// Transient storage reentrancy guard ensuring reentrant calls revert immediately.
@@ -2269,14 +2301,33 @@ impl SoroTaskContract {
         }
 
         if sigs.len() >= Self::pause_threshold(&env) {
+            let now = env.ledger().timestamp();
             let state = EmergencyPauseState {
                 is_paused: true,
-                paused_at: env.ledger().timestamp(),
-                pause_duration: 86400,
+                paused_at: now,
+                pause_duration: EMERGENCY_UNPAUSE_FAILSAFE_SECONDS,
             };
+            // The failsafe deadline is written once when the pause activates and
+            // is never mutably updated, so neither a malicious admin nor a
+            // compromised guardian majority can postpone the user withdrawal
+            // failsafe (Issue #1177).
             env.storage()
                 .persistent()
                 .set(&DataKey::EmergencyPauseState, &state);
+            env.storage().persistent().set(
+                &DataKey::EmergencyPauseDeadline,
+                &now.saturating_add(EMERGENCY_UNPAUSE_FAILSAFE_SECONDS),
+            );
+            env.events().publish(
+                (
+                    Symbol::new(&env, "GuardianEmergencyPause"),
+                    Symbol::new(&env, "v1"),
+                ),
+                (
+                    now,
+                    now.saturating_add(EMERGENCY_UNPAUSE_FAILSAFE_SECONDS),
+                ),
+            );
             true
         } else {
             false
@@ -2409,7 +2460,7 @@ impl SoroTaskContract {
         let state = EmergencyPauseState {
             is_paused: false,
             paused_at: 0,
-            pause_duration: 86400,
+            pause_duration: EMERGENCY_UNPAUSE_FAILSAFE_SECONDS,
         };
         env.storage()
             .persistent()
@@ -2422,6 +2473,11 @@ impl SoroTaskContract {
             .persistent()
             .set(&DataKey::UnpauseProposed, &false);
         env.storage().persistent().remove(&DataKey::UnpauseTimelock);
+        // A successful, explicit unpause restores normal operation, so the user
+        // failsafe no longer needs to stay armed (Issue #1177).
+        env.storage()
+            .persistent()
+            .remove(&DataKey::EmergencyPauseDeadline);
         Ok(())
     }
 
@@ -2445,6 +2501,75 @@ impl SoroTaskContract {
                     .set(&DataKey::EmergencyPauseState, &state);
             }
         }
+    }
+
+    /// Issue #1177: the immutable ledger-timestamp deadline after which the
+    /// emergency unpause failsafe lets users withdraw gas without permission.
+    /// Returns `None` until an emergency pause has been activated.
+    pub fn get_emergency_failsafe_deadline(env: Env) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::EmergencyPauseDeadline)
+    }
+
+    /// Issue #1177 failsafe: once the 72-hour emergency-pause deadline has
+    /// elapsed, the task creator may reclaim their escrowed gas without any
+    /// admin, guardian, or governance authorization. This is the guarantee that
+    /// a captured guardian set can never permanently freeze user funds.
+    ///
+    /// Only the escrow owner (`config.creator`) can withdraw, and only ever to
+    /// themselves, so the permissionless trigger is not a griefing vector.
+    pub fn emergency_withdraw_gas(env: Env, task_id: u64, amount: i128) {
+        let _guard = security::ReentrancyGuard::new(&env);
+
+        let deadline: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EmergencyPauseDeadline)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::UnpauseNotProposed));
+
+        if env.ledger().timestamp() < deadline {
+            panic_with_error!(&env, Error::UnpauseTimelockActive);
+        }
+
+        let task_key = DataKey::Task(task_id);
+        let mut config: TaskConfig = env
+            .storage()
+            .persistent()
+            .get(&task_key)
+            .expect("Task not found");
+
+        // The escrow owner - and only the escrow owner - authorizes the refund.
+        config.creator.require_auth();
+
+        if config.gas_balance < amount {
+            panic_with_error!(&env, Error::InsufficientBalance);
+        }
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("Not initialized");
+
+        ensure_task_liquid(&env, task_id, &config, amount);
+
+        config.gas_balance -= amount;
+        save_task(&env, task_id, &config);
+        sub_total_task_escrows(&env, amount);
+
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &config.creator, &amount);
+        assert_balance_invariant(&env);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "EmergencyGasWithdrawn"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (config.creator.clone(), amount),
+        );
     }
 
     /// Validates task payload arguments for size and structure.
@@ -9353,6 +9478,127 @@ env.storage()
     }
 
     // ============================================================================
+    // State Channel Off-Chain Settlement Engine (Issue #1185)
+    //
+    // Bi-directional off-chain micro-automation settlement. Participants sign
+    // execution receipts with strictly incrementing nonces; either party may
+    // submit the latest signed state on-chain via a cooperative close or a
+    // unilateral close that is subject to a 24-hour optimistic challenge window.
+    // ============================================================================
+
+    /// Opens a channel between two or more participants. Each participant
+    /// registers the Ed25519 public key used to verify their off-chain receipts.
+    pub fn open_channel(
+        env: Env,
+        opener: Address,
+        participants: Vec<Address>,
+        public_keys: Vec<BytesN<32>>,
+        initial_balances: Vec<i128>,
+        settlement_interval: u64,
+    ) -> u64 {
+        state_channel::open_channel(
+            &env,
+            &opener,
+            participants,
+            public_keys,
+            initial_balances,
+            settlement_interval,
+        )
+    }
+
+    /// Deposits gas tokens into an open channel (Medium: `deposit_funds`).
+    pub fn deposit_funds(env: Env, channel_id: u64, depositor: Address, amount: i128) {
+        state_channel::deposit_funds(&env, channel_id, &depositor, amount);
+    }
+
+    /// Submits an off-chain signed execution receipt. The nonce must strictly
+    /// exceed the latest accepted nonce, so newer signed state always supersedes
+    /// older state.
+    pub fn submit_state_receipt(
+        env: Env,
+        channel_id: u64,
+        submitter: Address,
+        nonce: u64,
+        state_hash: BytesN<32>,
+        signature: BytesN<64>,
+    ) {
+        state_channel::submit_receipt(&env, channel_id, &submitter, nonce, state_hash, signature);
+    }
+
+    /// Cooperative instant close: every participant signs the same final state.
+    pub fn cooperative_close_channel(
+        env: Env,
+        channel_id: u64,
+        nonce: u64,
+        state_hash: BytesN<32>,
+        signatures: Vec<BytesN<64>>,
+    ) {
+        state_channel::cooperative_close(&env, channel_id, nonce, state_hash, signatures);
+    }
+
+    /// Unilateral close: publishes the caller's latest signed state and starts
+    /// the 24-hour challenge window.
+    pub fn initiate_unilateral_close(
+        env: Env,
+        channel_id: u64,
+        initiator: Address,
+        nonce: u64,
+        state_hash: BytesN<32>,
+        signature: BytesN<64>,
+    ) {
+        state_channel::initiate_unilateral_close(
+            &env, channel_id, &initiator, nonce, state_hash, signature,
+        );
+    }
+
+    /// Challenges a pending unilateral close with a newer signed state; the
+    /// newer state supersedes the state proposed by the closing party.
+    pub fn challenge_unilateral_close(
+        env: Env,
+        channel_id: u64,
+        challenger: Address,
+        nonce: u64,
+        state_hash: BytesN<32>,
+        signature: BytesN<64>,
+    ) {
+        state_channel::challenge_unilateral_close(
+            &env, channel_id, &challenger, nonce, state_hash, signature,
+        );
+    }
+
+    /// Finalizes a unilateral close once the challenge window has elapsed.
+    pub fn finalize_unilateral_close(env: Env, channel_id: u64) {
+        state_channel::finalize_unilateral_close(&env, channel_id);
+    }
+
+    /// Withdraws a participant's settled balance after a channel is closed.
+    pub fn withdraw_channel_balance(env: Env, channel_id: u64, participant: Address, amount: i128) {
+        state_channel::withdraw_channel_balance(&env, channel_id, &participant, amount);
+    }
+
+    pub fn get_channel_state(env: Env, channel_id: u64) -> Option<ChannelState> {
+        state_channel::get_channel_state(&env, channel_id)
+    }
+
+    pub fn get_channel_close_request(env: Env, channel_id: u64) -> Option<ChannelCloseRequest> {
+        state_channel::get_channel_close_request(&env, channel_id)
+    }
+
+    pub fn get_channel_receipt(env: Env, channel_id: u64, nonce: u64) -> Option<ChannelReceipt> {
+        state_channel::get_channel_receipt(&env, channel_id, nonce)
+    }
+
+    /// Returns the exact byte payload participants must sign for a receipt.
+    pub fn channel_receipt_payload(
+        env: Env,
+        channel_id: u64,
+        nonce: u64,
+        state_hash: BytesN<32>,
+    ) -> Bytes {
+        state_channel::receipt_payload(&env, channel_id, nonce, &state_hash)
+    }
+
+    // ============================================================================
     // Feature Flags (Issue #887)
     // ============================================================================
 
@@ -14082,9 +14328,52 @@ pub(crate) mod tests {
         assert!(paused3);
         assert!(client.is_protocol_paused());
 
-        // Advance ledger timestamp by 24h + 1s to test automatic safety unpause
-        env.ledger().with_mut(|l| l.timestamp += 86401);
+        // Advance ledger timestamp by 72h + 1s to test the auto-unpause failsafe
+        env.ledger()
+            .with_mut(|l| l.timestamp += EMERGENCY_UNPAUSE_FAILSAFE_SECONDS + 1);
         assert!(!client.is_protocol_paused());
+    }
+
+    #[test]
+    fn test_emergency_failsafe_lets_user_withdraw_gas_after_72h() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_id.address();
+        let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+        let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+        client.init(&token_address);
+
+        // A task funded with gas escrow; the creator owns that escrow.
+        let target = env.register(MockTarget, ());
+        let mut cfg = base_config(&env, target);
+        cfg.gas_balance = 0;
+        let creator = cfg.creator.clone();
+        let task_id = client.register(&cfg);
+        token_admin_client.mint(&creator, &2_000);
+        client.deposit_gas(&task_id, &creator, &1_000);
+
+        // Guardians arm the emergency pause (default 3-of-N threshold).
+        let g1 = Address::generate(&env);
+        let g2 = Address::generate(&env);
+        let g3 = Address::generate(&env);
+        client.set_guardians(&vec![&env, g1.clone(), g2.clone(), g3.clone()]);
+        assert!(!client.emergency_pause(&g1));
+        assert!(!client.emergency_pause(&g2));
+        assert!(client.emergency_pause(&g3));
+        assert!(client.is_protocol_paused());
+
+        // Before the 72h deadline the failsafe is still locked.
+        let deadline = client.get_emergency_failsafe_deadline().unwrap();
+        assert!(client.try_emergency_withdraw_gas(&task_id, &500).is_err());
+
+        // After 72 hours the creator recovers escrow with no admin permission.
+        env.ledger().with_mut(|l| l.timestamp = deadline + 1);
+        client.emergency_withdraw_gas(&task_id, &500);
+        assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 500);
+        assert_eq!(token_client.balance(&creator), 1_500);
     }
 
     #[test]
@@ -14850,3 +15139,6 @@ mod test_access_control;
 #[cfg(test)]
 mod test;
 mod test_task_bundle;
+
+#[cfg(test)]
+mod test_state_channel;
