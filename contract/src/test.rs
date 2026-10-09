@@ -15,7 +15,7 @@ fn create_sample_task_config(env: &Env, creator: &Address, target: &Address) -> 
         resolver: None,
         interval: 3600,
         last_run: 0,
-        gas_balance: 10_000_000,
+        gas_balance: 0,  // Set to 0 to avoid requiring token transfer at registration
         whitelist: vec![env],
         is_active: true,
         blocked_by: vec![env],
@@ -147,7 +147,7 @@ fn test_flash_swap_slippage_bounds() {
         resolver: None,
         interval: 3600,
         last_run: 0,
-        gas_balance: 1000,
+        gas_balance: 0,  // Set to 0 to avoid requiring token transfer at registration
         whitelist: Vec::new(&env),
         is_active: true,
         blocked_by: Vec::new(&env),
