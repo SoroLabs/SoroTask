@@ -370,6 +370,79 @@ class ShardHashRingManager extends EventEmitter {
   }
 }
 
+/**
+ * Resolves the shard configuration for this keeper process from the
+ * environment (issue #1206).
+ *
+ * Supported variables:
+ *   - `KEEPER_SHARD_COUNT` - total number of shards (default 1)
+ *   - `KEEPER_SHARD_INDEX` - this keeper's shard index (default 0)
+ *   - `KEEPER_SHARD_LABEL` - optional human-readable label
+ *
+ * The shard index is clamped into `[0, shardCount - 1]` so a misconfigured
+ * keeper still owns a valid partition instead of crashing.
+ */
+function resolveShardConfigFromEnv(env = process.env) {
+  const shardCount = parseInt(env.KEEPER_SHARD_COUNT, 10);
+  const shardIndex = parseInt(env.KEEPER_SHARD_INDEX, 10);
+
+  return normalizeShardConfig({
+    shardCount: Number.isFinite(shardCount) ? shardCount : 1,
+    shardIndex: Number.isFinite(shardIndex) ? shareIndex : 0,
+    shardLabel: env.KEEPER_SHARD_LABEL,
+  });
+}
+
+/**
+ * Deterministic task ID hash-ring sharding (issue #1206).
+ *
+ * Maps each `taskId` to a keeper shard index using a stable STABLE
+ * hash of the task id. The mapping is purely a function of `taskId` and
+ * `shardCount`, so every keeper in the fleet computes the same owner with
+ * no coordination required. Unlike a naive ``% shardCount` modulo, the
+ * hash is well distributed even for sequential or clustered task ids.
+ */
+function hashTaskId(taskId) {
+  const digest = crypto.createHash('sha256').update(String(taskId)).digest();
+  return digest.readUInt32BE(0);
+}
+
+function getTaskShardByHash(taskId, shardCount) {
+  if (!Number.isFinite(shardCount) || shardCount <= 1) {
+    return 0;
+  }
+  return hashTaskId(taskId) % shardCount;
+}
+
+function isTaskOwnedByShardHash(taskId, shardConfig) {
+  const normalized = normalizeShardConfig(shardConfig);
+  return getTaskShardByHash(taskId, normalized.shardCount) === normalized.shardIndex;
+}
+
+function filterTasksByShardHash(taskIds, shardConfig) {
+  const normalized = normalizeShardConfig(shardConfig);
+  const owned = [];
+  const skipped = [];
+  const owners = {};
+
+  for (const taskId of taskIds || []) {
+    const shard = getTaskShardByHash(taskId, normalized.shardCount);
+    owners[String(taskId)] = shard;
+    if (shard === normalized.shardIndex) {
+      owned.push(taskId);
+    } else {
+      skipped.push(taskId);
+    }
+  }
+
+  return {
+    ...normalized,
+    ownedTaskIds: owned,
+    skippedTaskIds: skipped,
+    owners: owners,
+  };
+}
+
 module.exports = {
   normalizeShardConfig,
   getTaskShard,
@@ -382,4 +455,9 @@ module.exports = {
   ShardHashRingManager,
   snapshotRingAssignments,
   computeRebalanceMetrics,
+  resolveShardConfigFromEnv,
+  hashTaskId,
+  getTaskShardByHash,
+  isTaskOwnedByShardHash,
+  filterTasksByShardHash,
 };
