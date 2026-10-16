@@ -14,6 +14,7 @@ import {
   DEFAULT_PROPOSAL,
   type UpgradeProposal,
 } from "@/src/components/UpgradeModal";
+import { StorageInspector } from "@/src/components/StorageInspector";
 
 function AdminPage() {
   const { user } = useAuth();
@@ -98,6 +99,11 @@ function AdminPage() {
               Review Upgrade & Vote
             </button>
           </div>
+        </div>
+
+        {/* Contract Storage Inspector */}
+        <div className="mt-8">
+          <StorageInspector />
         </div>
 
         {/* Upgrade Governance Modal */}
