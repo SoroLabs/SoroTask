@@ -40,8 +40,7 @@ export type PluginRegistryEntry = PluginManifest & {
 
 export type FederationConfig = {
   defaultTimeoutMs?: number;
-  retryAttempts?: number;
-  retryDelayMs?: number;
+  trustedOrigins?: string[];
   onLoadError?: (pluginId: string, error: Error) => void;
 };
 

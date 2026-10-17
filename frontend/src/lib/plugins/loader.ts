@@ -1,8 +1,6 @@
-import type { ComponentType } from "react";
 import type {
   FederationConfig,
   LoadedPlugin,
-  PluginComponentProps,
   PluginLifecycleEvent,
   PluginLoadResult,
   PluginManifest,
@@ -10,12 +8,7 @@ import type {
 } from "./types";
 import { PLUGIN_EVENT_NAME } from "./types";
 import { getPluginRegistry } from "./registry";
-
-type PluginModule = {
-  default: ComponentType<PluginComponentProps>;
-};
-
-const pluginCache = new Map<string, LoadedPlugin>();
+import { createSandboxedPluginComponent } from "../pluginRuntime";
 
 function emitLifecycle(event: PluginLifecycleEvent): void {
   if (typeof window !== "undefined") {
@@ -40,69 +33,40 @@ function updateStatus(
   });
 }
 
-async function importPluginModule(
-  entry: string,
-  timeoutMs: number,
-): Promise<PluginModule> {
-  const importPromise = import(/* webpackIgnore: true */ entry) as Promise<PluginModule>;
-
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`Plugin load timed out after ${timeoutMs}ms`)), timeoutMs);
-  });
-
-  return Promise.race([importPromise, timeoutPromise]);
-}
-
-async function loadWithRetry(
-  entry: string,
-  attempts: number,
-  delayMs: number,
-  timeoutMs: number,
-): Promise<PluginModule> {
-  let lastError: Error | null = null;
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await importPluginModule(entry, timeoutMs);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (attempt < attempts) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
-      }
-    }
-  }
-
-  throw lastError ?? new Error("Plugin load failed");
-}
-
 export function createPluginLoader(config: FederationConfig = {}) {
   const timeoutMs = config.defaultTimeoutMs ?? 10000;
-  const retryAttempts = config.retryAttempts ?? 2;
-  const retryDelayMs = config.retryDelayMs ?? 500;
+  const pluginCache = new Map<string, LoadedPlugin>();
 
   const load = async (manifest: PluginManifest): Promise<PluginLoadResult> => {
     const cached = pluginCache.get(manifest.id);
-    if (cached?.status === "ready") {
+    if (
+      cached?.status === "ready" &&
+      cached.manifest.entry === manifest.entry &&
+      cached.manifest.version === manifest.version
+    ) {
       return { plugin: cached, error: null, usedFallback: false };
+    }
+    if (
+      cached?.status === "fallback" &&
+      cached.manifest.entry === manifest.fallbackEntry &&
+      cached.manifest.version === manifest.version
+    ) {
+      return {
+        plugin: cached,
+        error: cached.error ? new Error(cached.error) : null,
+        usedFallback: true,
+      };
     }
 
     updateStatus(manifest.id, "loading");
 
     try {
-      const pluginModule = await loadWithRetry(
-        manifest.entry,
-        retryAttempts,
-        retryDelayMs,
-        timeoutMs,
-      );
-
-      const component =
-        (pluginModule as { default?: ComponentType<PluginComponentProps> })?.default ??
-        (pluginModule as ComponentType<PluginComponentProps>);
-
       const loaded: LoadedPlugin = {
         manifest,
-        component,
+        component: createSandboxedPluginComponent(manifest, {
+          defaultTimeoutMs: timeoutMs,
+          trustedOrigins: config.trustedOrigins,
+        }),
         status: "ready",
         loadedAt: new Date().toISOString(),
       };
@@ -119,18 +83,17 @@ export function createPluginLoader(config: FederationConfig = {}) {
 
       config.onLoadError?.(manifest.id, error);
 
+      let loadError = error;
       if (manifest.fallbackEntry) {
         try {
-          const fallbackModule = await loadWithRetry(
-            manifest.fallbackEntry,
-            1,
-            retryDelayMs,
-            timeoutMs,
-          );
+          const fallbackManifest = { ...manifest, entry: manifest.fallbackEntry };
 
           const loaded: LoadedPlugin = {
-            manifest,
-            component: fallbackModule.default,
+            manifest: fallbackManifest,
+            component: createSandboxedPluginComponent(fallbackManifest, {
+              defaultTimeoutMs: timeoutMs,
+              trustedOrigins: config.trustedOrigins,
+            }),
             status: "fallback",
             loadedAt: new Date().toISOString(),
             error: error.message,
@@ -140,8 +103,15 @@ export function createPluginLoader(config: FederationConfig = {}) {
           updateStatus(manifest.id, "fallback", error.message);
 
           return { plugin: loaded, error, usedFallback: true };
-        } catch {
-          // Fall through to error state
+        } catch (fallbackError) {
+          const fallbackLoadError =
+            fallbackError instanceof Error
+              ? fallbackError
+              : new Error(String(fallbackError));
+          config.onLoadError?.(manifest.id, fallbackLoadError);
+          loadError = new Error(
+            `Plugin entry failed: ${error.message}; fallback entry failed: ${fallbackLoadError.message}`,
+          );
         }
       }
 
@@ -150,13 +120,13 @@ export function createPluginLoader(config: FederationConfig = {}) {
         component: () => null,
         status: "error",
         loadedAt: new Date().toISOString(),
-        error: error.message,
+        error: loadError.message,
       };
 
       pluginCache.set(manifest.id, failed);
-      updateStatus(manifest.id, "error", error.message);
+      updateStatus(manifest.id, "error", loadError.message);
 
-      return { plugin: failed, error, usedFallback: false };
+      return { plugin: failed, error: loadError, usedFallback: false };
     }
   };
 

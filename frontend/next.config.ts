@@ -24,6 +24,29 @@ const securityHeaders = [
   },
 ];
 
+const pluginFrameOrigins = (process.env.NEXT_PUBLIC_SOROTASK_PLUGIN_ORIGINS ?? "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+  .map((origin) => {
+    const url = new URL(origin);
+
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    ) {
+      throw new Error(
+        `Invalid plugin origin "${origin}". Plugin origins must be HTTPS origins without a path.`,
+      );
+    }
+
+    return url.origin;
+  });
+
 const nextConfig: NextConfig = {
   compress: true,
   poweredByHeader: false,
@@ -43,72 +66,14 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  webpack: (config, { isServer }) => {
-    // Enable WASM async module support and streaming
-    config.experiments = {
-      ...config.experiments,
-      asyncWebAssembly: true,
-      layers: true,
-    };
-
-    // Optimize vendor chunk splitting for heavy crypto/math libraries
-    if (!isServer && config.optimization?.splitChunks) {
-      config.optimization.splitChunks = {
-        ...config.optimization.splitChunks,
-        chunks: "all",
-        maxInitialRequests: 25,
-        minSize: 20000,
-        cacheGroups: {
-          ...config.optimization.splitChunks.cacheGroups,
-          stellar: {
-            test: /[\\/]node_modules[\\/](@stellar|stellar-sdk)[\\/]/,
-            name: "vendor-stellar",
-            priority: 40,
-            enforce: true,
-          },
-          cryptoModules: {
-            test: /[\\/]node_modules[\\/](snarkjs|circomlibjs|elliptic|bn\.js)[\\/]/,
-            name: "vendor-crypto-zk",
-            priority: 35,
-            enforce: true,
-          },
-          charts: {
-            test: /[\\/]node_modules[\\/](recharts|d3|d3-[^\\/]+)[\\/]/,
-            name: "vendor-charts",
-            priority: 30,
-            enforce: true,
-          },
-          graph: {
-            test: /[\\/]node_modules[\\/](reactflow|dagre|three)[\\/]/,
-            name: "vendor-graph",
-            priority: 25,
-            enforce: true,
-          },
-        },
-      };
-    }
-
-    return config;
-  },
   async headers() {
     return [
       {
         source: "/:path*",
         headers: [
-          ...securityHeaders,
           {
-            key: "Link",
-            value:
-              "<https://soroban-testnet.stellar.org>; rel=preconnect; crossorigin, <https://rpc-mainnet.stellar.org>; rel=dns-prefetch",
-          },
-        ],
-      },
-      {
-        source: "/_next/static/:path*",
-        headers: [
-          {
-            key: "Cache-Control",
-            value: "public, max-age=31536000, immutable",
+            key: "Content-Security-Policy",
+            value: `frame-src 'self' ${pluginFrameOrigins.join(" ")};`,
           },
         ],
       },

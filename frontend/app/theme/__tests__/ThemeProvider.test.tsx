@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ThemeProvider, useTheme } from "../ThemeProvider";
+import { ThemeToggle } from "../ThemeToggle";
 import { initHoudiniThemeEngine } from "@/src/lib/theme/houdiniThemeEngine";
 
 jest.mock("@/src/lib/theme/houdiniThemeEngine", () => ({
@@ -78,5 +79,38 @@ describe("ThemeProvider", () => {
     expect(screen.getByTestId("theme-mode")).toHaveTextContent("dark");
     expect(localStorage.getItem("theme")).toBe("dark");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+
+  it("supports persistent high-contrast mode from the accessible theme selector", () => {
+    render(
+      <ThemeProvider>
+        <ThemeToggle />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "High contrast theme" }));
+
+    expect(localStorage.getItem("theme")).toBe("high-contrast");
+    expect(document.documentElement.getAttribute("data-theme")).toBe(
+      "high-contrast",
+    );
+    expect(
+      screen.getByRole("button", { name: "High contrast theme" }),
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("exposes each theme choice as a keyboard-operable button", () => {
+    render(
+      <ThemeProvider>
+        <ThemeToggle />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByRole("group", { name: "Color theme" })).toBeInTheDocument();
+    for (const label of ["Light", "Dark", "System", "High contrast"]) {
+      expect(
+        screen.getByRole("button", { name: `${label} theme` }),
+      ).toHaveAttribute("type", "button");
+    }
   });
 });

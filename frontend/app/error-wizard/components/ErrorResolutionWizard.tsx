@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { useErrorWizard } from '../useErrorWizard';
 import { WizardStepCard } from './WizardStepCard';
 import type { FailureLog, ResolutionAction } from '../types';
+import { useWalletOptional } from '@/app/context/WalletContext';
 
 // ---------------------------------------------------------------------------
 // Demo/mock logs — replaced by real backend data in production
@@ -27,6 +28,7 @@ const DEMO_LOGS: FailureLog[] = [
 ];
 
 export function ErrorResolutionWizard() {
+  const { openConnectModal } = useWalletOptional();
   const {
     phase,
     steps,
@@ -41,7 +43,9 @@ export function ErrorResolutionWizard() {
   } = useErrorWizard();
 
   const [rawLogs, setRawLogs] = useState('');
+  const [diagnosticPayload, setDiagnosticPayload] = useState('');
   const [parseError, setParseError] = useState('');
+  const [recoveryNotice, setRecoveryNotice] = useState('');
 
   function handleAnalyzeDemoLogs() {
     setParseError('');
@@ -61,6 +65,54 @@ export function ErrorResolutionWizard() {
 
   function handleApply(patch?: ResolutionAction['patch']) {
     applyStep(patch);
+  }
+
+  function handleDiagnosticAnalyze() {
+    setParseError('');
+    analyze([{
+      taskId: 'diagnostic-input',
+      timestamp: new Date().toISOString(),
+      errorCode: '',
+      errorMessage: 'Soroban diagnostic payload',
+      diagnosticPayload,
+    }]);
+  }
+
+  function handleRecovery(action: ResolutionAction) {
+    setRecoveryNotice('');
+    if (
+      action.type === 'reconnect_wallet' ||
+      action.type === 'top_up_balance' ||
+      action.type === 'switch_network' ||
+      action.type === 'approve_token'
+    ) {
+      openConnectModal();
+      setRecoveryNotice(
+        action.type === 'approve_token'
+          ? 'Wallet panel opened. Verify the token contract, spender, and allowance before signing; this wizard does not submit an approval.'
+          : 'Wallet panel opened. Complete the wallet or funding step there, then return and review the task before retrying.',
+      );
+      return;
+    }
+    if (action.type === 'wait_and_retry') {
+      setRecoveryNotice(
+        'No transaction was submitted from this wizard. Retry the task from its task page when the network is available.',
+      );
+      return;
+    }
+    if (action.type === 'contact_support') {
+      setRecoveryNotice(
+        'Share the decoded diagnostic and error code with your SoroTask administrator for investigation.',
+      );
+      return;
+    }
+    if (!action.patch) {
+      setRecoveryNotice(
+        'Review this suggestion and update the contract call from its task page before retrying.',
+      );
+      return;
+    }
+    handleApply(action.patch);
   }
 
   const progress = steps.length > 0
@@ -85,6 +137,29 @@ export function ErrorResolutionWizard() {
         >
           Analyze demo logs
         </button>
+
+        <div className="space-y-2">
+          <label htmlFor="diagnostic-input" className="text-xs font-medium text-neutral-400 block">
+            Or paste a Soroban hex diagnostic payload
+          </label>
+          <textarea
+            id="diagnostic-input"
+            value={diagnosticPayload}
+            onChange={(e) => { setDiagnosticPayload(e.target.value); setParseError(''); }}
+            placeholder="0x... or Error(Contract, #2)"
+            rows={3}
+            className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-mono text-neutral-200 placeholder-neutral-600 outline-none focus:ring-1 focus:ring-blue-500 resize-y"
+            aria-label="Soroban diagnostic payload"
+          />
+          <button
+            type="button"
+            onClick={handleDiagnosticAnalyze}
+            disabled={!diagnosticPayload.trim()}
+            className="w-full py-2 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-white text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Decode diagnostic
+          </button>
+        </div>
 
         <div className="space-y-2">
           <label htmlFor="log-input" className="text-xs font-medium text-neutral-400 block">
@@ -133,7 +208,7 @@ export function ErrorResolutionWizard() {
         <div className="text-5xl" aria-hidden="true">✅</div>
         <h2 className="text-xl font-bold text-neutral-100">All steps complete</h2>
         <p className="text-sm text-neutral-400">
-          {applied} fix{applied !== 1 ? 'es' : ''} applied · {skipped} skipped
+          {applied} suggestion{applied !== 1 ? 's' : ''} accepted · {skipped} skipped
         </p>
 
         {Object.keys(appliedPatches).length > 0 && (
@@ -141,7 +216,7 @@ export function ErrorResolutionWizard() {
             aria-label="Applied configuration changes"
             className="text-left bg-neutral-800/60 rounded-lg px-4 py-3 space-y-1"
           >
-            <p className="text-xs font-semibold text-neutral-400 mb-2">Config changes to apply:</p>
+            <p className="text-xs font-semibold text-neutral-400 mb-2">Suggested configuration changes:</p>
             {Object.entries(appliedPatches).map(([field, value]) => (
               <p key={field} className="text-xs font-mono text-blue-300">
                 {field}: {value}
@@ -196,13 +271,20 @@ export function ErrorResolutionWizard() {
       </div>
 
       {currentStep && (
-        <WizardStepCard
-          step={currentStep}
-          stepNumber={currentIndex + 1}
-          totalSteps={steps.length}
-          onApply={handleApply}
-          onSkip={skipStep}
-        />
+        <>
+          <WizardStepCard
+            step={currentStep}
+            stepNumber={currentIndex + 1}
+            totalSteps={steps.length}
+            onRecover={handleRecovery}
+            onSkip={skipStep}
+          />
+          {recoveryNotice && (
+            <p role="status" className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-sm text-blue-100">
+              {recoveryNotice}
+            </p>
+          )}
+        </>
       )}
     </div>
   );

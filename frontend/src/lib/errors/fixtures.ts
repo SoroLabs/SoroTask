@@ -18,6 +18,9 @@ export const RAW_ERROR_FIXTURES: Record<ContractErrorCategory, unknown> = {
   INSUFFICIENT_FEE: Object.assign(new Error("tx_insufficient_fee"), {
     code: "TX_INSUFFICIENT_FEE",
   }),
+  TOKEN_APPROVAL_REQUIRED: new Error(
+    "Insufficient allowance for token transfer",
+  ),
 
   BAD_SEQUENCE: Object.assign(new Error("tx_bad_seq"), { code: "TX_BAD_SEQ" }),
   BAD_AUTH: Object.assign(new Error("tx_bad_auth"), { code: "TX_BAD_AUTH" }),

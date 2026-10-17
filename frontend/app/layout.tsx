@@ -5,12 +5,7 @@ import { AppProviders } from "@/app/components/AppProviders";
 import { AIAssistantProvider } from "@/components/AIAssistant";
 import { ClientInit } from "./ClientInit";
 import { ErrorBoundary } from "@sentry/nextjs";
-import { ThemeProvider } from "next-themes";
-import { ThemeInitScript } from "./theme-init";
-import { THEME_STORAGE_KEY } from "@/src/lib/theme/themeEngine";
-import { PriceTicker } from "@/src/components/PriceTicker";
-import { TransactionToasts } from "@/src/components/TransactionToasts";
-import Link from "next/link";
+import { ThemeProvider } from "./theme/ThemeProvider";
 
 function GlobalErrorFallback({ error, resetError }: any) {
   return (
@@ -60,7 +55,6 @@ export const viewport: Viewport = {
   ],
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
 };
 
 export default function RootLayout({
@@ -103,15 +97,7 @@ export default function RootLayout({
       </head>
       <body className="antialiased min-h-dvh w-full overflow-x-clip">
         <ErrorBoundary fallback={GlobalErrorFallback}>
-          <ThemeProvider
-            attribute="data-theme"
-            defaultTheme="system"
-            enableSystem
-            storageKey={THEME_STORAGE_KEY}
-            // Suppresses transitions for the frame the theme changes, so a
-            // switch does not animate a sweep across the whole page.
-            disableTransitionOnChange
-          >
+          <ThemeProvider>
             <AIAssistantProvider>
               <AppProviders>
                 <PriceTicker />

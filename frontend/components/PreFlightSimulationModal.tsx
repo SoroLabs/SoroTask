@@ -105,7 +105,30 @@ export function PreFlightSimulationModal({
             <div className="font-semibold flex items-center gap-1.5 text-rose-100">
               <span>⚠️</span> {willRevert ? "Transaction Will Revert" : "Simulation Warning"}
             </div>
+            {simulation.mappedError && (
+              <p className="font-semibold">{simulation.mappedError.title}</p>
+            )}
             <p>{simulation.errorMessage}</p>
+            {simulation.mappedError?.debug.message && (
+              <details className="rounded border border-rose-200/20 p-2">
+                <summary className="cursor-pointer font-medium">
+                  Show technical diagnostic
+                </summary>
+                <p className="mt-2 break-all font-mono">
+                  {simulation.mappedError.debug.message}
+                </p>
+                {simulation.mappedError.debug.code && (
+                  <p className="mt-1 font-mono">
+                    Code: {simulation.mappedError.debug.code}
+                  </p>
+                )}
+                {simulation.mappedError.debug.diagnostic && (
+                  <p className="mt-1 break-all font-mono">
+                    Decoded: {simulation.mappedError.debug.diagnostic.decodedText}
+                  </p>
+                )}
+              </details>
+            )}
           </div>
         ) : (
           <div className="space-y-4">

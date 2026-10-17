@@ -1,155 +1,160 @@
 @import "tailwindcss";
 
-/* ===========================================================================
-   Theme tokens (#1241)
-
-   Every colour a component can reference is defined in ALL THREE themes. The
-   previous version only defined the `[data-theme="dark"]` block, so in light
-   mode `var(--bg-surface)` and friends resolved to nothing and components fell
-   back to inherited values — which is what the failing contrast audits on custom
-   components were picking up.
-
-   `src/lib/theme/themeEngine.ts` mirrors these values in TypeScript so the
-   ratios can be asserted in a unit test. Change one, change both.
-   =========================================================================== */
-
-:root,
-[data-theme="light"] {
+:root {
   color-scheme: light;
-
-  --background: var(--theme-background, var(--fallback-bg, #ffffff));
-  --foreground: var(--theme-foreground, var(--fallback-fg, #171717));
-
+  --background: #ffffff;
+  --foreground: #171717;
   --bg-base: #ffffff;
-  --bg-surface: #f9fafb;
-  --bg-elevated: #f3f4f6;
-  --bg-overlay: rgba(23, 23, 23, 0.5);
-
-  --border: #d4d4d8;
-  --border-subtle: #e4e4e7;
-
+  --bg-surface: #f7f7f8;
+  --bg-elevated: #eeeeef;
+  --bg-overlay: rgba(255, 255, 255, 0.96);
+  --border: #767676;
+  --border-subtle: #a3a3a3;
   --text-primary: #171717;
   --text-secondary: #404040;
-  --text-muted: #595959;
-
-  --accent: #1d4ed8;
-  --accent-hover: #1e40af;
-  --accent-foreground: #ffffff;
-  --accent-shadow: rgba(29, 78, 216, 0.2);
-
-  --status-success: #14532d;
-  --status-warning: #713f12;
-  --status-error: #991b1b;
-
+  --text-muted: #525252;
+  --accent: #0047ab;
+  --accent-hover: #003780;
+  --accent-shadow: rgba(0, 71, 171, 0.18);
   --input-bg: #ffffff;
-  --input-border: #86868e;
-  --input-text: #171717;
-
-  /* Focus ring tokens – single source of truth */
-  --focus-ring-color: #1d4ed8;
+  --input-border: #767676;
+  --focus-ring-color: #0047ab;
   --focus-ring-offset: 3px;
   --focus-ring-width: 3px;
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
-
-  --background: var(--theme-background, var(--fallback-bg, #0a0a0a));
-  --foreground: var(--theme-foreground, var(--fallback-fg, #ededed));
-
-  --bg-base: #0a0a0a;
+  --background: #09090b;
+  --foreground: #f4f4f5;
+  --bg-base: #09090b;
   --bg-surface: #18181b;
   --bg-elevated: #27272a;
-  --bg-overlay: rgba(9, 9, 11, 0.6);
-
-  --border: #3f3f46;
-  --border-subtle: #27272a;
-
+  --bg-overlay: rgba(9, 9, 11, 0.96);
+  --border: #a1a1aa;
+  --border-subtle: #71717a;
   --text-primary: #fafafa;
-  --text-secondary: #a1a1aa;
-  --text-muted: #909098;
-
-  --accent: #60a5fa;
-  --accent-hover: #93c5fd;
-  --accent-foreground: #0a0a0a;
-  --accent-shadow: rgba(59, 130, 246, 0.25);
-
-  --status-success: #86efac;
-  --status-warning: #fcd34d;
-  --status-error: #fca5a5;
-
-  --input-bg: #0a0a0a;
-  --input-border: #75757e;
-  --input-text: #fafafa;
-
-  --focus-ring-color: #60a5fa;
+  --text-secondary: #d4d4d8;
+  --text-muted: #c4c4c8;
+  --accent: #9fc5ff;
+  --accent-hover: #c3dcff;
+  --accent-shadow: rgba(159, 197, 255, 0.2);
+  --input-bg: #09090b;
+  --input-border: #a1a1aa;
+  --focus-ring-color: #9fc5ff;
 }
 
-/* High-contrast OLED: pure black so unlit pixels draw no power, with every
-   text pair held to WCAG AAA (7:1) rather than AA. */
-[data-theme="oled"] {
+[data-theme="high-contrast"] {
   color-scheme: dark;
-
-  --background: var(--theme-background, var(--fallback-bg, #000000));
-  --foreground: var(--theme-foreground, var(--fallback-fg, #ffffff));
-
+  --background: #000000;
+  --foreground: #ffff00;
   --bg-base: #000000;
-  --bg-surface: #0a0a0a;
-  --bg-elevated: #171717;
-  --bg-overlay: rgba(0, 0, 0, 0.8);
-
-  --border: #a3a3a3;
-  --border-subtle: #52525b;
-
-  --text-primary: #ffffff;
-  --text-secondary: #e5e5e5;
-  --text-muted: #d4d4d8;
-
-  --accent: #93c5fd;
-  --accent-hover: #bfdbfe;
-  --accent-foreground: #000000;
-  --accent-shadow: rgba(147, 197, 253, 0.35);
-
-  --status-success: #bbf7d0;
-  --status-warning: #fde68a;
-  --status-error: #fecaca;
-
+  --bg-surface: #000000;
+  --bg-elevated: #000000;
+  --bg-overlay: #000000;
+  --border: #ffff00;
+  --border-subtle: #ffffff;
+  --text-primary: #ffff00;
+  --text-secondary: #ffffff;
+  --text-muted: #ffffff;
+  --accent: #00ffff;
+  --accent-hover: #ffffff;
+  --accent-shadow: transparent;
   --input-bg: #000000;
-  --input-border: #a3a3a3;
-  --input-text: #ffffff;
+  --input-border: #ffff00;
+  --focus-ring-color: #00ffff;
+  --focus-ring-width: 4px;
+}
 
-  --focus-ring-color: #93c5fd;
+/* Keep text on a single opaque background in high-contrast mode. */
+[data-theme="high-contrast"] body,
+[data-theme="high-contrast"] body *,
+[data-theme="high-contrast"] body *::before,
+[data-theme="high-contrast"] body *::after {
+  color: var(--text-primary) !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  text-shadow: none !important;
+  opacity: 1 !important;
+}
+
+[data-theme="high-contrast"] body {
+  background-color: var(--background) !important;
+}
+
+[data-theme="high-contrast"] body *:not(iframe) {
+  border-color: var(--border) !important;
+  box-shadow: none !important;
+}
+
+[data-theme="high-contrast"] a {
+  color: var(--accent) !important;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+[data-theme="high-contrast"] svg {
+  fill: currentColor !important;
+  stroke: currentColor !important;
 }
 
 /* ── Tailwind theme bridge ────────────────────────────────── */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--background);
+  --color-surface: var(--bg-surface);
+  --color-border: var(--border);
   --font-sans: "Segoe UI", "Inter", system-ui, sans-serif;
   --font-mono: "Consolas", "SFMono-Regular", monospace;
 }
-
-/* No system-preference block any more: `data-theme` is always resolved before
-   paint by app/theme-init.tsx, so honouring the OS here as well would let a
-   stale media query override an explicit user choice. */
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: "Segoe UI", "Inter", system-ui, sans-serif;
   min-height: 100vh;
-  /* Theme changes swap a large number of custom properties at once. Letting
-     that animate produces a visible "sweep" across the page, which is the
-     other half of the perceived flicker. */
-  transition: background-color 150ms ease, color 150ms ease;
+  transition:
+    background-color 180ms ease,
+    color 180ms ease;
 }
 
-/* Applied for one frame by next-themes' `disableTransitionOnChange`, which sets
-   this attribute around the swap. */
-html[data-theme-transition] *,
-html[data-theme-transition] *::before,
-html[data-theme-transition] *::after {
-  transition: none !important;
+.theme-ambient {
+  background-color: var(--background);
+  background-image: radial-gradient(
+    ellipse at 18% 10%,
+    color-mix(in srgb, var(--accent) 14%, transparent),
+    transparent 58%
+  );
+}
+
+.theme-glass {
+  border: 1px solid color-mix(in srgb, var(--foreground) 22%, transparent);
+  background-color: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--foreground) 10%, transparent);
+  backdrop-filter: blur(20px);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  body,
+  body * {
+    transition:
+      color 180ms ease,
+      background-color 180ms ease,
+      border-color 180ms ease;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 img {
@@ -166,13 +171,13 @@ img {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
   border-radius: inherit;
 }
 
 ::selection {
-  background: rgba(45, 212, 191, 0.3);
-  color: white;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--foreground);
 }
 
 button,
@@ -185,7 +190,7 @@ button {
 }
 
 input[type="checkbox"] {
-  accent-color: #5eead4;
+  accent-color: var(--accent);
 }
 
 /* ─── Skip-to-content link ────────────────────────────────────────────── */
@@ -207,11 +212,11 @@ input[type="checkbox"] {
   height: auto;
   padding: 0.5rem 1.25rem;
   border-radius: 0.5rem;
-  background: var(--focus-ring-color);
-  color: #fff;
+  background: var(--background);
+  color: var(--foreground);
   font-weight: 600;
   font-size: 0.9rem;
-  outline: var(--focus-ring-width) solid #fff;
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
   outline-offset: 2px;
 }
 

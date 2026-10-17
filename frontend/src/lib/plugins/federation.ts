@@ -1,5 +1,11 @@
-import { createPluginLoader, getPluginLoader, resetPluginLoader } from "./loader";
-import { createPluginRegistry, getPluginRegistry, resetPluginRegistry } from "./registry";
+import {
+  getPluginLoader,
+  resetPluginLoader,
+} from "./loader";
+import {
+  getPluginRegistry,
+  resetPluginRegistry,
+} from "./registry";
 import type {
   FederationConfig,
   PluginManifest,
@@ -13,11 +19,11 @@ export type ModuleFederationOptions = FederationConfig & {
 export function initializeModuleFederation(
   options: ModuleFederationOptions = {},
 ) {
-  const registry = createPluginRegistry(options.plugins ?? []);
-  const loader = createPluginLoader({
+  resetPluginLoader();
+  const registry = getPluginRegistry(options.plugins ?? []);
+  const loader = getPluginLoader({
     defaultTimeoutMs: options.defaultTimeoutMs,
-    retryAttempts: options.retryAttempts,
-    retryDelayMs: options.retryDelayMs,
+    trustedOrigins: options.trustedOrigins,
     onLoadError: options.onLoadError,
   });
 

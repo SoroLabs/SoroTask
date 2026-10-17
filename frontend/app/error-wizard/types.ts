@@ -4,7 +4,10 @@
  * src/lib/errors/contractErrors.ts
  */
 
-import type { ContractErrorCategory } from '@/src/lib/errors/contractErrors';
+import type {
+  ContractErrorCategory,
+  DecodedContractDiagnostic,
+} from '@/src/lib/errors/contractErrors';
 
 // ---------------------------------------------------------------------------
 // Failure log — what comes from the backend / keeper logs
@@ -15,12 +18,15 @@ export interface FailureLog {
   timestamp: string; // ISO
   errorCode: string; // Raw keeper error code, e.g. "TX_BAD_SEQ"
   errorMessage: string;
+  diagnosticPayload?: unknown;
   /** Optional structured fields from the keeper execution context */
   context?: {
     contractAddress?: string;
     functionName?: string;
     gasUsed?: number;
     gasBudget?: number;
+    tokenAddress?: string;
+    spenderAddress?: string;
     attempt?: number;
     maxAttempts?: number;
   };
@@ -40,6 +46,7 @@ export type ResolutionActionType =
   | 'reconnect_wallet'
   | 'switch_network'
   | 'top_up_balance'
+  | 'approve_token'
   | 'wait_and_retry'
   | 'contact_support';
 
@@ -57,6 +64,7 @@ export interface WizardStep {
   category: ContractErrorCategory;
   title: string;
   explanation: string;
+  diagnostic?: DecodedContractDiagnostic;
   /** Ordered list of fix actions for this step */
   actions: ResolutionAction[];
   status: StepStatus;
