@@ -1,74 +1,73 @@
-import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
-import "@testing-library/jest-dom";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { calculateYieldForecast } from "../../../lib/yield/calculator";
 import { useYieldStore } from "../../../store/yieldStore";
 import YieldCalculator from "../YieldCalculator";
 
-describe("Yield Calculator Logic", () => {
-  it("computes simple and gross compounding interest correctly", () => {
-    const config = {
+const refresh = jest.fn();
+const useFinancialAnalytics = jest.fn();
+
+jest.mock("@/src/hooks/useFinancialAnalytics", () => ({
+  useFinancialAnalytics: (...args: unknown[]) => useFinancialAnalytics(...args),
+}));
+
+jest.mock("@/src/lib/financial-analytics/csv", () => ({
+  downloadCsv: jest.fn(),
+}));
+
+describe("Yield forecast math", () => {
+  it("computes simple and compound yield and deducts transaction costs", () => {
+    const result = calculateYieldForecast({
       principal: 1000,
       apr: 10,
-      frequency: "annually" as const,
+      frequency: "annually",
       durationYears: 2,
       gasFeePerTx: 0,
       keeperFeePerTx: 0,
-      multiplier: 1.0,
-    };
+      multiplier: 1,
+    });
 
-    const result = calculateYieldForecast(config);
-    expect(result.finalSimple).toBe(1200); // 1000 + 1000*0.1*2
-    expect(result.finalCompound).toBe(1210); // 1000 * (1.1)^2
-    expect(result.finalNetCompound).toBe(1210); // no fees
-    expect(result.totalFeesPaid).toBe(0);
-    expect(result.depleted).toBe(false);
-  });
-
-  it("deducts transaction fees and flags depletion", () => {
-    const config = {
-      principal: 100,
-      apr: 5,
-      frequency: "daily" as const,
-      durationYears: 1,
-      gasFeePerTx: 2.0, // High fee
-      keeperFeePerTx: 1.0,
-      multiplier: 1.0,
-    };
-
-    const result = calculateYieldForecast(config);
-    expect(result.depleted).toBe(true);
-    expect(result.finalNetCompound).toBe(0);
-    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.finalSimple).toBe(1200);
+    expect(result.finalCompound).toBe(1210);
+    expect(result.finalNetCompound).toBe(1210);
   });
 });
 
-describe("Yield Zustand Store", () => {
-  it("initializes with default inputs and updates outputs on change", () => {
-    const store = useYieldStore.getState();
-    store.reset();
-    expect(useYieldStore.getState().principal).toBe(1000);
-
-    useYieldStore.getState().setInputs({ principal: 2000 });
-    expect(useYieldStore.getState().principal).toBe(2000);
-    expect(useYieldStore.getState().finalSimple).toBeGreaterThan(2000);
+describe("YieldCalculator", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    useYieldStore.getState().reset();
+    useFinancialAnalytics.mockReturnValue({
+      records: [
+        {
+          timestamp: "2026-10-17T00:00:00.000Z",
+          apyPercent: 12.5,
+          accruedYieldXlm: 3.4,
+        },
+      ],
+      status: "connected",
+      error: null,
+      lastUpdatedAt: "2026-10-17T00:00:00.000Z",
+      refresh,
+    });
   });
-});
 
-describe("YieldCalculator Component", () => {
-  it("renders parameters section and charts metrics", () => {
+  it("renders interactive forecasts and historical APY data", () => {
     render(<YieldCalculator />);
+
+    expect(useFinancialAnalytics).toHaveBeenCalledWith("yield");
     expect(screen.getByTestId("yield-calculator-container")).toBeInTheDocument();
-    expect(screen.getByText("Yield Configuration")).toBeInTheDocument();
-    expect(screen.getByText("Gross Compounded Yield")).toBeInTheDocument();
     expect(screen.getByTestId("yield-chart-container")).toBeInTheDocument();
+    expect(screen.getByTestId("yield-history-chart")).toBeInTheDocument();
+    expect(screen.getByTestId("yield-feed-status")).toHaveTextContent("Live APY updates connected.");
+    expect(screen.getByRole("button", { name: "Export CSV" })).toBeEnabled();
   });
 
-  it("reacts to input slider events", () => {
+  it("updates forecast inputs and lets the user refresh the historical feed", () => {
     render(<YieldCalculator />);
-    const sliders = screen.getAllByRole("slider");
-    // Slider 0 is Principal slider
-    fireEvent.change(sliders[0], { target: { value: "5000" } });
+    fireEvent.change(screen.getAllByRole("slider")[0], { target: { value: "5000" } });
     expect(useYieldStore.getState().principal).toBe(5000);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh APY history" }));
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

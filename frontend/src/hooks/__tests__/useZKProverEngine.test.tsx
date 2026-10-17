@@ -1,235 +1,84 @@
-import React from "react";
-import { render, act, renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { useZKProverEngine } from "../useZKProverEngine";
+import type { ZkProofPayload } from "@/src/lib/zk-proof";
+
+const mockBrowserGenerateProof = jest.fn();
+const mockBrowserTerminate = jest.fn();
+
+jest.mock("@/src/lib/zk-proof/browser-prover", () => ({
+  BrowserZkProver: jest.fn().mockImplementation(() => ({
+    generateProof: (...args: unknown[]) => mockBrowserGenerateProof(...args),
+    terminate: mockBrowserTerminate,
+  })),
+}));
+
+const mockProof: ZkProofPayload = {
+  proofId: "local-proof",
+  status: "success" as const,
+  pi_a: ["1", "2"],
+  pi_b: [["3", "4"], ["5", "6"]],
+  pi_c: ["7", "8"],
+  publicSignals: ["10"],
+  durationMs: 125,
+};
+
+const options = {
+  taskCondition: '{"minValue":"1","maxValue":"10"}',
+  secretData: '{"secretValue":"5"}',
+  verifierAddress: "",
+  simulateCongestion: false,
+  simulateFailure: false,
+  circuitId: "range" as const,
+};
 
 describe("useZKProverEngine", () => {
-  let scheduled: Array<{ fn: () => void; ms: number }>;
-
-  function drainScheduled() {
-    while (scheduled.length > 0) {
-      const { fn } = scheduled.shift()!;
-      fn();
-    }
-  }
-
   beforeEach(() => {
-    scheduled = [];
-    jest.useFakeTimers();
-  });
-
-  afterEach(() => {
-    jest.useRealTimers();
+    jest.clearAllMocks();
+    mockBrowserGenerateProof.mockResolvedValue(mockProof);
   });
 
   it("initializes with idle state", () => {
-    const { result } = renderHook(() =>
-      useZKProverEngine({
-        baseDelayMs: 0,
-        now: () => 1000,
-        schedule: (fn, ms) => {
-          scheduled.push({ fn, ms });
-        },
-      }),
-    );
-
-    expect(result.current.state.status).toBe("idle");
-    expect(result.current.isGenerating).toBe(false);
-    expect(result.current.isVerifying).toBe(false);
-    expect(result.current.isBusy).toBe(false);
-  });
-
-  it("provides worker stats", () => {
-    const { result } = renderHook(() =>
-      useZKProverEngine({
-        workerCount: 3,
-        baseDelayMs: 0,
-        now: () => 1000,
-        schedule: (fn, ms) => {
-          scheduled.push({ fn, ms });
-        },
-      }),
-    );
-
-    expect(result.current.workerStats.total).toBe(3);
-    expect(result.current.workerStats.idle).toBe(3);
-  });
-
-  it("generates proof and updates state", async () => {
-    const { result } = renderHook(() =>
-      useZKProverEngine({
-        workerCount: 2,
-        baseDelayMs: 0,
-        now: () => 1000,
-        schedule: (fn, ms) => {
-          scheduled.push({ fn, ms });
-        },
-      }),
-    );
-
-    let promise: Promise<any>;
-    act(() => {
-      promise = result.current.generateProof({
-        taskCondition: "{}",
-        secretData: "{}",
-        verifierAddress: "VERIFIER",
-        simulateCongestion: false,
-        simulateFailure: false,
-      });
-    });
-
-    expect(result.current.isGenerating).toBe(true);
-    expect(result.current.isBusy).toBe(true);
-
-    await act(async () => {
-      drainScheduled();
-      const proof = await promise!;
-      expect(proof.status).toBe("success");
-    });
+    const { result } = renderHook(() => useZKProverEngine());
 
     expect(result.current.state.status).toBe("idle");
     expect(result.current.isGenerating).toBe(false);
     expect(result.current.isBusy).toBe(false);
   });
 
-  it("handles generation failure", async () => {
-    const { result } = renderHook(() =>
-      useZKProverEngine({
-        workerCount: 2,
-        baseDelayMs: 0,
-        now: () => 1000,
-        schedule: (fn, ms) => {
-          scheduled.push({ fn, ms });
-        },
-      }),
-    );
-
-    let promise: Promise<any>;
-    act(() => {
-      promise = result.current.generateProof({
-        taskCondition: "{}",
-        secretData: "{}",
-        verifierAddress: "VERIFIER",
-        simulateCongestion: false,
-        simulateFailure: true,
-      });
-    });
+  it("uses the browser prover and updates pipeline state", async () => {
+    const { result } = renderHook(() => useZKProverEngine());
+    let proof: ZkProofPayload | undefined;
 
     await act(async () => {
-      drainScheduled();
-      await expect(promise!).rejects.toThrow();
+      proof = await result.current.generateProof(options);
+    });
+
+    expect(mockBrowserGenerateProof).toHaveBeenCalledWith(options, expect.any(Function));
+    expect(proof).toEqual(mockProof);
+    expect(result.current.state.proof).toEqual(mockProof);
+    expect(result.current.state.status).toBe("idle");
+    expect(result.current.state.currentStage).toBe("proof_complete");
+    expect(result.current.isBusy).toBe(false);
+  });
+
+  it("records browser worker errors and marks the pipeline failed", async () => {
+    mockBrowserGenerateProof.mockRejectedValueOnce(new Error("No circuit artifact."));
+    const { result } = renderHook(() => useZKProverEngine());
+
+    await act(async () => {
+      await expect(result.current.generateProof(options)).rejects.toThrow("No circuit artifact.");
     });
 
     expect(result.current.state.status).toBe("failed");
+    expect(result.current.state.errors[0].msg).toBe("No circuit artifact.");
     expect(result.current.isGenerating).toBe(false);
   });
 
-  it("resets state", () => {
-    const { result } = renderHook(() =>
-      useZKProverEngine({
-        workerCount: 2,
-        baseDelayMs: 0,
-        now: () => 1000,
-        schedule: (fn, ms) => {
-          scheduled.push({ fn, ms });
-        },
-      }),
-    );
+  it("terminates the local prover when the hook unmounts", () => {
+    const { unmount } = renderHook(() => useZKProverEngine());
 
-    act(() => {
-      result.current.reset();
-    });
+    unmount();
 
-    expect(result.current.state.status).toBe("idle");
-    expect(result.current.isGenerating).toBe(false);
-    expect(result.current.isVerifying).toBe(false);
-  });
-
-  it("sets tasks", () => {
-    const { result } = renderHook(() =>
-      useZKProverEngine({
-        workerCount: 2,
-        baseDelayMs: 0,
-        now: () => 1000,
-        schedule: (fn, ms) => {
-          scheduled.push({ fn, ms });
-        },
-      }),
-    );
-
-    act(() => {
-      result.current.setTasks([
-        {
-          id: 1,
-          contractAddress: "CAFE1234",
-          functionName: "harvest",
-          interval: 3600,
-          gasBalance: 10,
-          status: "active",
-        },
-      ]);
-    });
-
-    expect(result.current.engine.getTasks()).toHaveLength(1);
-  });
-
-  it("handles generate and verify lifecycle", async () => {
-    const { result } = renderHook(() =>
-      useZKProverEngine({
-        workerCount: 2,
-        baseDelayMs: 0,
-        now: () => 1000,
-        schedule: (fn, ms) => {
-          scheduled.push({ fn, ms });
-        },
-      }),
-    );
-
-    let genPromise: Promise<any>;
-    act(() => {
-      genPromise = result.current.generateProof({
-        taskCondition: "{}",
-        secretData: "{}",
-        verifierAddress: "VERIFIER",
-        simulateCongestion: false,
-        simulateFailure: false,
-      });
-    });
-
-    let proof: any;
-    await act(async () => {
-      drainScheduled();
-      proof = await genPromise!;
-    });
-    expect(proof.status).toBe("success");
-
-    act(() => {
-      result.current.setTasks([
-        {
-          id: 1,
-          contractAddress: "CAFE1234",
-          functionName: "harvest",
-          interval: 3600,
-          gasBalance: 10,
-          status: "active",
-        },
-      ]);
-    });
-
-    let verPromise: Promise<any>;
-    act(() => {
-      verPromise = result.current.verifyProof(
-        proof,
-        "CAFE1234",
-        "VERIFIER",
-        "GABC123",
-        true,
-      );
-    });
-
-    await act(async () => {
-      drainScheduled();
-      const result_ = await verPromise!;
-      expect(result_.success).toBe(true);
-    });
+    expect(mockBrowserTerminate).toHaveBeenCalledTimes(1);
   });
 });

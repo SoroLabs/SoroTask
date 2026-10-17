@@ -26,8 +26,13 @@ const INTL_LOCALES: Record<Locale, string> = {
   fr: "fr-FR",
   pt: "pt-BR",
   zh: "zh-CN",
+  ja: "ja-JP",
+  ko: "ko-KR",
   de: "de-DE",
+  ru: "ru-RU",
   ar: "ar-EG",
+  hi: "hi-IN",
+  tr: "tr-TR",
 };
 
 /** The BCP-47 tag for `locale`, e.g. `pt-BR`. */
@@ -160,8 +165,13 @@ export function formatInterval(
     fr: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} secondes)`,
     pt: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} segundos)`,
     zh: `${formatter.format(hours)}小时(${formatter.format(intervalSeconds)}秒)`,
+    ja: `${formatter.format(hours)}時間 (${formatter.format(intervalSeconds)}秒)`,
+    ko: `${formatter.format(hours)}시간 (${formatter.format(intervalSeconds)}초)`,
     de: `${formatter.format(hours)}Std (${formatter.format(intervalSeconds)} Sekunden)`,
+    ru: `${formatter.format(hours)} ч (${formatter.format(intervalSeconds)} сек)`,
     ar: `${formatter.format(hours)}س (${formatter.format(intervalSeconds)} ثانية)`,
+    hi: `${formatter.format(hours)} घंटे (${formatter.format(intervalSeconds)} सेकंड)`,
+    tr: `${formatter.format(hours)} sa (${formatter.format(intervalSeconds)} saniye)`,
   };
 
   return {
@@ -267,8 +277,13 @@ export function getTextExpansionFactor(locale: Locale): number {
     fr: 1.3,
     pt: 1.2,
     zh: 0.75,
+    ja: 0.8,
+    ko: 0.9,
     de: 1.35,
+    ru: 1.3,
     ar: 1.1,
+    hi: 1.2,
+    tr: 1.2,
   };
 
   return factors[locale];
@@ -290,8 +305,13 @@ export function getFontAdjustments(locale: Locale): {
     fr: { letterSpacing: "normal", lineHeight: 1.55 },
     pt: { letterSpacing: "normal", lineHeight: 1.55 },
     zh: { letterSpacing: "0.05em", lineHeight: 1.8 },
+    ja: { letterSpacing: "0.02em", lineHeight: 1.8 },
+    ko: { letterSpacing: "normal", lineHeight: 1.7 },
     de: { letterSpacing: "normal", lineHeight: 1.6 },
+    ru: { letterSpacing: "normal", lineHeight: 1.6 },
     ar: { letterSpacing: "normal", lineHeight: 1.7 },
+    hi: { letterSpacing: "normal", lineHeight: 1.8 },
+    tr: { letterSpacing: "normal", lineHeight: 1.55 },
   };
 
   return adjustments[locale];

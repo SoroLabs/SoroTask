@@ -1,0 +1,124 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "ウォレットに接続",
+    "close": "閉じる",
+    "cancel": "キャンセル",
+    "save": "保存",
+    "edit": "編集",
+    "delete": "削除",
+    "loading": "読み込み中...",
+    "error": "エラー",
+    "success": "成功",
+    "warning": "警告",
+    "no_data": "データがありません"
+  },
+  "calendar": {
+    "title": "タスクスケジュールカレンダー",
+    "today": "今日",
+    "previous_month": "前月",
+    "next_month": "翌月",
+    "timezone": "タイムゾーン",
+    "legend": {
+      "today": "今日",
+      "task_with_deadline": "期限付きタスク",
+      "multiple_tasks": "同じ日の複数タスク",
+      "past_deadline": "期限切れ"
+    },
+    "selected_date_title": "{date}のタスク",
+    "no_tasks_scheduled": "予定されたタスクはありません",
+    "schedule_calendar": "スケジュールカレンダー"
+  },
+  "calendar_day": {
+    "more_button": "他{count}件",
+    "tasks_label": "{count}件のタスク"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "{count}件の予定タスク",
+    "click_task_to_view": "タスクをクリックして詳細を表示"
+  },
+  "task_detail": {
+    "title": "タスクの詳細",
+    "status": "ステータス",
+    "contract_address": "コントラクトアドレス",
+    "description": "説明",
+    "schedule_settings": "スケジュール設定",
+    "execution_interval": "実行間隔",
+    "gas_balance": "ガス残高",
+    "next_execution": "次回実行",
+    "deadline": "期限",
+    "due_date": "期日",
+    "time_until_deadline": "期限までの時間",
+    "due_today": "本日期限",
+    "overdue_by": "{days}日超過",
+    "days_remaining": "残り{days}日",
+    "created": "作成日",
+    "timezone_label": "タイムゾーン",
+    "tags": "タグ",
+    "edit_task": "タスクを編集",
+    "view_logs": "ログを表示",
+    "status_pending": "保留中",
+    "status_active": "有効",
+    "status_completed": "完了",
+    "status_failed": "失敗",
+    "status_paused": "一時停止"
+  },
+  "forms": {
+    "create_automation_task": "自動化タスクを作成",
+    "your_tasks": "自分のタスク",
+    "target_contract_address": "対象コントラクトアドレス",
+    "contract_placeholder": "C...",
+    "function_name": "関数名",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "間隔（秒）",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "ガス残高（XLM）",
+    "gas_balance_placeholder": "10",
+    "register_task": "タスクを登録",
+    "no_tasks_registered_yet": "登録されたタスクはありません。"
+  },
+  "execution_logs": {
+    "title": "実行ログ",
+    "task_id": "タスクID",
+    "target": "対象",
+    "keeper": "キーパー",
+    "status": "ステータス",
+    "timestamp": "日時",
+    "status_success": "成功",
+    "mins_ago": "{mins}分前"
+  },
+  "formatting": {
+    "hours_short": "時間",
+    "seconds_short": "秒",
+    "interval_display": "{hours}時間（{seconds}秒）",
+    "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "接続状態",
+    "online": "オンライン",
+    "offline": "オフライン",
+    "resyncing": "再同期中",
+    "sync_failed": "同期に失敗しました",
+    "queued_actions": "{count, plural, =0 {キューに追加された操作はありません} other {# 件の操作をキューに追加しました}}",
+    "replaying": "{count, plural, other {キューに追加された # 件の操作を再実行しています}}",
+    "still_queued": "{count, plural, other {# 件の操作がキューに残っています}}",
+    "browse_cached": "キャッシュされたコンテンツを閲覧できます。変更はキューに追加されます。",
+    "will_run_when_back": "オンラインに戻ると実行されます。",
+    "retry": "再試行",
+    "read_only_notice": "読み取り専用モードです。変更内容はオンラインに戻ると送信されます。"
+  },
+  "theme": {
+    "label": "テーマ",
+    "light": "ライト",
+    "dark": "ダーク",
+    "oled": "高コントラスト OLED",
+    "system": "システム",
+    "change": "テーマ: {mode}。クリックして変更します。",
+    "resolving_to": "現在 {resolved} に設定しています。"
+  },
+  "language": {
+    "label": "言語を選択",
+    "loading": "言語を読み込み中...",
+    "available": "{count, plural, =0 {利用可能な言語はありません} other {# 言語}}"
+  }
+}

@@ -15,6 +15,7 @@ export type {
   ZkProofPipelineState,
   ZkEngineConfig,
   ZkVerificationResult,
+  ZkCircuitId,
 } from "./types";
 
 // In-browser WASM proving and Soroban serialisation (Issue #1250)

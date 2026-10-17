@@ -1,7 +1,6 @@
 import type {
   ZkProofPayload,
   ZkProofPipelineState,
-  PipelineLogEntry,
   PipelineStage,
   DiagnosticError,
   ZkVerificationResult,
@@ -75,6 +74,11 @@ export class ZkProofPipeline {
     this.notify();
   }
 
+  setProgress(progress: number): void {
+    this.state.progress = Math.max(0, Math.min(Math.round(progress), 100));
+    this.notify();
+  }
+
   setVerificationResult(result: ZkVerificationResult): void {
     this.state.status = result.success ? "success" : "failed";
     this.notify();
@@ -92,8 +96,10 @@ export class ZkProofPipeline {
       "allocating_worker",
       "ingesting_data",
       "building_constraints",
+      "computing_witness",
       "computing_coefficients",
       "synthesizing_signals",
+      "locally_verifying",
       "proof_complete",
       "preparing_credentials",
       "computing_hash",

@@ -175,7 +175,7 @@ export default function HomePage() {
               className="inline-flex items-center gap-2 rounded-full bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-200"
             >
               Launch
-              <FiArrowRight aria-hidden="true" />
+              <FiArrowRight aria-hidden="true" data-rtl-flip />
             </Link>
           </div>
         </nav>
@@ -203,7 +203,7 @@ export default function HomePage() {
                 className="inline-flex items-center justify-center gap-2 rounded-full bg-emerald-300 px-6 py-3 text-base font-bold text-slate-950 shadow-xl shadow-emerald-950/30 transition hover:-translate-y-0.5 hover:bg-emerald-200"
               >
                 Create automation
-                <FiArrowRight aria-hidden="true" />
+                <FiArrowRight aria-hidden="true" data-rtl-flip />
               </Link>
               <Link
                 href="/dashboard"
@@ -355,6 +355,7 @@ export default function HomePage() {
                     <FiArrowRight
                       className="transition group-hover:translate-x-1"
                       aria-hidden="true"
+                      data-rtl-flip
                     />
                   </span>
                 </Link>
@@ -381,7 +382,7 @@ export default function HomePage() {
                 className="inline-flex w-fit items-center gap-2 rounded-full bg-amber-300 px-5 py-3 font-bold text-slate-950 transition hover:bg-amber-200"
               >
                 Build a template
-                <FiArrowRight aria-hidden="true" />
+                <FiArrowRight aria-hidden="true" data-rtl-flip />
               </Link>
             </div>
             <div className="grid gap-3 sm:grid-cols-3">

@@ -1,8 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
+import React from "react";
 import dynamic from "next/dynamic";
-import type { ZkTask } from "@/src/lib/zk-proof";
 
 const ZKProverPanel = dynamic(
   () => import("@/src/components/zk-proof").then((mod) => mod.ZKProverPanel),
@@ -17,31 +16,8 @@ const ZKProverPanel = dynamic(
 );
 
 export default function ZKProverPage() {
-  const [tasks] = useState<ZkTask[]>([
-    {
-      id: 1,
-      contractAddress: "CAFE1234567890ABCDEF1234567890ABCDEF1234",
-      functionName: "harvest_yield",
-      interval: 3600,
-      gasBalance: 10,
-      status: "active",
-    },
-    {
-      id: 2,
-      contractAddress: "BEEF5678FAILS1234ABCDEF1234567890ABCDEF",
-      functionName: "claim_yield",
-      interval: 600,
-      gasBalance: 5,
-      status: "paused",
-    },
-  ]);
-
-  const [walletConnected, setWalletConnected] = useState(false);
-  const [walletAddress] = useState<string | null>("GABC...XYZ");
-
-  const handleZkVerified = (taskId: number, conditionHash: string) => {
-    console.log(`Task #${taskId} verified with hash: ${conditionHash}`);
-  };
+  const { session, openConnectModal } = useWalletOptional();
+  const tasks: ZkTask[] = [];
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 p-6">
@@ -52,26 +28,21 @@ export default function ZKProverPage() {
               ZK Browser Prover Engine
             </h1>
             <p className="text-sm text-neutral-500 mt-1">
-              Zero-Knowledge Proof generation and on-chain verification engine
+              Generate and locally verify zero-knowledge proofs in your browser
             </p>
           </div>
           <button
-            onClick={() => setWalletConnected((prev) => !prev)}
-            className={`text-xs font-medium px-4 py-2 rounded-xl border transition ${
-              walletConnected
-                ? "bg-green-900/20 border-green-800 text-green-300"
-                : "bg-neutral-900 border-neutral-800 text-neutral-400"
-            }`}
+            onClick={openConnectModal}
+            className="text-xs font-medium px-4 py-2 rounded-xl border border-neutral-800 bg-neutral-900 text-neutral-300 transition hover:bg-neutral-800"
           >
-            {walletConnected ? "Wallet Connected" : "Connect Wallet (Demo)"}
+            {session ? `Wallet ${session.address.slice(0, 5)}…${session.address.slice(-4)}` : "Connect Wallet"}
           </button>
         </div>
 
         <ZKProverPanel
           tasks={tasks}
-          walletConnected={walletConnected}
-          walletAddress={walletAddress}
-          onZkVerified={handleZkVerified}
+          walletConnected={Boolean(session)}
+          walletAddress={session?.address ?? null}
         />
       </div>
     </div>

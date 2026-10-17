@@ -117,7 +117,7 @@
     "resolving_to": "R\u00e9sout actuellement en {resolved}."
   },
   "language": {
-    "label": "S\u00e9lectionner la langue",
+    "label": "Choisir la langue",
     "loading": "Chargement de la langue...",
     "available": "{count, plural, =0 {Aucune langue} one {# langue} other {# langues}}"
   }

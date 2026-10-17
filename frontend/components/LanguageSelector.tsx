@@ -5,7 +5,8 @@ import { LocaleContext } from "@/context/LocaleContext";
 import {
   detectLocale,
   getAvailableLocales,
-  getStoredLocale,
+  getTranslation,
+  getStoredLocalePreference,
   getTextDirection,
   saveLocale,
   type Locale,
@@ -36,7 +37,7 @@ function useOptionalLocale(): {
   // on the first render would desynchronise the server and client markup.
   useEffect(() => {
     if (context) return;
-    setFallback(getStoredLocale() ?? detectLocale());
+    setFallback(getStoredLocalePreference() ?? detectLocale());
   }, [context]);
 
   if (context) return context;
@@ -76,7 +77,7 @@ export function LanguageSelector() {
   return (
     <div className="relative inline-block">
       <label className="sr-only" htmlFor="language-selector">
-        Select language
+        {getTranslation(locale, "language.label")}
       </label>
       <select
         id="language-selector"
@@ -87,7 +88,7 @@ export function LanguageSelector() {
         // second change from racing the first.
         disabled={isLoading}
         onChange={(event) => setLocale(event.target.value as Locale)}
-        className="appearance-none bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-sm font-medium py-2 pl-3 pr-8 rounded-md border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+        className="appearance-none bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-sm font-medium py-2 ps-3 pe-8 rounded-md border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
       >
         {LOCALES.map((entry) => (
           <option key={entry.code} value={entry.code}>
@@ -95,7 +96,7 @@ export function LanguageSelector() {
           </option>
         ))}
       </select>
-      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-neutral-500 dark:text-neutral-400">
+      <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center px-2 text-neutral-500 dark:text-neutral-400">
         <svg
           className="fill-current h-4 w-4"
           xmlns="http://www.w3.org/2000/svg"

@@ -1,305 +1,173 @@
 "use client";
 
-import React, { useState } from "react";
-import { useGasOptimizationStore } from "../../store/gasOptimizationStore";
-import {
-  FiCpu,
-  FiZap,
-  FiClock,
-  FiLayers,
-  FiRefreshCw,
-  FiPlay,
-  FiAlertCircle,
-  FiCheckCircle,
-} from "react-icons/fi";
+import { useMemo } from "react";
+import { FiDownload, FiRefreshCw } from "react-icons/fi";
+import { InteractiveFinancialChart } from "@/src/components/financial-analytics/InteractiveFinancialChart";
+import type { ChartDatum } from "@/src/components/financial-analytics/InteractiveFinancialChart";
+import { useFinancialAnalytics } from "@/src/hooks/useFinancialAnalytics";
+import { downloadCsv } from "@/src/lib/financial-analytics/csv";
+import type { GasFeeCandle } from "@/src/lib/financial-analytics/types";
+
+function isGasCandle(record: unknown): record is GasFeeCandle {
+  return record !== null && typeof record === "object" && "open" in record;
+}
+
+function formatXlm(value: number | undefined): string {
+  return value === undefined ? "—" : `${value.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM`;
+}
 
 export default function GasOptimizationEngine() {
-  const {
-    congestionLevel,
-    baseFee,
-    activeTxCount,
-    feeTiers,
-    bestHourUtc,
-    potentialOffpeakSavingsPercent,
-    hourlyHistory,
-    scheduledHourUtc,
-    batchOpportunities,
-    isSimulating,
-    simulationResult,
-    refreshMetrics,
-    optimizeSchedule,
-    runSimulation,
-    applyBatching,
-  } = useGasOptimizationStore();
+  const { records, status, error, lastUpdatedAt, refresh } = useFinancialAnalytics("gas");
+  const candles = useMemo(() => records.filter(isGasCandle), [records]);
+  const candleChart: ChartDatum[] = candles.map((candle, index) => ({
+    x: index,
+    label: new Date(candle.timestamp).toLocaleString(),
+    value: candle.close,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+  }));
+  const savingRows = candles.reduce<Array<{ timestamp: string; value: number }>>((rows, candle) => {
+    const accumulated = (rows.at(-1)?.value ?? 0) + (candle.batchSavingsXlm ?? 0);
+    rows.push({ timestamp: candle.timestamp, value: accumulated });
+    return rows;
+  }, []);
+  const depth = (candles.at(-1)?.depth ?? [])
+    .slice()
+    .sort((left, right) => left.priceXlm - right.priceXlm);
+  const depthChart: ChartDatum[] = depth.map((level) => ({
+    x: level.priceXlm,
+    label: `${level.priceXlm} XLM`,
+    value: level.cumulativeVolumeXlm,
+  }));
+  const latest = candles.at(-1);
+  const exportRows = candles.flatMap((candle) => {
+    const candleRow = {
+      recordType: "gas_fee_candle",
+      timestamp: candle.timestamp,
+      openXlm: candle.open,
+      highXlm: candle.high,
+      lowXlm: candle.low,
+      closeXlm: candle.close,
+      volumeXlm: candle.volumeXlm,
+      batchSavingsXlm: candle.batchSavingsXlm,
+      depthPriceXlm: "",
+      cumulativeDepthXlm: "",
+    };
+    return [
+      candleRow,
+      ...(candle.depth ?? []).map((level) => ({
+        recordType: "liquidity_depth",
+        timestamp: candle.timestamp,
+        openXlm: "",
+        highXlm: "",
+        lowXlm: "",
+        closeXlm: "",
+        volumeXlm: "",
+        batchSavingsXlm: "",
+        depthPriceXlm: level.priceXlm,
+        cumulativeDepthXlm: level.cumulativeVolumeXlm,
+      })),
+    ];
+  });
 
-  const [simContractId, setSimContractId] = useState("CC7G...X24");
-  const [simMethod, setSimMethod] = useState("claim_yield");
-
-  function handleSimulate(e: React.FormEvent) {
-    e.preventDefault();
-    runSimulation(simContractId, simMethod);
-  }
-
-  // Get color for congestion levels
-  const congestionColors = {
-    low: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20",
-    medium: "text-sky-400 bg-sky-400/10 border-sky-400/20",
-    high: "text-rose-400 bg-rose-400/10 border-rose-400/20",
-  };
+  const statusMessage = error
+    ? error
+    : status === "connected"
+      ? "Live WebSocket updates connected."
+      : candles.length > 0
+        ? "Historical data loaded. Live updates reconnect automatically when configured."
+        : "Waiting for the analytics history feed.";
 
   return (
     <div
-      className="grid gap-6 lg:grid-cols-[1fr_360px] rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-2xl backdrop-blur-md"
+      className="space-y-6 rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-2xl backdrop-blur-md"
       data-testid="gas-optimization-engine-container"
     >
-      {/* Main Gas Optimization cockpit */}
-      <section className="space-y-6">
-        {/* Real-time network metrics banner */}
-        <header className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/5 bg-slate-950/40 p-4">
-          <div className="flex items-center gap-3">
-            <span className="flex size-10 items-center justify-center rounded-full bg-emerald-400/10 text-emerald-400">
-              <FiCpu className="size-5" />
-            </span>
-            <div>
-              <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Network Congestion</p>
-              <h3 className="text-lg font-black text-white flex items-center gap-2">
-                Soroban Mainnet
-                <span
-                  className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${
-                    congestionColors[congestionLevel] || "text-slate-300 bg-slate-500/10"
-                  }`}
-                  data-testid="congestion-badge"
-                >
-                  {congestionLevel.toUpperCase()}
-                </span>
-              </h3>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-6">
-            <div className="text-right">
-              <p className="text-xs text-slate-400">Base Gas Fee</p>
-              <p className="text-xl font-bold font-mono text-white">{baseFee} XLM</p>
-            </div>
-            <div className="text-right">
-              <p className="text-xs text-slate-400">Active Queue</p>
-              <p className="text-xl font-bold font-mono text-white">{activeTxCount} txs</p>
-            </div>
-            <button
-              onClick={refreshMetrics}
-              className="rounded-lg border border-white/10 bg-white/5 p-2 text-slate-300 hover:bg-white/10 hover:text-white transition"
-              title="Refresh gas estimates"
-              type="button"
-            >
-              <FiRefreshCw className="size-4" />
-            </button>
-          </div>
-        </header>
-
-        {/* Speed tier options cards */}
-        <div className="grid gap-3 sm:grid-cols-3">
-          {feeTiers.map((tier) => {
-            const icons = {
-              fast: <FiZap className="text-amber-300" />,
-              standard: <FiClock className="text-sky-300" />,
-              "safe-low": <FiClock className="text-slate-400" />,
-            };
-            return (
-              <div
-                key={tier.tier}
-                className="rounded-xl border border-white/5 bg-slate-950/40 p-4 flex flex-col justify-between h-[110px]"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{tier.tier}</span>
-                  {icons[tier.tier]}
-                </div>
-                <div className="mt-4">
-                  <p className="text-lg font-bold font-mono text-white">{tier.baseFeeXlm} XLM</p>
-                  <p className="text-[10px] text-slate-400 mt-1">Est. arrival: {tier.etaSeconds}s</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Scheduled Optimizer & Batch opportunities */}
-        <div className="grid gap-4 sm:grid-cols-2">
-          {/* Scheduling recommendations */}
-          <article className="rounded-xl border border-white/5 bg-slate-950/40 p-5 flex flex-col justify-between">
-            <div>
-              <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-1.5">
-                <FiClock className="text-amber-400" />
-                Schedule Advisor
-              </h4>
-              <p className="text-xs leading-5 text-slate-300">
-                Network demand dips during off-peak times. Run scheduled automations at night to minimize gas consumption.
-              </p>
-            </div>
-            <div className="mt-4 border-t border-white/5 pt-4">
-              <p className="text-xs text-slate-400">
-                Recommended Slot: <span className="font-bold text-emerald-400">{bestHourUtc}:00 UTC</span>
-              </p>
-              <p className="text-xs text-slate-400 mt-1">
-                Potential Savings: <span className="font-bold text-emerald-400">-{potentialOffpeakSavingsPercent}%</span>
-              </p>
-            </div>
-          </article>
-
-          {/* Batching suggestions */}
-          <article className="rounded-xl border border-white/5 bg-slate-950/40 p-5 flex flex-col justify-between">
-            <div>
-              <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-1.5">
-                <FiLayers className="text-sky-400" />
-                Multi-call Batcher
-              </h4>
-              <p className="text-xs leading-5 text-slate-300">
-                We detected multiple separate contract calls that can be grouped into single multi-call payloads to bypass base transaction overheads.
-              </p>
-            </div>
-            <div className="mt-4 space-y-2">
-              {batchOpportunities.length === 0 ? (
-                <p className="text-xs text-slate-400 italic">No batchable transactions remaining.</p>
-              ) : (
-                batchOpportunities.map((opportunity) => (
-                  <div
-                    key={opportunity.id}
-                    className="flex items-center justify-between rounded bg-white/5 p-2 text-xs border border-white/5"
-                  >
-                    <div>
-                      <p className="font-bold text-slate-300">{opportunity.methodsCount} calls to {opportunity.contractId}</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">Save {opportunity.potentialSavingXlm} XLM base fee</p>
-                    </div>
-                    <button
-                      onClick={() => applyBatching(opportunity.id)}
-                      className="rounded bg-sky-400 text-slate-950 px-2 py-1 text-[10px] font-bold hover:bg-sky-300"
-                    >
-                      Batch
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </article>
-        </div>
-
-        <section className="rounded-xl border border-white/5 bg-slate-950/40 p-5" aria-labelledby="weekly-heatmap-title">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h4 id="weekly-heatmap-title" className="text-sm font-bold text-white">7-day hourly congestion</h4>
-              <p className="mt-1 text-xs text-slate-400">Estimated average fee for each UTC hour (lower is cheaper).</p>
-            </div>
-            <button type="button" onClick={optimizeSchedule} className="rounded bg-emerald-400 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-300">
-              Optimize schedule
-            </button>
-          </div>
-          <div className="grid grid-cols-[auto_repeat(24,minmax(0,1fr))] gap-1" role="grid" aria-label="Seven day gas fee heatmap">
-            <span />
-            {Array.from({ length: 24 }, (_, hour) => <span key={hour} className="text-center text-[9px] text-slate-500">{hour % 6 === 0 ? hour : ""}</span>)}
-            {Array.from({ length: 7 }, (_, day) => (
-              <React.Fragment key={day}>
-                <span className="pr-1 text-[10px] text-slate-400">D{day + 1}</span>
-                {hourlyHistory.filter((sample) => sample.day === day).map((sample) => {
-                  const intensity = Math.min(1, sample.feeXlm / 0.15);
-                  return <span key={sample.hour} role="gridcell" title={`Day ${day + 1}, ${sample.hour}:00 UTC: ${sample.feeXlm.toFixed(3)} XLM`} className={`h-4 rounded-sm ${intensity < 0.45 ? "bg-emerald-500/50" : intensity < 0.65 ? "bg-amber-400/60" : "bg-rose-500/70"}`} />;
-                })}
-              </React.Fragment>
-            ))}
-          </div>
-          <p className="mt-3 text-xs text-emerald-300" aria-live="polite">
-            {scheduledHourUtc === null ? `Lowest average window: ${bestHourUtc}:00 UTC (estimated ${potentialOffpeakSavingsPercent}% savings).` : `Schedule optimized for ${scheduledHourUtc}:00 UTC. Estimated savings: ${potentialOffpeakSavingsPercent}%.`}
-          </p>
-        </section>
-      </section>
-
-      {/* Interactive dry-run simulator panel */}
-      <section className="rounded-xl border border-white/10 bg-slate-950/40 p-5 flex flex-col gap-4">
+      <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h4 className="text-sm font-bold text-white flex items-center gap-2">
-            <FiPlay className="text-emerald-400" />
-            Transaction Gas Simulator
-          </h4>
-          <p className="text-xs text-slate-400 mt-0.5">Simulate calls to verify code gas footprint.</p>
+          <h2 className="text-xl font-bold text-white">Network Fee & Liquidity Analytics</h2>
+          <p className="mt-1 text-sm text-slate-400">
+            Historical Soroban inclusion-fee candles, liquidity depth and observed batching savings.
+          </p>
+          <p
+            className={`mt-2 text-xs ${error ? "text-rose-300" : status === "connected" ? "text-emerald-300" : "text-amber-300"}`}
+            role={error ? "alert" : "status"}
+            data-testid="gas-feed-status"
+          >
+            {statusMessage}
+            {lastUpdatedAt && ` Last update ${new Date(lastUpdatedAt).toLocaleTimeString()}.`}
+          </p>
         </div>
-
-        <form onSubmit={handleSimulate} className="space-y-3">
-          <div>
-            <label htmlFor="simContractId" className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Contract ID</label>
-            <input
-              id="simContractId"
-              type="text"
-              required
-              value={simContractId}
-              onChange={(e) => setSimContractId(e.target.value)}
-              className="w-full rounded bg-slate-900 border border-white/10 px-3 py-1.5 text-xs text-white focus:border-emerald-400 focus:outline-none"
-            />
-          </div>
-          <div>
-            <label htmlFor="simMethod" className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Method Name</label>
-            <input
-              id="simMethod"
-              type="text"
-              required
-              value={simMethod}
-              onChange={(e) => setSimMethod(e.target.value)}
-              className="w-full rounded bg-slate-900 border border-white/10 px-3 py-1.5 text-xs text-white focus:border-emerald-400 focus:outline-none"
-            />
-          </div>
+        <div className="flex flex-wrap gap-2">
           <button
-            type="submit"
-            disabled={isSimulating}
-            className="w-full rounded bg-emerald-400 text-slate-950 py-2 text-xs font-bold hover:bg-emerald-300 disabled:opacity-50 flex items-center justify-center gap-1.5"
+            type="button"
+            onClick={refresh}
+            className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 hover:bg-white/10"
           >
-            {isSimulating ? (
-              <>
-                <span className="size-3.5 animate-spin rounded-full border border-slate-950 border-t-transparent" />
-                Simulating...
-              </>
-            ) : (
-              <>Simulate Dry Run</>
-            )}
+            <FiRefreshCw aria-hidden="true" /> Refresh
           </button>
-        </form>
-
-        {/* Simulation readouts */}
-        {simulationResult && (
-          <div
-            className={`rounded-xl border p-4 text-xs ${
-              simulationResult.status === "success"
-                ? "border-emerald-500/20 bg-emerald-500/5 text-slate-200"
-                : "border-rose-500/20 bg-rose-500/5 text-slate-200"
-            }`}
-            data-testid="simulation-readout"
+          <button
+            type="button"
+            onClick={() => downloadCsv("sorotask-gas-analytics.csv", exportRows)}
+            disabled={exportRows.length === 0}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            <div className="flex items-center gap-1.5 font-bold mb-2">
-              {simulationResult.status === "success" ? (
-                <>
-                  <FiCheckCircle className="text-emerald-400" />
-                  <span className="text-emerald-400">Simulation Succeeded</span>
-                </>
-              ) : (
-                <>
-                  <FiAlertCircle className="text-rose-400" />
-                  <span className="text-rose-400">Simulation Failed</span>
-                </>
-              )}
-            </div>
+            <FiDownload aria-hidden="true" /> Export CSV
+          </button>
+        </div>
+      </header>
 
-            {simulationResult.status === "success" ? (
-              <div className="space-y-2 font-mono text-[10px]">
-                <p>Hash: {simulationResult.txHash}</p>
-                <p>Gas consumed: {simulationResult.gasConsumed.toLocaleString()} units</p>
-                <p>Fee cost: {simulationResult.feePaidXlm} XLM</p>
-                <p>Events emitted: {simulationResult.eventsCount}</p>
-              </div>
-            ) : (
-              <div className="space-y-2 font-mono text-[10px]">
-                <p className="text-rose-300 font-bold">{simulationResult.errorMessage}</p>
-                <p>Diagnostics: execution halted due to gas limit exhaustion or transaction assert fail.</p>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Metric title="Latest inclusion fee" value={formatXlm(latest?.close)} />
+        <Metric title="Latest observed range" value={latest ? `${formatXlm(latest.low)} – ${formatXlm(latest.high)}` : "—"} />
+        <Metric
+          title="Cumulative observed batch savings"
+          value={savingRows.length ? formatXlm(savingRows.at(-1)?.value) : "—"}
+        />
+      </div>
+
+      <InteractiveFinancialChart
+        title="Soroban inclusion fee · OHLC"
+        data={candleChart}
+        variant="candlestick"
+        valueLabel="Fee (XLM)"
+        testId="gas-candlestick-chart"
+        emptyMessage="No fee candles yet. Configure the analytics history endpoint to load recorded network data."
+      />
+      <div className="grid gap-6 xl:grid-cols-2">
+        <InteractiveFinancialChart
+          title="Cumulative batching savings"
+          data={savingRows.map((row) => ({
+            x: Date.parse(row.timestamp),
+            label: new Date(row.timestamp).toLocaleString(),
+            value: row.value,
+          }))}
+          color="#34d399"
+          valueLabel="Savings (XLM)"
+          testId="gas-savings-chart"
+          emptyMessage="Savings history will appear when the feed includes batchSavingsXlm."
+        />
+        <InteractiveFinancialChart
+          title="Latest liquidity depth"
+          data={depthChart}
+          variant="depth"
+          color="#38bdf8"
+          valueLabel="Cumulative volume (XLM)"
+          testId="gas-depth-chart"
+          emptyMessage="No liquidity depth snapshot is present in the latest feed record."
+        />
+      </div>
+    </div>
+  );
+}
+
+function Metric({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/5 bg-slate-950/40 p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</p>
+      <p className="mt-2 break-words font-mono text-lg font-bold text-white">{value}</p>
     </div>
   );
 }

@@ -1,0 +1,124 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "Подключить кошелёк",
+    "close": "Закрыть",
+    "cancel": "Отмена",
+    "save": "Сохранить",
+    "edit": "Изменить",
+    "delete": "Удалить",
+    "loading": "Загрузка...",
+    "error": "Ошибка",
+    "success": "Успешно",
+    "warning": "Предупреждение",
+    "no_data": "Нет доступных данных"
+  },
+  "calendar": {
+    "title": "Календарь планирования задач",
+    "today": "Сегодня",
+    "previous_month": "Предыдущий месяц",
+    "next_month": "Следующий месяц",
+    "timezone": "Часовой пояс",
+    "legend": {
+      "today": "Сегодня",
+      "task_with_deadline": "Задача со сроком",
+      "multiple_tasks": "Несколько задач в один день",
+      "past_deadline": "Срок истёк"
+    },
+    "selected_date_title": "Задачи на {date}",
+    "no_tasks_scheduled": "Нет запланированных задач",
+    "schedule_calendar": "Календарь расписания"
+  },
+  "calendar_day": {
+    "more_button": "ещё {count}",
+    "tasks_label": "{count} задач(и)"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "Запланировано задач: {count}",
+    "click_task_to_view": "Нажмите на задачу, чтобы посмотреть подробности"
+  },
+  "task_detail": {
+    "title": "Сведения о задаче",
+    "status": "Статус",
+    "contract_address": "Адрес контракта",
+    "description": "Описание",
+    "schedule_settings": "Настройки расписания",
+    "execution_interval": "Интервал выполнения",
+    "gas_balance": "Баланс газа",
+    "next_execution": "Следующий запуск",
+    "deadline": "Крайний срок",
+    "due_date": "Срок выполнения",
+    "time_until_deadline": "Время до срока",
+    "due_today": "Срок сегодня!",
+    "overdue_by": "Просрочено на {days} дн.",
+    "days_remaining": "Осталось дней: {days}",
+    "created": "Создано",
+    "timezone_label": "Часовой пояс",
+    "tags": "Метки",
+    "edit_task": "Изменить задачу",
+    "view_logs": "Просмотреть журналы",
+    "status_pending": "Ожидает",
+    "status_active": "Активна",
+    "status_completed": "Завершена",
+    "status_failed": "Не выполнена",
+    "status_paused": "Приостановлена"
+  },
+  "forms": {
+    "create_automation_task": "Создать автоматизированную задачу",
+    "your_tasks": "Ваши задачи",
+    "target_contract_address": "Адрес целевого контракта",
+    "contract_placeholder": "C...",
+    "function_name": "Имя функции",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "Интервал (секунды)",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "Баланс газа (XLM)",
+    "gas_balance_placeholder": "10",
+    "register_task": "Зарегистрировать задачу",
+    "no_tasks_registered_yet": "Пока нет зарегистрированных задач."
+  },
+  "execution_logs": {
+    "title": "Журналы выполнения",
+    "task_id": "ID задачи",
+    "target": "Цель",
+    "keeper": "Исполнитель",
+    "status": "Статус",
+    "timestamp": "Время",
+    "status_success": "Успешно",
+    "mins_ago": "{mins} мин. назад"
+  },
+  "formatting": {
+    "hours_short": "ч",
+    "seconds_short": "с",
+    "interval_display": "{hours} ч ({seconds} секунд)",
+    "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "Состояние подключения",
+    "online": "В сети",
+    "offline": "Не в сети",
+    "resyncing": "Повторная синхронизация",
+    "sync_failed": "Не удалось синхронизировать",
+    "queued_actions": "{count, plural, =0 {Действий в очереди нет} one {В очереди # действие} few {В очереди # действия} many {В очереди # действий} other {В очереди # действия}}",
+    "replaying": "{count, plural, one {Повторное выполнение # действия из очереди} few {Повторное выполнение # действий из очереди} many {Повторное выполнение # действий из очереди} other {Повторное выполнение # действия из очереди}}",
+    "still_queued": "{count, plural, one {В очереди осталось # действие} few {В очереди осталось # действия} many {В очереди осталось # действий} other {В очереди осталось # действия}}",
+    "browse_cached": "Можно просматривать кэшированные данные. Изменения будут добавлены в очередь.",
+    "will_run_when_back": "будет выполнено после восстановления подключения.",
+    "retry": "Повторить",
+    "read_only_notice": "Включён режим только для чтения. Изменения будут отправлены после восстановления подключения."
+  },
+  "theme": {
+    "label": "Тема",
+    "light": "Светлая",
+    "dark": "Тёмная",
+    "oled": "Высококонтрастная OLED",
+    "system": "Системная",
+    "change": "Тема: {mode}. Нажмите, чтобы изменить.",
+    "resolving_to": "Сейчас устанавливается тема «{resolved}»."
+  },
+  "language": {
+    "label": "Выберите язык",
+    "loading": "Загрузка языка...",
+    "available": "{count, plural, =0 {Нет доступных языков} one {# язык} few {# языка} many {# языков} other {# языка}}"
+  }
+}

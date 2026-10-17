@@ -14,22 +14,44 @@ import pt from "./translations/pt.json";
 import zh from "./translations/zh.json";
 import de from "./translations/de.json";
 import ar from "./translations/ar.json";
+import ja from "./translations/ja.json";
+import ko from "./translations/ko.json";
+import ru from "./translations/ru.json";
+import hi from "./translations/hi.json";
+import tr from "./translations/tr.json";
 import {
   formatMessage,
   getPluralCategory,
   type MessageVariables,
 } from "./plural";
 
-export type Locale = "en" | "es" | "fr" | "pt" | "zh" | "de" | "ar";
+export type Locale =
+  | "en"
+  | "es"
+  | "zh"
+  | "ja"
+  | "ko"
+  | "de"
+  | "fr"
+  | "pt"
+  | "ru"
+  | "ar"
+  | "hi"
+  | "tr";
 
 export const SUPPORTED_LOCALES: Locale[] = [
   "en",
   "es",
+  "zh",
+  "ja",
+  "ko",
+  "de",
   "fr",
   "pt",
-  "zh",
-  "de",
+  "ru",
   "ar",
+  "hi",
+  "tr",
 ];
 
 export const DEFAULT_LOCALE: Locale = "en";
@@ -41,8 +63,13 @@ const translations: Record<Locale, typeof en> = {
   fr,
   pt,
   zh,
+  ja,
+  ko,
   de,
+  ru,
   ar,
+  hi,
+  tr,
 };
 
 /** Exposed for the async loader, which needs the statically-bundled English. */
@@ -58,8 +85,13 @@ export function getLocaleName(locale: Locale): string {
     fr: "Français (French)",
     pt: "Português (Portuguese)",
     zh: "中文 (Chinese)",
+    ja: "日本語 (Japanese)",
+    ko: "한국어 (Korean)",
     de: "Deutsch (German)",
+    ru: "Русский (Russian)",
     ar: "العربية (Arabic)",
+    hi: "हिन्दी (Hindi)",
+    tr: "Türkçe (Turkish)",
   };
   return names[locale];
 }
@@ -74,8 +106,13 @@ export function getLocaleFlag(locale: Locale): string {
     fr: "🇫🇷",
     pt: "🇵🇹",
     zh: "🇨🇳",
+    ja: "🇯🇵",
+    ko: "🇰🇷",
     de: "🇩🇪",
+    ru: "🇷🇺",
     ar: "🇸🇦",
+    hi: "🇮🇳",
+    tr: "🇹🇷",
   };
   return flags[locale];
 }
@@ -84,7 +121,7 @@ export function getLocaleFlag(locale: Locale): string {
  * Locales written right-to-left. Drives the `dir` attribute on <html> and the
  * logical-property flip in globals.css.
  */
-const RTL_LOCALES: readonly Locale[] = ["ar"];
+export const RTL_LOCALES: readonly Locale[] = ["ar"];
 
 export function isRtlLocale(locale: Locale): boolean {
   return RTL_LOCALES.includes(locale);
@@ -111,34 +148,73 @@ export function detectLocale(): Locale {
   const localeMap: Record<string, Locale> = {
     en: "en",
     es: "es",
+    zh: "zh",
+    ja: "ja",
+    ko: "ko",
+    de: "de",
     fr: "fr",
     pt: "pt",
-    zh: "zh",
-    de: "de",
+    ru: "ru",
     ar: "ar",
+    hi: "hi",
+    tr: "tr",
   };
 
-  return (localeMap[baseLocale] as Locale) || DEFAULT_LOCALE;
+  return localeMap[baseLocale] ?? DEFAULT_LOCALE;
+}
+
+/** Checks whether an arbitrary string is one of the supported locale codes. */
+export function isLocale(value: string | undefined): value is Locale {
+  return value !== undefined && SUPPORTED_LOCALES.includes(value as Locale);
+}
+
+/** Negotiates a supported locale from an HTTP Accept-Language header. */
+export function getLocaleFromAcceptLanguage(
+  acceptLanguage: string | null,
+): Locale {
+  if (!acceptLanguage) return DEFAULT_LOCALE;
+
+  const preferences = acceptLanguage
+    .split(",")
+    .map((entry, index) => {
+      const [tag, quality] = entry.trim().split(";q=");
+      const parsedQuality = quality === undefined ? 1 : Number(quality);
+      return {
+        locale: tag.split("-")[0].toLowerCase(),
+        quality: Number.isFinite(parsedQuality) ? parsedQuality : 0,
+        index,
+      };
+    })
+    .filter(({ locale, quality }) => locale !== "*" && quality > 0)
+    .sort((a, b) => b.quality - a.quality || a.index - b.index);
+
+  for (const preference of preferences) {
+    if (isLocale(preference.locale)) return preference.locale;
+  }
+  return DEFAULT_LOCALE;
 }
 
 /**
  * Get locale from storage or default
  */
 export function getStoredLocale(): Locale {
+  return getStoredLocalePreference() ?? DEFAULT_LOCALE;
+}
+
+/** Reads a saved locale without conflating "not chosen" with the default. */
+export function getStoredLocalePreference(): Locale | undefined {
   if (typeof window === "undefined") {
-    return DEFAULT_LOCALE;
+    return undefined;
   }
 
   try {
     const stored = localStorage.getItem("sorotask_locale");
-    if (stored && SUPPORTED_LOCALES.includes(stored as Locale)) {
-      return stored as Locale;
-    }
+    return isLocale(stored ?? undefined) ? stored : undefined;
   } catch {
     // localStorage not available
   }
 
-  return DEFAULT_LOCALE;
+  return undefined;
 }
 
 /**
@@ -265,9 +341,14 @@ export function getAvailableLocales(): Array<{
 const NATIVE_NAMES: Record<Locale, string> = {
   en: "English",
   es: "Español",
+  zh: "中文",
+  ja: "日本語",
+  ko: "한국어",
+  de: "Deutsch",
   fr: "Français",
   pt: "Português",
-  zh: "中文",
-  de: "Deutsch",
+  ru: "Русский",
   ar: "العربية",
+  hi: "हिन्दी",
+  tr: "Türkçe",
 };

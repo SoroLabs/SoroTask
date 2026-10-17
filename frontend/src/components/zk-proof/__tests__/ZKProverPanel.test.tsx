@@ -1,7 +1,17 @@
 import React from "react";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ZKProverPanel } from "../ZKProverPanel";
-import type { ZkTask } from "@/src/lib/zk-proof";
+import type { ZkProofGenerationOptions, ZkProofPayload, ZkTask } from "@/src/lib/zk-proof";
+
+const mockGenerateProof = jest.fn();
+const mockTerminate = jest.fn();
+
+jest.mock("@/src/lib/zk-proof/browser-prover", () => ({
+  BrowserZkProver: jest.fn().mockImplementation(() => ({
+    generateProof: (...args: unknown[]) => mockGenerateProof(...args),
+    terminate: mockTerminate,
+  })),
+}));
 
 const mockTasks: ZkTask[] = [
   {
@@ -12,336 +22,104 @@ const mockTasks: ZkTask[] = [
     gasBalance: 10,
     status: "active",
   },
-  {
-    id: 2,
-    contractAddress: "BEEF5678FAILS",
-    functionName: "claim_yield",
-    interval: 600,
-    gasBalance: 5,
-    status: "active",
-  },
 ];
 
-describe("ZKProverPanel", () => {
-  const mockOnZkVerified = jest.fn();
-  const mockOnAddLog = jest.fn();
+const mockProof: ZkProofPayload = {
+  proofId: "proof-1",
+  status: "success",
+  pi_a: ["1", "2"],
+  pi_b: [["3", "4"], ["5", "6"]],
+  pi_c: ["7", "8"],
+  publicSignals: ["10000", "100000"],
+  durationMs: 450,
+};
 
+function renderPanel(tasks = mockTasks) {
+  return render(
+    <ZKProverPanel
+      tasks={tasks}
+      walletConnected={false}
+      walletAddress={null}
+    />,
+  );
+}
+
+describe("ZKProverPanel", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGenerateProof.mockResolvedValue(mockProof);
     Element.prototype.scrollIntoView = jest.fn();
-    jest.useFakeTimers();
   });
 
-  afterEach(() => {
-    jest.useRealTimers();
-  });
+  it("shows that proof creation and verification happen locally", () => {
+    renderPanel();
 
-  it("renders the panel header", () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={false}
-        walletAddress={null}
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
+    expect(screen.getByText("Client-Side Zero-Knowledge Proof Generator")).toBeInTheDocument();
     expect(
-      screen.getByText("Zero-Knowledge (ZK) Proof Verification"),
+      screen.getByText(/Generate and locally verify Groth16 proofs in a Web Worker/),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/Submit.*Verify.*On-Chain/)).not.toBeInTheDocument();
   });
 
-  it("shows task select options", () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={false}
-        walletAddress={null}
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
-    expect(screen.getByText("Task #1 - harvest_yield (CAFE1234...)")).toBeInTheDocument();
-    expect(screen.getByText("Task #2 - claim_yield (BEEF5678FA...)")).toBeInTheDocument();
+  it("allows generating a standalone range proof without a task", async () => {
+    renderPanel([]);
+
+    expect(screen.getByText(/Standalone proof generation is available/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Generate Local Groth16 Proof" }));
+
+    await waitFor(() => expect(mockGenerateProof).toHaveBeenCalledTimes(1));
+    const [options] = mockGenerateProof.mock.calls[0] as [ZkProofGenerationOptions];
+    expect(options).toMatchObject({
+      taskCondition: '{"minValue": "10000", "maxValue": "100000"}',
+      secretData: '{"secretValue": "25000"}',
+      circuitId: "range",
+    });
+    expect(screen.getByText("Groth16 Proof Generated and Verified Locally")).toBeInTheDocument();
+    expect(screen.getByText(/450 ms in a Web Worker/)).toBeInTheDocument();
   });
 
-  it("shows warning when no tasks available", () => {
-    render(
-      <ZKProverPanel
-        tasks={[]}
-        walletConnected={false}
-        walletAddress={null}
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
-    expect(
-      screen.getByText("No registered tasks available. Create a task first."),
-    ).toBeInTheDocument();
+  it("passes chosen circuit inputs to the local prover and exposes no on-chain action", async () => {
+    renderPanel();
+    fireEvent.change(screen.getByLabelText("Proof Circuit"), {
+      target: { value: "membership" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate Local Groth16 Proof" }));
+    await waitFor(() => expect(mockGenerateProof).toHaveBeenCalledTimes(1));
+
+    const [options] = mockGenerateProof.mock.calls[0] as [ZkProofGenerationOptions];
+    expect(options.circuitId).toBe("membership");
+    expect(options.taskCondition).toBe('{"root": "0"}');
+    expect(options.secretData).toContain('"pathElements": []');
+    expect(screen.queryByText(/Submit.*Verify.*On-Chain/)).not.toBeInTheDocument();
   });
 
-  it("switches between workspace and diagnostics tabs", () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={false}
-        walletAddress={null}
-        onZkVerified={mockOnZkVerified}
-      />,
+  it("shows prover failures in diagnostics with remediation guidance", async () => {
+    mockGenerateProof.mockRejectedValueOnce(
+      new Error("Circuit wasm is unavailable (404)."),
     );
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Generate Local Groth16 Proof" }));
 
-    fireEvent.click(screen.getByText("Diagnostics"));
-    expect(screen.getByText("System Healthy")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByText("Workspace"));
-    expect(screen.getByText("1. ZK Generation Setup")).toBeInTheDocument();
-  });
-
-  it("generates proof and shows verify button", async () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={true}
-        walletAddress="GABC123"
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
-
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "1" } });
-    fireEvent.click(
-      screen.getByText("Generate Zero-Knowledge Proof"),
-    );
-
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-
+    fireEvent.click(screen.getByRole("button", { name: "Diagnostics" }));
     await waitFor(() => {
+      expect(screen.getByText("Circuit wasm is unavailable (404).")).toBeInTheDocument();
       expect(
-        screen.getByText("Submit & Verify Proof On-Chain"),
+        screen.getByText(/audited WASM, proving key, and verification key/),
       ).toBeInTheDocument();
     });
   });
 
-  it("handles proof generation failure", async () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={true}
-        walletAddress="GABC123"
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
+  it("copies a diagnostic report without private input values", async () => {
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderPanel();
 
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "1" } });
-    fireEvent.click(screen.getByLabelText("Simulate Computational Proof Failure"));
-    fireEvent.click(
-      screen.getByText("Generate Zero-Knowledge Proof"),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Diagnostics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy Diagnostic Report" }));
 
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(/Computational failure detected/i),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it("handles full generate and verify lifecycle", async () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={true}
-        walletAddress="GABC123"
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
-
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "1" } });
-    fireEvent.click(
-      screen.getByText("Generate Zero-Knowledge Proof"),
-    );
-
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Submit & Verify Proof On-Chain"),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByText("Submit & Verify Proof On-Chain"));
-
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Verified & Secured On-Chain"),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it("handles on-chain verification failure", async () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={true}
-        walletAddress="GABC123"
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
-
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "2" } });
-    fireEvent.click(
-      screen.getByText("Generate Zero-Knowledge Proof"),
-    );
-
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Submit & Verify Proof On-Chain"),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByText("Submit & Verify Proof On-Chain"));
-
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(/On-chain verifier rejected the proof validity/i),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it("copies proof JSON to clipboard", async () => {
-    const writeTextMock = jest.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, {
-      clipboard: { writeText: writeTextMock },
-    });
-
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={true}
-        walletAddress="GABC123"
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
-
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "1" } });
-    fireEvent.click(
-      screen.getByText("Generate Zero-Knowledge Proof"),
-    );
-
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-
-    await waitFor(() => {
-      expect(screen.getByText("Copy Proof JSON")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByText("Copy Proof JSON"));
-    expect(writeTextMock).toHaveBeenCalled();
-  });
-
-  it("shows status badge during generating state", async () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={true}
-        walletAddress="GABC123"
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
-
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "1" } });
-    fireEvent.click(
-      screen.getByText("Generate Zero-Knowledge Proof"),
-    );
-
-    expect(screen.getByText("Generating Proof")).toBeInTheDocument();
-
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-  });
-
-  it("shows error count on diagnostics tab", async () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={true}
-        walletAddress="GABC123"
-        onZkVerified={mockOnZkVerified}
-      />,
-    );
-
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "2" } });
-    fireEvent.click(screen.getByLabelText("Simulate Computational Proof Failure"));
-    fireEvent.click(
-      screen.getByText("Generate Zero-Knowledge Proof"),
-    );
-
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-
-    await waitFor(() => {
-      const diagnosticsBtn = screen.getByText("Diagnostics");
-      expect(diagnosticsBtn.querySelector("span")).toBeInTheDocument();
-    });
-  });
-
-  it("calls onZkVerified after successful verification", async () => {
-    render(
-      <ZKProverPanel
-        tasks={mockTasks}
-        walletConnected={true}
-        walletAddress="GABC123"
-        onZkVerified={mockOnZkVerified}
-        onAddLog={mockOnAddLog}
-      />,
-    );
-
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "1" } });
-    fireEvent.click(
-      screen.getByText("Generate Zero-Knowledge Proof"),
-    );
-
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-    act(() => { jest.advanceTimersByTime(300); });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Submit & Verify Proof On-Chain"),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByText("Submit & Verify Proof On-Chain"));
-
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-    act(() => { jest.advanceTimersByTime(200); });
-
-    await waitFor(() => {
-      expect(mockOnZkVerified).toHaveBeenCalledWith(1, expect.any(String));
-      expect(mockOnAddLog).toHaveBeenCalled();
-    });
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText.mock.calls[0][0]).not.toContain("25000");
+    expect(writeText.mock.calls[0][0]).toContain('"privateInputsIncluded": false');
   });
 });

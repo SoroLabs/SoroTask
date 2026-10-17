@@ -1,0 +1,124 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "Cüzdanı bağla",
+    "close": "Kapat",
+    "cancel": "İptal",
+    "save": "Kaydet",
+    "edit": "Düzenle",
+    "delete": "Sil",
+    "loading": "Yükleniyor...",
+    "error": "Hata",
+    "success": "Başarılı",
+    "warning": "Uyarı",
+    "no_data": "Kullanılabilir veri yok"
+  },
+  "calendar": {
+    "title": "Görev planlama takvimi",
+    "today": "Bugün",
+    "previous_month": "Önceki ay",
+    "next_month": "Sonraki ay",
+    "timezone": "Saat dilimi",
+    "legend": {
+      "today": "Bugün",
+      "task_with_deadline": "Son teslim tarihi olan görev",
+      "multiple_tasks": "Aynı tarihte birden fazla görev",
+      "past_deadline": "Geçmiş son teslim tarihi"
+    },
+    "selected_date_title": "{date} tarihindeki görevler",
+    "no_tasks_scheduled": "Planlanmış görev yok",
+    "schedule_calendar": "Planlama takvimi"
+  },
+  "calendar_day": {
+    "more_button": "+{count} tane daha",
+    "tasks_label": "{count} görev"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "{count} görev planlandı",
+    "click_task_to_view": "Ayrıntıları görmek için göreve tıklayın"
+  },
+  "task_detail": {
+    "title": "Görev ayrıntıları",
+    "status": "Durum",
+    "contract_address": "Sözleşme adresi",
+    "description": "Açıklama",
+    "schedule_settings": "Planlama ayarları",
+    "execution_interval": "Çalıştırma aralığı",
+    "gas_balance": "Gas bakiyesi",
+    "next_execution": "Sonraki çalıştırma",
+    "deadline": "Son tarih",
+    "due_date": "Bitiş tarihi",
+    "time_until_deadline": "Son tarihe kalan süre",
+    "due_today": "Bugün tamamlanmalı!",
+    "overdue_by": "{days} gün gecikti",
+    "days_remaining": "{days} gün kaldı",
+    "created": "Oluşturulma",
+    "timezone_label": "Saat dilimi",
+    "tags": "Etiketler",
+    "edit_task": "Görevi düzenle",
+    "view_logs": "Günlükleri görüntüle",
+    "status_pending": "Bekliyor",
+    "status_active": "Etkin",
+    "status_completed": "Tamamlandı",
+    "status_failed": "Başarısız",
+    "status_paused": "Duraklatıldı"
+  },
+  "forms": {
+    "create_automation_task": "Otomasyon görevi oluştur",
+    "your_tasks": "Görevleriniz",
+    "target_contract_address": "Hedef sözleşme adresi",
+    "contract_placeholder": "C...",
+    "function_name": "Fonksiyon adı",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "Aralık (saniye)",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "Gas bakiyesi (XLM)",
+    "gas_balance_placeholder": "10",
+    "register_task": "Görevi kaydet",
+    "no_tasks_registered_yet": "Henüz kayıtlı görev yok."
+  },
+  "execution_logs": {
+    "title": "Çalıştırma günlükleri",
+    "task_id": "Görev kimliği",
+    "target": "Hedef",
+    "keeper": "Keeper",
+    "status": "Durum",
+    "timestamp": "Zaman damgası",
+    "status_success": "Başarılı",
+    "mins_ago": "{mins} dakika önce"
+  },
+  "formatting": {
+    "hours_short": "sa",
+    "seconds_short": "sn",
+    "interval_display": "{hours} sa ({seconds} saniye)",
+    "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "Bağlantı durumu",
+    "online": "Çevrimiçi",
+    "offline": "Çevrimdışı",
+    "resyncing": "Yeniden eşitleniyor",
+    "sync_failed": "Eşitleme başarısız",
+    "queued_actions": "{count, plural, =0 {Kuyrukta işlem yok} one {Kuyrukta # işlem var} other {Kuyrukta # işlem var}}",
+    "replaying": "{count, plural, one {Kuyruktaki # işlem yeniden yürütülüyor} other {Kuyruktaki # işlem yeniden yürütülüyor}}",
+    "still_queued": "{count, plural, one {# işlem hâlâ kuyrukta} other {# işlem hâlâ kuyrukta}}",
+    "browse_cached": "Önbelleğe alınmış içeriklere göz atabilirsiniz. Değişiklikler kuyruğa alınır.",
+    "will_run_when_back": "Yeniden çevrimiçi olduğunuzda çalıştırılır.",
+    "retry": "Yeniden dene",
+    "read_only_notice": "Salt okunur moddasınız. Değişiklikler yeniden çevrimiçi olduğunuzda gönderilir."
+  },
+  "theme": {
+    "label": "Tema",
+    "light": "Açık",
+    "dark": "Koyu",
+    "oled": "Yüksek kontrastlı OLED",
+    "system": "Sistem",
+    "change": "Tema: {mode}. Değiştirmek için tıklayın.",
+    "resolving_to": "Şu anda {resolved} olarak ayarlanıyor."
+  },
+  "language": {
+    "label": "Dil seçin",
+    "loading": "Dil yükleniyor...",
+    "available": "{count, plural, =0 {Kullanılabilir dil yok} one {# dil} other {# dil}}"
+  }
+}

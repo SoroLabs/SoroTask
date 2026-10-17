@@ -152,6 +152,32 @@ html[data-theme-transition] *::after {
   transition: none !important;
 }
 
+html[dir="rtl"] body {
+  text-align: start;
+}
+
+html[dir="rtl"] .ml-auto {
+  margin-left: 0;
+  margin-right: auto;
+}
+
+html[dir="rtl"] .mr-auto {
+  margin-right: 0;
+  margin-left: auto;
+}
+
+html[dir="rtl"] .text-left {
+  text-align: right;
+}
+
+html[dir="rtl"] .text-right {
+  text-align: left;
+}
+
+html[dir="rtl"] :is(.rtl-flip, [data-rtl-flip]) {
+  transform: scaleX(-1);
+}
+
 img {
   max-width: 100%;
   height: auto;

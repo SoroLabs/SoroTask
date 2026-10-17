@@ -1,237 +1,258 @@
-import type { ProverRequest, ProverResponse } from "@/src/workers/zk-prover.worker";
+import type {
+  ZkCircuitId,
+  ZkProofGenerationOptions,
+  ZkProofPayload,
+} from "./types";
 
-/**
- * Main-thread side of the in-browser proving engine (Issue #1250).
- *
- * Owns the worker lifecycle, the memory budget, and the timeout. The worker
- * itself only proves; every policy decision about whether a proof should be
- * attempted lives here, where it can be tested without spawning one.
- */
+export interface ZkArtifactSet {
+  wasm: string;
+  zkey: string;
+  verificationKey: string;
+}
 
-export class ProverUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ProverUnavailableError";
+export interface ZkProverWorkerRequest {
+  id: string;
+  circuitId: ZkCircuitId;
+  inputs: Record<string, unknown>;
+  artifacts: ZkArtifactSet;
+}
+
+export type ZkProverWorkerResponse =
+  | { id: string; type: "progress"; stage: string; progress: number }
+  | { id: string; type: "result"; proof: ZkProofPayload }
+  | { id: string; type: "error"; error: string };
+
+export interface ZkProverWorkerLike {
+  onmessage: ((event: MessageEvent<ZkProverWorkerResponse>) => void) | null;
+  onerror: ((event: ErrorEvent) => void) | null;
+  postMessage(message: ZkProverWorkerRequest): void;
+  terminate(): void;
+}
+
+export type ZkProverWorkerFactory = () => ZkProverWorkerLike;
+
+const CIRCUIT_FILES: Record<ZkCircuitId, { wasm: string; zkey: string; verificationKey: string }> = {
+  range: {
+    wasm: "range-proof.wasm",
+    zkey: "range-proof.zkey",
+    verificationKey: "range-proof-verification_key.json",
+  },
+  membership: {
+    wasm: "membership-proof.wasm",
+    zkey: "membership-proof.zkey",
+    verificationKey: "membership-proof-verification_key.json",
+  },
+};
+
+const REQUIRED_INPUTS: Record<ZkCircuitId, { public: string[]; private: string[] }> = {
+  range: {
+    public: ["minValue", "maxValue"],
+    private: ["secretValue"],
+  },
+  membership: {
+    public: ["root"],
+    private: ["leaf", "pathElements", "pathIndices"],
+  },
+};
+
+const BN254_SCALAR_FIELD =
+  21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+export class BrowserZkProver {
+  private workerFactory: ZkProverWorkerFactory;
+  private worker: ZkProverWorkerLike | null = null;
+  private rejectActive: ((error: Error) => void) | null = null;
+  private workerTimeout: number | null = null;
+  private requestSequence = 0;
+
+  constructor(workerFactory: ZkProverWorkerFactory = createWorker) {
+    this.workerFactory = workerFactory;
+  }
+
+  async generateProof(
+    options: ZkProofGenerationOptions,
+    onProgress?: (stage: string, progress: number) => void,
+  ): Promise<ZkProofPayload> {
+    if (typeof window === "undefined" || typeof Worker === "undefined") {
+      throw new Error("Client-side Web Workers are not available in this browser.");
+    }
+    if (this.worker) {
+      throw new Error("A proof is already being generated in this prover.");
+    }
+
+    const circuitId = options.circuitId ?? "range";
+    const inputs = combineCircuitInputs(options.taskCondition, options.secretData, circuitId);
+    const artifacts = getCircuitArtifacts(circuitId);
+    const id = `proof-${++this.requestSequence}`;
+    const worker = this.workerFactory();
+    this.worker = worker;
+
+    try {
+      return await new Promise<ZkProofPayload>((resolve, reject) => {
+        this.rejectActive = (error) => {
+          if (this.workerTimeout !== null) {
+            window.clearTimeout(this.workerTimeout);
+            this.workerTimeout = null;
+          }
+          reject(error);
+        };
+        this.workerTimeout = window.setTimeout(() => {
+          this.rejectActive?.(new Error("Proof generation exceeded the 120-second worker limit."));
+        }, 120_000);
+        worker.onmessage = (event) => {
+          const response = event.data;
+          if (response.id !== id) return;
+          if (response.type === "progress") {
+            onProgress?.(response.stage, response.progress);
+          } else if (response.type === "result") {
+            if (this.workerTimeout !== null) window.clearTimeout(this.workerTimeout);
+            this.workerTimeout = null;
+            resolve(response.proof);
+          } else {
+            if (this.workerTimeout !== null) window.clearTimeout(this.workerTimeout);
+            this.workerTimeout = null;
+            reject(new Error(response.error));
+          }
+        };
+        worker.onerror = (event) => {
+          if (this.workerTimeout !== null) window.clearTimeout(this.workerTimeout);
+          this.workerTimeout = null;
+          reject(new Error(event.message || "The browser proof worker failed."));
+        };
+        worker.postMessage({ id, circuitId, inputs, artifacts });
+      });
+    } finally {
+      if (this.worker === worker) {
+        worker.terminate();
+        this.worker = null;
+      }
+      if (this.workerTimeout !== null) window.clearTimeout(this.workerTimeout);
+      this.workerTimeout = null;
+      this.rejectActive = null;
+    }
+  }
+
+  terminate(): void {
+    this.worker?.terminate();
+    this.worker = null;
+    this.rejectActive?.(new Error("Proof generation was cancelled."));
+    this.rejectActive = null;
   }
 }
 
-export class ProverMemoryError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ProverMemoryError";
-  }
-}
-
-export interface MemoryBudget {
-  /** Heap the proof is estimated to need, in MB. */
-  requiredMb: number;
-  /** Heap the device reports as available, in MB, or null if unknown. */
-  availableMb: number | null;
-  /** Whether the proof should be attempted. */
-  sufficient: boolean;
-  reason: string;
-}
-
-/**
- * Rough proving memory requirement, from the circuit's constraint count.
- *
- * Groth16 proving memory scales roughly linearly with constraints. The
- * coefficient is deliberately conservative: refusing a proof that would have
- * fitted is a worse outcome than a slow proof, but attempting one that crashes
- * the tab loses the user's unsaved inputs as well as the proof, so the bias is
- * toward refusing near the ceiling rather than crashing at it.
- */
-export const MB_PER_MILLION_CONSTRAINTS = 900;
-/** Floor covering the WASM runtime and the proving key regardless of size. */
-export const BASE_PROVING_MEMORY_MB = 256;
-
-export function estimateProvingMemoryMb(constraintCount: number): number {
-  const constraints = Math.max(0, constraintCount);
-  return Math.ceil(
-    BASE_PROVING_MEMORY_MB + (constraints / 1_000_000) * MB_PER_MILLION_CONSTRAINTS,
-  );
-}
-
-type DeviceMemoryNavigator = Navigator & { deviceMemory?: number };
-
-/**
- * Check whether this device can be expected to complete the proof.
- *
- * `navigator.deviceMemory` is coarse (rounded to a power of two) and absent in
- * Safari and Firefox. Absence is treated as "proceed": refusing to prove on
- * every browser that does not implement a non-standard API would disable the
- * feature for most users, and the worker reports a real out-of-memory failure
- * distinctly if it happens.
- */
-export function checkMemoryBudget(constraintCount: number): MemoryBudget {
-  const requiredMb = estimateProvingMemoryMb(constraintCount);
-
-  const deviceMemoryGb =
-    typeof navigator !== "undefined"
-      ? (navigator as DeviceMemoryNavigator).deviceMemory
-      : undefined;
-
-  if (typeof deviceMemoryGb !== "number" || deviceMemoryGb <= 0) {
-    return {
-      requiredMb,
-      availableMb: null,
-      sufficient: true,
-      reason: "device memory is not reported by this browser; proceeding",
-    };
+export function combineCircuitInputs(
+  publicInputsJson: string,
+  privateInputsJson: string,
+  circuitId: ZkCircuitId,
+): Record<string, unknown> {
+  const publicInputs = parseInputObject(publicInputsJson, "Public inputs");
+  const privateInputs = parseInputObject(privateInputsJson, "Private inputs");
+  const overlap = Object.keys(publicInputs).filter((key) => key in privateInputs);
+  if (overlap.length > 0) {
+    throw new Error(`Input fields must not be both public and private: ${overlap.join(", ")}.`);
   }
 
-  // Only a fraction of device memory is available to one tab; the rest is the
-  // browser, other tabs, and the OS.
-  const availableMb = Math.floor(deviceMemoryGb * 1024 * 0.5);
-  const sufficient = availableMb >= requiredMb;
+  const required = REQUIRED_INPUTS[circuitId];
+  const allowedPublicKeys = new Set(required.public);
+  const allowedPrivateKeys = new Set(required.private);
+  const unknownPublicKey = Object.keys(publicInputs).find((key) => !allowedPublicKeys.has(key));
+  const unknownPrivateKey = Object.keys(privateInputs).find((key) => !allowedPrivateKeys.has(key));
+  if (unknownPublicKey) throw new Error(`Unknown public input "${unknownPublicKey}" for the ${circuitId} circuit.`);
+  if (unknownPrivateKey) throw new Error(`Unknown private input "${unknownPrivateKey}" for the ${circuitId} circuit.`);
+  for (const key of required.public) {
+    if (!(key in publicInputs)) throw new Error(`Missing public circuit input "${key}".`);
+  }
+  for (const key of required.private) {
+    if (!(key in privateInputs)) throw new Error(`Missing private circuit input "${key}".`);
+  }
+
+  if (circuitId === "range") {
+    for (const key of ["minValue", "maxValue", "secretValue"]) {
+      const value = key in publicInputs ? publicInputs[key] : privateInputs[key];
+      if (typeof value !== "string" || !/^\d+$/.test(value)) {
+        throw new Error(`Range input "${key}" must be a non-negative integer string.`);
+      }
+      if (value.length > 20) throw new Error("Range inputs must be smaller than 2^64.");
+    }
+    const min = BigInt(String(publicInputs.minValue));
+    const max = BigInt(String(publicInputs.maxValue));
+    const secret = BigInt(String(privateInputs.secretValue));
+    const maxFieldValue = 1n << 64n;
+    if (min >= maxFieldValue || max >= maxFieldValue || secret >= maxFieldValue) {
+      throw new Error("Range inputs must be smaller than 2^64.");
+    }
+    if (min > max) throw new Error("The minimum range value cannot exceed the maximum.");
+  }
+
+  if (circuitId === "membership") {
+    if (!Array.isArray(privateInputs.pathElements) || !Array.isArray(privateInputs.pathIndices)) {
+      throw new Error('Private membership inputs "pathElements" and "pathIndices" must be arrays.');
+    }
+    if (
+      privateInputs.pathElements.length !== 20 ||
+      privateInputs.pathIndices.length !== 20 ||
+      !privateInputs.pathIndices.every((index) => index === 0 || index === 1)
+    ) {
+      throw new Error("Membership proofs require exactly 20 siblings and 20 direction bits (0 or 1).");
+    }
+    for (const [label, value] of [
+      ["root", publicInputs.root],
+      ["leaf", privateInputs.leaf],
+      ...privateInputs.pathElements.map((value, index) => [`pathElements[${index}]`, value]),
+    ]) {
+      if (typeof value !== "string" || !/^\d+$/.test(value)) {
+        throw new Error(`Membership input "${label}" must be a decimal field-element string.`);
+      }
+      if (value.length > 77) {
+        throw new Error(`Membership input "${label}" must be smaller than the BN254 scalar field.`);
+      }
+      if (BigInt(value) >= BN254_SCALAR_FIELD) {
+        throw new Error(`Membership input "${label}" must be smaller than the BN254 scalar field.`);
+      }
+    }
+  }
+
+  return { ...publicInputs, ...privateInputs };
+}
+
+export function getCircuitArtifacts(circuitId: ZkCircuitId): ZkArtifactSet {
+  const base = process.env.NEXT_PUBLIC_ZK_ARTIFACT_BASE_URL || "/zk-proofs";
+  const files = CIRCUIT_FILES[circuitId];
+  const origin = window.location.origin;
+
+  const resolveArtifact = (file: string) => {
+    const url = new URL(`${base.replace(/\/+$/, "")}/${file}`, origin);
+    if (url.origin !== origin) {
+      throw new Error("ZK circuit artifacts must be served from this application’s origin.");
+    }
+    return url.toString();
+  };
 
   return {
-    requiredMb,
-    availableMb,
-    sufficient,
-    reason: sufficient
-      ? `estimated ${requiredMb}MB against ${availableMb}MB usable`
-      : `this circuit needs about ${requiredMb}MB and this device has roughly ` +
-        `${availableMb}MB usable for the page`,
+    wasm: resolveArtifact(files.wasm),
+    zkey: resolveArtifact(files.zkey),
+    verificationKey: resolveArtifact(files.verificationKey),
   };
 }
 
-export interface BrowserProveOptions {
-  input: Record<string, string | number | bigint>;
-  wasmUrl: string;
-  zkeyUrl: string;
-  /** Used for the memory check only; not sent to the worker. */
-  constraintCount?: number;
-  /** Abort and terminate the worker after this long. */
-  timeoutMs?: number;
-  onProgress?: (stage: string, progress: number) => void;
-  /** Injectable for tests. */
-  createWorker?: () => Worker;
+function parseInputObject(json: string, label: string): Record<string, unknown> {
+  if (json.length > 16_384) {
+    throw new Error(`${label} must be no larger than 16 KB.`);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    throw new Error(`${label} must be valid JSON.`);
+  }
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+  return value as Record<string, unknown>;
 }
 
-/** A stuck proof holds a worker and its memory indefinitely without this. */
-export const DEFAULT_PROVE_TIMEOUT_MS = 120_000;
-
-export interface BrowserProveResult {
-  proof: unknown;
-  publicSignals: string[];
-  durationMs: number;
-}
-
-function defaultWorkerFactory(): Worker {
-  return new Worker(new URL("@/src/workers/zk-prover.worker.ts", import.meta.url), {
+function createWorker(): ZkProverWorkerLike {
+  return new Worker(new URL("./zkProverWorker.ts", import.meta.url), {
     type: "module",
-  });
-}
-
-/**
- * Generate a proof in a dedicated worker.
- *
- * The private input is passed to the worker and never returned; only the proof
- * and public signals come back.
- */
-export function proveInBrowser(
-  options: BrowserProveOptions,
-): Promise<BrowserProveResult> {
-  const {
-    input,
-    wasmUrl,
-    zkeyUrl,
-    constraintCount = 0,
-    timeoutMs = DEFAULT_PROVE_TIMEOUT_MS,
-    onProgress,
-    createWorker = defaultWorkerFactory,
-  } = options;
-
-  // Only guard the default factory: an injected factory supplies its own
-  // worker, and in a jsdom test there is no global `Worker` to find.
-  if (createWorker === defaultWorkerFactory && typeof Worker === "undefined") {
-    return Promise.reject(
-      new ProverUnavailableError(
-        "this browser does not support Web Workers, so proving cannot run off the main thread",
-      ),
-    );
-  }
-
-  const budget = checkMemoryBudget(constraintCount);
-  if (!budget.sufficient) {
-    // Refused before spawning: attempting it would crash the tab and lose the
-    // user's unsaved inputs along with the proof.
-    return Promise.reject(new ProverMemoryError(budget.reason));
-  }
-
-  return new Promise<BrowserProveResult>((resolve, reject) => {
-    const requestId = `prove-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    let worker: Worker;
-
-    try {
-      worker = createWorker();
-    } catch (error) {
-      reject(
-        new ProverUnavailableError(
-          error instanceof Error ? error.message : "could not start the proving worker",
-        ),
-      );
-      return;
-    }
-
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      worker.terminate();
-      fn();
-    };
-
-    const timer = setTimeout(() => {
-      finish(() =>
-        reject(new Error(`proof generation exceeded ${timeoutMs}ms and was aborted`)),
-      );
-    }, timeoutMs);
-
-    worker.addEventListener("message", (event: MessageEvent<ProverResponse>) => {
-      const message = event.data;
-      if (!message || message.requestId !== requestId) return;
-
-      if (message.type === "progress") {
-        onProgress?.(message.stage, message.progress);
-        return;
-      }
-
-      if (message.type === "result") {
-        finish(() =>
-          resolve({
-            proof: message.proof,
-            publicSignals: message.publicSignals,
-            durationMs: message.durationMs,
-          }),
-        );
-        return;
-      }
-
-      finish(() =>
-        reject(
-          message.outOfMemory
-            ? new ProverMemoryError(message.message)
-            : new Error(message.message),
-        ),
-      );
-    });
-
-    worker.addEventListener("error", (event) => {
-      finish(() =>
-        reject(new ProverUnavailableError(event.message || "the proving worker failed")),
-      );
-    });
-
-    const request: ProverRequest = {
-      type: "generate",
-      requestId,
-      input,
-      wasmUrl,
-      zkeyUrl,
-    };
-    worker.postMessage(request);
-  });
+  }) as ZkProverWorkerLike;
 }

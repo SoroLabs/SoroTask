@@ -35,8 +35,13 @@ const LOADERS: Record<Locale, DictionaryLoader | null> = {
   fr: () => import("./translations/fr.json"),
   pt: () => import("./translations/pt.json"),
   zh: () => import("./translations/zh.json"),
+  ja: () => import("./translations/ja.json"),
+  ko: () => import("./translations/ko.json"),
   de: () => import("./translations/de.json"),
+  ru: () => import("./translations/ru.json"),
   ar: () => import("./translations/ar.json"),
+  hi: () => import("./translations/hi.json"),
+  tr: () => import("./translations/tr.json"),
 };
 
 /** In-flight or settled loads, keyed by locale. Holds the promise, not the

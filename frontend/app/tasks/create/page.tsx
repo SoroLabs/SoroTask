@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useStellarWallet } from '@/context/StellarWalletContext';
+import { simulateTaskCall, formatXlm } from '@/src/lib/soroban/task-simulation';
 import {
   TaskWizardFormData,
   WizardStep,
@@ -13,52 +14,76 @@ import { WalletButton } from '@/app/components/WalletButton';
 const INITIAL_FORM_DATA: TaskWizardFormData = {
   targetContractId: '',
   functionName: '',
-  functionArgs: '{}',
+  functionArgs: '[]',
   cronInterval: '0 * * * *',
   gasDeposit: '10',
 };
 
 export default function CreateTaskWizardPage() {
-  const { address, isConnected } = useStellarWallet();
+  const { address, isConnected, network } = useStellarWallet();
   const [step, setStep] = useState<WizardStep>(WizardStep.TARGET_CONTRACT);
   const [formData, setFormData] = useState<TaskWizardFormData>(INITIAL_FORM_DATA);
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
   const [simResult, setSimResult] = useState<SimulationResult | null>(null);
+  const simulationSequence = useRef(0);
+  const sorobanNetwork = network === 'PUBLIC' ? 'mainnet' : 'testnet';
 
   const updateFormData = (field: keyof TaskWizardFormData, value: string) => {
+    if (field === 'targetContractId' || field === 'functionName' || field === 'functionArgs') {
+      simulationSequence.current += 1;
+      setSimResult(null);
+    }
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleRunSimulation = async () => {
+  const handleRunSimulation = useCallback(async () => {
+    const requestId = ++simulationSequence.current;
     setIsSimulating(true);
     setSimResult(null);
 
     try {
-      // Mock RPC call simulating Soroban transaction execution (simulateTransaction)
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-
-      if (!formData.targetContractId.startsWith('C')) {
-        throw new Error('Invalid Soroban Contract ID format.');
+      if (!address) {
+        throw new Error('Connect a Stellar wallet before simulating this call.');
       }
-
+      const result = await simulateTaskCall({
+        contractId: formData.targetContractId,
+        functionName: formData.functionName,
+        functionArgs: formData.functionArgs,
+        sourceAddress: address,
+        network: sorobanNetwork,
+      });
+      if (requestId !== simulationSequence.current) return;
       setSimResult({
         success: true,
-        minResourceFee: '0.05 XLM',
-        estimatedCpuInstructions: 145000,
-        estimatedMemoryBytes: 24500,
+        minResourceFee: `${formatXlm(result.minResourceFeeStroops)} XLM`,
+        networkFee: `${formatXlm(result.networkFeeStroops)} XLM`,
+        totalFee: `${formatXlm(result.totalFeeStroops)} XLM`,
+        estimatedCpuInstructions: result.cpuInstructions,
+        storageReadBytes: result.storageReadBytes,
+        storageWriteBytes: result.storageWriteBytes,
+        readOnlyEntries: result.readOnlyEntries,
+        readWriteEntries: result.readWriteEntries,
+        stateChanges: result.stateChanges,
+        trace: result.trace,
       });
-    } catch (err: any) {
+    } catch (err) {
+      if (requestId !== simulationSequence.current) return;
       setSimResult({
         success: false,
         minResourceFee: '0',
         estimatedCpuInstructions: 0,
-        estimatedMemoryBytes: 0,
-        errorMessage: err.message || 'Simulation reverted or failed.',
+        errorMessage: err instanceof Error ? err.message : 'Simulation failed unexpectedly.',
       });
     } finally {
-      setIsSimulating(false);
+      if (requestId === simulationSequence.current) setIsSimulating(false);
     }
-  };
+  }, [address, formData.functionArgs, formData.functionName, formData.targetContractId, sorobanNetwork]);
+
+  useEffect(() => {
+    if (step !== WizardStep.TRIGGER_AND_SIMULATION) return;
+    const timeout = setTimeout(() => void handleRunSimulation(), 300);
+    return () => clearTimeout(timeout);
+  }, [handleRunSimulation, step]);
 
   const calculateMonthlyEstimate = (): string => {
     const baseDeposit = parseFloat(formData.gasDeposit) || 0;
@@ -167,6 +192,10 @@ export default function CreateTaskWizardPage() {
                 onChange={(e) => updateFormData('functionArgs', e.target.value)}
                 className="w-full p-2.5 border rounded-md bg-background focus:ring-2 focus:ring-primary text-sm font-mono"
               />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Provide a JSON array. To specify an address or integer type, use an object such as
+                {" "}{"{\"__type\":\"address\",\"value\":\"G...\"}"}.
+              </p>
             </div>
           </div>
         )}
@@ -185,11 +214,14 @@ export default function CreateTaskWizardPage() {
             </div>
 
             <div className="p-4 border rounded-lg bg-muted/40 space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Simulation runs automatically and again when the contract call changes. No transaction is signed or submitted.
+              </p>
               <div className="flex justify-between items-center">
                 <span className="text-sm font-semibold">Soroban Pre-flight RPC Check</span>
                 <button
                   type="button"
-                  onClick={handleRunSimulation}
+                  onClick={() => void handleRunSimulation()}
                   disabled={isSimulating}
                   className="px-3 py-1.5 text-xs font-semibold bg-secondary hover:bg-secondary/80 rounded-md transition-colors"
                 >
@@ -209,7 +241,23 @@ export default function CreateTaskWizardPage() {
                     <div>
                       <p className="font-bold">✓ Simulation Successful</p>
                       <p>Resource Fee: {simResult.minResourceFee}</p>
+                      {simResult.networkFee ? <p>Median Network Inclusion Fee: {simResult.networkFee}</p> : null}
+                      {simResult.totalFee ? <p>Total Estimated Fee: {simResult.totalFee}</p> : null}
                       <p>CPU Instructions: {simResult.estimatedCpuInstructions}</p>
+                      <p>Storage I/O: {simResult.storageReadBytes ?? 0} bytes read / {simResult.storageWriteBytes ?? 0} bytes written</p>
+                      <p>Storage footprint: {simResult.readOnlyEntries ?? 0} read-only / {simResult.readWriteEntries ?? 0} read-write entries</p>
+                      {simResult.stateChanges ? (
+                        <p>Ledger delta: {simResult.stateChanges.created} created / {simResult.stateChanges.updated} updated / {simResult.stateChanges.removed} removed</p>
+                      ) : null}
+                      {simResult.trace?.length ? (
+                        <ol className="mt-2 space-y-1 border-t border-current/20 pt-2">
+                          {simResult.trace.map((item, index) => (
+                            <li key={`${item.step}-${index}`}>
+                              <strong>{index + 1}. {item.step}:</strong> {item.detail}
+                            </li>
+                          ))}
+                        </ol>
+                      ) : null}
                     </div>
                   ) : (
                     <p>✗ Simulation Error: {simResult.errorMessage}</p>

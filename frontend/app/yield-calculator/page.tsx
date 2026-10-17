@@ -34,7 +34,7 @@ export default function YieldCalculatorPage() {
 
           <div className="flex items-center gap-3">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-500/20 bg-sky-500/10 px-3 py-1 text-xs font-semibold text-sky-400">
-              <FiTrendingUp className="animate-pulse" /> Compound Projections
+              <FiTrendingUp /> Historical APY + projections
             </span>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-300">
               <FiSettings /> Net Model

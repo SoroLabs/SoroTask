@@ -33,10 +33,10 @@ export default function GasOptimizationPage() {
 
           <div className="flex items-center gap-3">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-400">
-              <FiCpu className="animate-pulse" /> Network Gas Watcher
+              <FiCpu /> Soroban network fees
             </span>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-300">
-              <FiTrendingUp /> Optimization active
+              <FiTrendingUp /> Historical + live feed
             </span>
           </div>
         </header>
