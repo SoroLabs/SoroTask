@@ -84,7 +84,7 @@
     "jest-axe": "^11.0.0",
     "jest-environment-jsdom": "^30.5.2",
     "object-assign": "^4.1.1",
-    "prettier": "^3.9.9",
+    "prettier": "^3.9.10",
     "sonner": "^2.0.8",
     "storybook": "^10.6.0",
     "tailwindcss": "^4",
