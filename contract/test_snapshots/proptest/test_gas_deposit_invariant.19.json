@@ -41,7 +41,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "786488"
+                  "i128": "672552"
                 }
               ]
             }
@@ -87,6 +87,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "expiration_timestamp"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "function"
                       },
                       "val": {
@@ -106,7 +114,7 @@
                         "symbol": "interval"
                       },
                       "val": {
-                        "u32": 26749722
+                        "u32": 62471336
                       }
                     },
                     {
@@ -120,6 +128,14 @@
                     {
                       "key": {
                         "symbol": "last_run"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_runs"
                       },
                       "val": {
                         "u64": "0"
@@ -186,7 +202,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "763320"
+                  "i128": "631273"
                 }
               ]
             }
@@ -205,7 +221,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                     },
                     {
-                      "i128": "763320"
+                      "i128": "631273"
                     }
                   ]
                 }
@@ -230,7 +246,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "8784"
+                  "i128": "32627"
                 }
               ]
             }
@@ -268,7 +284,7 @@
   "ledger": {
     "protocol_version": 28,
     "sequence_number": 0,
-    "timestamp": 26749723,
+    "timestamp": 62471337,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -930,7 +946,7 @@
                       "symbol": "timestamp"
                     },
                     "val": {
-                      "u64": "26749723"
+                      "u64": "62471337"
                     }
                   }
                 ]
@@ -1043,6 +1059,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "function"
                     },
                     "val": {
@@ -1054,7 +1078,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "754436"
+                      "i128": "598546"
                     }
                   },
                   {
@@ -1062,7 +1086,7 @@
                       "symbol": "interval"
                     },
                     "val": {
-                      "u32": 26749722
+                      "u32": 62471336
                     }
                   },
                   {
@@ -1078,7 +1102,15 @@
                       "symbol": "last_run"
                     },
                     "val": {
-                      "u64": "26749723"
+                      "u64": "62471337"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -1144,7 +1176,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "754436"
+                "i128": "598546"
               }
             }
           },
@@ -1165,7 +1197,7 @@
                     "symbol": "TaskFingerprint"
                   },
                   {
-                    "bytes": "5819b7992673ffc844ceab402aeaefc32e9194b7cc41171484e451b7cbe1881b"
+                    "bytes": "060658284737b799453e76df1c61cc4ca3f6c5f3fb37352d245d79d8120c0729"
                   }
                 ]
               },
@@ -1217,10 +1249,18 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "754436"
+                      "i128": "598546"
                     }
                   },
                   {
@@ -1228,7 +1268,7 @@
                       "symbol": "interval"
                     },
                     "val": {
-                      "u32": 26749722
+                      "u32": 62471336
                     }
                   },
                   {
@@ -1244,7 +1284,15 @@
                       "symbol": "last_run"
                     },
                     "val": {
-                      "u64": "26749723"
+                      "u64": "62471337"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -1412,7 +1460,7 @@
                       "symbol": "completed_at"
                     },
                     "val": {
-                      "u64": "26749723"
+                      "u64": "62471337"
                     }
                   },
                   {
@@ -1503,7 +1551,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "754436"
+                        "i128": "598546"
                       }
                     }
                   ]
@@ -1643,7 +1691,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "754436"
+                      "i128": "598546"
                     }
                   },
                   {
@@ -1695,7 +1743,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "31952"
+                      "i128": "73906"
                     }
                   },
                   {

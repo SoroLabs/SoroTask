@@ -105,6 +105,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "expiration_timestamp"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "function"
                       },
                       "val": {
@@ -138,6 +146,14 @@
                     {
                       "key": {
                         "symbol": "last_run"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_runs"
                       },
                       "val": {
                         "u64": "0"
@@ -731,7 +747,7 @@
                                 "symbol": "detail"
                               },
                               "val": {
-                                "u32": 100
+                                "u32": 300
                               }
                             },
                             {
@@ -859,7 +875,7 @@
                                 "symbol": "detail"
                               },
                               "val": {
-                                "u32": 100
+                                "u32": 300
                               }
                             },
                             {
@@ -1045,6 +1061,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "function"
                     },
                     "val": {
@@ -1056,7 +1080,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "4900"
+                      "i128": "4700"
                     }
                   },
                   {
@@ -1081,6 +1105,14 @@
                     },
                     "val": {
                       "u64": "3600"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -1146,7 +1178,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "4900"
+                "i128": "4700"
               }
             }
           },
@@ -1219,10 +1251,18 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "4900"
+                      "i128": "4700"
                     }
                   },
                   {
@@ -1247,6 +1287,14 @@
                     },
                     "val": {
                       "u64": "3600"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -1512,6 +1560,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "StakingRewardReserve"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "i128": "6"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Token"
                           }
                         ]
@@ -1594,7 +1654,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "4900"
+                        "i128": "4700"
                       }
                     }
                   ]
@@ -1774,7 +1834,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "4900"
+                      "i128": "4706"
                     }
                   },
                   {
@@ -1826,7 +1886,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "10"
+                      "i128": "24"
                     }
                   },
                   {
@@ -1930,7 +1990,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "90"
+                      "i128": "270"
                     }
                   },
                   {

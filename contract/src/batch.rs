@@ -59,12 +59,15 @@ pub(crate) fn try_invoke_target(
     function: &Symbol,
     args: Vec<Val>,
 ) -> Result<Val, u32> {
-    match env.try_invoke_contract::<Val, soroban_sdk::Error>(target, function, args) {
-        Ok(Ok(val)) => Ok(val),
-        // Target contract returned a contract-level error / reverted.
-        Ok(Err(_contract_err)) => Err(TARGET_INVOKE_REJECTED),
-        // Host/SDK invocation failure (missing contract, bad symbol, etc.).
-        Err(_sdk_err) => Err(TARGET_INVOKE_SDK_ERROR),
+    match crate::security::try_invoke_contract_with_guard::<Val>(
+        env,
+        target,
+        function,
+        args,
+        false, // target call is state-changing
+    ) {
+        Ok(val) => Ok(val),
+        Err(_) => Err(TARGET_INVOKE_REJECTED),
     }
 }
 
