@@ -1,5 +1,13 @@
+import {
+  generateCorrelationId,
+  propagateCorrelationIdToHeaders,
+  attachCorrelationIdToHeaders,
+  appendTraceContextToBody,
+  describeTrace,
+  makeSpan,
+  endSpan,
+} from '@/src/lib/tracing';
 export type TaskStatus = "pending" | "running" | "success" | "failed";
-
 export interface Task {
   id: string;
   contract: string;
@@ -9,19 +17,16 @@ export interface Task {
   status: TaskStatus;
   updatedAt: number;
 }
-
 export interface TaskFilters {
   status?: TaskStatus;
   search?: string;
 }
-
 export interface RegisterTaskInput {
   contract: string;
   fn: string;
   intervalSec: number;
   gas: number;
 }
-
 export interface UpdateTaskInput {
   id: string;
   intervalSec?: number;
@@ -217,12 +222,29 @@ const GRAPHQL_URL =
   process.env.NEXT_PUBLIC_INDEXER_URL || "http://localhost:4000/graphql";
 
 async function fetchGraphQL(query: string, variables: any = {}) {
+  const correlationId = generateCorrelationId();
+  const span = makeSpan({
+    name: 'frontend→api fetchGraphQL',
+    traceId: correlationId,
+    attributes: {
+      'http.url': GRAPHQL_URL,
+      'http.method': 'POST',
+      'graphql.query': query,
+      'correlation.id': correlationId,
+      'tracing.origin': 'frontend',
+    },
+  });
+  const headers = attachCorrelationIdToHeaders({
+    'Content-Type': 'application/json',
+  }, correlationId);
+  const body = appendTraceContextToBody({
+    query,
+    variables,
+  }, correlationId);
   const response = await fetch(GRAPHQL_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query, variables }),
+    headers,
+    body: JSON.stringify(body),
   });
 
   if (response.status === 429) {
@@ -248,8 +270,10 @@ async function fetchGraphQL(query: string, variables: any = {}) {
         GRAPHQL_URL,
       );
     }
+    endSpan(span, 'error', { 'graphql.error': msg });
     throw new Error(msg);
   }
+  endSpan(span, 'success', { 'graphql.data.keys': Object.keys(result.data ?? {}), 'response.status': response.status });
   return result.data;
 }
 
@@ -585,6 +609,7 @@ export async function pauseTask(
     }
   } catch (err) {
     console.warn("pause_task contract call failed:", err);
+    throw err;
   }
 
   return { id, status: "pending" };
@@ -611,6 +636,7 @@ export async function resumeTask(
     }
   } catch (err) {
     console.warn("resume_task contract call failed:", err);
+    throw err;
   }
 
   return { id, status: "running" };
@@ -755,5 +781,179 @@ export async function deleteTask(id: string): Promise<{ id: string }> {
   } catch (err) {
     console.error("Failed to pause/delete task via GraphQL:", err);
   }
+  await purgeEdgeTaskCache([`task:${id}`, "tasks:all", "tasks:active"]);
   return { id };
+}
+
+// ---------------------------------------------------------------------------
+// #1456 — Edge CDN Dynamic Cache Invalidation Service for Global Task Metadata
+// ---------------------------------------------------------------------------
+
+export interface EdgeCdnRuleConfig {
+  sMaxAgeSeconds?: number;
+  staleWhileRevalidateSeconds?: number;
+  provider?: "cloudflare" | "fastly";
+}
+
+export interface EdgePurgeResult {
+  purgedKeys: string[];
+  latencyMs: number;
+  withinSla: boolean;
+  provider: "cloudflare" | "fastly";
+}
+
+export interface EdgeCacheStats {
+  totalReads: number;
+  cacheHits: number;
+  originFetches: number;
+  hitRatio: number;
+  originLoadReduction: number;
+  purgesCompleted: number;
+  lastPurgeLatencyMs: number;
+}
+
+export function buildEdgeCdnHeaders(
+  surrogateKeys: string[] = ["tasks:all"],
+  config: EdgeCdnRuleConfig = {},
+): Record<string, string> {
+  const sMaxAge = config.sMaxAgeSeconds ?? 300;
+  const swr = config.staleWhileRevalidateSeconds ?? 60;
+  const uniqueKeys = Array.from(new Set(surrogateKeys.filter(Boolean)));
+
+  return {
+    "Cache-Control": `public, max-age=15, s-maxage=${sMaxAge}, stale-while-revalidate=${swr}`,
+    "CDN-Cache-Control": `public, max-age=${sMaxAge}, stale-while-revalidate=${swr}`,
+    "Surrogate-Control": `max-age=${sMaxAge}, stale-while-revalidate=${swr}`,
+    "Surrogate-Key": uniqueKeys.join(" "),
+    "Cache-Tag": uniqueKeys.join(","),
+  };
+}
+
+export class EdgeCdnTaskCache {
+  private entries = new Map<
+    string,
+    { value: unknown; expiresAt: number; surrogateKeys: string[] }
+  >();
+  private surrogateIndex = new Map<string, Set<string>>();
+  private totalReads = 0;
+  private cacheHits = 0;
+  private originFetches = 0;
+  private purgesCompleted = 0;
+  private lastPurgeLatencyMs = 0;
+  private purgeSlaMs: number;
+  private provider: "cloudflare" | "fastly";
+
+  constructor(options: { purgeSlaMs?: number; provider?: "cloudflare" | "fastly" } = {}) {
+    this.purgeSlaMs = options.purgeSlaMs ?? 150;
+    this.provider = options.provider ?? "cloudflare";
+  }
+
+  get<T>(key: string): T | null {
+    this.totalReads += 1;
+    const entry = this.entries.get(key);
+    if (!entry) {
+      this.originFetches += 1;
+      return null;
+    }
+    if (Date.now() > entry.expiresAt) {
+      this.entries.delete(key);
+      this.originFetches += 1;
+      return null;
+    }
+    this.cacheHits += 1;
+    return entry.value as T;
+  }
+
+  set<T>(key: string, value: T, surrogateKeys: string[] = [], ttlMs = 300_000): void {
+    const tags = Array.from(new Set([key, ...surrogateKeys]));
+    this.entries.set(key, {
+      value,
+      expiresAt: Date.now() + ttlMs,
+      surrogateKeys: tags,
+    });
+    for (const tag of tags) {
+      let bucket = this.surrogateIndex.get(tag);
+      if (!bucket) {
+        bucket = new Set<string>();
+        this.surrogateIndex.set(tag, bucket);
+      }
+      bucket.add(key);
+    }
+  }
+
+  async readThrough<T>(
+    key: string,
+    surrogateKeys: string[],
+    originLoader: () => Promise<T>,
+    ttlMs = 300_000,
+  ): Promise<T> {
+    const cached = this.get<T>(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const fresh = await originLoader();
+    this.set(key, fresh, surrogateKeys, ttlMs);
+    return fresh;
+  }
+
+  async purgeBySurrogateKeys(keys: string[]): Promise<EdgePurgeResult> {
+    const start = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
+
+    for (const tag of uniqueKeys) {
+      this.entries.delete(tag);
+      const indexed = this.surrogateIndex.get(tag);
+      if (indexed) {
+        for (const cacheKey of indexed) {
+          this.entries.delete(cacheKey);
+        }
+        this.surrogateIndex.delete(tag);
+      }
+    }
+
+    const end = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const latencyMs = Number(Math.max(0, end - start).toFixed(3));
+    this.purgesCompleted += 1;
+    this.lastPurgeLatencyMs = latencyMs;
+
+    return {
+      purgedKeys: uniqueKeys,
+      latencyMs,
+      withinSla: latencyMs < this.purgeSlaMs,
+      provider: this.provider,
+    };
+  }
+
+  getStats(): EdgeCacheStats {
+    const hitRatio =
+      this.totalReads > 0
+        ? Number((this.cacheHits / this.totalReads).toFixed(4))
+        : 1;
+    return {
+      totalReads: this.totalReads,
+      cacheHits: this.cacheHits,
+      originFetches: this.originFetches,
+      hitRatio,
+      originLoadReduction: hitRatio,
+      purgesCompleted: this.purgesCompleted,
+      lastPurgeLatencyMs: this.lastPurgeLatencyMs,
+    };
+  }
+
+  clear(): void {
+    this.entries.clear();
+    this.surrogateIndex.clear();
+  }
+}
+
+export const edgeTaskCache = new EdgeCdnTaskCache();
+
+export async function purgeEdgeTaskCache(
+  surrogateKeys: string[] = ["tasks:all"],
+): Promise<EdgePurgeResult> {
+  return edgeTaskCache.purgeBySurrogateKeys(surrogateKeys);
+}
+
+export function getEdgeCacheStats(): EdgeCacheStats {
+  return edgeTaskCache.getStats();
 }

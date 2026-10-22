@@ -44,6 +44,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "expiration_timestamp"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "function"
                       },
                       "val": {
@@ -77,6 +85,14 @@
                     {
                       "key": {
                         "symbol": "last_run"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_runs"
                       },
                       "val": {
                         "u64": "0"
@@ -872,6 +888,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "function"
                     },
                     "val": {
@@ -908,6 +932,14 @@
                     },
                     "val": {
                       "u64": "12345"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -1050,6 +1082,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "gas_balance"
                     },
                     "val": {
@@ -1078,6 +1118,14 @@
                     },
                     "val": {
                       "u64": "12345"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {

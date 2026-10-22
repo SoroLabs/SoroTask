@@ -43,10 +43,11 @@ const SERVICE_NAME = 'sorotask-keeper';
 // registered below, so spans are created (cheap, in-process only) but never
 // exported anywhere - zero-config overhead when tracing isn't wanted.
 function buildSpanProcessor() {
-  const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || process.env.JAEGER_ENDPOINT;
   if (otlpEndpoint) {
     const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http');
-    return new SimpleSpanProcessor(new OTLPTraceExporter({ url: `${otlpEndpoint}/v1/traces` }));
+    const url = otlpEndpoint.endsWith('/v1/traces') ? otlpEndpoint : `${otlpEndpoint.replace(/\/$/, '')}/v1/traces`;
+    return new SimpleSpanProcessor(new OTLPTraceExporter({ url }));
   }
   if (process.env.OTEL_CONSOLE_EXPORTER === 'true') {
     return new SimpleSpanProcessor(new ConsoleSpanExporter());

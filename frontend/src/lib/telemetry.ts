@@ -1,3 +1,10 @@
+import {
+  REDACTED,
+  scrubString,
+  scrubUrl,
+  scrubValue,
+} from "@/src/lib/observability/scrubber";
+
 export interface DiagnosticReport {
   title: string;
   description: string;
@@ -13,156 +20,156 @@ export interface DiagnosticReport {
     onlineStatus: boolean;
   };
   consoleLogs: string[];
-  networkErrors: Array<{ url: string; status: number; error: string; timestamp: number }>;
+  networkErrors: Array<{
+    url: string;
+    status: number;
+    error: string;
+    timestamp: number;
+  }>;
   ticketDestination?: "github" | "jira" | "api";
-  };
-  consoleLogs: string[];
+}
+
+const ADDRESS_PATTERN = /(?<![A-Z2-7])[GC][A-Z2-7]{55}(?![A-Z2-7])/g;
+const BALANCE_PATTERN =
+  /\b(?:balance|amount|gas|funds)\b(?:\s*(?:is|of|:|=))?\s*(?:[$]?\s*)\d+(?:[.,]\d+)*(?:\s*(?:xlm|stroops?))?/gi;
+const SENSITIVE_FIELD_PATTERN =
+  /wallet|address|balance|amount|gas|funds|private|secret|token|password|mnemonic|seed|api[_-]?key/i;
+const MAX_HISTORY = 50;
+
+function scrubDiagnosticString(value: string): string {
+  return scrubString(value)
+    .replace(ADDRESS_PATTERN, REDACTED)
+    .replace(BALANCE_PATTERN, REDACTED)
+    .replace(
+      /((?:private[_-]?key|secret(?:[_-]?(?:key|token))?|api[_-]?key|auth[_-]?token|seed|mnemonic|password|bearer|authorization)\s*[:=]\s*)[^\s,;&]+/gi,
+      `$1${REDACTED}`,
+    )
+    .replace(/TOP_SECRET_[^\s,;&]+/gi, REDACTED);
+}
+
+function scrubDiagnosticValue(value: unknown, depth = 0): unknown {
+  if (depth > 12) return REDACTED;
+  if (typeof value === "string") return scrubDiagnosticString(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubDiagnosticValue(item, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        SENSITIVE_FIELD_PATTERN.test(key)
+          ? REDACTED
+          : /url/i.test(key) && typeof entry === "string"
+            ? scrubDiagnosticString(scrubUrl(entry))
+            : scrubDiagnosticValue(entry, depth + 1),
+      ]),
+    );
+  }
+  return scrubValue(value);
 }
 
 export class Telemetry {
   private static instance: Telemetry;
-  private consoleHistory: string[] = [];
-  private networkErrorsHistory: Array<{ url: string; status: number; error: string; timestamp: number }> = [];
-
-  private constructor() {
-    this.initHooks();
-  }
+  private readonly consoleHistory: string[] = [];
+  private readonly networkErrorsHistory: DiagnosticReport["networkErrors"] = [];
 
   private constructor() {}
 
   static getInstance(): Telemetry {
-    if (!Telemetry.instance) {
-      Telemetry.instance = new Telemetry();
-    }
+    if (!Telemetry.instance) Telemetry.instance = new Telemetry();
     return Telemetry.instance;
   }
 
-  private initHooks() {
-    if (typeof window === "undefined") return;
+  initialize(): () => void {
+    if (typeof window === "undefined") return () => undefined;
 
-    // Hook console
-    const origLog = console.log;
-    const origError = console.error;
-    const origWarn = console.warn;
-
-    console.log = (...args: unknown[]) => {
-      this.pushLog("LOG", args);
-      origLog.apply(console, args);
+    const onError = (event: ErrorEvent) => {
+      this.recordConsole(
+        "ERROR",
+        [event.message || "Unknown client error"],
+      );
+    };
+    const onRejection = (event: PromiseRejectionEvent) => {
+      this.recordConsole("UNHANDLED_REJECTION", [
+        event.reason instanceof Error ? event.reason.message : String(event.reason),
+      ]);
     };
 
-    console.error = (...args: unknown[]) => {
-      this.pushLog("ERROR", args);
-      origError.apply(console, args);
-    };
-
-    console.warn = (...args: unknown[]) => {
-      this.pushLog("WARN", args);
-      origWarn.apply(console, args);
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onRejection);
     };
   }
 
-  private pushLog(level: string, args: unknown[]) {
-    try {
-      const msg = `[${level}] ${args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ")}`;
-      this.consoleHistory.push(msg);
-      if (this.consoleHistory.length > 100) {
-        this.consoleHistory.shift();
-      }
-    } catch {}
+  recordConsole(level: string, args: unknown[]): void {
+    const message = scrubDiagnosticString(
+      `[${level}] ${args
+        .map((arg) =>
+          typeof arg === "string"
+            ? arg
+            : JSON.stringify(scrubDiagnosticValue(arg)),
+        )
+        .join(" ")}`,
+    );
+    this.consoleHistory.push(message);
+    if (this.consoleHistory.length > MAX_HISTORY) this.consoleHistory.shift();
   }
 
-  recordNetworkError(url: string, status: number, error: string) {
+  recordNetworkError(url: string, status: number, error: string): void {
     this.networkErrorsHistory.push({
-      url,
+      url: scrubUrl(url.split(/[?#]/, 1)[0]).replace(ADDRESS_PATTERN, REDACTED),
       status,
-      error,
+      error: scrubDiagnosticString(error),
       timestamp: Date.now(),
     });
-    if (this.networkErrorsHistory.length > 50) {
+    if (this.networkErrorsHistory.length > MAX_HISTORY) {
       this.networkErrorsHistory.shift();
     }
   }
 
   captureConsoleSnapshot(maxLogs = 50): string[] {
-    return this.consoleHistory.slice(-maxLogs);
+    return this.consoleHistory.slice(-Math.max(0, maxLogs));
   }
 
-  captureNetworkErrors(): Array<{ url: string; status: number; error: string; timestamp: number }> {
-    return [...this.networkErrorsHistory];
+  captureNetworkErrors(): DiagnosticReport["networkErrors"] {
+    return this.networkErrorsHistory.map((item) => ({ ...item }));
   }
 
   redactSensitiveData(report: DiagnosticReport): DiagnosticReport {
-    let serialized = JSON.stringify(report);
-    // Redact Stellar secret seed keys (S followed by 55 base32 chars)
-    serialized = serialized.replace(/S[A-Z2-7]{55}/g, "[REDACTED_SECRET_KEY]");
-    // Redact key=value or key: value
-    serialized = serialized.replace(
-      /((?:private|secret|api|auth)[_-]?(?:key|token)?|seed|mnemonic|password|bearer|authorization)\s*[:=]\s*([^\\"\s,;]+)/gi,
-      "$1=[REDACTED]"
-    );
-    // Also scrub any remaining sensitive keywords if standing alone
-    serialized = serialized.replace(
-      /(TOP_SECRET_[^\s\\",]+)/gi,
-      "[REDACTED]"
-    );
-    return JSON.parse(serialized) as DiagnosticReport;
+    return scrubDiagnosticValue(report) as DiagnosticReport;
   }
 
-  async sendReport(report: DiagnosticReport): Promise<{ success: boolean; ticketId?: string; error?: string }> {
-    const sanitized = this.redactSensitiveData(report);
-
+  async sendReport(
+    report: DiagnosticReport,
+  ): Promise<{ success: boolean; ticketId?: string; error?: string }> {
     try {
+      const sanitized = this.redactSensitiveData(report);
       const response = await fetch("/api/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(sanitized),
       });
-
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        return { success: false, error: `HTTP ${response.status}` };
       }
-
-      const data = await response.json();
-      return { success: true, ticketId: data.ticketId || `TICK-${Date.now().toString(36).toUpperCase()}` };
-    } catch {
-      // Offline fallback: persist into local storage queue
-      try {
-        if (typeof window !== "undefined") {
-          const queue = JSON.parse(localStorage.getItem("sorotask_pending_bug_reports") || "[]");
-          queue.push(sanitized);
-          localStorage.setItem("sorotask_pending_bug_reports", JSON.stringify(queue));
-        }
-      } catch {}
+      const data = (await response.json()) as { ticketId?: string };
       return {
         success: true,
-        ticketId: `LOCAL-${Date.now().toString(36).toUpperCase()}`,
+        ticketId:
+          data.ticketId ??
+          `TICK-${Date.now().toString(36).toUpperCase()}`,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to submit diagnostic report",
       };
     }
-  async sendReport(report: DiagnosticReport): Promise<void> {
-    const redacted = this.redactSensitiveData(report);
-    await fetch("/api/telemetry/bug-report", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(redacted),
-    });
-  }
-
-  private redactSensitiveData(report: DiagnosticReport): DiagnosticReport {
-    const serialized = JSON.stringify(report);
-    const redacted = serialized.replace(
-      /(private[_-]?key|seed|secret|mnemonic|password|token|api[_-]?key|authorization)/gi,
-      "[REDACTED]"
-    );
-    return JSON.parse(redacted) as DiagnosticReport;
-  }
-
-  captureConsoleSnapshot(maxLogs: number = 50): string[] {
-    // This is a placeholder - actual implementation would capture console history
-    return [];
-  }
-
-  captureNetworkErrors(): Array<{ url: string; status: number; error: string }> {
-    return [];
   }
 }
 

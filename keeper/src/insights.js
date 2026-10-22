@@ -36,6 +36,59 @@ function classifyScore(score) {
   return 'low';
 }
 
+/**
+ * Calculate daily SLA score from keeper metrics.
+ * 
+ * @param {Object} params
+ * @param {number} params.uptimeSeconds - Total uptime in seconds
+ * @param {number} params.expectedUptimeSeconds - Expected uptime in seconds
+ * @param {number} params.totalTasks - Total tasks assigned
+ * @param {number} params.completedTasks - Tasks completed successfully
+ * @param {number} params.revertedTasks - Tasks that reverted/failed
+ * @param {number} params.avgLatencyMs - Average execution latency
+ * @param {number} params.targetLatencyMs - Target latency (default 5000ms)
+ * @returns {Object} SLA score breakdown
+ */
+function calculateDailySlaScore({ 
+  uptimeSeconds = 0, 
+  expectedUptimeSeconds = 86400, 
+  totalTasks = 0, 
+  completedTasks = 0, 
+  revertedTasks = 0, 
+  avgLatencyMs = 0, 
+  targetLatencyMs = 5000 
+}) {
+  const uptimeRatio = clamp(uptimeSeconds / Math.max(1, expectedUptimeSeconds), 0, 1);
+  const completionRatio = totalTasks > 0 ? clamp(completedTasks / totalTasks, 0, 1) : 1;
+  const revertPenalty = totalTasks > 0 ? clamp(revertedTasks / totalTasks, 0, 1) : 0;
+  const latencyScore = avgLatencyMs > 0 ? clamp(targetLatencyMs / Math.max(1, avgLatencyMs), 0, 1) : 1;
+
+  const features = {
+    uptime: uptimeRatio,
+    completion: completionRatio,
+    revertPenalty: 1 - revertPenalty, // invert so higher is better
+    latency: latencyScore,
+  };
+
+  const score = weightedScore(features, {
+    uptime: 0.3,
+    completion: 0.3,
+    revertPenalty: 0.25,
+    latency: 0.15,
+  });
+
+  return {
+    slaScore: Math.round(score * 100),
+    tier: classifyScore(score),
+    components: {
+      uptime: Math.round(uptimeRatio * 100),
+      completion: Math.round(completionRatio * 100),
+      revertRate: Math.round(revertPenalty * 100),
+      latency: Math.round(latencyScore * 100),
+    },
+  };
+}
+
 class FailurePredictor {
   constructor(options = {}) {
     this.logger = options.logger || createLogger('failure-predictor');
@@ -111,6 +164,182 @@ class KeeperReputationScorer {
   constructor(options = {}) {
     this.logger = options.logger || createLogger('reputation-scorer');
     this.historyManager = options.historyManager || null;
+    // In-memory store for slashing events (in production, persist to DB)
+    this.slashingEvents = new Map(); // keeperAddress -> Array<SlashingEvent>
+    this.dailySlaHistory = new Map(); // date -> SLA score
+  }
+
+  /**
+   * Record a slashing event for a keeper.
+   * 
+   * @param {Object} event
+   * @param {string} event.keeperAddress - Keeper's public key
+   * @param {number} event.slashAmount - Amount slashed in XLM
+   * @param {string} event.reason - Reason for slashing (e.g., 'missed_execution', 'downtime', 'malicious')
+   * @param {string} event.transactionHash - On-chain transaction hash
+   * @param {number} event.timestamp - Unix timestamp (ms)
+   */
+  recordSlashingEvent(event) {
+    const { keeperAddress, slashAmount, reason, transactionHash, timestamp = Date.now() } = event;
+    if (!this.slashingEvents.has(keeperAddress)) {
+      this.slashingEvents.set(keeperAddress, []);
+    }
+    const events = this.slashingEvents.get(keeperAddress);
+    events.push({
+      slashAmount: Number(slashAmount),
+      reason,
+      transactionHash,
+      timestamp,
+    });
+    // Keep only last 365 days
+    const cutoff = timestamp - 365 * 24 * 60 * 60 * 1000;
+    while (events.length > 0 && events[0].timestamp < cutoff) {
+      events.shift();
+    }
+    this.logger.info('Slashing event recorded', { keeperAddress, slashAmount, reason });
+  }
+
+  /**
+   * Get all slashing events for a keeper.
+   * 
+   * @param {string} keeperAddress
+   * @returns {Array}
+   */
+  getSlashingEvents(keeperAddress) {
+    return this.slashingEvents.get(keeperAddress) || [];
+  }
+
+  /**
+   * Calculate total slashed amount for a keeper.
+   * 
+   * @param {string} keeperAddress
+   * @returns {number}
+   */
+  getTotalSlashed(keeperAddress) {
+    const events = this.getSlashingEvents(keeperAddress);
+    return events.reduce((sum, e) => sum + e.slashAmount, 0);
+  }
+
+  /**
+   * Calculate slashing percentage (slashed / total stake).
+   * 
+   * @param {string} keeperAddress
+   * @param {number} totalStake - Total stake amount in XLM
+   * @returns {number} Percentage (0-100)
+   */
+  getSlashingPercentage(keeperAddress, totalStake) {
+    const totalSlashed = this.getTotalSlashed(keeperAddress);
+    if (totalStake <= 0) return 0;
+    return clamp((totalSlashed / totalStake) * 100, 0, 100);
+  }
+
+  /**
+   * Record daily SLA score for a keeper.
+   * 
+   * @param {string} keeperAddress
+   * @param {Object} slaData
+   * @param {number} slaData.uptimeSeconds
+   * @param {number} slaData.expectedUptimeSeconds
+   * @param {number} slaData.totalTasks
+   * @param {number} slaData.completedTasks
+   * @param {number} slaData.revertedTasks
+   * @param {number} slaData.avgLatencyMs
+   * @param {number} slaData.targetLatencyMs
+   */
+  recordDailySla(keeperAddress, slaData) {
+    const dateKey = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const sla = calculateDailySlaScore(slaData);
+    
+    if (!this.dailySlaHistory.has(keeperAddress)) {
+      this.dailySlaHistory.set(keeperAddress, new Map());
+    }
+    this.dailySlaHistory.get(keeperAddress).set(dateKey, {
+      ...sla,
+      timestamp: Date.now(),
+      ...slaData,
+    });
+
+    // Keep only last 90 days
+    const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    const history = this.dailySlaHistory.get(keeperAddress);
+    for (const [date, data] of history.entries()) {
+      if (data.timestamp < cutoff) {
+        history.delete(date);
+      }
+    }
+  }
+
+  /**
+   * Get average daily SLA score over the last N days.
+   * 
+   * @param {string} keeperAddress
+   * @param {number} days - Number of days to average (default 30)
+   * @returns {number} Average SLA score (0-100)
+   */
+  getAverageSlaScore(keeperAddress, days = 30) {
+    const history = this.dailySlaHistory.get(keeperAddress);
+    if (!history || history.size === 0) return 100; // No data = perfect score
+
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    let sum = 0;
+    let count = 0;
+    for (const [date, data] of history.entries()) {
+      if (data.timestamp >= cutoff) {
+        sum += data.slaScore;
+        count++;
+      }
+    }
+    return count > 0 ? Math.round(sum / count) : 100;
+  }
+
+  /**
+   * Generate a comprehensive reputation scorecard for a keeper.
+   * 
+   * @param {string} keeperAddress
+   * @param {Object} metrics - Current keeper metrics
+   * @param {number} metrics.totalStake - Total stake in XLM
+   * @returns {Object} Reputation scorecard
+   */
+  generateScorecard(keeperAddress, metrics = {}) {
+    const reputation = this.scoreKeeper(metrics);
+    const slashingEvents = this.getSlashingEvents(keeperAddress);
+    const totalSlashed = this.getTotalSlashed(keeperAddress);
+    const slashingPercentage = this.getSlashingPercentage(keeperAddress, metrics.totalStake || 0);
+    const avgSlaScore = this.getAverageSlaScore(keeperAddress, 30);
+    const currentSla = this.dailySlaHistory.get(keeperAddress)?.get(new Date().toISOString().split('T')[0]);
+
+    return {
+      keeperAddress,
+      generatedAt: new Date().toISOString(),
+      reputationScore: reputation.reputationScore,
+      reputationTier: reputation.reputationTier,
+      signals: reputation.signals,
+      evidence: reputation.evidence,
+      slashing: {
+        totalEvents: slashingEvents.length,
+        totalSlashedXlm: totalSlashed,
+        slashingPercentage: Math.round(slashingPercentage * 100) / 100,
+        recentEvents: slashingEvents.slice(-5).map(e => ({
+          amount: e.slashAmount,
+          reason: e.reason,
+          timestamp: e.timestamp,
+          txHash: e.transactionHash,
+        })),
+      },
+      sla: {
+        average30d: avgSlaScore,
+        current: currentSla ? {
+          score: currentSla.slaScore,
+          tier: currentSla.tier,
+          components: currentSla.components,
+        } : null,
+      },
+      // Verified scorecard hash for tamper-proof verification
+      verification: {
+        version: '1.0',
+        schema: 'sorotask-keeper-scorecard-v1',
+      },
+    };
   }
 
   scoreKeeper(metrics = {}) {
@@ -250,6 +479,7 @@ module.exports = {
   classifyScore,
   normalizeRatio,
   weightedScore,
+  calculateDailySlaScore,
   FailurePredictor,
   KeeperReputationScorer,
   ProfitabilityEstimator,

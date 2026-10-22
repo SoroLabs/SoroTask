@@ -9,6 +9,7 @@ import { TxBatchRegistration } from "@/src/components/wallet/TxBatchRegistration
 import { OptimizedMedia } from "@/src/components/optimized-media";
 import { ApiKeyManager } from "@/src/components/ApiKeyManager";
 import { AllowanceManager } from "@/src/components/AllowanceManager";
+import { NotificationPreferenceCenter } from "@/src/components/notification-preference-center";
 
 interface ProviderConfig {
   name: string;
@@ -23,101 +24,21 @@ export default function SettingsPage() {
   const { start: startOnboarding } = useOnboarding();
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [hardwareSession, setHardwareSession] = useState<any>(null);
-  const [notificationPrefs, setNotificationPrefs] = useState({
-    categories: { tasks: true, mentions: true, system: true },
-    channels: { inApp: true, browser: true },
-  });
-  const [browserPermission, setBrowserPermission] = useState<
-    "granted" | "denied" | "default"
-  >("default");
-  const [saveMessage, setSaveMessage] = useState("");
   const [didConnected, setDidConnected] = useState(false);
   const [didProfile, setDidProfile] = useState("");
   const [didStatusMessage, setDidStatusMessage] = useState("");
   const [didError, setDidError] = useState("");
 
-  const notificationCategories = [
-    {
-      key: "tasks",
-      label: "Task updates",
-      description:
-        "Receive alerts for task assignments, completion, and status changes.",
-    },
-    {
-      key: "mentions",
-      label: "Mentions & comments",
-      description:
-        "Get notified when someone mentions you or comments on your work.",
-    },
-    {
-      key: "system",
-      label: "System alerts",
-      description:
-        "Important platform notices such as maintenance, outages, and policy updates.",
-    },
-  ];
-
-  const notificationChannels = [
-    {
-      key: "inApp",
-      label: "In-app alerts",
-      description:
-        "See notifications inside the SoroTask interface while you are signed in.",
-    },
-    {
-      key: "browser",
-      label: "Browser push",
-      description: "Receive browser popups when your workspace is inactive.",
-    },
-  ];
-
-  const loadPreferences = () => {
+  const loadDidProfile = () => {
     if (typeof window === "undefined") return;
     try {
-      const storedPrefs = window.localStorage.getItem(
-        "soroNotificationPreferences",
-      );
-      if (storedPrefs && storedPrefs !== "undefined") {
-        setNotificationPrefs(JSON.parse(storedPrefs));
-      }
       const storedDid = window.localStorage.getItem("soroDIDProfile");
       if (storedDid) {
         setDidConnected(true);
         setDidProfile(storedDid);
       }
-      if ("Notification" in window) {
-        setBrowserPermission(Notification.permission);
-      }
     } catch (error) {
       console.warn("Failed to load persisted settings", error);
-    }
-  };
-
-  const savePreferences = () => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(
-      "soroNotificationPreferences",
-      JSON.stringify(notificationPrefs),
-    );
-    setSaveMessage("Preferences saved locally. Reload to verify behavior.");
-    window.setTimeout(() => setSaveMessage(""), 2500);
-  };
-
-  const requestBrowserPermission = async () => {
-    if (typeof window === "undefined" || !("Notification" in window)) return;
-    try {
-      const permission = await Notification.requestPermission();
-      setBrowserPermission(permission);
-      if (permission === "granted") {
-        setSaveMessage("Browser notifications enabled.");
-      } else if (permission === "denied") {
-        setSaveMessage(
-          "Browser notifications denied. Toggle browser channel off or recover from browser settings.",
-        );
-      }
-      window.setTimeout(() => setSaveMessage(""), 2500);
-    } catch (error) {
-      console.error(error);
     }
   };
 
@@ -153,20 +74,8 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
-    loadPreferences();
+    loadDidProfile();
   }, []);
-
-  const activeChannels =
-    [
-      notificationPrefs.channels.inApp ? "In-app alerts" : null,
-      notificationPrefs.channels.browser ? "Browser popups" : null,
-    ]
-      .filter(Boolean)
-      .join(", ") || "None";
-
-  const previewEnabled =
-    Object.values(notificationPrefs.categories).some(Boolean) &&
-    Object.values(notificationPrefs.channels).some(Boolean);
 
   if (status === "loading") {
     return (
@@ -394,194 +303,7 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Notification Preferences */}
-        <div className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 shadow-xl mb-6">
-          <div className="flex items-center justify-between gap-4 mb-4">
-            <div>
-              <h2 className="text-xl font-semibold">
-                Notification Preferences
-              </h2>
-              <p className="text-neutral-400 text-sm mt-1">
-                Control notification categories, delivery channels, and browser
-                permission behavior from one panel.
-              </p>
-            </div>
-            <span className="text-xs uppercase tracking-[0.2em] text-neutral-500">
-              Unified center
-            </span>
-          </div>
-
-          <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
-            <div className="space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2">
-                {notificationCategories.map((category) => (
-                  <label
-                    key={category.key}
-                    className="group flex items-start gap-3 p-4 rounded-2xl border border-neutral-700/50 bg-neutral-900/50 hover:border-blue-500/40 transition-colors"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={
-                        notificationPrefs.categories[
-                          category.key as "tasks" | "mentions" | "system"
-                        ]
-                      }
-                      onChange={() =>
-                        setNotificationPrefs((prev) => ({
-                          ...prev,
-                          categories: {
-                            ...prev.categories,
-                            [category.key]:
-                              !prev.categories[
-                                category.key as keyof typeof prev.categories
-                              ],
-                          },
-                        }))
-                      }
-                      className="w-5 h-5 rounded text-blue-500 focus:ring-blue-400"
-                    />
-                    <div>
-                      <p className="font-medium">{category.label}</p>
-                      <p className="text-neutral-400 text-sm">
-                        {category.description}
-                      </p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                {notificationChannels.map((channel) => (
-                  <label
-                    key={channel.key}
-                    className="group flex items-start gap-3 p-4 rounded-2xl border border-neutral-700/50 bg-neutral-900/50 hover:border-blue-500/40 transition-colors"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={
-                        notificationPrefs.channels[
-                          channel.key as "inApp" | "browser"
-                        ]
-                      }
-                      onChange={() =>
-                        setNotificationPrefs((prev) => ({
-                          ...prev,
-                          channels: {
-                            ...prev.channels,
-                            [channel.key]:
-                              !prev.channels[
-                                channel.key as keyof typeof prev.channels
-                              ],
-                          },
-                        }))
-                      }
-                      className="w-5 h-5 rounded text-blue-500 focus:ring-blue-400"
-                    />
-                    <div>
-                      <p className="font-medium">{channel.label}</p>
-                      <p className="text-neutral-400 text-sm">
-                        {channel.description}
-                      </p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-
-              <div className="rounded-2xl border border-neutral-700/50 bg-neutral-950/60 p-4">
-                <div className="flex items-center justify-between gap-3 mb-3">
-                  <div>
-                    <p className="font-medium">Browser permission</p>
-                    <p className="text-sm text-neutral-400">
-                      Current browser state for push notifications.
-                    </p>
-                  </div>
-                  <span
-                    className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
-                      browserPermission === "granted"
-                        ? "bg-green-500/10 text-green-300"
-                        : browserPermission === "denied"
-                          ? "bg-red-500/10 text-red-300"
-                          : "bg-yellow-500/10 text-yellow-300"
-                    }`}
-                  >
-                    {browserPermission}
-                  </span>
-                </div>
-                <p className="text-neutral-400 text-sm mb-3">
-                  {browserPermission === "denied"
-                    ? "Your browser is blocking push notifications. Recover this from browser site settings if you want browser alerts."
-                    : browserPermission === "granted"
-                      ? "Browser notifications are allowed. You can use browser alerts when the channel is enabled."
-                      : "Browser notifications are not yet granted. Request permission to enable browser popups."}
-                </p>
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={requestBrowserPermission}
-                    className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all"
-                  >
-                    Request Permission
-                  </button>
-                  <button
-                    type="button"
-                    onClick={savePreferences}
-                    className="bg-neutral-700 hover:bg-neutral-600 text-neutral-100 px-4 py-2 rounded-lg text-sm font-medium transition-all"
-                  >
-                    Save Preferences
-                  </button>
-                </div>
-                {saveMessage && (
-                  <p className="mt-3 text-sm text-blue-300">{saveMessage}</p>
-                )}
-              </div>
-            </div>
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-neutral-700/50 bg-neutral-900/50 p-5">
-                <p className="text-sm uppercase tracking-[0.2em] text-neutral-500 mb-3">
-                  Live preview
-                </p>
-                <p className="font-medium mb-1">Effective channels</p>
-                <p className="text-neutral-400 text-sm mb-4">
-                  {activeChannels}
-                </p>
-                <div
-                  className={`rounded-2xl p-4 ${previewEnabled ? "bg-green-500/10 border border-green-500/10" : "bg-neutral-800 border border-neutral-700"}`}
-                >
-                  <p className="font-medium">
-                    {previewEnabled
-                      ? "Notifications are configured to run"
-                      : "Notification delivery is currently disabled"}
-                  </p>
-                  <p className="text-neutral-400 text-sm mt-2">
-                    {previewEnabled
-                      ? "When enabled, task activity and mentions are surfaced in your selected channels."
-                      : "Enable at least one category and one channel to receive notifications."}
-                  </p>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-neutral-700/50 bg-neutral-900/50 p-5">
-                <p className="text-sm uppercase tracking-[0.2em] text-neutral-500 mb-3">
-                  Behavior summary
-                </p>
-                <ul className="space-y-2 text-sm text-neutral-400">
-                  <li>
-                    • In-app alerts are always persisted while you are signed
-                    in.
-                  </li>
-                  <li>
-                    • Browser popups require browser permission and are disabled
-                    if denied.
-                  </li>
-                  <li>
-                    • Task updates and system alerts are grouped for quick
-                    control.
-                  </li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>
+        <NotificationPreferenceCenter />
 
         {/* DID Integration */}
         <div className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 shadow-xl mb-6">

@@ -494,3 +494,68 @@ pub fn init_contract_storage(env: &Env) {
         .instance()
         .set(&DataKey::StorageSchemaVersion, &STORAGE_SCHEMA_VERSION);
 }
+
+/// -----------------------------------------------------------------------------
+/// Crowdfunded task boosters (Issue #1420)
+/// -----------------------------------------------------------------------------
+
+/// Storage keys for third-party booster contributions to a task's gas balance.
+/// Kept out of `DataKey` so booster bookkeeping stays self-contained.
+#[derive(Clone, Debug)]
+#[soroban_sdk::contracttype]
+pub enum BoosterKey {
+    /// Cumulative amount `sponsor` has boosted `task_id` with.
+    Share(u64, Address),
+    /// Sum of all booster contributions to `task_id`.
+    Total(u64),
+    /// Distinct sponsors of `task_id`, in first-contribution order.
+    Sponsors(u64),
+}
+
+/// Record `amount` from `sponsor` against `task_id` and return the sponsor's new share.
+pub fn record_booster_contribution(
+    env: &Env,
+    task_id: u64,
+    sponsor: &Address,
+    amount: i128,
+) -> i128 {
+    let persistent = env.storage().persistent();
+    let share_key = BoosterKey::Share(task_id, sponsor.clone());
+    let previous: i128 = persistent.get(&share_key).unwrap_or(0);
+    if previous == 0 {
+        let mut sponsors = booster_sponsors(env, task_id);
+        sponsors.push_back(sponsor.clone());
+        persistent.set(&BoosterKey::Sponsors(task_id), &sponsors);
+    }
+    let share = previous + amount;
+    persistent.set(&share_key, &share);
+    persistent.set(
+        &BoosterKey::Total(task_id),
+        &(booster_total(env, task_id) + amount),
+    );
+    share
+}
+
+/// Amount `sponsor` has contributed to `task_id` (0 if none).
+pub fn booster_share(env: &Env, task_id: u64, sponsor: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&BoosterKey::Share(task_id, sponsor.clone()))
+        .unwrap_or(0)
+}
+
+/// Total booster contributions to `task_id` (0 if none).
+pub fn booster_total(env: &Env, task_id: u64) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&BoosterKey::Total(task_id))
+        .unwrap_or(0)
+}
+
+/// Distinct sponsors of `task_id`.
+pub fn booster_sponsors(env: &Env, task_id: u64) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&BoosterKey::Sponsors(task_id))
+        .unwrap_or_else(|| Vec::new(env))
+}

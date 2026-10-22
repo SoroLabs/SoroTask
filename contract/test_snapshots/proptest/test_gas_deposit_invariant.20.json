@@ -41,7 +41,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "426851"
+                  "i128": "370223"
                 }
               ]
             }
@@ -87,6 +87,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "expiration_timestamp"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "function"
                       },
                       "val": {
@@ -106,7 +114,7 @@
                         "symbol": "interval"
                       },
                       "val": {
-                        "u32": 219732
+                        "u32": 74423703
                       }
                     },
                     {
@@ -120,6 +128,14 @@
                     {
                       "key": {
                         "symbol": "last_run"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_runs"
                       },
                       "val": {
                         "u64": "0"
@@ -186,7 +202,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "382188"
+                  "i128": "338008"
                 }
               ]
             }
@@ -205,7 +221,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                     },
                     {
-                      "i128": "382188"
+                      "i128": "338008"
                     }
                   ]
                 }
@@ -230,7 +246,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "40599"
+                  "i128": "19881"
                 }
               ]
             }
@@ -410,6 +426,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "function"
                     },
                     "val": {
@@ -421,7 +445,7 @@
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "341589"
+                      "i128": "318127"
                     }
                   },
                   {
@@ -429,7 +453,7 @@
                       "symbol": "interval"
                     },
                     "val": {
-                      "u32": 219732
+                      "u32": 74423703
                     }
                   },
                   {
@@ -443,6 +467,14 @@
                   {
                     "key": {
                       "symbol": "last_run"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
                     },
                     "val": {
                       "u64": "0"
@@ -511,7 +543,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "341589"
+                "i128": "318127"
               }
             }
           },
@@ -532,7 +564,7 @@
                     "symbol": "TaskFingerprint"
                   },
                   {
-                    "bytes": "be98a48e582f0d68ce19bf7ae60d8ec206b909419d7f6da8562648e423b9fbc4"
+                    "bytes": "16dd79107c320180e73475e529fc7a4aa26f938482eaac55c301e5dd60bf503b"
                   }
                 ]
               },
@@ -584,10 +616,18 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "gas_balance"
                     },
                     "val": {
-                      "i128": "341589"
+                      "i128": "318127"
                     }
                   },
                   {
@@ -595,7 +635,7 @@
                       "symbol": "interval"
                     },
                     "val": {
-                      "u32": 219732
+                      "u32": 74423703
                     }
                   },
                   {
@@ -609,6 +649,14 @@
                   {
                     "key": {
                       "symbol": "last_run"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
                     },
                     "val": {
                       "u64": "0"
@@ -858,7 +906,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "341589"
+                        "i128": "318127"
                       }
                     }
                   ]
@@ -978,7 +1026,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "341589"
+                      "i128": "318127"
                     }
                   },
                   {
@@ -1030,7 +1078,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "85262"
+                      "i128": "52096"
                     }
                   },
                   {

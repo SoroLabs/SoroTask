@@ -153,6 +153,7 @@ export default async function RootLayout({
           >
             <AIAssistantProvider>
               <AppProviders>
+                <ClientInit />
                 <PriceTicker />
                 <CommandPalette />
                 <TransactionToasts />

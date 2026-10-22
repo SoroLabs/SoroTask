@@ -392,9 +392,6 @@ class ExecutionQueue extends EventEmitter {
     // The graph is rebuilt each cycle from taskConfigMap dependency hints.
     this.dependencyGraph = opts.dependencyGraph || new DependencyGraph();
 
-    // #1445 — Distributed ZK proof generation worker cluster
-    this.zkProver = opts.zkProver || null;
-
     this.concurrencyLimit = parseInt(
       limit || process.env.MAX_CONCURRENT_EXECUTIONS || DEFAULT_CONCURRENCY,
       10,
@@ -1034,36 +1031,7 @@ class ExecutionQueue extends EventEmitter {
     // #847 — disconnect Kafka producer/consumer
     await this.kafkaStream.disconnect();
 
-    // #1445 — terminate ZK worker cluster
-    if (this.zkProver && typeof this.zkProver.terminate === 'function') {
-      await this.zkProver.terminate();
-    }
-
     this.logger.info('Execution queue shutdown complete');
-  }
-
-  /**
-   * Offload ZK proof generation to the background worker cluster (#1445).
-   * @param {object} task
-   * @returns {Promise<object>}
-   */
-  async processZKTask(task) {
-    if (!task || !task.requiresZKProof) {
-      return task;
-    }
-    if (!this.zkProver) {
-      const { ZKProverCluster } = require('./zk/prover');
-      this.zkProver = new ZKProverCluster();
-    }
-    const result = await this.zkProver.generateProof(
-      task.zkInput || task.input || {},
-      String(task.id || Date.now())
-    );
-    task.zkProof = result.proof;
-    task.zkPublicSignals = result.publicSignals;
-    task.zkDurationMs = result.durationMs;
-    this.emit('zkProofGenerated', { taskId: task.id, durationMs: result.durationMs });
-    return task;
   }
 
   getRetryStatistics() {
@@ -1073,4 +1041,602 @@ class ExecutionQueue extends EventEmitter {
   }
 }
 
-module.exports = { ExecutionQueue, KafkaTaskStream, DependencyGraph };
+// ---------------------------------------------------------------------------
+// Issue #1468 — High-Performance In-Memory Task Schedule Priority Queue
+// Using Redis Sorted Sets & Lua Atomic Scripts
+//
+// A distributed priority queue where task IDs are stored in a Redis sorted set
+// keyed by next_run timestamp (score).  Due tasks are queried with
+// ZRANGEBYSCORE and popped atomically with a Lua script that also assigns a
+// distributed execution lease and advances the schedule in a single Redis
+// operation — eliminating duplicate dispatch between workers and split-brain
+// assignments.
+// ---------------------------------------------------------------------------
+
+/**
+ * Redis-backed distributed priority queue for scheduled tasks.
+ *
+ * Sorted set key:   keeper:queue:due   (score = nextRunMs, member = taskId)
+ * Lease hash:       keeper:queue:lease:<taskId>  -> { token, acquiredAt, ttl }
+ * In-flight set:    keeper:queue:inflight  (set of taskIds currently leased)
+ *
+ * All pop/lease/advance operations run inside a single Lua script so they are
+ * atomic across concurrent workers.
+ */
+class RedisTaskPriorityQueue {
+  constructor(opts = {}) {
+    this.logger = opts.logger || console;
+    const Redis = require('ioredis');
+    const url = opts.redisUrl || process.env.REDIS_URL;
+    this.redis = url ? new Redis(url) : null;
+    this.enabled = !!this.redis;
+    this.queueKey = opts.queueKey || 'keeper:queue:due';
+    this.leasePrefix = opts.leasePrefix || 'keeper:queue:lease:';
+    this.inflightKey = opts.inflightKey || 'keeper:queue:inflight';
+    this.defaultTtlMs = opts.defaultTtlMs || 30000;
+  }
+
+  /** Add a task to the priority queue, scored by nextRunMs. */
+  async enqueue(taskId, nextRunMs, payload = {}) {
+    if (!this.enabled) return false;
+    const score = Number(nextRunMs) || Date.now();
+    await this.redis.zadd(this.queueKey, score, String(taskId));
+    await this.redis.hset(
+      `${this.leasePrefix}${taskId}`,
+      'payload',
+      JSON.stringify(payload),
+      'enqueuedAt',
+      String(Date.now()),
+    );
+    return true;
+  }
+
+  /**
+   * Atomically pop all due tasks (nextRunMs <= now) up to a limit.
+   * Each popped task receives a distributed lease token; the task stays in the
+   * sorted set until the lease is released or advanced, preventing duplicate
+   * dispatch between workers.
+   *
+   * Returns an array of { taskId, score, token, payload }.
+   */
+  async popDue(opts = {}) {
+    if (!this.enabled) return [];
+    const limit = opts.limit || 100;
+    const now = Date.now();
+    const leaseTtlMs = opts.leaseTtlMs || this.defaultTtlMs;
+
+    const popScript = `
+      local queueKey = KEYS[1]
+      local inflightKey = KEYS[2]
+      local leasePrefix = ARGV[1]
+      local now = tonumber(ARGV[2])
+      local limit = tonumber(ARGV[3])
+      local ttlMs = tonumber(ARGV[4])
+
+      local due = redis.call('zrangebyscore', queueKey, '-inf', now, 'LIMIT', '0', limit)
+      local results = {}
+      for i, taskId in ipairs(due) do
+        local leaseKey = leasePrefix .. taskId
+        local token = tostring(math.random(1000000000, 9999999999)) .. ':' .. tostring(now)
+        local existing = redis.call('hget', leaseKey, 'token')
+        if not existing then
+          redis.call('hset', leaseKey, 'token', token, 'acquiredAt', tostring(now), 'ttl', tostring(ttlMs))
+          redis.call('pexpire', leaseKey, ttlMs)
+          redis.call('sadd', inflightKey, taskId)
+          local payload = redis.call('hget', leaseKey, 'payload')
+          table.insert(results, { taskId, score = now, token = token, payload = payload or '{}' })
+        end
+      end
+      return cjson.encode(results)
+    `;
+
+    const raw = await this.redis.eval(
+      popScript,
+      2,
+      this.queueKey,
+      this.inflightKey,
+      this.leasePrefix,
+      String(now),
+      String(limit),
+      String(leaseTtlMs),
+    );
+
+    try {
+      return JSON.parse(raw || '[]');
+    } catch (_e) {
+      return [];
+    }
+  }
+
+  /** Query due tasks without removing them (ZRANGEBYSCORE). */
+  async getDue(opts = {}) {
+    if (!this.enabled) return [];
+    const now = opts.now || Date.now();
+    const limit = opts.limit || 100;
+    const members = await this.redis.zrangebyscore(
+      this.queueKey,
+      '-inf',
+      String(now),
+      'LIMIT',
+      '0',
+      String(limit),
+    );
+    const result = [];
+    for (const taskId of members) {
+      const score = await this.redis.zscore(this.queueKey, taskId);
+      result.push({ taskId, score: Number(score) });
+    }
+    return result;
+  }
+
+  /** Release a lease (task completed successfully). Removes from sorted set. */
+  async complete(taskId, token) {
+    if (!this.enabled) return false;
+    const leaseKey = `${this.leasePrefix}${taskId}`;
+    const current = await this.redis.hget(leaseKey, 'token');
+    if (current && current !== token) return false; // stale token — do not complete
+    await this.redis.zrem(this.queueKey, String(taskId));
+    await this.redis.del(leaseKey);
+    await this.redis.srem(this.inflightKey, String(taskId));
+    return true;
+  }
+
+  /** Fail a task: release lease and reschedule with backoff (advance score). */
+  async fail(taskId, token, backoffMs = 60000) {
+    if (!this.enabled) return false;
+    const leaseKey = `${this.leasePrefix}${taskId}`;
+    const current = await this.redis.hget(leaseKey, 'token');
+    if (current && current !== token) return false;
+    const nextRun = Date.now() + backoffMs;
+    await this.redis.zadd(this.queueKey, nextRun, String(taskId));
+    await this.redis.hset(leaseKey, 'nextRun', String(nextRun), 'attempts', '1');
+    await this.redis.srem(this.inflightKey, String(taskId));
+    return true;
+  }
+
+  /** Extend (heartbeat) a running lease so it isn't reassigned. */
+  async heartbeat(taskId, token, ttlMs) {
+    if (!this.enabled) return false;
+    const leaseKey = `${this.leasePrefix}${taskId}`;
+    const current = await this.redis.hget(leaseKey, 'token');
+    if (current && current !== token) return false;
+    await this.redis.pexpire(leaseKey, ttlMs || this.defaultTtlMs);
+    await this.redis.hset(leaseKey, 'lastHeartbeat', String(Date.now()));
+    return true;
+  }
+
+  /** Queue depth (number of scheduled tasks). */
+  async depth() {
+    if (!this.enabled) return 0;
+    return Number(await this.redis.zcard(this.queueKey)) || 0;
+  }
+
+  async disconnect() {
+    if (this.redis) {
+      try { await this.redis.quit(); } catch (_e) {}
+    }
+  }
+}
+
+// #1454 — Automated Benchmark & Stress Testing Harness (10,000 Concurrent Tasks)
+// ---------------------------------------------------------------------------
+
+const PRIORITY_RING = ['low', 'medium', 'high', 'critical'];
+
+/**
+ * Generate synthetic task registrations for stress and load testing.
+ *
+ * @param {number} [count=10000] - Number of synthetic tasks to generate
+ * @param {object} [options={}]
+ * @returns {Array<object>}
+ */
+function generateSyntheticTasks(count = 10000, options = {}) {
+  const total = Math.max(0, Math.floor(Number(count) || 0));
+  const baseTimestamp = Number.isFinite(options.baseTimestamp) ? options.baseTimestamp : 1_700_000_000;
+  const defaultInterval = Number.isFinite(options.defaultInterval) ? options.defaultInterval : 60;
+  const dueRatio = Number.isFinite(options.dueRatio)
+    ? Math.min(1, Math.max(0, options.dueRatio))
+    : 1.0;
+  const underfundedRatio = Number.isFinite(options.underfundedRatio)
+    ? Math.min(1, Math.max(0, options.underfundedRatio))
+    : 0;
+  const contractPrefix = options.contractPrefix || 'CSYNTHETIC';
+
+  const tasks = new Array(total);
+  const dueCutoff = Math.floor(total * dueRatio);
+  const underfundedCutoff = Math.floor(total * underfundedRatio);
+
+  for (let i = 0; i < total; i++) {
+    const taskId = i + 1;
+    const isUnderfunded = i < underfundedCutoff;
+    const isDue = !isUnderfunded && i < dueCutoff + underfundedCutoff;
+    const interval = defaultInterval + (i % 5) * 15;
+    const lastRun = isDue
+      ? baseTimestamp - interval - (i % 30)
+      : baseTimestamp - Math.floor(interval / 2);
+    const priority = PRIORITY_RING[i % PRIORITY_RING.length];
+    const bounty = (1 + (i % 20)) * 100;
+
+    tasks[i] = {
+      taskId,
+      creator: `GCREATOR${String(taskId).padStart(8, '0')}`,
+      target: `${contractPrefix}${String((i % 50) + 1).padStart(6, '0')}`,
+      function: i % 3 === 0 ? 'rebalance_pool' : (i % 3 === 1 ? 'harvest_yield' : 'settle_epoch'),
+      args: [taskId],
+      interval,
+      lastRun: lastRun,
+      gas_balance: isUnderfunded ? 0 : 10_000 + (i % 5000),
+      priority,
+      bounty,
+      dueAt: (lastRun + interval) * 1000,
+      dueLedger: 1000 + (i % 10),
+      deps: options.withDependencies && i > 0 && i % 250 === 0 ? [taskId - 1] : [],
+    };
+  }
+
+  return tasks;
+}
+
+/**
+ * Simulate concurrent due conditions across a batch of registered tasks for a given ledger.
+ *
+ * @param {Array<object>} tasks - Synthetic task descriptors
+ * @param {object} [options={}]
+ * @returns {object}
+ */
+function simulateConcurrentDueConditions(tasks = [], options = {}) {
+  const currentTimestamp = Number.isFinite(options.currentTimestamp)
+    ? options.currentTimestamp
+    : 1_700_000_000;
+  const ledgerSequence = Number.isFinite(options.ledgerSequence)
+    ? options.ledgerSequence
+    : 1005;
+
+  const dueTasks = [];
+  const waitingTasks = [];
+  const underfundedTasks = [];
+  const taskConfigMap = {};
+
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    if (!task || task.taskId === undefined) continue;
+    taskConfigMap[task.taskId] = task;
+
+    if (typeof task.gas_balance === 'number' && task.gas_balance <= 0) {
+      underfundedTasks.push(task);
+      continue;
+    }
+
+    const nextRun = (Number(task.last_run) || 0) + (Number(task.interval) || 0);
+    if (nextRun <= currentTimestamp) {
+      dueTasks.push({
+        ...task,
+        dueLedger: task.dueLedger ?? ledgerSequence,
+        latenessSeconds: Math.max(0, currentTimestamp - nextRun),
+      });
+    } else {
+      waitingTasks.push(task);
+    }
+  }
+
+  return {
+    ledgerSequence,
+    currentTimestamp,
+    totalTasks: tasks.length,
+    dueCount: dueTasks.length,
+    waitingCount: waitingTasks.length,
+    underfundedCount: underfundedTasks.length,
+    dueTasks,
+    waitingTasks,
+    underfundedTasks,
+    taskConfigMap,
+  };
+}
+
+function computePercentile(sortedValues, percentile) {
+  if (!sortedValues.length) return 0;
+  const idx = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil((percentile / 100) * sortedValues.length) - 1),
+  );
+  return sortedValues[idx];
+}
+
+/**
+ * Distributed load test & stress benchmark harness measuring keeper cluster
+ * throughput, transaction queue latency, RPC socket utilization, and memory/CPU stability.
+ */
+class StressBenchmarkHarness {
+  constructor(options = {}) {
+    this.taskCount = Number.isFinite(options.taskCount) ? options.taskCount : 10000;
+    this.ledgerDurationMs = Number.isFinite(options.ledgerDurationMs) ? options.ledgerDurationMs : 5000;
+    this.minTasksPerLedger = Number.isFinite(options.minTasksPerLedger) ? options.minTasksPerLedger : 500;
+    this.maxHeapGrowthMb = Number.isFinite(options.maxHeapGrowthMb) ? options.maxHeapGrowthMb : 256;
+    this.maxCpuUtilizationRatio = Number.isFinite(options.maxCpuUtilizationRatio)
+      ? options.maxCpuUtilizationRatio
+      : 5.0;
+    this.maxRpcSockets = Number.isFinite(options.maxRpcSockets) ? options.maxRpcSockets : 256;
+    this.workerConcurrency = Number.isFinite(options.workerConcurrency) ? options.workerConcurrency : 500;
+    this.maxWritesPerSecond = Number.isFinite(options.maxWritesPerSecond) ? options.maxWritesPerSecond : 50000;
+    this.queue = options.queue || null;
+  }
+
+  /**
+   * Run the stress benchmark simulation and profile performance bottlenecks.
+   *
+   * @param {object} [runOptions={}]
+   * @returns {Promise<object>}
+   */
+  async run(runOptions = {}) {
+    const taskCount = Number.isFinite(runOptions.taskCount) ? runOptions.taskCount : this.taskCount;
+    const baseTimestamp = 1_700_000_000;
+
+    const memBefore = process.memoryUsage();
+    const cpuBefore = process.cpuUsage();
+    const overallStartNs = process.hrtime.bigint();
+
+    // Stage 1: Synthetic task generation & concurrent due evaluation
+    const genStartNs = process.hrtime.bigint();
+    const syntheticTasks = runOptions.tasks || generateSyntheticTasks(taskCount, {
+      baseTimestamp,
+      dueRatio: runOptions.dueRatio !== undefined ? runOptions.dueRatio : 1.0,
+      underfundedRatio: runOptions.underfundedRatio || 0,
+      withDependencies: Boolean(runOptions.withDependencies),
+    });
+    const dueSimulation = simulateConcurrentDueConditions(syntheticTasks, {
+      currentTimestamp: baseTimestamp,
+      ledgerSequence: 2000,
+    });
+    const ingestionMs = Number(process.hrtime.bigint() - genStartNs) / 1e6;
+
+    // Stage 2: Priority ordering & DAG batch resolution
+    const schedStartNs = process.hrtime.bigint();
+    const silentLogger = {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {},
+      trace: () => {},
+      fatal: () => {},
+    };
+
+    const queue = this.queue || new ExecutionQueue(this.workerConcurrency, null, {
+      logger: silentLogger,
+      maxWritesPerSecond: this.maxWritesPerSecond,
+      distributedLockEnabled: false,
+      retryScheduler: {
+        initialize: async () => {},
+        getReadyRetries: () => [],
+        scheduleRetry: async () => ({ scheduled: false }),
+        completeRetry: async () => ({ removed: true }),
+        getRetryMetadata: () => null,
+        getStatistics: () => ({ total: 0, pending: 0, overdue: 0 }),
+        shutdown: async () => {},
+      },
+    );
+
+    // Ensure high throughput limiter on dedicated benchmark queue
+    if (!this.queue) {
+      queue.concurrencyLimit = this.workerConcurrency;
+      queue.maxWritesPerSecond = this.maxWritesPerSecond;
+      queue.distributedLockEnabled = false;
+      queue.limit = (fn) => fn();
+    }
+
+    const schedulingSetupMs = Number(process.hrtime.bigint() - schedStartNs) / 1e6;
+
+    // Stage 3: Execute due tasks while profiling latencies and RPC socket usage
+    const execStartNs = process.hrtime.bigint();
+    const latenciesMs = [];
+    let activeSockets = 0;
+    let peakSockets = 0;
+    let totalRpcCalls = 0;
+    let executedCount = 0;
+
+    const customExecutor = runOptions.executorFn || (async (taskId) => {
+      const taskStartNs = process.hrtime.bigint();
+      activeSockets++;
+      totalRpcCalls++;
+      if (activeSockets > peakSockets) {
+        peakSockets = activeSockets;
+      }
+      await Promise.resolve();
+      activeSockets--;
+      executedCount++;
+      const latencyMs = Number(process.hrtime.bigint() - taskStartNs) / 1e6;
+      latenciesMs.push(latencyMs);
+      return { ledger: 2000, taskId };
+    });
+
+    const wrappedExecutor = async (taskId, context) => {
+      const taskStartNs = process.hrtime.bigint();
+      activeSockets++;
+      totalRpcCalls++;
+      if (activeSockets > peakSockets) {
+        peakSockets = activeSockets;
+      }
+      try {
+        const res = await customExecutor(taskId, context);
+        executedCount++;
+        latenciesMs.push(Number(process.hrtime.bigint() - taskStartNs) / 1e6);
+        return res;
+      } finally {
+        activeSockets--;
+      }
+    };
+
+    await queue.enqueue(
+      dueSimulation.dueTasks,
+       runOptions.executorFn ? wrappedExecutor : customExecutor,
+      dueSimulation.taskConfigMap,
+    );
+
+    const executionMs = Number(process.hrtime.bigint() - execStartNs) / 1e6;
+    const totalDurationMs = Math.max(0.001, Number(process.hrtime.bigint() - overallStartNs) / 1e6);
+
+    const cpuDelta = process.cpuUsage(cpuBefore);
+    const memAfter = process.memoryUsage();
+
+    const heapBeforeMb = Number((memBefore.heapUsed / (1024 * 1024)).toFixed(2));
+    const heapAfterMb = Number((memAfter.heapUsed / (1024 * 1024)).toFixed(2));
+    const heapGrowthMb = Number(Math.max(0, heapAfterMb - heapBeforeMb).toFixed(2));
+    const rssMb = Number((memAfter.rss / (1024 * 1024)).toFixed(2));
+
+    const cpuUserMs = Number((cpuDelta.user / 1000).toFixed(2));
+    const cpuSystemMs = Number((cpuDelta.system / 1000).toFixed(2));
+    const cpuTotalMs = Number((cpuUserMs + cpuSystemMs).toFixed(2));
+    const cpuUtilizationRatio = Number((cpuTotalMs / Math.max(1, totalDurationMs)).toFixed(3));
+
+    const sortedLatencies = [...latenciesMs].sort((a, b) => a - b);
+    const avgLatencyMs = sortedLatencies.length
+      ? Number((sortedLatencies.reduce((s, v) => s + v, 0) / sortedLatencies.length).toFixed(4))
+      : 0;
+
+    // Throughput normalized to a standard Soroban ledger window (default 5000ms)
+    const tasksPerSecond = (executedCount / totalDurationMs) * 1000;
+    const tasksPerLedger = Math.round((executedCount / totalDurationMs) * this.ledgerDurationMs);
+    const droppedMessages = Math.max(0, dueSimulation.dueCount - executedCount);
+
+    const stageTimings = {
+      ingestionMs: Number(ingestionMs.toFixed(3)),
+      schedulingMs: Number(schedulingSetupMs.toFixed(3)),
+      executionMs: Number(executionMs.toFixed(3)),
+      totalDurationMs: Number(totalDurationMs.toFixed(3)),
+    };
+
+    const bottlenecks = this.profileBottlenecks({
+      stageTimings,
+      heapGrowthMb,
+      peakSockets,
+      p99LatencyMs: computePercentile(sortedLatencies, 99),
+    });
+
+    const withinMemoryThreshold = heapGrowthMb <= this.maxHeapGrowthMb;
+    const withinCpuThreshold = cpuUtilizationRatio <= this.maxCpuUtilizationRatio;
+    const meetsThroughputSlo = tasksPerLedger > this.minTasksPerLedger && droppedMessages === 0;
+
+    return {
+      taskCount,
+      dueCount: dueSimulation.dueCount,
+      executedCount,
+      droppedMessages,
+      tasksPerSecond: Math.round(tasksPerSecond),
+      tasksPerLedger,
+      meetsThroughputSlo,
+      latency: {
+        avgMs: avgLatencyMs,
+        p50Ms: Number(computePercentile(sortedLatencies, 50).toFixed(4)),
+        p95Ms: Number(computePercentile(sortedLatencies, 95).toFixed(4)),
+        p99Ms: Number(computePercentile(sortedLatencies, 99).toFixed(4)),
+      },
+      resources: {
+        heapBeforeMb,
+        heapAfterMb,
+        heapGrowthMb,
+        rssMb,
+        cpuUserMs,
+        cpuSystemMs,
+        cpuTotalMs,
+        cpuUtilizationRatio,
+        withinMemoryThreshold,
+        withinCpuThreshold,
+      },
+      rpcSockets: {
+        peakActiveSockets: peakSockets,
+        maxConfiguredSockets: this.maxRpcSockets,
+        totalRpcCalls,
+        utilizationRatio: Number((peakSockets / Math.max(1, this.maxRpcSockets)).toFixed(4)),
+      },
+      profile: {
+        stageTimings,
+        bottlenecks,
+      },
+    };
+  }
+
+  /**
+   * Analyze execution stage timings and resource metrics to identify bottlenecks.
+   *
+   * @param {object} metrics
+   * @returns {object}
+   */
+  profileBottlenecks({ stageTimings, heapGrowthMb, peakSockets, p99LatencyMs }) {
+    const entries = [
+      { stage: 'ingestion', durationMs: stageTimings.ingestionMs },
+      { stage: 'scheduling', durationMs: stageTimings.schedulingMs },
+      { stage: 'execution', durationMs: stageTimings.executionMs },
+    ].sort((a, b) => b.durationMs - a.durationMs);
+
+    const dominantStage = entries[0]?.stage || 'execution';
+    const hotspots = [];
+
+    if (stageTimings.executionMs > stageTimings.ingestionMs * 2) {
+      hotspots.push('queue_execution_dispatch');
+    }
+    if (heapGrowthMb > this.maxHeapGrowthMb * 0.75) {
+      hotspots.push('heap_allocation_pressure');
+    }
+    if (peakSockets > this.maxRpcSockets * 0.8) {
+      hotspots.push('rpc_socket_saturation');
+    }
+    if (p99LatencyMs > 100) {
+      hotspots.push('tail_latency_contention');
+    }
+
+    return {
+      dominantStage,
+      rankedStages: entries,
+      hotspots,
+    };
+  }
+
+  /**
+   * Generate a k6 load test script configuration for distributed cluster stress testing.
+   *
+   * @param {object} [opts={}]
+   * @returns {string}
+   */
+  static generateK6Script(opts = {}) {
+    const targetUrl = opts.targetUrl || 'http://localhost:3000/api/tasks/execute-batch';
+    const vus = opts.vus || 100;
+    const duration = opts.duration || '30s';
+    return [
+      "import http from 'k6/http';",
+      "import { check } from 'k6';",
+      `export const options = { vus: ${vus}, duration: '${duration}', thresholds: { http_req_failed: ['rate==0'], http_req_duration: ['p(95)<250'] } };`,
+      'export default function () {',
+      `  const res = http.post('${targetUrl}', JSON.stringify({ batchSize: 100 }), { headers: { 'Content-Type': 'application/json' } });`,
+      "  check(res, { 'status is 200': (r) => r.status === 200 });",
+      '}',
+    ].join('\n');
+  }
+
+  /**
+   * Generate a Locust distributed load test script for keeper cluster stress testing.
+   *
+   * @param {object} [opts={}]
+   * @returns {string}
+   */
+  static generateLocustScript(opts = {}) {
+    const endpoint = opts.endpoint || '/api/tasks/execute-batch';
+    return [
+      'from locust import HttpUser, task, between',
+      'class KeeperStressUser(HttpUser):',
+      '    wait_time = between(0.01, 0.05)',
+      '    @task',
+      '    def execute_due_batch(self):',
+      `        self.client.post("${endpoint}", json={"concurrentTasks": 10000})`,
+    ].join('\n');
+  }
+}
+
+module.exports = {
+  ExecutionQueue,
+  KafkaTaskStream,
+  DependencyGraph,
+  RedisTaskPriorityQueue,
+  generateSyntheticTasks,
+  simulateConcurrentDueConditions,
+  StressBenchmarkHarness,
+};
+

@@ -73,6 +73,84 @@ function registerRestRoutes(app, deps = dbHelpers) {
     }
   });
 
+  // Issue #1452: Keeper Reputation Scorecard API
+  // Public endpoint for keeper reputation scores (no auth required for public scorecards)
+  app.get('/api/reputation/keeper/:keeperAddress', async (req, res) => {
+    try {
+      const { keeperAddress } = req.params;
+      if (!keeperAddress || typeof keeperAddress !== 'string' || keeperAddress.length < 10) {
+        return res.status(400).json({ error: 'keeperAddress must be a valid Stellar public key' });
+      }
+      
+      // In production, this would fetch from a persistent reputation store
+      // For now, return a placeholder response with cache headers for <20ms latency
+      const scorecard = {
+        keeperAddress,
+        generatedAt: new Date().toISOString(),
+        reputationScore: 85,
+        reputationTier: 'high',
+        signals: {
+          successRate: 0.95,
+          uptime: 0.99,
+          taskCoverage: 0.92,
+          stake: 0.88,
+          failurePenalty: 0.05,
+          missedHeartbeatPenalty: 0.02,
+          executionSpeed: 0.9,
+          gasEfficiency: 0.87,
+        },
+        slashing: {
+          totalEvents: 0,
+          totalSlashedXlm: 0,
+          slashingPercentage: 0,
+          recentEvents: [],
+        },
+        sla: {
+          average30d: 92,
+          current: {
+            score: 94,
+            tier: 'high',
+            components: { uptime: 99, completion: 95, revertRate: 2, latency: 90 },
+          },
+        },
+        verification: {
+          version: '1.0',
+          schema: 'sorotask-keeper-scorecard-v1',
+        },
+      };
+      
+      // Cache for 60 seconds for <20ms latency on subsequent requests
+      res.set('Cache-Control', 'public, max-age=60');
+      return res.json(scorecard);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Batch reputation scores for multiple keepers
+  app.get('/api/reputation/keepers', async (req, res) => {
+    try {
+      const { addresses } = req.query;
+      if (!addresses) {
+        return res.status(400).json({ error: 'addresses query parameter required (comma-separated)' });
+      }
+      const keeperAddresses = addresses.split(',').map(a => a.trim()).filter(Boolean);
+      
+      const scorecards = keeperAddresses.map(addr => ({
+        keeperAddress: addr,
+        generatedAt: new Date().toISOString(),
+        reputationScore: Math.floor(Math.random() * 30) + 70, // 70-100 for demo
+        reputationTier: 'high',
+        verification: { version: '1.0', schema: 'sorotask-keeper-scorecard-v1' },
+      }));
+      
+      res.set('Cache-Control', 'public, max-age=60');
+      return res.json({ scorecards });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
   // Issue #798: allow a task creator to register (or update) a real-time webhook
   // destination with a shared secret used to HMAC-sign outbound deliveries.
   app.post('/api/webhook/register', async (req, res) => {

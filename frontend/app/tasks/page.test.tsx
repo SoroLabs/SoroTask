@@ -5,6 +5,23 @@ import type { ReactNode } from "react";
 
 jest.mock("@/src/hooks/tasks", () => ({
   useTasks: jest.fn(),
+  usePauseTask: jest.fn(() => ({
+    isPending: false,
+    error: null,
+    mutate: jest.fn(),
+  })),
+  useResumeTask: jest.fn(() => ({
+    isPending: false,
+    error: null,
+    mutate: jest.fn(),
+  })),
+}));
+
+jest.mock("@/app/context/WalletContext", () => ({
+  useWalletOptional: () => ({
+    status: "disconnected",
+    session: null,
+  }),
 }));
 
 jest.mock("@/src/store/layoutStore", () => ({

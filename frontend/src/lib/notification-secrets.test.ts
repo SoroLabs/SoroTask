@@ -5,6 +5,7 @@ import {
   encryptChannelSecret,
   resolveChannelUrl,
   sendChannelTestPing,
+  validateNotificationEndpointUrl,
 } from "./notification-secrets";
 
 const WALLET_PUBLIC_KEY =
@@ -93,12 +94,42 @@ describe("channel test ping (issue #1263)", () => {
     const blocked = await sendChannelTestPing("webhook", "https://x.example", {
       fetchFn: throwing as unknown as typeof fetch,
     });
-    expect(bad).toEqual({ ok: false, error: "CORS blocked" });
+    expect(blocked).toEqual({ ok: false, error: "CORS blocked" });
   });
 
   it("fails fast without an endpoint", async () => {
     const result = await sendChannelTestPing("telegram", "", { fetchFn: jest.fn() });
     expect(result).toEqual({ ok: false, error: "No delivery endpoint configured" });
+  });
+});
+
+describe("validateNotificationEndpointUrl", () => {
+  it.each([
+    "http://hooks.example.com/path",
+    "https://localhost/hook",
+    "https://127.0.0.1/hook",
+    "https://[::1]/hook",
+    "https://service.internal/hook",
+    "https://user:pass@hooks.example.com/hook",
+  ])("rejects unsafe endpoint %s", (url) => {
+    expect(validateNotificationEndpointUrl(url)).toBeTruthy();
+  });
+
+  it("accepts an HTTPS endpoint on a public hostname", () => {
+    expect(
+      validateNotificationEndpointUrl("https://hooks.example.com/abc"),
+    ).toBeNull();
+  });
+
+  it("does not send a test ping to a blocked endpoint", async () => {
+    const fetchFn = jest.fn();
+
+    const result = await sendChannelTestPing("webhook", "http://localhost/hook", {
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 });
 

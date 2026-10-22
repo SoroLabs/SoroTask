@@ -9,6 +9,34 @@ export type ExternalChannelConfig = {
   secret: string;
 };
 
+export function validateNotificationEndpointUrl(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return "Enter a valid HTTPS endpoint URL";
+  }
+
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const isIpAddress =
+    /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) || hostname.includes(":");
+  const blockedSuffixes = [".localhost", ".local", ".internal", ".test", ".lan"];
+
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    isIpAddress ||
+    !hostname.includes(".") ||
+    hostname === "localhost" ||
+    blockedSuffixes.some((suffix) => hostname.endsWith(suffix))
+  ) {
+    return "Use an HTTPS URL with a public hostname (local and IP addresses are not allowed)";
+  }
+
+  return null;
+}
+
 function base64Encode(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -101,6 +129,11 @@ export async function sendChannelTestPing(
 ): Promise<{ ok: boolean; status?: number; error?: string }> {
   if (!url) {
     return { ok: false, error: "No delivery endpoint configured" };
+  }
+
+  const validationError = validateNotificationEndpointUrl(url);
+  if (validationError) {
+    return { ok: false, error: validationError };
   }
 
   const fetchFn = options.fetchFn ?? (typeof fetch === "function" ? fetch : undefined);

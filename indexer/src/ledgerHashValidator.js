@@ -11,6 +11,13 @@
  * This prevents the indexer from ingesting unconfirmed state transitions
  * during network partitions or transient RPC state rollbacks.
  *
+ * Features (Issue #1451):
+ * - Rolling buffer of last 64 block hashes (configurable)
+ * - Compare previous ledger hash on each block close
+ * - Reorg detection up to 16 blocks with automatic rollback
+ * - Automatic task re-queuing for invalidated executions
+ * - Zero phantom records guarantee in analytical database
+ *
  * Usage:
  *   const validator = new LedgerHashValidator({ rpc, db, windowSize: 64 });
  *   const isValid = await validator.validateNewLedger(ledgerSequence, prevHash);
@@ -22,6 +29,7 @@
 const { createLogger } = require('./logger');
 
 const DEFAULT_WINDOW_SIZE = 64;
+const DEFAULT_MAX_ROLLBACK_DEPTH = 16;
 const DEFAULT_LEDGER_TABLE = 'ledger_hash_window';
 
 class LedgerHashValidator {
@@ -30,15 +38,19 @@ class LedgerHashValidator {
    * @param {object} options.rpc - Stellar RPC server instance
    * @param {object} options.db - SQLite database connection
    * @param {number} [options.windowSize=64] - Size of the sliding window
+   * @param {number} [options.maxRollbackDepth=16] - Maximum rollback depth in blocks
    * @param {object} [options.logger] - Pino-compatible logger
    * @param {Function} [options.onRollback] - Callback invoked on rollback with details
+   * @param {Function} [options.requeueTasks] - Function to re-queue tasks after rollback
    */
   constructor(options = {}) {
     this.rpc = options.rpc;
     this.db = options.db;
     this.windowSize = options.windowSize || parseInt(process.env.LEDGER_HASH_WINDOW_SIZE, 10) || DEFAULT_WINDOW_SIZE;
+    this.maxRollbackDepth = options.maxRollbackDepth || parseInt(process.env.LEDGER_MAX_ROLLBACK_DEPTH, 10) || DEFAULT_MAX_ROLLBACK_DEPTH;
     this.logger = options.logger || createLogger('ledger-hash-validator');
     this.onRollback = options.onRollback || null;
+    this.requeueTasks = options.requeueTasks || null;
 
     // In-memory sliding window: Array<{ sequence: number, hash: string, prevHash: string }>
     this.window = [];
@@ -50,6 +62,7 @@ class LedgerHashValidator {
       rollbacks: 0,
       lastValidatedSequence: null,
       lastRollbackAt: null,
+      requeuedTasks: 0,
     };
 
     this._initialized = false;
@@ -167,12 +180,33 @@ class LedgerHashValidator {
   /**
    * Roll back the database state to a specific ledger sequence.
    * Deletes all events and tasks indexed after the rollback point.
+   * Re-queues affected tasks for re-processing.
    *
    * @param {number} rollbackToSequence - The ledger sequence to roll back to
-   * @returns {Promise<{ deletedEvents: number, deletedTasks: number }>}
+   * @returns {Promise<{ deletedEvents: number, deletedTasks: number, requeuedTasks: number, affectedTaskIds: number[] }>}
    */
   async rollbackToSequence(rollbackToSequence) {
-    this.logger.warn('Rolling back database state', { rollbackToSequence });
+    this.logger.warn('Rolling back database state', { rollbackToSequence, maxRollbackDepth: this.maxRollbackDepth });
+
+    // Validate rollback depth doesn't exceed maximum
+    const currentSequence = this.stats.lastValidatedSequence;
+    if (currentSequence && (currentSequence - rollbackToSequence) > this.maxRollbackDepth) {
+      this.logger.error('Rollback depth exceeds maximum allowed', {
+        currentSequence,
+        rollbackToSequence,
+        depth: currentSequence - rollbackToSequence,
+        maxDepth: this.maxRollbackDepth,
+      });
+      return { 
+        success: false, 
+        reason: 'rollback_depth_exceeded', 
+        depth: currentSequence - rollbackToSequence,
+        maxDepth: this.maxRollbackDepth 
+      };
+    }
+
+    // Find tasks affected by the rollback (those with events after rollback point)
+    const affectedTaskIds = await this._findAffectedTasks(rollbackToSequence);
 
     return new Promise((resolve, reject) => {
       this.db.serialize(() => {
@@ -209,7 +243,7 @@ class LedgerHashValidator {
           }
         );
 
-        this.db.run('COMMIT', (err) => {
+        this.db.run('COMMIT', async (err) => {
           if (err) {
             this.db.run('ROLLBACK', () => reject(err));
             return;
@@ -221,11 +255,52 @@ class LedgerHashValidator {
           // Trim window to the rollback point
           this.window = this.window.filter(e => e.sequence <= rollbackToSequence);
 
-          this._persistWindow().then(() => {
-            resolve({ deletedEvents, deletedTasks, rollbackToSequence });
-          }).catch(reject);
+          // Re-queue affected tasks if callback provided
+          let requeuedTasks = 0;
+          if (this.requeueTasks && affectedTaskIds.length > 0) {
+            try {
+              requeuedTasks = await this.requeueTasks(affectedTaskIds, rollbackToSequence);
+              this.stats.requeuedTasks += requeuedTasks;
+              this.logger.info('Re-queued tasks after rollback', { requeuedTasks, affectedTaskIds });
+            } catch (requeueErr) {
+              this.logger.error('Failed to re-queue tasks after rollback', { error: requeueErr.message });
+            }
+          }
+
+          await this._persistWindow().catch(persistErr => {
+            this.logger.error('Failed to persist window after rollback', { error: persistErr.message });
+          });
+
+          resolve({ 
+            deletedEvents, 
+            deletedTasks, 
+            requeuedTasks, 
+            affectedTaskIds,
+            rollbackToSequence 
+          });
         });
       });
+    });
+  }
+
+  /**
+   * Find task IDs that have events after the rollback sequence.
+   * These tasks need to be re-processed after rollback.
+   *
+   * @param {number} rollbackToSequence
+   * @returns {Promise<number[]>}
+   */
+  async _findAffectedTasks(rollbackToSequence) {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        'SELECT DISTINCT task_id FROM events WHERE ledger_sequence > ? AND task_id IS NOT NULL',
+        [rollbackToSequence],
+        (err, rows) => {
+          if (err) return reject(err);
+          const taskIds = rows ? rows.map(r => r.task_id).filter(id => id != null) : [];
+          resolve(taskIds);
+        }
+      );
     });
   }
 
@@ -234,7 +309,7 @@ class LedgerHashValidator {
    * common ancestor, and roll back the database.
    *
    * @param {Array} newChainLedgers - The new chain data to compare against
-   * @returns {Promise<{ success: boolean, ancestor?: object, rollback?: object }>}
+   * @returns {Promise<{ success: boolean, ancestor?: object, rollback?: object, reason?: string }>}
    */
   async rollbackToAncestor(newChainLedgers) {
     const ancestor = this.findCommonAncestor(newChainLedgers);
@@ -253,6 +328,11 @@ class LedgerHashValidator {
     });
 
     const rollback = await this.rollbackToSequence(ancestor.rollbackFrom);
+
+    // Check if rollback failed due to depth limit
+    if (!rollback.success) {
+      return rollback;
+    }
 
     // Invoke callback if provided
     if (this.onRollback) {
@@ -279,6 +359,25 @@ class LedgerHashValidator {
     return {
       window: [...this.window],
       stats: { ...this.stats },
+    };
+  }
+
+  /**
+   * Check if a rollback would exceed the maximum allowed depth.
+   *
+   * @param {number} targetSequence
+   * @returns {{ allowed: boolean, depth: number, maxDepth: number }}
+   */
+  checkRollbackDepth(targetSequence) {
+    const currentSequence = this.stats.lastValidatedSequence;
+    if (!currentSequence) {
+      return { allowed: true, depth: 0, maxDepth: this.maxRollbackDepth };
+    }
+    const depth = currentSequence - targetSequence;
+    return {
+      allowed: depth <= this.maxRollbackDepth,
+      depth,
+      maxDepth: this.maxRollbackDepth,
     };
   }
 

@@ -20,10 +20,8 @@
  * # What counts as a secret
  *
  * A Stellar secret seed is a 56-character base32 string beginning with `S`.
- * That is the shape the issue calls out and the one that loses user funds.
- * Public keys (`G...`) are deliberately *not* redacted: they are public by
- * definition, and stripping them would make most error reports useless for
- * debugging.
+ * Public Stellar account and contract addresses are also redacted to avoid
+ * turning telemetry into a wallet activity index.
  *
  * Also caught: BIP-39 mnemonics, JWTs, bearer tokens, private key PEM blocks,
  * and API-key-shaped strings.
@@ -55,6 +53,9 @@ const STELLAR_SECRET_KEY = /(?<![A-Z2-7])S[A-Z2-7]{55}(?![A-Z2-7])/g;
  */
 const STELLAR_MUXED_SECRET = /(?<![A-Z2-7])M[A-Z2-7]{68}(?![A-Z2-7])/g;
 
+/** Public Stellar account and contract identifiers are still user-identifying data. */
+const STELLAR_PUBLIC_ADDRESS = /(?<![A-Z2-7])[GC][A-Z2-7]{55}(?![A-Z2-7])/g;
+
 /** PEM-encoded private keys. */
 const PEM_PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
 
@@ -66,6 +67,10 @@ const AUTH_SCHEME = /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{12,}/gi;
 
 /** Common API key prefixes (Sentry DSNs, Stripe, GitHub, OpenAI, …). */
 const API_KEY_LIKE = /\b(sk|pk|rk|api|ghp|gho|ghs|ghu|github_pat|xox[baprs])[_-][A-Za-z0-9_-]{16,}\b/g;
+
+/** Amounts stated alongside balance/gas labels in free-text errors. */
+const BALANCE_VALUE =
+  /\b(?:balance|amount|gas|funds)\b(?:\s*(?:is|of|:|=))?\s*(?:[$]?\s*)\d+(?:[.,]\d+)*(?:\s*(?:xlm|stroops?))?/gi;
 
 /**
  * BIP-39 mnemonic: 12 / 15 / 18 / 21 / 24 lowercase words.
@@ -79,15 +84,12 @@ const MNEMONIC = /\b(?:[a-z]{3,8}\s+){11,23}[a-z]{3,8}\b/g;
 
 /** Key names whose *value* is always secret regardless of its shape. */
 const SENSITIVE_KEY_PATTERN =
-  /pass(word|phrase)?|secret|token|auth|cookie|session|credential|api[_-]?key|private[_-]?key|seed|mnemonic|signature|csrf|xsrf|pin|otp|cvv|ssn|social[_-]?security|credit[_-]?card|card[_-]?number/i;
+  /pass(word|phrase)?|secret|token|auth|cookie|session|credential|api[_-]?key|private[_-]?key|public[_-]?key|address|account[_-]?id|contract[_-]?id|seed|mnemonic|signature|csrf|xsrf|pin|otp|cvv|ssn|social[_-]?security|credit[_-]?card|card[_-]?number|balance|amount|available[_-]?funds|gas[_-]?balance/i;
 
 /**
- * Key names that hold a *public* value and must survive.
- *
- * Without this, `publicKey` matches the `key` rule and every report loses the
- * account it was about — which is most of the debugging value.
+ * Non-sensitive transaction metadata that can survive key-name filtering.
  */
-const SAFE_KEY_PATTERN = /^(public[_-]?key|pubkey|account[_-]?id|address|contract[_-]?id|tx[_-]?hash|ledger)$/i;
+const SAFE_KEY_PATTERN = /^(tx[_-]?hash|ledger)$/i;
 
 /** Longest string we will scan. Guards against a pathological payload. */
 const MAX_STRING_LENGTH = 100_000;
@@ -112,6 +114,8 @@ export function scrubString(input: string): string {
     .replace(MNEMONIC, REDACTED_MNEMONIC)
     .replace(STELLAR_SECRET_KEY, REDACTED_SECRET_KEY)
     .replace(STELLAR_MUXED_SECRET, REDACTED_SECRET_KEY)
+    .replace(STELLAR_PUBLIC_ADDRESS, REDACTED)
+    .replace(BALANCE_VALUE, REDACTED)
     .replace(JWT, REDACTED_TOKEN)
     .replace(AUTH_SCHEME, REDACTED_TOKEN)
     .replace(API_KEY_LIKE, REDACTED_TOKEN);
@@ -258,7 +262,10 @@ export function scrubEvent<T extends ScrubbableEvent>(event: T): T | null {
       delete scrubbedRest.ip_address;
       delete scrubbedRest.email;
       delete scrubbedRest.username;
-      out.user = id === undefined ? scrubbedRest : { id, ...scrubbedRest };
+      out.user =
+        id === undefined
+          ? scrubbedRest
+          : { id: scrubValue(id), ...scrubbedRest };
     }
 
     if (out.extra) out.extra = scrubValue(out.extra) as Record<string, unknown>;

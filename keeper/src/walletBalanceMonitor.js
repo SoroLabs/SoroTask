@@ -7,7 +7,7 @@
  *
  * Monitors the keeper account's native XLM balance at a configurable interval
  * (default 60 seconds). When balance drops below WARNING_THRESHOLD, multi-channel
- * alerts fire (PagerDuty, Discord, Telegram). When balance drops below
+ * alerts fire (PagerDuty, Discord, Telegram, Email). When balance drops below
  * CRITICAL_THRESHOLD, an automated balance sweep is triggered from a designated
  * funding cold wallet.
  *
@@ -22,6 +22,7 @@
  *   PAGERDUTY_ALERT_KEY               - PagerDuty integration key
  *   DISCORD_WALLET_ALERT_WEBHOOK      - Discord webhook URL
  *   TELEGRAM_WALLET_ALERT_WEBHOOK     - Telegram bot webhook URL
+ *   EMAIL_WALLET_ALERT_WEBHOOK        - Email webhook URL (SendGrid, Mailgun, etc.)
  *
  * Sliding burn-rate monitoring (issue #1215):
  *   WALLET_BURN_RATE_WINDOW_MS        - Sliding window for the burn rate
@@ -33,7 +34,7 @@
  */
 
 const { createLogger } = require('./logger');
-const { sendAlert } = require('./keeperAlerts');
+const { sendAlert, sendTelegramAlert, sendEmailAlert, KeeperAlertManager } = require('./keeperAlerts');
 
 const logger = createLogger('wallet-balance-monitor');
 
@@ -79,6 +80,7 @@ class WalletBalanceMonitor {
     this.pagerdutyKey = process.env.PAGERDUTY_ALERT_KEY || '';
     this.discordWebhook = process.env.DISCORD_WALLET_ALERT_WEBHOOK || '';
     this.telegramWebhook = process.env.TELEGRAM_WALLET_ALERT_WEBHOOK || '';
+    this.emailWebhook = process.env.EMAIL_WALLET_ALERT_WEBHOOK || '';
 
     this._intervalHandle = null;
     this._lastBalance = null;
@@ -151,6 +153,7 @@ class WalletBalanceMonitor {
         pagerduty: !!this.pagerdutyKey,
         discord: !!this.discordWebhook,
         telegram: !!this.telegramWebhook,
+        email: !!this.emailWebhook,
       },
       burnRateXlmPerHour: this.getBurnRateXlmPerHour(),
       runwayHours: this.getRunwayHours(),
@@ -324,7 +327,7 @@ class WalletBalanceMonitor {
   }
 
   /**
-   * Dispatch alerts to all configured channels (PagerDuty, Discord, Telegram).
+   * Dispatch alerts to all configured channels (PagerDuty, Discord, Telegram, Email).
    * Alerts are debounced to prevent spam.
    * @param {'warning'|'critical'} level
    * @param {object} details
@@ -353,6 +356,11 @@ class WalletBalanceMonitor {
     // Telegram
     if (this.telegramWebhook) {
       promises.push(this._sendTelegramAlert(details));
+    }
+
+    // Email
+    if (this.emailWebhook) {
+      promises.push(sendEmailAlert(this.emailWebhook, details.message, details, level));
     }
 
     if (promises.length === 0) {

@@ -87,6 +87,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "expiration_timestamp"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "function"
                       },
                       "val": {
@@ -120,6 +128,14 @@
                     {
                       "key": {
                         "symbol": "last_run"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_runs"
                       },
                       "val": {
                         "u64": "0"
@@ -997,6 +1013,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "function"
                     },
                     "val": {
@@ -1033,6 +1057,14 @@
                     },
                     "val": {
                       "u64": "99999"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -1171,6 +1203,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "gas_balance"
                     },
                     "val": {
@@ -1199,6 +1239,14 @@
                     },
                     "val": {
                       "u64": "99999"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -1871,7 +1919,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -1950,7 +1998,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2029,7 +2077,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2108,7 +2156,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2187,7 +2235,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2266,7 +2314,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2345,7 +2393,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2424,7 +2472,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2503,7 +2551,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2582,7 +2630,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2744,7 +2792,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2823,7 +2871,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2902,7 +2950,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -2975,89 +3023,6 @@
     {
       "event": {
         "ext": "v0",
-        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "type": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "FeeBreakdown"
-              },
-              {
-                "symbol": "v1"
-              },
-              {
-                "u64": "1"
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "base_fee"
-                  },
-                  "val": {
-                    "i128": "300"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "cpu_cost"
-                  },
-                  "val": {
-                    "i128": "0"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "cpu_instructions"
-                  },
-                  "val": {
-                    "u64": "0"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "mem_cost"
-                  },
-                  "val": {
-                    "i128": "0"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "memory_bytes"
-                  },
-                  "val": {
-                    "u64": "0"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "priority_tip"
-                  },
-                  "val": {
-                    "i128": "0"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "total"
-                  },
-                  "val": {
-                    "i128": "300"
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
         "contract_id": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
         "type": "contract",
         "body": {
@@ -3093,7 +3058,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"
@@ -3172,7 +3137,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "Task"
+                "symbol": "SoroTask"
               },
               {
                 "symbol": "StepExecuted"

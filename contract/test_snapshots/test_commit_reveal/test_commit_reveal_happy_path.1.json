@@ -44,6 +44,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "expiration_timestamp"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "function"
                       },
                       "val": {
@@ -84,10 +92,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "max_runs"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "permissions"
                       },
                       "val": {
-                        "u32": 15
+                        "u32": 31
                       }
                     },
                     {
@@ -556,6 +572,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "function"
                     },
                     "val": {
@@ -596,10 +620,18 @@
                   },
                   {
                     "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "permissions"
                     },
                     "val": {
-                      "u32": 15
+                      "u32": 31
                     }
                   },
                   {
@@ -631,6 +663,33 @@
                     "val": "void"
                   }
                 ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "TaskEscrow"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "i128": "1000"
               }
             }
           },
@@ -703,6 +762,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "expiration_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "gas_balance"
                     },
                     "val": {
@@ -735,10 +802,18 @@
                   },
                   {
                     "key": {
+                      "symbol": "max_runs"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "permissions"
                     },
                     "val": {
-                      "u32": 15
+                      "u32": 31
                     }
                   },
                   {
@@ -954,6 +1029,18 @@
                       },
                       "val": {
                         "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "TotalTaskEscrows"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "i128": "1000"
                       }
                     }
                   ]

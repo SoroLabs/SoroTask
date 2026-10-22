@@ -252,7 +252,7 @@ export function NotificationPreferenceCenter() {
           if (!endpointDraft.secret) {
             // Keep the previously stored secret when the field is untouched.
             externalEndpoints[channel] = {
-              url: externalEndpoints[channel].url || url,
+              url,
               secret: externalEndpoints[channel].secret,
             };
             continue;
@@ -489,7 +489,7 @@ export function NotificationPreferenceCenter() {
                       <input
                         aria-label={`${channelCopy[channel].label} endpoint URL`}
                         type="url"
-                        placeholder="https://…"
+                        placeholder="https://hooks.example.com/…"
                         value={externalEndpointDrafts[channel].url}
                         onChange={(event) => {
                           const value = event.target.value;

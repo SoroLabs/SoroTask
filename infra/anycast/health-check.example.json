@@ -1,0 +1,10 @@
+{
+  "_comment": "Example Route 53 health check for one regional keeper API gateway (BE-PROD-38, #1462). Replace the domain. /health is served by the keeper metrics server (keeper/src/metrics.js).",
+  "Type": "HTTPS",
+  "FullyQualifiedDomainName": "api-region-a.example.com",
+  "Port": 443,
+  "ResourcePath": "/health",
+  "RequestInterval": 10,
+  "FailureThreshold": 2,
+  "EnableSNI": true
+}

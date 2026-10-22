@@ -3,10 +3,12 @@ const { createRateLimiter } = require('./concurrency');
 const { DistributedRateLimiter } = require('./distributedRateLimiter');
 const { createLogger } = require('./logger');
 const { validateTaskPayload } = require('./taskValidator');
+const { BytecodeScanner } = require('./bytecodeScanner');
 const { TaskFilterChain } = require('./taskFilter');
 const { SimulationCache } = require('./simulationCache');
 const { TaskMetadataCache } = require('./taskMetadataCache');
 const { ReadBatcher } = require('./readBatcher');
+const { TaskReadinessPredictor } = require('./ml-execution-predictor');
 const crypto = require('crypto');
 
 function normalizeLogger(logger) {
@@ -35,9 +37,26 @@ class TaskPoller {
   constructor(server, contractId, options = {}) {
     this.server = server;
     this.contractId = contractId;
+    this.mempoolSniffer = options.mempoolSniffer || null;
 
     // Structured logger for poller module
     this.logger = normalizeLogger(options.logger);
+
+    // Issue #1472: Hot-reloadable operational parameters
+    this.gasThreshold = parseInt(
+      options.gasThreshold !== undefined ? options.gasThreshold : (this.config?.gasThreshold || this.config?.minGasThreshold || process.env.GAS_THRESHOLD || 0),
+      10,
+    );
+    this.rpcUrl = options.rpcUrl || (this.config?.rpcUrl) || process.env.SOROBAN_RPC_URL || null;
+    this.logLevel = options.logLevel || (this.config?.logLevel) || process.env.LOG_LEVEL || 'info';
+    this.pollIntervalMs = parseInt(
+      options.pollIntervalMs !== undefined ? options.pollIntervalMs : (this.config?.pollIntervalMs || process.env.POLLING_INTERVAL_MS || 10000),
+      10,
+    );
+    this.consulService = options.consulService || this.config?.consulService || null;
+    if (this.consulService && typeof this.consulService.subscribe === 'function') {
+      this.consulUnsubscribe = this.consulService.subscribe((changes) => this.hotReload(changes));
+    }
 
     // Optional pre-filter chain — eliminates non-actionable tasks before RPC calls
     this.filterChain = options.filterChain instanceof TaskFilterChain
@@ -47,6 +66,10 @@ class TaskPoller {
     this.config = options.config || null;
     this.historyManager = options.historyManager || null;
     this.resolverRuntime = options.resolverRuntime || null;
+    this.oracleAggregator = options.oracleAggregator || null;
+    this.fraudDetection = options.fraudDetection || null;
+    this.readinessPredictor = options.readinessPredictor || new TaskReadinessPredictor({ logger: this.logger });
+    this.bytecodeScanner = options.bytecodeScanner || new BytecodeScanner(options);
     this.resolverFailureMode = options.resolverFailureMode || process.env.RESOLVER_FAILURE_MODE || 'skip';
     this.shardLabel = options.shardLabel || null;
     this.driftWarningSeconds = parseInt(
@@ -174,6 +197,15 @@ class TaskPoller {
     } else {
       this.taskMetadataCache = null;
     }
+  }
+
+  startMempoolSniffer() {
+    if (this.mempoolSniffer && typeof this.mempoolSniffer.start === 'function') this.mempoolSniffer.start();
+    return this.mempoolSniffer;
+  }
+
+  stopMempoolSniffer() {
+    if (this.mempoolSniffer && typeof this.mempoolSniffer.stop === 'function') this.mempoolSniffer.stop();
   }
 
   /**
@@ -474,6 +506,10 @@ class TaskPoller {
       context.resolver = result.resolver;
     }
 
+    if (result.deps && Array.isArray(result.deps)) {
+      context.deps = result.deps;
+    }
+
     return {
       taskId: result.taskId,
       correlationId: result.correlationId,
@@ -490,6 +526,87 @@ class TaskPoller {
    * @param {Object} [options] - Additional options including correlationId
    * @returns {Promise<{isDue: boolean, taskId: number, reason?: string, correlationId?: string}>}
    */
+
+  /**
+   * Dynamic hot-reloading of keeper gas thresholds, RPC endpoints, and log levels
+   * without restarting active Node.js processes.
+   * Issue #1472.
+   *
+   * @param {Object} changes - Dynamic configuration changes
+   * @returns {Object} Hot-reload result
+   */
+  hotReload(changes) {
+    if (!changes || typeof changes !== 'object') {
+      return { applied: false, reason: 'invalid_changes' };
+    }
+
+    const appliedChanges = {};
+
+    // 1. Hot-reload gas thresholds
+    if (changes.gasThreshold !== undefined || changes.minGasThreshold !== undefined) {
+      const newGas = Number(changes.gasThreshold ?? changes.minGasThreshold);
+      if (Number.isFinite(newGas) && newGas >= 0) {
+        const old = this.gasThreshold;
+        this.gasThreshold = newGas;
+        appliedChanges.gasThreshold = { old, new: newGas };
+        this.logger.info('Hot-reloaded keeper gas threshold', { old, newGas });
+      }
+    }
+
+    // 2. Hot-reload RPC endpoints
+    if (changes.rpcUrl || (Array.isArray(changes.rpcUrls) && changes.rpcUrls.length > 0)) {
+      const newRpc = changes.rpcUrl || changes.rpcUrls[0];
+      if (typeof newRpc === 'string' && (newRpc.startsWith('http://') || newRpc.startsWith('https://'))) {
+        const old = this.rpcUrl;
+        this.rpcUrl = newRpc;
+        try {
+          const { rpc } = require('@stellar/stellar-sdk');
+          const Server = rpc?.Server;
+          if (Server) {
+            this.server = new Server(newRpc, { allowHttp: newRpc.startsWith('http://') });
+          }
+        } catch (_err) {
+          // ignore
+        }
+        appliedChanges.rpcUrl = { old, new: newRpc };
+        this.logger.info('Hot-reloaded keeper RPC endpoint', { old, newRpc });
+      }
+    }
+
+    // 3. Hot-reload log levels
+    if (changes.logLevel && typeof changes.logLevel === 'string') {
+      const validLevels = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
+      const normalizedLevel = changes.logLevel.toLowerCase();
+      if (validLevels.includes(normalizedLevel)) {
+        const old = this.logLevel;
+        this.logLevel = normalizedLevel;
+        process.env.LOG_LEVEL = normalizedLevel;
+        appliedChanges.logLevel = { old, new: normalizedLevel };
+        this.logger.info('Hot-reloaded keeper log level', { old, newLogLevel: normalizedLevel });
+      }
+    }
+
+    // 4. Hot-reload polling frequencies
+    if (changes.pollIntervalMs !== undefined) {
+      const newInterval = parseInt(changes.pollIntervalMs, 10);
+      if (newInterval >= 100) {
+        const old = this.pollIntervalMs;
+        this.pollIntervalMs = newInterval;
+        appliedChanges.pollIntervalMs = { old, new: newInterval };
+        this.logger.info('Hot-reloaded keeper poll interval', { old, newInterval });
+      }
+    }
+
+    if (this.config) {
+      Object.assign(this.config, changes);
+    }
+
+    return {
+      applied: true,
+      appliedChanges,
+    };
+  }
+
   async checkTask(taskId, currentTimestamp, registry, options = {}) {
     const correlationId = options.correlationId;
     const taskLogger = correlationId 
@@ -563,15 +680,38 @@ class TaskPoller {
         registry.updateTask(taskId, { ...taskConfig, status: taskConfig.gas_balance > 0 ? 'active' : 'low_gas' });
       }
 
+      // Pre-poll bytecode safety scanner (#1447)
+      if (this.bytecodeScanner) {
+        if (this.bytecodeScanner.isBlacklisted(taskConfig.target)) {
+          this.logger.warn('Task target contract is blacklisted due to bytecode vulnerability', {
+            taskId,
+            target: taskConfig.target,
+          });
+          return { isDue: false, taskId, reason: 'contract_blacklisted', correlationId };
+        }
+
+        if (taskConfig.bytecode) {
+          const scanResult = this.bytecodeScanner.scan(taskConfig.bytecode, { contractId: taskConfig.target });
+          if (!scanResult.safe) {
+            taskLogger.warn('Task contract bytecode failed static analysis', {
+              taskId,
+              target: taskConfig.target,
+              vulnerabilities: scanResult.vulnerabilities,
+            });
+            return { isDue: false, taskId, reason: 'vulnerable_bytecode', correlationId };
+          }
+        }
+      }
+
       // Validate task payload size and shape
-      const validation = validateTaskPayload(taskConfig, taskConfig.args || []);
+      const validation = validateTaskPayload(taskConfig, taskConfig.args || [], { scanner: this.bytecodeScanner });
       if (!validation.isValid) {
         this.logger.error('Task rejected due to malformed payload', { taskId, errors: validation.errors.join(', ') });
         return { isDue: false, taskId, reason: 'invalid_payload' };
       }
 
       // Check gas balance
-      if (taskConfig.gas_balance <= 0) {
+      if (taskConfig.gas_balance <= (this.gasThreshold ?? 0)) {
         this.logger.warn('Task has insufficient gas balance', { taskId, gasBalance: taskConfig.gas_balance });
         return { isDue: false, taskId, reason: 'skipped', secondsUntilDue: null, nextRunTime: null };
         taskLogger.warn('Task has insufficient gas balance', { taskId, gasBalance: taskConfig.gas_balance });
@@ -678,10 +818,53 @@ class TaskPoller {
         }
       }
 
+      // #1455 — Evaluate multi-source oracle price condition when configured
+      let oracleEvaluation = null;
+      if (isDue && this.oracleAggregator && (taskConfig.oracleCondition || taskConfig.oracle)) {
+        oracleEvaluation = await this.evaluateOracleGate(taskId, taskConfig, { taskLogger });
+        if (oracleEvaluation && !oracleEvaluation.isReady) {
+          isDue = false;
+          reason = oracleEvaluation.reason || 'oracle_not_ready';
+        }
+      }
+
+      // #1464 — Real-Time Anomaly Detection & Flash Loan Quarantine Gate
+      let anomalyEvaluation = null;
+      if (isDue && this.fraudDetection) {
+        if (typeof this.fraudDetection.isTaskQuarantined === 'function' && this.fraudDetection.isTaskQuarantined(taskId)) {
+          isDue = false;
+          reason = 'quarantined_anomaly';
+        } else if (taskConfig.executionTelemetry && typeof this.fraudDetection.evaluateFlashLoanAnomaly === 'function') {
+          anomalyEvaluation = this.fraudDetection.evaluateFlashLoanAnomaly({
+            taskId,
+            ...taskConfig.executionTelemetry,
+          });
+          if (anomalyEvaluation.isAnomalous) {
+            isDue = false;
+            reason = 'quarantined_anomaly';
+            taskLogger.warn('Task auto-paused by anomaly detection engine before execution', {
+              taskId,
+              anomalyScore: anomalyEvaluation.anomalyScore,
+              reasons: anomalyEvaluation.reasons,
+            });
+          }
+        }
+      }
+
+      // #1429 — Predictive task readiness ML model ahead of block close
+      let readinessPrediction = null;
+      if (this.readinessPredictor) {
+        readinessPrediction = this.readinessPredictor.predictReadiness(taskConfig, {
+          timestamp: currentTimestamp,
+          sequence: this.lastObservedLedger || 1000,
+        });
+      }
+
       return {
         isDue,
         taskId,
         reason,
+        deps: taskConfig.deps || [],
         lateness: isDue ? lateness : 0,
         isUnacceptablyLate,
         correlationId,
@@ -692,6 +875,9 @@ class TaskPoller {
         driftSeconds,
         driftSeverity,
         resolver,
+        oracle: oracleEvaluation,
+        anomaly: anomalyEvaluation,
+        readiness: readinessPrediction,
       };
 
     } catch (error) {
@@ -715,6 +901,35 @@ class TaskPoller {
     }
 
     return null;
+  }
+
+  /**
+   * #1455 — Evaluate multi-source oracle condition for an oracle-dependent task.
+   *
+   * @param {number} taskId
+   * @param {object} taskConfig
+   * @param {object} [options={}]
+   * @returns {Promise<object|null>}
+   */
+  async evaluateOracleGate(taskId, taskConfig, options = {}) {
+    const condition = taskConfig && (taskConfig.oracleCondition || taskConfig.oracle);
+    if (!condition || !this.oracleAggregator) {
+      return null;
+    }
+    const taskLogger = options.taskLogger || this.logger;
+    try {
+      return await this.oracleAggregator.evaluatePriceCondition(condition);
+    } catch (error) {
+      taskLogger.error('Oracle condition evaluation failed', {
+        taskId,
+        error: error.message,
+      });
+      return {
+        isReady: false,
+        reason: 'oracle_error',
+        error: error.message,
+      };
+    }
   }
 
   async evaluateResolverGate(taskId, taskConfig, currentTimestamp, options = {}) {
@@ -914,6 +1129,8 @@ class TaskPoller {
       if (raw.args !== undefined) config.args = raw.args;
       if (raw.resolver !== undefined) config.resolver = raw.resolver;
       if (raw.whitelist !== undefined) config.whitelist = raw.whitelist;
+      if (raw.deps !== undefined) config.deps = raw.deps;
+      if (raw.dependencies !== undefined) config.deps = raw.dependencies;
 
       return config;
     } catch (error) {

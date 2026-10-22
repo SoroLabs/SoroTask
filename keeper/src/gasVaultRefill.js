@@ -223,6 +223,9 @@ class GasVaultRefillMonitor {
     this.getSourceAssetBalance = options.getSourceAssetBalance;
     this.triggerThresholdXlm = options.triggerThresholdXlm ?? 30;
     this.targetBalanceXlm = options.targetBalanceXlm ?? 100;
+    this.maxHotBalanceXlm = options.maxHotBalanceXlm ?? this.targetBalanceXlm * 2;
+    this.sweepToColdStorage = options.sweepToColdStorage;
+    this.emergencyTopUpXlm = options.emergencyTopUpXlm ?? this.targetBalanceXlm;
     this.routerContractId = options.routerContractId;
     this.sourceAssetContractIds = options.sourceAssetContractIds || [];
     this.xlmContractId = options.xlmContractId;
@@ -278,6 +281,11 @@ class GasVaultRefillMonitor {
     }
 
     const xlmBalance = await this.getXlmBalance();
+    if (xlmBalance > this.maxHotBalanceXlm && this.sweepToColdStorage) {
+      const amountXlm = xlmBalance - this.targetBalanceXlm;
+      const swept = await this.sweepToColdStorage(amountXlm);
+      return { triggered: false, rebalanced: true, reason: 'excess_hot_balance', xlmBalance, amountXlm, swept };
+    }
     if (xlmBalance >= this.triggerThresholdXlm) {
       return { triggered: false, reason: 'above_threshold', xlmBalance };
     }

@@ -42,16 +42,34 @@ const rpc = new SorobanRpc.Server(RPC_URL, { allowHttp: RPC_URL.startsWith("http
 const contract = new Contract(CONTRACT_ID);
 
 // Database connection is handled by the PostgreSQL pool in ./graphql/db.js (Issue #1064)
-// Initialize ledger hash validator for reorg detection (Issue #1065)
+// Initialize ledger hash validator for reorg detection (Issue #1065, #1451)
 const ledgerHashValidator = new LedgerHashValidator({
   rpc,
   db,
   windowSize: parseInt(process.env.LEDGER_HASH_WINDOW_SIZE, 10) || 64,
+  maxRollbackDepth: parseInt(process.env.LEDGER_MAX_ROLLBACK_DEPTH, 10) || 16,
   onRollback: async (details) => {
-    console.error(`[ReorgRollback] Rolled back to ledger ${details.rollback.rollbackToSequence}`, {
-      deletedEvents: details.rollback.deletedEvents,
-      deletedTasks: details.rollback.deletedTasks,
+    console.error(`[ReorgRollback] Rolled back to ledger ${details.rollback?.rollbackToSequence ?? details.rollback?.rollbackToSequence}`, {
+      deletedEvents: details.rollback?.deletedEvents,
+      deletedTasks: details.rollback?.deletedTasks,
+      requeuedTasks: details.rollback?.requeuedTasks,
+      affectedTaskIds: details.rollback?.affectedTaskIds,
     });
+  },
+  requeueTasks: async (taskIds, rollbackToSequence) => {
+    console.log(`[ReorgRecovery] Re-queuing ${taskIds.length} tasks after rollback to ledger ${rollbackToSequence}`);
+    // Re-fetch on-chain state for each affected task and re-reconcile
+    let requeued = 0;
+    for (const taskId of taskIds) {
+      try {
+        // Trigger reconciliation for this task to get latest on-chain state
+        await reconcileTask(taskId);
+        requeued++;
+      } catch (err) {
+        console.error(`[ReorgRecovery] Failed to re-queue task ${taskId}:`, err.message);
+      }
+    }
+    return requeued;
   },
 });
 
@@ -242,7 +260,14 @@ async function handleEvent(event) {
   // After storing event, reconcile this task to ensure state is correct
   if (taskId) {
     await reconcileTask(taskId);
-    cacheInvalidator.invalidateForEvent(name, taskId, JSON.parse(dataJson || '{}'));
+    const parsedData = JSON.parse(dataJson || '{}');
+    cacheInvalidator.invalidateForEvent(name, taskId, parsedData);
+    await cacheInvalidator.handleDatabaseMutation({
+      table: 'events',
+      operation: name,
+      taskId,
+      record: parsedData,
+    });
   }
 }
 
@@ -321,8 +346,17 @@ function upsertTask(task) {
       task.is_active ? 1 : 0,
       task.blocked_by_json || JSON.stringify([]),
       (err) => {
-        if (err) reject(err);
-        else resolve();
+        if (err) {
+          reject(err);
+        } else {
+          void cacheInvalidator.handleDatabaseMutation({
+            table: 'tasks',
+            operation: 'UPSERT',
+            taskId: task.task_id,
+            record: task,
+          });
+          resolve();
+        }
       }
     );
     stmt.finalize();
@@ -721,8 +755,18 @@ const DEBEZIUM_CONNECTOR_CONFIG = {
 };
 
 async function publishCDCMutation(producer, topic, mutationEvent) {
+  const afterRecord = mutationEvent?.payload?.after || null;
+  const beforeRecord = mutationEvent?.payload?.before || null;
+  const key = afterRecord?.id ?? afterRecord?.task_id ?? beforeRecord?.id ?? beforeRecord?.task_id ?? null;
+
+  await cacheInvalidator.handleDatabaseMutation({
+    table: mutationEvent?.payload?.source?.table || 'tasks',
+    operation: mutationEvent?.payload?.op || 'UPDATE',
+    taskId: key,
+    record: afterRecord || beforeRecord || {},
+  });
+
   if (!producer || typeof producer.send !== 'function') return;
-  const key = mutationEvent?.payload?.after?.id || mutationEvent?.payload?.before?.id || null;
   await producer.send({
     topic: topic || process.env.KEEPER_CDC_TOPIC || 'sorotask.cdc.keeper.mutations',
     messages: [
@@ -734,12 +778,23 @@ async function publishCDCMutation(producer, topic, mutationEvent) {
   });
 }
 
+function configureEdgeCdnRules(surrogateKeys = ['tasks:all'], options = {}) {
+  return cacheInvalidator.buildCdnCacheHeaders(surrogateKeys, options);
+}
+
+async function triggerEdgeCachePurge(surrogateKeys = []) {
+  return cacheInvalidator.purgeEdgeCache(surrogateKeys);
+}
+
 module.exports = {
   handleEvent,
   reconcileTask,
   reconcileAll,
   HighAvailabilityManager,
   CacheInvalidationEngine,
+  cacheInvalidator,
+  configureEdgeCdnRules,
+  triggerEdgeCachePurge,
   ParallelLedgerParser,
   DEBEZIUM_CONNECTOR_CONFIG,
   publishCDCMutation,

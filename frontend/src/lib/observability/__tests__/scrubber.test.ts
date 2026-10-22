@@ -31,8 +31,7 @@ describe("containsStellarSecret", () => {
   });
 
   it("does not flag a public key", () => {
-    // Public keys are public. Redacting them would strip the account an error
-    // report is about, which is most of its debugging value.
+    // Public identifiers are scrubbed separately from secret seeds.
     expect(containsStellarSecret(PUBLIC_KEY)).toBe(false);
   });
 
@@ -68,8 +67,13 @@ describe("scrubString", () => {
     expect(containsStellarSecret(out)).toBe(false);
   });
 
-  it("leaves a public key intact", () => {
-    expect(scrubString(`account ${PUBLIC_KEY}`)).toContain(PUBLIC_KEY);
+  it("redacts public wallet addresses from diagnostics", () => {
+    expect(scrubString(`account ${PUBLIC_KEY}`)).not.toContain(PUBLIC_KEY);
+  });
+
+  it("redacts balances from free-text diagnostics", () => {
+    expect(scrubString("balance 123.45 XLM")).not.toContain("123.45");
+    expect(scrubString("gas: 950 stroops")).not.toContain("950");
   });
 
   it("redacts a BIP-39-shaped mnemonic", () => {
@@ -114,11 +118,12 @@ describe("isSensitiveKey", () => {
     }
   });
 
-  it("spares names that hold public values", () => {
-    // `publicKey` contains "key"; without the allow-list every report would
-    // lose the account it was about.
-    for (const key of ["publicKey", "accountId", "address", "contractId", "txHash"]) {
+  it("spares non-sensitive transaction metadata", () => {
+    for (const key of ["txHash", "ledger"]) {
       expect(isSensitiveKey(key)).toBe(false);
+    }
+    for (const key of ["publicKey", "accountId", "address", "contractId", "balance", "amount"]) {
+      expect(isSensitiveKey(key)).toBe(true);
     }
   });
 });
@@ -252,7 +257,7 @@ describe("scrubEvent", () => {
     expect(scrubbed?.user?.username).toBeUndefined();
   });
 
-  it("keeps the debugging context that carries no secret", () => {
+  it("keeps non-sensitive debugging context and redacts wallet addresses", () => {
     // Over-redaction makes reports useless, which is its own failure mode.
     const scrubbed = scrubEvent({
       message: "Contract call reverted",
@@ -262,7 +267,7 @@ describe("scrubEvent", () => {
 
     expect(scrubbed?.message).toBe("Contract call reverted");
     expect(scrubbed?.tags?.section).toBe("task-detail");
-    expect(scrubbed?.extra?.publicKey).toBe(PUBLIC_KEY);
+    expect(scrubbed?.extra?.publicKey).toBe(REDACTED);
     expect(scrubbed?.extra?.ledger).toBe(55123);
   });
 

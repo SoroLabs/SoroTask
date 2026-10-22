@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sorotask-keeper.fullname" . }}
+  labels:
+    {{- include "sorotask-keeper.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "sorotask-keeper.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sorotask-keeper.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: keeper
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http-metrics
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: METRICS_PORT
+              value: {{ .Values.service.port | quote }}
+            - name: SHUTDOWN_DRAIN_TIMEOUT_MS
+              value: {{ .Values.drain.timeoutMs | quote }}
+            - name: SOROBAN_RPC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sorotask-keeper.secretName" . }}
+                  key: SOROBAN_RPC_URL
+            - name: NETWORK_PASSPHRASE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sorotask-keeper.secretName" . }}
+                  key: NETWORK_PASSPHRASE
+            - name: CONTRACT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sorotask-keeper.secretName" . }}
+                  key: CONTRACT_ID
+            - name: KEEPER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sorotask-keeper.secretName" . }}
+                  key: KEEPER_SECRET
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sorotask-keeper.secretName" . }}
+                  key: REDIS_URL
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - "sleep {{ .Values.drain.preStopSleepSeconds }} && kill -TERM 1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http-metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http-metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
