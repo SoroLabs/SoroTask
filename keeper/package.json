@@ -24,7 +24,9 @@
     "bench:compare": "node benchmarks/compare.js",
     "chaos-test": "node scripts/chaos-test.js run",
     "chaos-test:list": "node scripts/chaos-test.js list",
-    "chaos-test:single": "node scripts/chaos-test.js single"
+    "chaos-test:single": "node scripts/chaos-test.js single",
+    "helm:lint": "node scripts/validate-helm-keda.js",
+    "k8s:validate": "node scripts/validate-helm-keda.js"
   },
   "keywords": [
     "soroban",

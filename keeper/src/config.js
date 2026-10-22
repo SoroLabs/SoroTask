@@ -27,6 +27,361 @@ function parseList(value) {
     .filter(Boolean);
 }
 
+const VALID_LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
+
+/**
+ * Validates dynamic configuration updates before applying them.
+ * Rejects invalid configurations automatically.
+ */
+function validateConfiguration(newConfig) {
+  const errors = [];
+  if (!newConfig || typeof newConfig !== 'object') {
+    return { isValid: false, errors: ['Configuration must be a non-null object'] };
+  }
+
+  // Validate log level
+  if (newConfig.logLevel !== undefined) {
+    if (
+      typeof newConfig.logLevel !== 'string' ||
+      !VALID_LOG_LEVELS.includes(newConfig.logLevel.toLowerCase())
+    ) {
+      errors.push(
+        `Invalid logLevel: "${newConfig.logLevel}". Must be one of: ${VALID_LOG_LEVELS.join(', ')}`
+      );
+    }
+  }
+
+  // Validate RPC endpoints
+  if (newConfig.rpcUrl !== undefined) {
+    if (
+      typeof newConfig.rpcUrl !== 'string' ||
+      (!newConfig.rpcUrl.startsWith('http://') && !newConfig.rpcUrl.startsWith('https://'))
+    ) {
+      errors.push(`Invalid rpcUrl: "${newConfig.rpcUrl}". Must be a valid HTTP/HTTPS URL.`);
+    }
+  }
+  if (newConfig.rpcUrls !== undefined) {
+    if (
+      !Array.isArray(newConfig.rpcUrls) ||
+      newConfig.rpcUrls.length === 0 ||
+      !newConfig.rpcUrls.every(
+        (u) => typeof u === 'string' && (u.startsWith('http://') || u.startsWith('https://'))
+      )
+    ) {
+      errors.push('Invalid rpcUrls list. Must be non-empty array of valid HTTP/HTTPS URLs.');
+    }
+  }
+
+  // Validate gas thresholds
+  if (newConfig.gasThreshold !== undefined) {
+    const val = Number(newConfig.gasThreshold);
+    if (!Number.isFinite(val) || val < 0) {
+      errors.push(`Invalid gasThreshold: "${newConfig.gasThreshold}". Must be a non-negative number.`);
+    }
+  }
+  if (newConfig.minGasThreshold !== undefined) {
+    const val = Number(newConfig.minGasThreshold);
+    if (!Number.isFinite(val) || val < 0) {
+      errors.push(`Invalid minGasThreshold: "${newConfig.minGasThreshold}". Must be a non-negative number.`);
+    }
+  }
+
+  // Validate polling interval
+  if (newConfig.pollIntervalMs !== undefined) {
+    const val = Number(newConfig.pollIntervalMs);
+    if (!Number.isFinite(val) || val < 100) {
+      errors.push(`Invalid pollIntervalMs: "${newConfig.pollIntervalMs}". Must be >= 100ms.`);
+    }
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Continuous Configuration Drift Detection and Dynamic Hot-Reload Service via HashiCorp Consul.
+ * Issue #1472.
+ */
+class ConsulConfigService {
+  constructor(options = {}) {
+    this.consulAddr =
+      options.consulAddr ||
+      process.env.CONSUL_HTTP_ADDR ||
+      process.env.CONSUL_ADDR ||
+      'http://127.0.0.1:8500';
+    this.consulToken =
+      options.consulToken ||
+      process.env.CONSUL_HTTP_TOKEN ||
+      process.env.CONSUL_TOKEN ||
+      null;
+    this.kvPrefix = options.kvPrefix || process.env.CONSUL_KV_PREFIX || 'sorotask/keeper';
+    this.watchIntervalMs = options.watchIntervalMs || 300; // < 500ms propagation
+    this.logger = options.logger || createLogger('consul-config');
+    this.activeConfig = options.initialConfig || null;
+    this.subscribers = new Set();
+    this.watchTimer = null;
+    this.isWatching = false;
+
+    // In-memory KV fallback for offline / mock testing
+    this.mockKV = new Map();
+  }
+
+  /**
+   * Migrate static environment variables or config object to Consul KV store
+   */
+  async migrateStaticToConsul(staticConfig) {
+    const cfg = staticConfig || this.activeConfig || {};
+    const flatEntries = this._flatten(cfg);
+    const results = [];
+
+    for (const [key, value] of Object.entries(flatEntries)) {
+      if (value === undefined || value === null) continue;
+      const consulKey = `${this.kvPrefix}/${key}`;
+      const strVal = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      await this.setKV(consulKey, strVal);
+      results.push({ key: consulKey, value: strVal });
+    }
+
+    this.logger.info(`Migrated ${results.length} static config keys to Consul KV store`);
+    return results;
+  }
+
+  /**
+   * Fetch a key from Consul KV
+   */
+  async getKV(key) {
+    const url = `${this.consulAddr.replace(/\/$/, '')}/v1/kv/${key.replace(/^\//, '')}`;
+    try {
+      const headers = {};
+      if (this.consulToken) headers['X-Consul-Token'] = this.consulToken;
+      const res = await globalThis.fetch(url, { headers });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`Consul HTTP ${res.status}`);
+      const json = await res.json();
+      if (Array.isArray(json) && json[0]?.Value) {
+        return Buffer.from(json[0].Value, 'base64').toString('utf8');
+      }
+      return null;
+    } catch {
+      return this.mockKV.get(key) ?? null;
+    }
+  }
+
+  /**
+   * Set a key in Consul KV
+   */
+  async setKV(key, value) {
+    const strVal = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    this.mockKV.set(key, strVal);
+
+    const url = `${this.consulAddr.replace(/\/$/, '')}/v1/kv/${key.replace(/^\//, '')}`;
+    try {
+      const headers = { 'Content-Type': 'text/plain' };
+      if (this.consulToken) headers['X-Consul-Token'] = this.consulToken;
+      await globalThis.fetch(url, {
+        method: 'PUT',
+        headers,
+        body: strVal,
+      });
+    } catch {
+      // Retained in mockKV fallback
+    }
+  }
+
+  /**
+   * Fetch all KV entries under kvPrefix from Consul
+   */
+  async fetchAllFromConsul() {
+    const url = `${this.consulAddr.replace(/\/$/, '')}/v1/kv/${this.kvPrefix}/?recurse=true`;
+    const fetched = {};
+
+    try {
+      const headers = {};
+      if (this.consulToken) headers['X-Consul-Token'] = this.consulToken;
+      const res = await globalThis.fetch(url, { headers });
+      if (res.ok) {
+        const items = await res.json();
+        if (Array.isArray(items)) {
+          for (const item of items) {
+            const relKey = item.Key.replace(new RegExp(`^${this.kvPrefix}/`), '');
+            if (item.Value) {
+              const decoded = Buffer.from(item.Value, 'base64').toString('utf8');
+              fetched[relKey] = this._parseValue(decoded);
+            }
+          }
+        }
+      }
+    } catch {
+      for (const [k, v] of this.mockKV.entries()) {
+        if (k.startsWith(this.kvPrefix)) {
+          const relKey = k.replace(new RegExp(`^${this.kvPrefix}/`), '');
+          fetched[relKey] = this._parseValue(v);
+        }
+      }
+    }
+
+    return fetched;
+  }
+
+  /**
+   * Continuous Configuration Drift Detection.
+   * Compares active in-memory configuration against Consul KV store.
+   */
+  async detectDrift() {
+    const consulConfig = await this.fetchAllFromConsul();
+    const active = this.activeConfig || {};
+    const drifts = [];
+
+    for (const [key, remoteVal] of Object.entries(consulConfig)) {
+      const localVal = active[key];
+      if (localVal !== undefined && String(localVal) !== String(remoteVal)) {
+        drifts.push({
+          key,
+          activeValue: localVal,
+          consulValue: remoteVal,
+        });
+      }
+    }
+
+    return {
+      hasDrift: drifts.length > 0,
+      driftCount: drifts.length,
+      drifts,
+    };
+  }
+
+  /**
+   * Start Consul watch daemon with < 500ms propagation interval
+   */
+  startWatchDaemon(onReload) {
+    if (this.isWatching) return;
+    this.isWatching = true;
+
+    if (typeof onReload === 'function') {
+      this.subscribe(onReload);
+    }
+
+    this.watchTimer = setInterval(async () => {
+      try {
+        const consulConfig = await this.fetchAllFromConsul();
+        if (Object.keys(consulConfig).length === 0) return;
+
+        const active = this.activeConfig || {};
+        const changed = {};
+        for (const [k, v] of Object.entries(consulConfig)) {
+          if (active[k] === undefined || String(active[k]) !== String(v)) {
+            changed[k] = v;
+          }
+        }
+
+        if (Object.keys(changed).length > 0) {
+          this.hotReload(changed);
+        }
+      } catch (err) {
+        this.logger.debug('Consul watch check error:', { error: err.message });
+      }
+    }, this.watchIntervalMs);
+
+    this.logger.info(`Consul watch daemon started (interval: ${this.watchIntervalMs}ms)`);
+  }
+
+  /**
+   * Stop Consul watch daemon
+   */
+  stopWatchDaemon() {
+    if (this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
+    this.isWatching = false;
+    this.logger.info('Consul watch daemon stopped');
+  }
+
+  /**
+   * Hot-reloads configuration in memory without restarting active process.
+   * Automatically rejects invalid configurations.
+   */
+  hotReload(changes) {
+    const validation = validateConfiguration(changes);
+    if (!validation.isValid) {
+      this.logger.error('Invalid configuration update rejected automatically', {
+        errors: validation.errors,
+        changes,
+      });
+      return {
+        applied: false,
+        rejected: true,
+        errors: validation.errors,
+      };
+    }
+
+    if (!this.activeConfig) {
+      this.activeConfig = {};
+    }
+
+    const previousConfig = { ...this.activeConfig };
+    Object.assign(this.activeConfig, changes);
+
+    if (changes.logLevel) {
+      process.env.LOG_LEVEL = changes.logLevel;
+    }
+    if (changes.rpcUrl) {
+      process.env.SOROBAN_RPC_URL = changes.rpcUrl;
+    }
+
+    this.logger.info('Successfully hot-reloaded configuration', { changes });
+
+    for (const sub of this.subscribers) {
+      try {
+        sub(changes, this.activeConfig, previousConfig);
+      } catch (err) {
+        this.logger.error('Error in config hot-reload subscriber', { error: err.message });
+      }
+    }
+
+    return {
+      applied: true,
+      rejected: false,
+      changes,
+      activeConfig: this.activeConfig,
+    };
+  }
+
+  subscribe(callback) {
+    this.subscribers.add(callback);
+    return () => this.subscribers.delete(callback);
+  }
+
+  _flatten(obj, prefix = '') {
+    const res = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const fullKey = prefix ? `${prefix}_${k}` : k;
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        Object.assign(res, this._flatten(v, fullKey));
+      } else {
+        res[fullKey] = v;
+      }
+    }
+    return res;
+  }
+
+  _parseValue(val) {
+    if (val === 'true') return true;
+    if (val === 'false') return false;
+    if (/^-?\d+$/.test(val)) return parseInt(val, 10);
+    if (/^-?\d+\.\d+$/.test(val)) return parseFloat(val);
+    try {
+      return JSON.parse(val);
+    } catch {
+      return val;
+    }
+  }
+}
+
+let globalActiveConfig = null;
+
 function loadConfig() {
   const signerType = (process.env.SIGNER_TYPE || 'local').toLowerCase();
 
@@ -72,6 +427,13 @@ function loadConfig() {
     rpcFailoverLatencyPenaltyThresholdMs: parseInteger(process.env.RPC_FAILOVER_LATENCY_PENALTY_THRESHOLD_MS, 1000),
     networkPassphrase: process.env.NETWORK_PASSPHRASE || process.env.NETWORK_PASSTHRAPE,
     keeperSecret: process.env.KEEPER_SECRET,
+    vault: {
+      primaryAddr: process.env.VAULT_ADDR,
+      secondaryAddr: process.env.VAULT_SECONDARY_ADDR,
+      authMethod: process.env.VAULT_AUTH_METHOD || 'approle',
+      renewFraction: Number(process.env.VAULT_RENEW_FRACTION || 0.75),
+      transitKeyPath: process.env.VAULT_TRANSIT_KEY_PATH,
+    },
     contractId: process.env.CONTRACT_ID,
     pollIntervalMs: parseInteger(process.env.POLLING_INTERVAL_MS, 10000),
     adaptivePollingEnabled: parseBoolean(process.env.ADAPTIVE_POLLING_ENABLED, false),
@@ -195,9 +557,31 @@ function loadConfig() {
     sloPollFreshnessMs: parseInteger(process.env.SLO_POLL_FRESHNESS_MS, 30000),
     sloExecutionTimelinessMs: parseInteger(process.env.SLO_EXECUTION_TIMELINESS_MS, 60000),
     resolverFailureMode: process.env.RESOLVER_FAILURE_MODE || 'skip',
+    gasThreshold: parseInteger(process.env.GAS_THRESHOLD, 0),
+    minGasThreshold: parseInteger(process.env.MIN_GAS_THRESHOLD, 0),
   };
 
+  globalActiveConfig = config;
   return config;
 }
 
-module.exports = { loadConfig, parseInteger, parseBoolean, parseList };
+function getActiveConfig() {
+  if (!globalActiveConfig) {
+    try {
+      return loadConfig();
+    } catch {
+      return {};
+    }
+  }
+  return globalActiveConfig;
+}
+
+module.exports = {
+  loadConfig,
+  parseInteger,
+  parseBoolean,
+  parseList,
+  validateConfiguration,
+  ConsulConfigService,
+  getActiveConfig,
+};

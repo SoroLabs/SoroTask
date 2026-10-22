@@ -1,0 +1,14 @@
+apiVersion: v2
+name: sorotask-keeper
+description: Production Helm chart for SoroTask Keeper with HPA and KEDA event-driven autoscaling
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - soroban
+  - stellar
+  - keeper
+  - keda
+  - autoscaling
+maintainers:
+  - name: SoroLabs

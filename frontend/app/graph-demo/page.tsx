@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import TaskDependencyManager, {
   type Task as ManagerTask,
 } from "@/components/TaskDependencyManager";
 import { useTaskStore } from "@/src/store/taskStore";
 import type { Task, TaskDependency } from "@/src/types/task";
+import type { DAGPulse, NodeStatus } from "@/src/components/TaskDAGVisualizer";
 
 const TaskDependencyGraph = dynamic(
   () => import("@/src/components/TaskDependencyGraph"),
@@ -15,6 +16,18 @@ const TaskDependencyGraph = dynamic(
     loading: () => (
       <div className="flex min-h-80 items-center justify-center rounded-xl border border-neutral-800 text-sm text-neutral-400">
         Loading dependency graph…
+      </div>
+    ),
+  },
+);
+
+const TaskDAGVisualizer = dynamic(
+  () => import("@/src/components/TaskDAGVisualizer"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex min-h-80 items-center justify-center rounded-lg border border-neutral-800 text-sm text-neutral-400">
+        Loading DAG visualizer…
       </div>
     ),
   },
@@ -64,6 +77,50 @@ const SEED_DEPS: TaskDependency[] = [
   { fromId: "t10", toId: "t9" },
 ];
 
+/** Deterministic PRNG so the seeded 10k-node graph is identical on server and client. */
+function mulberry32(seed: number): () => number {
+  let current = seed;
+  return () => {
+    current |= 0;
+    current = (current + 0x6d2b79f5) | 0;
+    let t = Math.imul(current ^ (current >>> 15), 1 | current);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const LARGE_NODE_COUNT = 10000;
+const LARGE_LAYERS = 20;
+
+/** Multi-tier dependency DAG: LARGE_LAYERS tiers, 1-2 parents per node. */
+function buildLargeDag(count: number) {
+  const rand = mulberry32(42);
+  const perLayer = Math.ceil(count / LARGE_LAYERS);
+  const nodes = Array.from({ length: count }, (_, i) => ({
+    id: `g${i}`,
+    label: `Task ${i + 1}`,
+  }));
+  const edges: { source: string; target: string }[] = [];
+  const seen = new Set<string>();
+  for (let layer = 1; layer < LARGE_LAYERS; layer++) {
+    for (let i = 0; i < perLayer; i++) {
+      const index = layer * perLayer + i;
+      if (index >= count) break;
+      const start = (layer - 1) * perLayer;
+      const end = Math.min(layer * perLayer, count);
+      const parents = 1 + Math.floor(rand() * 2);
+      for (let p = 0; p < parents; p++) {
+        const parent = start + Math.floor(rand() * (end - start));
+        const key = `g${parent}->g${index}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({ source: `g${parent}`, target: `g${index}` });
+      }
+    }
+  }
+  return { nodes, edges };
+}
+
 function toManagerTask(task: Task, deps: TaskDependency[]): ManagerTask {
   const numericId = Number(task.id.replace(/\D/g, "")) || 0;
   const blockedBy = deps
@@ -87,6 +144,41 @@ export default function GraphDemoPage() {
   const tasks = useTaskStore((s) => s.tasks);
   const taskIds = useTaskStore((s) => s.taskIds);
   const deps = useTaskStore((s) => s.dependencies);
+
+  const large = useMemo(() => buildLargeDag(LARGE_NODE_COUNT), []);
+  const [largeStatuses, setLargeStatuses] = useState<Record<string, NodeStatus>>({});
+  const [largePulses, setLargePulses] = useState<DAGPulse[]>([]);
+  const [liveFeed, setLiveFeed] = useState(false);
+
+  useEffect(() => {
+    if (!liveFeed) return;
+    // Simulated execution events. In production, socket.io "execution" events
+    // push the same {id, at} pulse payload and status updates here.
+    const timer = window.setInterval(() => {
+      const total = large.nodes.length;
+      const ids = [
+        large.nodes[Math.floor(Math.random() * total)].id,
+        large.nodes[Math.floor(Math.random() * total)].id,
+      ];
+      const at = Date.now();
+      setLargeStatuses((prev) => ({
+        ...prev,
+        [ids[0]]: "running",
+        [ids[1]]: "running",
+      }));
+      setLargePulses((prev) =>
+        [...prev, { id: ids[0], at }, { id: ids[1], at }].slice(-300),
+      );
+      window.setTimeout(() => {
+        setLargeStatuses((prev) => ({
+          ...prev,
+          [ids[0]]: "success",
+          [ids[1]]: "success",
+        }));
+      }, 900);
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, [liveFeed, large]);
 
   useEffect(() => {
     const store = useTaskStore.getState();
@@ -123,6 +215,39 @@ export default function GraphDemoPage() {
           A live, auto-laid-out view of how seeded tasks depend on each other.
         </p>
       </header>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950 p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">
+              Performance DAG visualizer
+            </h2>
+            <p className="text-xs text-neutral-500">
+              Canvas engine with layered layout —{" "}
+              {LARGE_NODE_COUNT.toLocaleString()} nodes, pan/zoom, live pulse
+              animations and click-to-inspect drawer.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setLiveFeed((value) => !value)}
+            className={`rounded-lg px-4 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 ${
+              liveFeed
+                ? "bg-red-500 hover:bg-red-600 focus:ring-red-400"
+                : "bg-emerald-500 hover:bg-emerald-600 focus:ring-emerald-400"
+            }`}
+          >
+            {liveFeed ? "Stop live feed" : "Start live feed"}
+          </button>
+        </div>
+        <TaskDAGVisualizer
+          className="h-[560px] rounded-lg border border-neutral-800"
+          nodes={large.nodes}
+          edges={large.edges}
+          statuses={largeStatuses}
+          pulses={largePulses}
+        />
+      </section>
 
       <div className="flex items-center gap-3">
         <button

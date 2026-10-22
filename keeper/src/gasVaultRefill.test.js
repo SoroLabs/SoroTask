@@ -23,6 +23,18 @@ describe('GasVaultRefillMonitor', () => {
     expect(result).toEqual({ triggered: false, reason: 'above_threshold', xlmBalance: 50 });
   });
 
+  test('sweeps excess hot balance to cold storage while preserving the target reserve', async () => {
+    const sweep = jest.fn().mockResolvedValue({ txHash: 'sweep-1' });
+    const monitor = new GasVaultRefillMonitor(baseOptions({
+      getXlmBalance: async () => 250,
+      maxHotBalanceXlm: 200,
+      targetBalanceXlm: 100,
+      sweepToColdStorage: sweep,
+    }));
+    await expect(monitor.checkAndRefill()).resolves.toMatchObject({ rebalanced: true, amountXlm: 150 });
+    expect(sweep).toHaveBeenCalledWith(150);
+  });
+
   test('reports not_configured when router/xlm/source contract IDs are missing', async () => {
     const monitor = new GasVaultRefillMonitor(baseOptions({ routerContractId: null }));
     const result = await monitor.checkAndRefill();

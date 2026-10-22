@@ -1,5 +1,13 @@
+import {
+  generateCorrelationId,
+  propagateCorrelationIdToHeaders,
+  attachCorrelationIdToHeaders,
+  appendTraceContextToBody,
+  describeTrace,
+  makeSpan,
+  endSpan,
+} from '@/src/lib/tracing';
 export type TaskStatus = "pending" | "running" | "success" | "failed";
-
 export interface Task {
   id: string;
   contract: string;
@@ -9,19 +17,16 @@ export interface Task {
   status: TaskStatus;
   updatedAt: number;
 }
-
 export interface TaskFilters {
   status?: TaskStatus;
   search?: string;
 }
-
 export interface RegisterTaskInput {
   contract: string;
   fn: string;
   intervalSec: number;
   gas: number;
 }
-
 export interface UpdateTaskInput {
   id: string;
   intervalSec?: number;
@@ -217,12 +222,29 @@ const GRAPHQL_URL =
   process.env.NEXT_PUBLIC_INDEXER_URL || "http://localhost:4000/graphql";
 
 async function fetchGraphQL(query: string, variables: any = {}) {
+  const correlationId = generateCorrelationId();
+  const span = makeSpan({
+    name: 'frontend→api fetchGraphQL',
+    traceId: correlationId,
+    attributes: {
+      'http.url': GRAPHQL_URL,
+      'http.method': 'POST',
+      'graphql.query': query,
+      'correlation.id': correlationId,
+      'tracing.origin': 'frontend',
+    },
+  });
+  const headers = attachCorrelationIdToHeaders({
+    'Content-Type': 'application/json',
+  }, correlationId);
+  const body = appendTraceContextToBody({
+    query,
+    variables,
+  }, correlationId);
   const response = await fetch(GRAPHQL_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query, variables }),
+    headers,
+    body: JSON.stringify(body),
   });
 
   if (response.status === 429) {
@@ -248,8 +270,10 @@ async function fetchGraphQL(query: string, variables: any = {}) {
         GRAPHQL_URL,
       );
     }
+    endSpan(span, 'error', { 'graphql.error': msg });
     throw new Error(msg);
   }
+  endSpan(span, 'success', { 'graphql.data.keys': Object.keys(result.data ?? {}), 'response.status': response.status });
   return result.data;
 }
 

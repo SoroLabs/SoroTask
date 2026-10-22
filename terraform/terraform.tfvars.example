@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+environment           = "production"
+primary_region        = "us-east-1"
+dr_region             = "eu-west-1"
+vpc_cidr              = "10.0.0.0/16"
+dr_vpc_cidr           = "10.1.0.0/16"
+cloudflare_api_token  = "REPLACE_WITH_CLOUDFLARE_API_TOKEN"
+cloudflare_zone_id    = "REPLACE_WITH_ZONE_ID"
+origin_hostname       = "lb.example.com"
+db_username           = "sorotask"
+db_password           = "REPLACE_WITH_STRONG_PASSWORD"

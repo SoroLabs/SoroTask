@@ -42,16 +42,34 @@ const rpc = new SorobanRpc.Server(RPC_URL, { allowHttp: RPC_URL.startsWith("http
 const contract = new Contract(CONTRACT_ID);
 
 // Database connection is handled by the PostgreSQL pool in ./graphql/db.js (Issue #1064)
-// Initialize ledger hash validator for reorg detection (Issue #1065)
+// Initialize ledger hash validator for reorg detection (Issue #1065, #1451)
 const ledgerHashValidator = new LedgerHashValidator({
   rpc,
   db,
   windowSize: parseInt(process.env.LEDGER_HASH_WINDOW_SIZE, 10) || 64,
+  maxRollbackDepth: parseInt(process.env.LEDGER_MAX_ROLLBACK_DEPTH, 10) || 16,
   onRollback: async (details) => {
-    console.error(`[ReorgRollback] Rolled back to ledger ${details.rollback.rollbackToSequence}`, {
-      deletedEvents: details.rollback.deletedEvents,
-      deletedTasks: details.rollback.deletedTasks,
+    console.error(`[ReorgRollback] Rolled back to ledger ${details.rollback?.rollbackToSequence ?? details.rollback?.rollbackToSequence}`, {
+      deletedEvents: details.rollback?.deletedEvents,
+      deletedTasks: details.rollback?.deletedTasks,
+      requeuedTasks: details.rollback?.requeuedTasks,
+      affectedTaskIds: details.rollback?.affectedTaskIds,
     });
+  },
+  requeueTasks: async (taskIds, rollbackToSequence) => {
+    console.log(`[ReorgRecovery] Re-queuing ${taskIds.length} tasks after rollback to ledger ${rollbackToSequence}`);
+    // Re-fetch on-chain state for each affected task and re-reconcile
+    let requeued = 0;
+    for (const taskId of taskIds) {
+      try {
+        // Trigger reconciliation for this task to get latest on-chain state
+        await reconcileTask(taskId);
+        requeued++;
+      } catch (err) {
+        console.error(`[ReorgRecovery] Failed to re-queue task ${taskId}:`, err.message);
+      }
+    }
+    return requeued;
   },
 });
 

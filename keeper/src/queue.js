@@ -392,9 +392,6 @@ class ExecutionQueue extends EventEmitter {
     // The graph is rebuilt each cycle from taskConfigMap dependency hints.
     this.dependencyGraph = opts.dependencyGraph || new DependencyGraph();
 
-    // #1445 — Distributed ZK proof generation worker cluster
-    this.zkProver = opts.zkProver || null;
-
     this.concurrencyLimit = parseInt(
       limit || process.env.MAX_CONCURRENT_EXECUTIONS || DEFAULT_CONCURRENCY,
       10,
@@ -1034,36 +1031,7 @@ class ExecutionQueue extends EventEmitter {
     // #847 — disconnect Kafka producer/consumer
     await this.kafkaStream.disconnect();
 
-    // #1445 — terminate ZK worker cluster
-    if (this.zkProver && typeof this.zkProver.terminate === 'function') {
-      await this.zkProver.terminate();
-    }
-
     this.logger.info('Execution queue shutdown complete');
-  }
-
-  /**
-   * Offload ZK proof generation to the background worker cluster (#1445).
-   * @param {object} task
-   * @returns {Promise<object>}
-   */
-  async processZKTask(task) {
-    if (!task || !task.requiresZKProof) {
-      return task;
-    }
-    if (!this.zkProver) {
-      const { ZKProverCluster } = require('./zk/prover');
-      this.zkProver = new ZKProverCluster();
-    }
-    const result = await this.zkProver.generateProof(
-      task.zkInput || task.input || {},
-      String(task.id || Date.now())
-    );
-    task.zkProof = result.proof;
-    task.zkPublicSignals = result.publicSignals;
-    task.zkDurationMs = result.durationMs;
-    this.emit('zkProofGenerated', { taskId: task.id, durationMs: result.durationMs });
-    return task;
   }
 
   getRetryStatistics() {
@@ -1071,22 +1039,185 @@ class ExecutionQueue extends EventEmitter {
       ? this.retryScheduler.getStatistics()
       : { total: 0, pending: 0, overdue: 0 };
   }
-
-  /**
-   * #1454 — Execute a high-concurrency stress benchmark on this queue instance.
-   * @param {object} options
-   * @returns {Promise<object>}
-   */
-  async runStressBenchmark(options = {}) {
-    const harness = new StressBenchmarkHarness({
-      ...options,
-      queue: this,
-    });
-    return harness.run(options);
-  }
 }
 
 // ---------------------------------------------------------------------------
+// Issue #1468 — High-Performance In-Memory Task Schedule Priority Queue
+// Using Redis Sorted Sets & Lua Atomic Scripts
+//
+// A distributed priority queue where task IDs are stored in a Redis sorted set
+// keyed by next_run timestamp (score).  Due tasks are queried with
+// ZRANGEBYSCORE and popped atomically with a Lua script that also assigns a
+// distributed execution lease and advances the schedule in a single Redis
+// operation — eliminating duplicate dispatch between workers and split-brain
+// assignments.
+// ---------------------------------------------------------------------------
+
+/**
+ * Redis-backed distributed priority queue for scheduled tasks.
+ *
+ * Sorted set key:   keeper:queue:due   (score = nextRunMs, member = taskId)
+ * Lease hash:       keeper:queue:lease:<taskId>  -> { token, acquiredAt, ttl }
+ * In-flight set:    keeper:queue:inflight  (set of taskIds currently leased)
+ *
+ * All pop/lease/advance operations run inside a single Lua script so they are
+ * atomic across concurrent workers.
+ */
+class RedisTaskPriorityQueue {
+  constructor(opts = {}) {
+    this.logger = opts.logger || console;
+    const Redis = require('ioredis');
+    const url = opts.redisUrl || process.env.REDIS_URL;
+    this.redis = url ? new Redis(url) : null;
+    this.enabled = !!this.redis;
+    this.queueKey = opts.queueKey || 'keeper:queue:due';
+    this.leasePrefix = opts.leasePrefix || 'keeper:queue:lease:';
+    this.inflightKey = opts.inflightKey || 'keeper:queue:inflight';
+    this.defaultTtlMs = opts.defaultTtlMs || 30000;
+  }
+
+  /** Add a task to the priority queue, scored by nextRunMs. */
+  async enqueue(taskId, nextRunMs, payload = {}) {
+    if (!this.enabled) return false;
+    const score = Number(nextRunMs) || Date.now();
+    await this.redis.zadd(this.queueKey, score, String(taskId));
+    await this.redis.hset(
+      `${this.leasePrefix}${taskId}`,
+      'payload',
+      JSON.stringify(payload),
+      'enqueuedAt',
+      String(Date.now()),
+    );
+    return true;
+  }
+
+  /**
+   * Atomically pop all due tasks (nextRunMs <= now) up to a limit.
+   * Each popped task receives a distributed lease token; the task stays in the
+   * sorted set until the lease is released or advanced, preventing duplicate
+   * dispatch between workers.
+   *
+   * Returns an array of { taskId, score, token, payload }.
+   */
+  async popDue(opts = {}) {
+    if (!this.enabled) return [];
+    const limit = opts.limit || 100;
+    const now = Date.now();
+    const leaseTtlMs = opts.leaseTtlMs || this.defaultTtlMs;
+
+    const popScript = `
+      local queueKey = KEYS[1]
+      local inflightKey = KEYS[2]
+      local leasePrefix = ARGV[1]
+      local now = tonumber(ARGV[2])
+      local limit = tonumber(ARGV[3])
+      local ttlMs = tonumber(ARGV[4])
+
+      local due = redis.call('zrangebyscore', queueKey, '-inf', now, 'LIMIT', '0', limit)
+      local results = {}
+      for i, taskId in ipairs(due) do
+        local leaseKey = leasePrefix .. taskId
+        local token = tostring(math.random(1000000000, 9999999999)) .. ':' .. tostring(now)
+        local existing = redis.call('hget', leaseKey, 'token')
+        if not existing then
+          redis.call('hset', leaseKey, 'token', token, 'acquiredAt', tostring(now), 'ttl', tostring(ttlMs))
+          redis.call('pexpire', leaseKey, ttlMs)
+          redis.call('sadd', inflightKey, taskId)
+          local payload = redis.call('hget', leaseKey, 'payload')
+          table.insert(results, { taskId, score = now, token = token, payload = payload or '{}' })
+        end
+      end
+      return cjson.encode(results)
+    `;
+
+    const raw = await this.redis.eval(
+      popScript,
+      2,
+      this.queueKey,
+      this.inflightKey,
+      this.leasePrefix,
+      String(now),
+      String(limit),
+      String(leaseTtlMs),
+    );
+
+    try {
+      return JSON.parse(raw || '[]');
+    } catch (_e) {
+      return [];
+    }
+  }
+
+  /** Query due tasks without removing them (ZRANGEBYSCORE). */
+  async getDue(opts = {}) {
+    if (!this.enabled) return [];
+    const now = opts.now || Date.now();
+    const limit = opts.limit || 100;
+    const members = await this.redis.zrangebyscore(
+      this.queueKey,
+      '-inf',
+      String(now),
+      'LIMIT',
+      '0',
+      String(limit),
+    );
+    const result = [];
+    for (const taskId of members) {
+      const score = await this.redis.zscore(this.queueKey, taskId);
+      result.push({ taskId, score: Number(score) });
+    }
+    return result;
+  }
+
+  /** Release a lease (task completed successfully). Removes from sorted set. */
+  async complete(taskId, token) {
+    if (!this.enabled) return false;
+    const leaseKey = `${this.leasePrefix}${taskId}`;
+    const current = await this.redis.hget(leaseKey, 'token');
+    if (current && current !== token) return false; // stale token — do not complete
+    await this.redis.zrem(this.queueKey, String(taskId));
+    await this.redis.del(leaseKey);
+    await this.redis.srem(this.inflightKey, String(taskId));
+    return true;
+  }
+
+  /** Fail a task: release lease and reschedule with backoff (advance score). */
+  async fail(taskId, token, backoffMs = 60000) {
+    if (!this.enabled) return false;
+    const leaseKey = `${this.leasePrefix}${taskId}`;
+    const current = await this.redis.hget(leaseKey, 'token');
+    if (current && current !== token) return false;
+    const nextRun = Date.now() + backoffMs;
+    await this.redis.zadd(this.queueKey, nextRun, String(taskId));
+    await this.redis.hset(leaseKey, 'nextRun', String(nextRun), 'attempts', '1');
+    await this.redis.srem(this.inflightKey, String(taskId));
+    return true;
+  }
+
+  /** Extend (heartbeat) a running lease so it isn't reassigned. */
+  async heartbeat(taskId, token, ttlMs) {
+    if (!this.enabled) return false;
+    const leaseKey = `${this.leasePrefix}${taskId}`;
+    const current = await this.redis.hget(leaseKey, 'token');
+    if (current && current !== token) return false;
+    await this.redis.pexpire(leaseKey, ttlMs || this.defaultTtlMs);
+    await this.redis.hset(leaseKey, 'lastHeartbeat', String(Date.now()));
+    return true;
+  }
+
+  /** Queue depth (number of scheduled tasks). */
+  async depth() {
+    if (!this.enabled) return 0;
+    return Number(await this.redis.zcard(this.queueKey)) || 0;
+  }
+
+  async disconnect() {
+    if (this.redis) {
+      try { await this.redis.quit(); } catch (_e) {}
+    }
+  }
+}
+
 // #1454 — Automated Benchmark & Stress Testing Harness (10,000 Concurrent Tasks)
 // ---------------------------------------------------------------------------
 
@@ -1133,7 +1264,7 @@ function generateSyntheticTasks(count = 10000, options = {}) {
       function: i % 3 === 0 ? 'rebalance_pool' : (i % 3 === 1 ? 'harvest_yield' : 'settle_epoch'),
       args: [taskId],
       interval,
-      last_run: lastRun,
+      lastRun: lastRun,
       gas_balance: isUnderfunded ? 0 : 10_000 + (i % 5000),
       priority,
       bounty,
@@ -1282,7 +1413,7 @@ class StressBenchmarkHarness {
         getStatistics: () => ({ total: 0, pending: 0, overdue: 0 }),
         shutdown: async () => {},
       },
-    });
+    );
 
     // Ensure high throughput limiter on dedicated benchmark queue
     if (!this.queue) {
@@ -1503,7 +1634,9 @@ module.exports = {
   ExecutionQueue,
   KafkaTaskStream,
   DependencyGraph,
+  RedisTaskPriorityQueue,
   generateSyntheticTasks,
   simulateConcurrentDueConditions,
   StressBenchmarkHarness,
 };
+

@@ -8,19 +8,65 @@ pub mod packed_args;
 pub mod rate_limiter;
 pub use events::*;
 pub mod admin;
+pub mod circuit_breaker;
 pub mod dag;
+pub mod dynamic_nft;
 pub mod math;
 pub mod optimistic;
+pub mod private_tasks;
 pub mod state_channel;
 pub mod storage;
 pub mod task;
 pub mod upgrade;
+pub mod governance;
+pub mod escrow_pool;
+pub mod synthetic_arbitrageur;
 
 pub use gas::{get_gas_rates, update_gas_rates, EscrowManager, FeeBreakdown, GasMeter};
 pub use optimistic::{FraudProof, OptimisticClaim, CHALLENGE_WINDOW_LEDGERS};
 pub use state_channel::{ChannelCloseRequest, ChannelReceipt, ChannelState, ChannelStatus};
+pub use trailing_stop_loss::{
+    TrailingOrderConfig, TrailingOrderExecution, TrailingOrderStatus,
+    create_trailing_order, update_trailing_order, cancel_trailing_order,
+    get_trailing_order, get_trailing_order_execution, batch_update_trailing_orders,
+};
+pub use merkle_state_channel::{
+    MerkleChannelState, ChannelSubState, MerkleProof, MerkleExitClaim,
+    open_merkle_channel, submit_closing_state, initiate_unilateral_exit,
+    challenge_unilateral_exit, submit_merkle_exit_claim, withdraw_merkle_exit,
+    apply_timeout_penalty, get_merkle_channel_state, get_channel_substate,
+    get_merkle_exit_claim, MERKLE_CHALLENGE_WINDOW_SECONDS,
+};
+pub use protocol_insurance::{
+    ProtocolInsuranceClaim, UnderwriterStake, RiskTranche, InsurancePoolStats,
+    InsuranceClaimStatus, ClaimRiskLevel,
+    stake_as_underwriter, unstake_as_underwriter, submit_insurance_claim,
+    certify_insurance_claim, process_insurance_claim, reject_insurance_claim,
+    accrue_protocol_fees, claim_underwriter_rewards, get_insurance_pool_stats,
+    get_insurance_claim, get_underwriter_stake, get_risk_tranches,
+};
+pub use gas_refund::{
+    GasConsumptionRecord, YieldAccumulator, DustRecord, GasPriceConfig, GasUsageStats,
+    record_gas_consumption, sweep_task_dust, batch_sweep_dust,
+    harvest_yield_accumulator, get_accumulator_balance, get_gas_usage_stats,
+    get_task_dust, get_gas_consumption_record, update_gas_price_config, estimate_refund,
+};
 pub use storage::{ExecutionLog, TaskMeta, TaskPayload, TaskStats};
 pub use upgrade::{UpgradeProposal, UPGRADE_TIMELOCK_SECONDS};
+pub use governance::{
+    GovernanceConfig, GovernanceProposal, VoteChoice, VoteRecord, VoteSnapshot, VoteStatus,
+    DEFAULT_APPROVAL_THRESHOLD_BPS, DEFAULT_QUORUM_BPS, DEFAULT_VOTING_PERIOD_LEDGERS,
+    MIN_VOTING_PERIOD_LEDGERS,
+};
+pub use escrow_pool::{
+    DepositResult, EscrowPoolError, PoolConfig, SHARE_PRECISION, WithdrawalResult,
+    YIELD_PRECISION,
+};
+pub use synthetic_arbitrageur::{
+    ArbitrageConfig, ArbitrageError, ArbitrageRecord, ArbitrageResult, ArbitrageStatus,
+    DEFAULT_MAX_ARBITRAGE_PCT_BPS, DEFAULT_MAX_DEVIATION_BPS, DEFAULT_MIN_PROFIT_BPS,
+    FLASH_LOAN_FEE_BPS,
+};
 
 /// Pending execution commitment posted by a keeper in the commit phase.
 /// Stores the hash of (keeper_address, task_id, secret, block_target)
@@ -168,6 +214,47 @@ pub enum Error {
     ChannelNotClosing = 816,
     InvalidChannelParticipants = 817,
     ChannelNotClosed = 818,
+    // Governance errors (SC-PROD-37)
+    GovernanceProposalNotFound = 820,
+    GovernanceProposalNotActive = 821,
+    GovernanceVotingNotStarted = 822,
+    GovernanceVotingEnded = 823,
+    GovernanceQuorumNotReached = 824,
+    GovernanceProposalNotPassed = 825,
+    GovernanceAlreadyVoted = 826,
+    GovernanceInvalidVotingPower = 827,
+    GovernanceInvalidThreshold = 828,
+    GovernanceExecutionFailed = 829,
+    GovernanceSnapshotAlreadyExists = 830,
+    GovernanceInvalidProposalId = 831,
+    GovernanceVotingPeriodTooShort = 832,
+    GovernanceZeroVotingWeight = 833,
+    GovernanceMaxVotersReached = 834,
+    GovernanceEmergencyStopped = 835,
+    // Emergency circuit breaker errors (SC-PROD-32)
+    BreakerInvalidConfig = 900,
+    BreakerAlreadyEngaged = 901,
+    BreakerNotEngaged = 902,
+    BreakerCooldownActive = 903,
+    BreakerRenewalLimit = 904,
+    BreakerInvalidFixProof = 905,
+    BreakerAlreadyVoted = 906,
+    BreakerVoterIneligible = 907,
+    BreakerStakeLocked = 908,
+    // Privacy-preserving scheduler errors (SC-PROD-31)
+    InvalidPrivateTaskConfig = 920,
+    InvalidPrivateCommitment = 921,
+    PrivateCommitmentExists = 922,
+    PrivateTreeFull = 923,
+    PrivateUnknownRoot = 924,
+    PrivateNullifierSpent = 925,
+    PrivateProofStale = 926,
+    // Dynamic NFT evolution errors (SC-PROD-30)
+    InvalidNftTiers = 940,
+    NftCollectionNotFound = 941,
+    // Congestion surcharge errors (SC-PROD-29)
+    InvalidSurchargeConfig = 960,
+    InvalidInclusionFee = 961,
 }
 
 #[contracttype]
@@ -1330,6 +1417,88 @@ pub enum DataKey {
     ZkProofRecord(u64),
     /// Counter for sequential ZK proof records
     ZkProofCounter,
+
+    // ========== SC-PROD-39: Trailing Stop-Loss Order Manager ==========
+    /// Trailing order counter
+    TrailingOrderCounter,
+    /// Trailing stop-loss order configuration (order_id -> config)
+    TrailingOrder(u64),
+    /// Trailing order execution record
+    TrailingOrderExecution(u64),
+    // ========== SC-PROD-38: Merkle State Channel ==========
+    /// Merkle channel counter
+    MerkleChannelCounter,
+    /// Merkle-enabled channel state
+    MerkleChannelState(u64),
+    /// Channel sub-state for Merkle proofs (channel_id, nonce)
+    ChannelSubState(u64, u64),
+    /// Merkle exit claim (channel_id, claimant)
+    MerkleExitClaim(u64, Address),
+    /// Timeout penalty record
+    TimeoutPenalty(u64, Address),
+    // ========== SC-PROD-40: Protocol Insurance Fund ==========
+    /// Protocol insurance claim (claim_id -> claim)
+    ProtocolInsuranceClaim(u64),
+    /// Protocol claim counter
+    ProtocolClaimCounter,
+    /// Insurance underwriter stake
+    InsuranceUnderwriter(Address),
+    /// Total insurance underwriter stake
+    TotalInsuranceUnderwriterStake,
+    /// Insurance pool statistics
+    InsurancePoolStats,
+    /// Risk tranches for insurance waterfall
+    InsuranceTranches,
+    /// Tranche initialization flag
+    InsuranceTrancheInitialized,
+    // ========== SC-PROD-35: Gas Refund & Dust Sweeper ==========
+    /// Gas consumption record (task_id, sequence)
+    GasConsumption(u64, u32),
+    /// Task dust record
+    TaskDust(u64),
+    /// Yield accumulator (creator, name)
+    YieldAccumulator(Address, Bytes),
+    /// Gas price configuration
+    GasPriceConfig,
+    /// Gas usage statistics
+    GasUsageStats,
+
+    // ========== SC-PROD-37: Governance Vote Relayer ==========
+    /// Governance system configuration
+    GovernanceConfig,
+    /// Governance voting token address
+    GovernanceVotingToken,
+    /// Governance vote record: (proposal_id, voter)
+    GovernanceVote(u64, Address),
+    /// Vote snapshot for a proposal
+    GovernanceSnapshot(u64),
+
+    // ========== SC-PROD-36: Time-Locked Upgrade ==========
+    /// Guardian configuration for emergency upgrade actions
+    UpgradeGuardianConfig,
+    /// Public upgrade proposal with announcement data
+    PublicUpgradeProposal,
+
+    // ========== SC-PROD-34: Multi-Token Escrow Pool ==========
+    /// Escrow pool configuration
+    EscrowPoolConfig,
+    /// Token state in escrow pool
+    EscrowPoolTokenState(Address),
+    /// Virtual sub-account in escrow pool: (owner, token)
+    EscrowPoolSubAccount(Address, Address),
+
+    // ========== SC-PROD-33: Synthetic Asset Arbitrageur ==========
+    /// Arbitrage system configuration
+    ArbitrageConfig,
+    /// Synthetic token pair configuration
+    SyntheticTokenPair(Address),
+    /// Arbitrage execution record
+    ArbitrageRecord(u64),
+    /// Counter for arbitrage records
+    ArbitrageRecordCounter,
+    /// Simulated prices for testing
+    SimulatedSyntheticPrice(Address),
+    SimulatedUnderlyingPrice(Address),
 }
 
 /// Call frame representing a single entry in the call stack
@@ -1364,10 +1533,16 @@ pub struct CallGraph {
 
 pub mod gas;
 
+pub mod carbon;
 pub mod ccip;
 pub mod mempool;
 pub mod resolver;
 pub mod security;
+pub mod trailing_stop_loss;
+pub mod merkle_state_channel;
+pub mod protocol_insurance;
+pub mod gas_refund;
+
 #[cfg(test)]
 mod test_commit_reveal;
 pub mod zk;
@@ -1813,17 +1988,23 @@ pub(crate) fn assert_balance_invariant(env: &Env) {
         let total_keeper_stakes = get_total_keeper_stakes(env);
         let total_unclaimed_fees = get_total_unclaimed_fees(env);
         let insurance_reserve = insurance::funded_balance(env);
+        let private_pool = private_tasks::pool_balance(env);
+        let required = total_task_escrows
+            + total_keeper_stakes
+            + total_unclaimed_fees
+            + insurance_reserve
+            + private_pool;
         assert!(
-            contract_balance.saturating_add(total_invested_task_escrows)
-                >= total_task_escrows + total_keeper_stakes + total_unclaimed_fees + insurance_reserve,
-            "Total balance invariant violated: liquid plus invested balance {} is less than required sum {} (escrows: {}, invested: {}, stakes: {}, unclaimed: {}, insurance: {})",
+            contract_balance.saturating_add(total_invested_task_escrows) >= required,
+            "Total balance invariant violated: liquid plus invested balance {} is less than required sum {} (escrows: {}, invested: {}, stakes: {}, unclaimed: {}, insurance: {}, private pool: {})",
             contract_balance.saturating_add(total_invested_task_escrows),
-            total_task_escrows + total_keeper_stakes + total_unclaimed_fees + insurance_reserve,
+            required,
             total_task_escrows,
             total_invested_task_escrows,
             total_keeper_stakes,
             total_unclaimed_fees,
-            insurance_reserve
+            insurance_reserve,
+            private_pool
         );
     }
 }
@@ -2281,6 +2462,28 @@ impl SoroTaskContract {
             .set(&DataKey::Guardians, &guardians);
     }
 
+    /// Configures carbon-offset accounting for keeper executions. Admin-gated
+    /// once an admin is set, like `set_guardians`. (SC-PROD-48)
+    pub fn set_carbon_config(env: Env, config: carbon::CarbonConfig) {
+        if let Some(admin) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::AdminAddress)
+        {
+            admin.require_auth();
+        }
+        carbon::set_config(&env, &config);
+    }
+
+    pub fn get_carbon_config(env: Env) -> Option<carbon::CarbonConfig> {
+        carbon::get_config(&env)
+    }
+
+    /// Cumulative instructions, outstanding carbon debt and retirement totals.
+    pub fn get_carbon_ledger(env: Env) -> carbon::CarbonLedger {
+        carbon::get_ledger(&env)
+    }
+
     pub fn get_guardians(env: Env) -> Vec<Address> {
         env.storage()
             .persistent()
@@ -2396,6 +2599,9 @@ impl SoroTaskContract {
     }
 
     pub fn is_protocol_paused(env: Env) -> bool {
+        if circuit_breaker::is_engaged(&env) {
+            return true;
+        }
         if let Some(mut state) = env
             .storage()
             .persistent()
@@ -2631,6 +2837,216 @@ impl SoroTaskContract {
             ),
             (config.creator.clone(), amount),
         );
+    }
+
+    // ── Emergency circuit breaker (SC-PROD-32) ─────────────────────────────
+
+    /// Appoints the security committee that can trip the circuit breaker.
+    /// `threshold` approvals are needed to renew or lift a pause, and
+    /// `veto_quorum_bps` of staked supply is needed for a community veto.
+    pub fn set_security_committee(
+        env: Env,
+        admin: Address,
+        members: Vec<Address>,
+        threshold: u32,
+        veto_quorum_bps: u32,
+    ) {
+        circuit_breaker::set_committee(&env, &admin, members, threshold, veto_quorum_bps);
+    }
+
+    pub fn get_security_committee(env: Env) -> Option<circuit_breaker::SecurityCommittee> {
+        circuit_breaker::committee(&env)
+    }
+
+    /// Instantly pauses task execution for 72 hours. Any single committee
+    /// member may call this during an active exploit.
+    pub fn trip_circuit_breaker(
+        env: Env,
+        member: Address,
+        incident_hash: BytesN<32>,
+    ) -> circuit_breaker::BreakerState {
+        circuit_breaker::trip(&env, &member, incident_hash)
+    }
+
+    /// Adds a committee approval to renew (with a bug-fix proof) or lift the
+    /// active pause. Returns `true` once the K-of-N quorum executes it.
+    pub fn approve_breaker_action(
+        env: Env,
+        member: Address,
+        action: circuit_breaker::BreakerAction,
+    ) -> bool {
+        circuit_breaker::approve(&env, &member, action)
+    }
+
+    /// Votes staked balance to veto or uphold the active pause. Returns
+    /// `true` if this vote reached quorum and lifted the pause.
+    pub fn cast_breaker_veto(env: Env, voter: Address, veto: bool) -> bool {
+        circuit_breaker::cast_vote(&env, &voter, veto)
+    }
+
+    pub fn get_circuit_breaker_state(env: Env) -> circuit_breaker::BreakerState {
+        circuit_breaker::current_state(&env)
+    }
+
+    pub fn is_circuit_breaker_engaged(env: Env) -> bool {
+        circuit_breaker::is_engaged(&env)
+    }
+
+    // ── Privacy-preserving scheduler (SC-PROD-31) ──────────────────────────
+
+    /// One-time setup of the Groth16 verifying key and pool denomination.
+    pub fn configure_private_scheduler(
+        env: Env,
+        admin: Address,
+        vk: private_tasks::PrivateVerifyingKey,
+        denomination: i128,
+    ) {
+        private_tasks::configure(&env, &admin, vk, denomination);
+    }
+
+    /// Registers a blinded Pedersen task commitment, escrowing one
+    /// denomination. Returns the commitment's Merkle leaf index.
+    pub fn register_private_task(
+        env: Env,
+        funder: Address,
+        commitment: soroban_sdk::crypto::bls12_381::G1Affine,
+    ) -> u32 {
+        private_tasks::register(&env, &funder, commitment)
+    }
+
+    /// Executes a private task by proving possession of an unspent commitment
+    /// whose criteria are met, without revealing which one or who created it.
+    pub fn execute_private_task(
+        env: Env,
+        keeper: Address,
+        proof: private_tasks::PrivateProof,
+        inputs: private_tasks::PrivateExecutionInputs,
+        target: Address,
+        function: Symbol,
+        args: Vec<Val>,
+    ) -> Val {
+        if Self::is_protocol_paused(env.clone()) {
+            panic_with_error!(&env, Error::TaskPaused);
+        }
+        private_tasks::execute(&env, &keeper, proof, inputs, target, function, args)
+    }
+
+    pub fn get_private_task_root(env: Env) -> BytesN<32> {
+        private_tasks::current_root(&env)
+    }
+
+    pub fn is_private_task_root_known(env: Env, root: BytesN<32>) -> bool {
+        private_tasks::is_known_root(&env, &root)
+    }
+
+    pub fn is_private_nullifier_spent(env: Env, nullifier: BytesN<32>) -> bool {
+        private_tasks::is_nullifier_spent(&env, nullifier)
+    }
+
+    pub fn get_private_commitment(
+        env: Env,
+        leaf: BytesN<32>,
+    ) -> Option<private_tasks::PrivateCommitmentRecord> {
+        private_tasks::get_commitment(&env, leaf)
+    }
+
+    pub fn get_private_task_count(env: Env) -> u32 {
+        private_tasks::commitment_count(&env)
+    }
+
+    pub fn get_pedersen_generators(
+        env: Env,
+    ) -> (
+        soroban_sdk::crypto::bls12_381::G1Affine,
+        soroban_sdk::crypto::bls12_381::G1Affine,
+    ) {
+        private_tasks::generators(&env)
+    }
+
+    // ── Dynamic NFT evolution (SC-PROD-30) ─────────────────────────────────
+
+    /// Registers or replaces a collection's tier rules. Must be authorized by
+    /// the NFT contract itself.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_dynamic_nft_collection(
+        env: Env,
+        nft_contract: Address,
+        update_fn: Symbol,
+        metrics_source: Address,
+        metrics_fn: Symbol,
+        base_uri: soroban_sdk::String,
+        tiers: Vec<dynamic_nft::NftTier>,
+        allow_downgrade: bool,
+    ) {
+        dynamic_nft::register_collection(
+            &env,
+            nft_contract,
+            update_fn,
+            metrics_source,
+            metrics_fn,
+            base_uri,
+            tiers,
+            allow_downgrade,
+        );
+    }
+
+    /// Keeper entry point: re-reads a token's DeFi metrics and evolves its
+    /// metadata when it crosses a tier threshold.
+    pub fn evolve_dynamic_nft(
+        env: Env,
+        keeper: Address,
+        nft_contract: Address,
+        token_id: u32,
+    ) -> bool {
+        if Self::is_protocol_paused(env.clone()) {
+            panic_with_error!(&env, Error::TaskPaused);
+        }
+        dynamic_nft::evolve(&env, &keeper, nft_contract, token_id)
+    }
+
+    pub fn get_dynamic_nft_collection(
+        env: Env,
+        nft_contract: Address,
+    ) -> Option<dynamic_nft::DynamicNftCollection> {
+        dynamic_nft::get_collection(&env, nft_contract)
+    }
+
+    pub fn get_dynamic_nft_attributes(
+        env: Env,
+        nft_contract: Address,
+        token_id: u32,
+    ) -> Option<dynamic_nft::DynamicNftAttributes> {
+        dynamic_nft::get_attributes(&env, nft_contract, token_id)
+    }
+
+    // ── Congestion surcharge (SC-PROD-29) ──────────────────────────────────
+
+    /// Fee reporters (admin or ROLE_FEES delegates) publish observed network
+    /// inclusion fees, feeding the 24h median baseline.
+    pub fn record_inclusion_fee(env: Env, reporter: Address, fee: i128) {
+        gas::record_inclusion_fee(&env, &reporter, fee);
+    }
+
+    pub fn set_surcharge_config(env: Env, caller: Address, config: gas::SurchargeConfig) {
+        gas::set_surcharge_config(&env, &caller, config);
+    }
+
+    pub fn get_surcharge_config(env: Env) -> gas::SurchargeConfig {
+        gas::surcharge_config(&env)
+    }
+
+    /// Declares the inclusion fee a keeper bids per execution transaction.
+    pub fn set_keeper_fee_bid(env: Env, keeper: Address, bid: i128) {
+        gas::set_keeper_fee_bid(&env, &keeper, bid);
+    }
+
+    pub fn get_baseline_inclusion_fee(env: Env) -> Option<i128> {
+        gas::baseline_inclusion_fee(&env)
+    }
+
+    /// Previews the surcharge and overbid penalty `keeper` would get now.
+    pub fn quote_congestion_surcharge(env: Env, keeper: Address) -> gas::CongestionQuote {
+        gas::quote_congestion(&env, Some(&keeper))
     }
 
     /// Validates task payload arguments for size and structure.
@@ -4326,15 +4742,111 @@ impl SoroTaskContract {
         summary
     }
 
-    /// Fallible single-task execution used by [`Self::batch_execute`].
+    /// Enterprise batch multi-call dispatcher supporting independent tasks and atomic rollback pairs (#1415).
     ///
-    /// Returns `Ok(())` after the target call succeeds and keeper fees are
-    /// settled, or `Err(error_code)` on any recoverable failure. Never panics
-    /// for per-task outcomes so siblings can continue.
-    fn try_execute_isolated(env: &Env, keeper: &Address, task_id: u64) -> Result<(), u32> {
+    /// Up to 50 tasks can be packaged in a single transaction. Independent task failures
+    /// do not abort sibling operations, while paired atomic tasks rollback together in tandem
+    /// if either partner fails or reverts.
+    pub fn batch_execute_branches(
+        env: Env,
+        keeper: Address,
+        independent_task_ids: Vec<u64>,
+        atomic_pairs: Vec<batch::AtomicTaskPair>,
+    ) -> batch::BatchExecutionSummary {
+        enter_security_guard(&env);
+        keeper.require_auth();
+
+        let total_tasks = independent_task_ids.len() + (atomic_pairs.len() * 2);
+        if total_tasks == 0 || total_tasks > MAX_BATCH_SIZE as u32 {
+            panic_with_error!(&env, Error::InvalidInterval);
+        }
+
+        let mut outcomes: Vec<batch::BatchTaskOutcome> = Vec::new(&env);
+        let mut succeeded: u32 = 0;
+        let mut failed: u32 = 0;
+
+        // 1. Dispatch independent tasks with failure isolation
+        for i in 0..independent_task_ids.len() {
+            let task_id = independent_task_ids.get(i).unwrap();
+            match Self::try_execute_isolated(&env, &keeper, task_id) {
+                Ok(()) => {
+                    succeeded += 1;
+                    outcomes.push_back(batch::BatchTaskOutcome {
+                        task_id,
+                        succeeded: true,
+                        error_code: 0,
+                    });
+                    batch::publish_batch_task_event(&env, &keeper, task_id, true, 0);
+                }
+                Err(code) => {
+                    failed += 1;
+                    outcomes.push_back(batch::BatchTaskOutcome {
+                        task_id,
+                        succeeded: false,
+                        error_code: code,
+                    });
+                    batch::publish_batch_task_event(&env, &keeper, task_id, false, code);
+                }
+            }
+        }
+
+        // 2. Dispatch atomic paired tasks with tandem rollback
+        for i in 0..atomic_pairs.len() {
+            let pair = atomic_pairs.get(i).unwrap();
+            let (out_a, out_b) = Self::try_execute_atomic_pair(&env, &keeper, &pair);
+            if out_a.succeeded {
+                succeeded += 1;
+            } else {
+                failed += 1;
+            }
+            if out_b.succeeded {
+                succeeded += 1;
+            } else {
+                failed += 1;
+            }
+            outcomes.push_back(out_a);
+            outcomes.push_back(out_b);
+        }
+
+        let summary = batch::BatchExecutionSummary {
+            total: total_tasks as u32,
+            succeeded,
+            failed,
+            outcomes,
+        };
+        batch::publish_batch_summary_event(&env, &keeper, &summary);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "BatchExecutionCompleted"),
+                Symbol::new(&env, "v1"),
+                keeper.clone(),
+            ),
+            (summary.total, summary.succeeded, summary.failed),
+        );
+        exit_security_guard(&env);
+        summary
+    }
+
+    /// Dispatch a batch consisting strictly of atomic paired task branches (#1415).
+    pub fn batch_execute_atomic_pairs(
+        env: Env,
+        keeper: Address,
+        pairs: Vec<batch::AtomicTaskPair>,
+    ) -> batch::BatchExecutionSummary {
+        let empty_independent: Vec<u64> = Vec::new(&env);
+        Self::batch_execute_branches(env, keeper, empty_independent, pairs)
+    }
+
+    /// Precondition checks and target contract call for an isolated task without mutating storage (#1415).
+    fn prepare_and_invoke_isolated(
+        env: &Env,
+        keeper: &Address,
+        task_id: u64,
+    ) -> Result<(TaskConfig, i128), u32> {
         use events::{ExecutionStep, StepResult};
 
-        let mut config: TaskConfig = match batch::load_task_or_error(env, task_id) {
+        let config: TaskConfig = match batch::load_task_or_error(env, task_id) {
             Ok(cfg) => cfg,
             Err(err) => return Err(err as u32),
         };
@@ -4382,8 +4894,7 @@ impl SoroTaskContract {
             fee as u32,
         );
 
-        // Target call — isolated via try_invoke_contract so a revert does not
-        // abort sibling tasks (#1179).
+        // Target call — isolated via try_invoke_contract so a revert does not abort siblings.
         let invoke_result =
             batch::try_invoke_target(env, &config.target, &config.function, config.args.clone());
         if let Err(code) = invoke_result {
@@ -4407,7 +4918,18 @@ impl SoroTaskContract {
             0,
         );
 
-        // Settle fees only for successful executions.
+        Ok((config, fee))
+    }
+
+    /// Commit task state changes, deduct fee, and settle keeper payouts upon verified invocation (#1415).
+    fn commit_executed_task(
+        env: &Env,
+        keeper: &Address,
+        task_id: u64,
+        mut config: TaskConfig,
+        fee: i128,
+    ) {
+        let now = env.ledger().timestamp();
         let protocol_fee_bps: u32 = env
             .storage()
             .instance()
@@ -4455,7 +4977,6 @@ impl SoroTaskContract {
             assert_balance_invariant(env);
         }
 
-        // Update state on success only.
         config.last_run = now;
         save_task(env, task_id, &config);
         storage::record_successful_run(env, task_id, config.last_run);
@@ -4469,7 +4990,116 @@ impl SoroTaskContract {
             .persistent()
             .remove(&DataKey::VrfKeeperAssignment(task_id));
         Self::set_task_status(env, task_id, ExecutionOutcome::Success);
+    }
 
+    /// Executes a paired atomic task branch (#1415).
+    /// Both tasks must pass preconditions and their target invocations must succeed;
+    /// if either fails, neither commits in storage and both are marked failed/rolled back.
+    fn try_execute_atomic_pair(
+        env: &Env,
+        keeper: &Address,
+        pair: &batch::AtomicTaskPair,
+    ) -> (batch::BatchTaskOutcome, batch::BatchTaskOutcome) {
+        let res_a = Self::prepare_and_invoke_isolated(env, keeper, pair.task_a);
+        let res_b = Self::prepare_and_invoke_isolated(env, keeper, pair.task_b);
+
+        match (res_a, res_b) {
+            (Ok((cfg_a, fee_a)), Ok((cfg_b, fee_b))) => {
+                Self::commit_executed_task(env, keeper, pair.task_a, cfg_a, fee_a);
+                Self::commit_executed_task(env, keeper, pair.task_b, cfg_b, fee_b);
+
+                batch::publish_batch_task_event(env, keeper, pair.task_a, true, 0);
+                batch::publish_batch_task_event(env, keeper, pair.task_b, true, 0);
+
+                (
+                    batch::BatchTaskOutcome {
+                        task_id: pair.task_a,
+                        succeeded: true,
+                        error_code: 0,
+                    },
+                    batch::BatchTaskOutcome {
+                        task_id: pair.task_b,
+                        succeeded: true,
+                        error_code: 0,
+                    },
+                )
+            }
+            (Err(err_a), Ok(_)) => {
+                // Partner B is rolled back because A failed
+                batch::publish_batch_task_event(env, keeper, pair.task_a, false, err_a);
+                batch::publish_batch_task_event(
+                    env,
+                    keeper,
+                    pair.task_b,
+                    false,
+                    batch::ATOMIC_PAIR_PARTNER_FAILED,
+                );
+
+                (
+                    batch::BatchTaskOutcome {
+                        task_id: pair.task_a,
+                        succeeded: false,
+                        error_code: err_a,
+                    },
+                    batch::BatchTaskOutcome {
+                        task_id: pair.task_b,
+                        succeeded: false,
+                        error_code: batch::ATOMIC_PAIR_PARTNER_FAILED,
+                    },
+                )
+            }
+            (Ok(_), Err(err_b)) => {
+                // Partner A is rolled back because B failed
+                batch::publish_batch_task_event(
+                    env,
+                    keeper,
+                    pair.task_a,
+                    false,
+                    batch::ATOMIC_PAIR_PARTNER_FAILED,
+                );
+                batch::publish_batch_task_event(env, keeper, pair.task_b, false, err_b);
+
+                (
+                    batch::BatchTaskOutcome {
+                        task_id: pair.task_a,
+                        succeeded: false,
+                        error_code: batch::ATOMIC_PAIR_PARTNER_FAILED,
+                    },
+                    batch::BatchTaskOutcome {
+                        task_id: pair.task_b,
+                        succeeded: false,
+                        error_code: err_b,
+                    },
+                )
+            }
+            (Err(err_a), Err(err_b)) => {
+                batch::publish_batch_task_event(env, keeper, pair.task_a, false, err_a);
+                batch::publish_batch_task_event(env, keeper, pair.task_b, false, err_b);
+
+                (
+                    batch::BatchTaskOutcome {
+                        task_id: pair.task_a,
+                        succeeded: false,
+                        error_code: err_a,
+                    },
+                    batch::BatchTaskOutcome {
+                        task_id: pair.task_b,
+                        succeeded: false,
+                        error_code: err_b,
+                    },
+                )
+            }
+        }
+    }
+
+    /// Fallible single-task execution used by [`Self::batch_execute`].
+    ///
+    /// Returns `Ok(())` after the target call succeeds and keeper fees are
+    /// settled, or `Err(error_code)` on any recoverable failure. Never panics
+    /// for per-task outcomes so siblings can continue.
+    fn try_execute_isolated(env: &Env, keeper: &Address, task_id: u64) -> Result<(), u32> {
+        let (config, fee) = Self::prepare_and_invoke_isolated(env, keeper, task_id)?;
+        Self::commit_executed_task(env, keeper, task_id, config, fee);
         Ok(())
     }
 
@@ -4734,7 +5364,7 @@ impl SoroTaskContract {
 
         // ── Gas Meter: Initialize for dynamic fee calculation ──────────────────
         // Pass task interval for base fee computation (shorter interval = higher base fee)
-        let gas_meter = gas::GasMeter::new(env, config.interval);
+        let gas_meter = gas::GasMeter::for_keeper(env, config.interval, Some(keeper));
 
         // ── 3. Check invalidation hooks (Issue #832) ────────────────────
         if let Some(hook) = check_invalidation_hooks(env, &config.target) {
@@ -5182,6 +5812,7 @@ impl SoroTaskContract {
             // ── 10. Fee calculation ─────────────────────────────────────
             // Combine dynamic gas metering with staking fee discounts
             let calculated_fee = gas_meter.calculate_fee(env);
+            carbon::record_consumption(env, gas_meter.consumed_cpu(env));
 
             let protocol_fee_bps: u32 = env
                 .storage()
@@ -6700,6 +7331,46 @@ impl SoroTaskContract {
         enter_security_guard(&env);
         Self::deposit_gas_internal(&env, task_id, &from, amount, false);
         exit_security_guard(&env);
+    }
+
+    /// Boosts a task's gas balance with third-party funds (Issue #1420).
+    ///
+    /// Any address can top up an existing task. The tokens go into the task's
+    /// gas balance and escrow exactly like `deposit_gas`, and the sponsor's
+    /// cumulative share is tracked so it can be attributed and refunded later.
+    pub fn boost_task(env: Env, task_id: u64, sponsor: Address, amount: i128) -> i128 {
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidBounty);
+        }
+        enter_security_guard(&env);
+        Self::deposit_gas_internal(&env, task_id, &sponsor, amount, false);
+        let share = storage::record_booster_contribution(&env, task_id, &sponsor, amount);
+        exit_security_guard(&env);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "TaskBoosted"),
+                Symbol::new(&env, "v1"),
+                task_id,
+            ),
+            (sponsor, amount, share),
+        );
+        share
+    }
+
+    /// Cumulative amount `sponsor` has boosted `task_id` with.
+    pub fn get_booster_share(env: Env, task_id: u64, sponsor: Address) -> i128 {
+        storage::booster_share(&env, task_id, &sponsor)
+    }
+
+    /// Total booster contributions to `task_id` across all sponsors.
+    pub fn get_booster_total(env: Env, task_id: u64) -> i128 {
+        storage::booster_total(&env, task_id)
+    }
+
+    /// Distinct sponsors that have boosted `task_id`.
+    pub fn get_booster_sponsors(env: Env, task_id: u64) -> Vec<Address> {
+        storage::booster_sponsors(&env, task_id)
     }
 
     /// Withdraws gas tokens from a task's balance.
@@ -8790,6 +9461,7 @@ impl SoroTaskContract {
         if amount <= 0 {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
+        circuit_breaker::note_stake_increase(&env, &staker);
 
         // Validate staking pool is initialized
         let pool: StakingPool = env
@@ -8911,6 +9583,7 @@ impl SoroTaskContract {
     pub fn unstake_tokens(env: Env, staker: Address, amount: i128) {
         enter_security_guard(&env);
         staker.require_auth();
+        circuit_breaker::assert_stake_unlocked(&env, &staker);
 
         // Validate staking pool is initialized
         let pool: StakingPool = env
@@ -15350,3 +16023,6 @@ mod test_task_bundle;
 
 #[cfg(test)]
 mod test_state_channel;
+
+#[cfg(test)]
+mod test_booster;

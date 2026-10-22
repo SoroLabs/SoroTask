@@ -7,13 +7,15 @@
 //! - Priority tipping based on ledger congestion
 //! - Base fee computed from task interval (shorter interval = higher base fee)
 //! - Escrow settlement with refunds
+//! - Congestion surcharge compensating keepers for inclusion-fee spikes (SC-PROD-29)
 //!
 //! Note: CPU/memory metering is only available in test environments via
 //! `env.cost_estimate()`. In production, static rates are used.
 
-use soroban_sdk::{contracttype, Address, Env, Symbol, Vec};
+use soroban_sdk::{contracttype, panic_with_error, Address, Env, Symbol, Vec};
 
-use crate::{DataKey, NetworkMetrics};
+use crate::admin::{self, ROLE_FEES};
+use crate::{DataKey, Error, NetworkMetrics};
 
 #[cfg(feature = "testutils")]
 use soroban_sdk::testutils::cost_estimate::CostEstimate;
@@ -33,6 +35,10 @@ pub struct GasMeter {
     base_fee: i128,
     /// Priority tip for congestion
     priority_tip: i128,
+    /// Compensation for inclusion-fee spikes above the 24h baseline
+    surcharge: i128,
+    /// Deduction for the keeper bidding far above the observed inclusion fee
+    overbid_penalty: i128,
     /// Task interval for base fee calculation
     interval: u32,
 }
@@ -41,10 +47,22 @@ impl GasMeter {
     /// Create a new gas meter with current rates and task interval
     /// Shorter intervals (higher frequency) result in higher base fees
     pub fn new(env: &Env, interval: u32) -> Self {
+        Self::for_keeper(env, interval, None)
+    }
+
+    /// Create a gas meter that also prices the congestion surcharge for
+    /// `keeper`'s declared inclusion-fee bid.
+    pub fn for_keeper(env: &Env, interval: u32, keeper: Option<&Address>) -> Self {
         let cpu_rate = Self::get_cpu_rate(env);
         let mem_rate = Self::get_mem_rate(env);
         let base_fee = Self::get_base_fee(env, interval);
         let priority_tip = Self::calculate_priority_tip(env);
+        // Same backwards-compatibility rule as the priority tip: no token, no surcharge.
+        let congestion = if env.storage().instance().has(&DataKey::Token) {
+            quote_congestion(env, keeper)
+        } else {
+            CongestionQuote::default()
+        };
 
         // Try to get initial cost estimates (works in test mode)
         // In production, these will be 0 and we'll use static estimation
@@ -57,6 +75,8 @@ impl GasMeter {
             mem_rate,
             base_fee,
             priority_tip,
+            surcharge: congestion.surcharge,
+            overbid_penalty: congestion.penalty,
             interval,
         }
     }
@@ -203,7 +223,8 @@ impl GasMeter {
         0
     }
 
-    /// Calculate total fee: base + cpu_cost + mem_cost + tip
+    /// Calculate total fee: base + cpu_cost + mem_cost + tip + surcharge - penalty.
+    /// The overbid penalty never pushes the fee below the base fee.
     pub fn calculate_fee(&self, env: &Env) -> i128 {
         let cpu_consumed = self.consumed_cpu(env) as i128;
         let mem_consumed = self.consumed_mem(env) as i128;
@@ -215,6 +236,9 @@ impl GasMeter {
             .saturating_add(cpu_cost)
             .saturating_add(mem_cost)
             .saturating_add(self.priority_tip)
+            .saturating_add(self.surcharge)
+            .saturating_sub(self.overbid_penalty)
+            .max(self.base_fee)
     }
 
     /// Get fee breakdown for transparency
@@ -229,6 +253,8 @@ impl GasMeter {
             cpu_cost,
             mem_cost,
             priority_tip: self.priority_tip,
+            congestion_surcharge: self.surcharge,
+            overbid_penalty: self.overbid_penalty,
             total: self.calculate_fee(env),
             cpu_instructions: cpu_consumed as u64,
             memory_bytes: mem_consumed as u64,
@@ -249,6 +275,16 @@ impl GasMeter {
     pub fn priority_tip(&self) -> i128 {
         self.priority_tip
     }
+
+    /// Get the congestion surcharge component
+    pub fn surcharge(&self) -> i128 {
+        self.surcharge
+    }
+
+    /// Get the overbid penalty deducted from the fee
+    pub fn overbid_penalty(&self) -> i128 {
+        self.overbid_penalty
+    }
 }
 
 /// Fee breakdown for event logging
@@ -259,6 +295,8 @@ pub struct FeeBreakdown {
     pub cpu_cost: i128,
     pub mem_cost: i128,
     pub priority_tip: i128,
+    pub congestion_surcharge: i128,
+    pub overbid_penalty: i128,
     pub total: i128,
     pub cpu_instructions: u64,
     pub memory_bytes: u64,
@@ -420,6 +458,264 @@ impl EscrowManager {
 
         (actual_consumed, refund)
     }
+}
+
+// ── Congestion surcharge (SC-PROD-29) ───────────────────────────────────────
+//
+// Soroban contracts cannot observe the inclusion fee of the transaction that
+// invokes them, so fee reporters (admin or ROLE_FEES delegates) publish
+// observed network inclusion fees. Samples are kept in 24 hourly buckets and
+// their median is the baseline. When the latest observation spikes past
+// `trigger_bps` of the baseline, keepers are reimbursed for the excess they
+// actually bid, capped at the observed fee and at `max_spike_multiple` x
+// baseline. Bids above the observed fee by more than `overbid_tolerance_bps`
+// are penalized, so declaring an unnecessary premium never pays.
+
+/// Width of one baseline bucket.
+pub const FEE_BUCKET_SECONDS: u64 = 3_600;
+/// Number of hourly buckets in the 24-hour baseline window.
+pub const FEE_BUCKET_COUNT: u32 = 24;
+
+const BPS: i128 = 10_000;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SurchargeConfig {
+    /// Current/baseline ratio (bps) at which a flash event starts. >= 10_000.
+    pub trigger_bps: u32,
+    /// Share of the spike cost reimbursed to the keeper (bps).
+    pub compensation_bps: u32,
+    /// Reimbursable fee is capped at this multiple of the baseline.
+    pub max_spike_multiple: u32,
+    /// Headroom above the observed fee a bid may carry without penalty (bps).
+    pub overbid_tolerance_bps: u32,
+    /// Share of the excess overbid deducted from the keeper fee (bps).
+    pub overbid_penalty_bps: u32,
+    /// Latest sample older than this disables the surcharge (fail closed).
+    pub max_sample_age: u64,
+    /// Buckets with samples required before a baseline is trusted.
+    pub min_baseline_samples: u32,
+    /// Inclusion-fee units consumed by one execution transaction.
+    pub fee_units_per_execution: u32,
+}
+
+impl SurchargeConfig {
+    pub fn default_config() -> Self {
+        Self {
+            trigger_bps: 15_000,
+            compensation_bps: 10_000,
+            max_spike_multiple: 100,
+            overbid_tolerance_bps: 2_000,
+            overbid_penalty_bps: 5_000,
+            max_sample_age: 600,
+            min_baseline_samples: 6,
+            fee_units_per_execution: 1,
+        }
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InclusionFeeSample {
+    pub fee: i128,
+    pub observed_at: u64,
+}
+
+/// Surcharge pricing at a point in time, exposed for keeper bots.
+#[contracttype]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CongestionQuote {
+    pub current_fee: i128,
+    pub baseline_fee: i128,
+    /// Per-unit fee reimbursed: min(bid, current, cap).
+    pub effective_fee: i128,
+    pub surcharge: i128,
+    pub penalty: i128,
+}
+
+#[contracttype]
+#[derive(Clone)]
+enum GasSurchargeKey {
+    SurchargeConfig,
+    InclusionFeeBuckets,
+    LatestInclusionFee,
+    KeeperFeeBid(Address),
+}
+
+pub fn surcharge_config(env: &Env) -> SurchargeConfig {
+    env.storage()
+        .instance()
+        .get(&GasSurchargeKey::SurchargeConfig)
+        .unwrap_or_else(SurchargeConfig::default_config)
+}
+
+pub fn set_surcharge_config(env: &Env, caller: &Address, config: SurchargeConfig) {
+    admin::require_role(env, caller, ROLE_FEES);
+    if (config.trigger_bps as i128) < BPS
+        || config.compensation_bps as i128 > BPS
+        || config.overbid_penalty_bps as i128 > BPS
+        || config.max_spike_multiple == 0
+        || config.max_sample_age == 0
+        || config.min_baseline_samples == 0
+        || config.min_baseline_samples > FEE_BUCKET_COUNT
+        || config.fee_units_per_execution == 0
+    {
+        panic_with_error!(env, Error::InvalidSurchargeConfig);
+    }
+    env.storage()
+        .instance()
+        .set(&GasSurchargeKey::SurchargeConfig, &config);
+}
+
+/// Records an observed network inclusion fee (stroops per unit).
+pub fn record_inclusion_fee(env: &Env, reporter: &Address, fee: i128) {
+    admin::require_role(env, reporter, ROLE_FEES);
+    if fee <= 0 {
+        panic_with_error!(env, Error::InvalidInclusionFee);
+    }
+
+    let now = env.ledger().timestamp();
+    let sample = InclusionFeeSample {
+        fee,
+        observed_at: now,
+    };
+    let mut buckets = fee_buckets(env);
+    let slot = ((now / FEE_BUCKET_SECONDS) % FEE_BUCKET_COUNT as u64) as u32;
+    // The latest sample of the hour wins; older hours sharing the slot are
+    // overwritten because they have left the 24h window.
+    buckets.set(slot, sample.clone());
+
+    env.storage()
+        .instance()
+        .set(&GasSurchargeKey::InclusionFeeBuckets, &buckets);
+    env.storage()
+        .instance()
+        .set(&GasSurchargeKey::LatestInclusionFee, &sample);
+    env.events().publish(
+        (
+            Symbol::new(env, "InclusionFeeRecorded"),
+            Symbol::new(env, "v1"),
+        ),
+        (reporter.clone(), fee, now),
+    );
+}
+
+fn fee_buckets(env: &Env) -> Vec<InclusionFeeSample> {
+    env.storage()
+        .instance()
+        .get(&GasSurchargeKey::InclusionFeeBuckets)
+        .unwrap_or_else(|| {
+            let mut buckets = Vec::new(env);
+            for _ in 0..FEE_BUCKET_COUNT {
+                buckets.push_back(InclusionFeeSample {
+                    fee: 0,
+                    observed_at: 0,
+                });
+            }
+            buckets
+        })
+}
+
+/// Median of the samples observed within the last 24 hours, or `None` when
+/// fewer than `min_baseline_samples` buckets are populated.
+pub fn baseline_inclusion_fee(env: &Env) -> Option<i128> {
+    let now = env.ledger().timestamp();
+    let window = FEE_BUCKET_SECONDS * FEE_BUCKET_COUNT as u64;
+    let mut fees = [0i128; FEE_BUCKET_COUNT as usize];
+    let mut count = 0usize;
+    for sample in fee_buckets(env).iter() {
+        if sample.fee > 0 && now.saturating_sub(sample.observed_at) < window {
+            fees[count] = sample.fee;
+            count += 1;
+        }
+    }
+    if count == 0 || (count as u32) < surcharge_config(env).min_baseline_samples {
+        return None;
+    }
+
+    let fees = &mut fees[..count];
+    fees.sort_unstable();
+    let mid = count / 2;
+    Some(if count % 2 == 1 {
+        fees[mid]
+    } else {
+        fees[mid - 1] + (fees[mid] - fees[mid - 1]) / 2
+    })
+}
+
+pub fn latest_inclusion_fee(env: &Env) -> Option<InclusionFeeSample> {
+    env.storage()
+        .instance()
+        .get(&GasSurchargeKey::LatestInclusionFee)
+}
+
+/// Declares the inclusion fee per unit `keeper` bids on execution
+/// transactions. A bid of 0 clears it, which forgoes any surcharge.
+pub fn set_keeper_fee_bid(env: &Env, keeper: &Address, bid: i128) {
+    keeper.require_auth();
+    if bid < 0 {
+        panic_with_error!(env, Error::InvalidInclusionFee);
+    }
+    let key = GasSurchargeKey::KeeperFeeBid(keeper.clone());
+    if bid == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &bid);
+    }
+}
+
+pub fn keeper_fee_bid(env: &Env, keeper: &Address) -> Option<i128> {
+    env.storage()
+        .persistent()
+        .get(&GasSurchargeKey::KeeperFeeBid(keeper.clone()))
+}
+
+/// Prices the congestion surcharge and overbid penalty for `keeper`.
+/// Returns an all-zero surcharge whenever data is missing or stale.
+pub fn quote_congestion(env: &Env, keeper: Option<&Address>) -> CongestionQuote {
+    let mut quote = CongestionQuote::default();
+    let config = surcharge_config(env);
+
+    let latest = match latest_inclusion_fee(env) {
+        Some(sample) => sample,
+        None => return quote,
+    };
+    if env.ledger().timestamp().saturating_sub(latest.observed_at) > config.max_sample_age {
+        return quote;
+    }
+    let baseline = match baseline_inclusion_fee(env) {
+        Some(fee) => fee,
+        None => return quote,
+    };
+
+    let current = latest.fee;
+    let units = config.fee_units_per_execution as i128;
+    // A keeper that declares no bid claims no premium over the baseline.
+    let bid = keeper
+        .and_then(|k| keeper_fee_bid(env, k))
+        .unwrap_or(baseline);
+    let cap = baseline.saturating_mul(config.max_spike_multiple as i128);
+
+    quote.current_fee = current;
+    quote.baseline_fee = baseline;
+    quote.effective_fee = bid.min(current).min(cap);
+
+    let spiking = current.saturating_mul(BPS) >= baseline.saturating_mul(config.trigger_bps as i128);
+    if spiking && quote.effective_fee > baseline {
+        quote.surcharge = (quote.effective_fee - baseline)
+            .saturating_mul(units)
+            .saturating_mul(config.compensation_bps as i128)
+            / BPS;
+    }
+
+    let tolerated = current.saturating_mul(BPS + config.overbid_tolerance_bps as i128) / BPS;
+    if bid > tolerated {
+        quote.penalty = (bid - tolerated)
+            .saturating_mul(units)
+            .saturating_mul(config.overbid_penalty_bps as i128)
+            / BPS;
+    }
+    quote
 }
 
 /// Update gas rates (admin only)

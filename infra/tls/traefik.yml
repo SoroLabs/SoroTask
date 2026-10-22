@@ -1,0 +1,36 @@
+# Traefik static configuration for automated Let's Encrypt certificates (BE-PROD-37, #1461).
+# Certificates are issued with the ACME DNS-01 challenge through Cloudflare, so
+# renewal does not need inbound port 80 and works for wildcard names.
+#
+# Required environment (never commit values):
+#   ACME_EMAIL          contact address for Let's Encrypt
+#   CF_DNS_API_TOKEN    Cloudflare API token scoped to Zone:DNS:Edit for the zone
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "${ACME_EMAIL}"
+      storage: /letsencrypt/acme.json
+      # Staging CA while testing; switch to the production directory once verified.
+      # caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true

@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * keeperAlerts.js - Real-time Slack, Discord, and PagerDuty alerting for
- * critical keeper failures (Issue #786)
+ * keeperAlerts.js - Real-time Slack, Discord, PagerDuty, Telegram, and Email alerting
+ * for critical keeper failures (Issue #786, #1449)
  *
  * Triggers high-priority alerts when:
  * - X consecutive task executions fail
@@ -11,8 +11,9 @@
  * - Keeper account balance drops below a configurable threshold
  * - The keeper process crashes (via an uncaught exception hook)
  *
- * All channels support rate limiting so a flapping condition doesn't spam
- * the configured webhooks.
+ * All channels support rate limiting and debouncing so a flapping condition doesn't spam
+ * the configured webhooks. Critical alerts support exponential escalation to PagerDuty
+ * if unacknowledged within a configurable window (default 5 minutes).
  */
 
 const https = require('https');
@@ -35,6 +36,16 @@ const DEFAULT_BALANCE_THRESHOLD = process.env.ALERT_BALANCE_THRESHOLD
   : 0;
 const DEFAULT_RATE_LIMIT_MS = parseInt(
   process.env.ALERT_RATE_LIMIT_MS || String(5 * 60 * 1000),
+  10,
+);
+// Exponential escalation: escalate to PagerDuty if critical alert unacknowledged after this window
+const DEFAULT_ESCALATION_WINDOW_MS = parseInt(
+  process.env.ALERT_ESCALATION_WINDOW_MS || String(5 * 60 * 1000),
+  10,
+);
+// Maximum escalation attempts before giving up
+const DEFAULT_MAX_ESCALATION_ATTEMPTS = parseInt(
+  process.env.ALERT_MAX_ESCALATION_ATTEMPTS || '3',
   10,
 );
 
@@ -87,6 +98,18 @@ function buildPagerDutyPayload(routingKey, message, details = {}, severity = 'cr
       custom_details: details,
     },
   });
+}
+
+/**
+ * Build an email payload for webhook-based email delivery (e.g., SendGrid, Mailgun, Postmark webhooks).
+ * Expects a webhook URL that accepts JSON with: to, subject, text, html
+ */
+function buildEmailPayload(message, details = {}, severity = 'critical') {
+  const detailLines = Object.entries(details).map(([k, v]) => `${k}: ${v}`).join('\n');
+  const subject = `[SoroTask Keeper] ${severity.toUpperCase()} Alert`;
+  const text = `SoroTask Keeper Alert (${severity})\n\n${message}\n\n${detailLines}`;
+  const html = `<h2>SoroTask Keeper Alert (${severity})</h2><p>${message}</p><pre>${detailLines}</pre>`;
+  return JSON.stringify({ subject, text, html });
 }
 
 function postJson(targetUrl, body, extraHeaders = {}) {
@@ -184,10 +207,29 @@ async function sendTelegramAlert(telegramWebhookUrl, message, details = {}, seve
 }
 
 /**
+ * Send an email alert via a webhook endpoint (e.g., SendGrid, Mailgun, Postmark, or custom relay).
+ * The webhook should accept JSON with: subject, text, html (and optionally to/from).
+ */
+async function sendEmailAlert(emailWebhookUrl, message, details = {}, severity = 'critical') {
+  if (!emailWebhookUrl) return;
+  const body = buildEmailPayload(message, details, severity);
+  try {
+    await postJson(emailWebhookUrl, body);
+    logger.info('Email alert sent', { message });
+  } catch (err) {
+    logger.error('Failed to send email alert', { error: err.message });
+  }
+}
+
+/**
  * KeeperAlertManager fans a single alert condition out to every configured
- * channel (Slack webhook, Discord webhook, PagerDuty routing key), and
- * rate-limits repeated alerts of the same kind so a persistent or flapping
- * failure doesn't spam the destinations.
+ * channel (Slack webhook, Discord webhook, PagerDuty routing key, Telegram,
+ * Email), and rate-limits repeated alerts of the same kind so a persistent
+ * or flapping failure doesn't spam the destinations.
+ *
+ * Supports exponential escalation: if a critical alert is not acknowledged
+ * within the escalation window, it re-triggers with higher urgency and
+ * escalates to PagerDuty with increased severity.
  */
 class KeeperAlertManager {
   constructor(options = {}) {
@@ -197,6 +239,8 @@ class KeeperAlertManager {
       options.pagerDutyRoutingKey || process.env.PAGERDUTY_ROUTING_KEY || null;
     this.telegramWebhookUrl =
       options.telegramWebhookUrl || process.env.ALERT_TELEGRAM_WEBHOOK || null;
+    this.emailWebhookUrl =
+      options.emailWebhookUrl || process.env.ALERT_EMAIL_WEBHOOK || null;
 
     // Backwards-compatible single-URL option: routed by isDiscordUrl sniffing.
     this.webhookUrl =
@@ -214,11 +258,18 @@ class KeeperAlertManager {
 
     this.rateLimitMs = options.rateLimitMs ?? DEFAULT_RATE_LIMIT_MS;
 
+    // Exponential escalation configuration
+    this.escalationWindowMs = options.escalationWindowMs ?? DEFAULT_ESCALATION_WINDOW_MS;
+    this.maxEscalationAttempts = options.maxEscalationAttempts ?? DEFAULT_MAX_ESCALATION_ATTEMPTS;
+
     this._consecutiveFailures = 0;
     this._rpcDownSince = null;
     this._rpcAlertSent = false;
     this._rpcCheckInterval = null;
     this._lastAlertAt = new Map();
+    // Track active alerts for escalation: kind -> { sentAt, attempts, severity, acknowledged }
+    this._activeAlerts = new Map();
+    this._escalationCheckInterval = null;
 
     if (options.hookProcessCrashes) {
       this._installCrashHooks();
@@ -260,7 +311,89 @@ class KeeperAlertManager {
     if (this.telegramWebhookUrl) {
       tasks.push(sendTelegramAlert(this.telegramWebhookUrl, message, details, severity));
     }
+    if (this.emailWebhookUrl) {
+      tasks.push(sendEmailAlert(this.emailWebhookUrl, message, details, severity));
+    }
     await Promise.all(tasks);
+
+    // Track critical alerts for exponential escalation
+    if (severity === 'critical' && this.pagerDutyRoutingKey) {
+      this._activeAlerts.set(kind, {
+        sentAt: Date.now(),
+        attempts: 1,
+        severity,
+        message,
+        details,
+        acknowledged: false,
+      });
+      this._startEscalationMonitor();
+    }
+  }
+
+  /**
+   * Start the escalation monitor if not already running.
+   * Checks active alerts periodically and escalates unacknowledged ones.
+   */
+  _startEscalationMonitor() {
+    if (this._escalationCheckInterval) return;
+    this._escalationCheckInterval = setInterval(() => this._checkEscalations(), 60000); // Check every minute
+  }
+
+  /**
+   * Check active alerts and escalate any unacknowledged critical alerts
+   * that have exceeded the escalation window.
+   */
+  async _checkEscalations() {
+    const now = Date.now();
+    for (const [kind, alert] of this._activeAlerts.entries()) {
+      if (alert.acknowledged) {
+        this._activeAlerts.delete(kind);
+        continue;
+      }
+      const elapsed = now - alert.sentAt;
+      if (elapsed >= this.escalationWindowMs && alert.attempts < this.maxEscalationAttempts) {
+        // Escalate: resend to PagerDuty with increased urgency
+        const escalatedSeverity = alert.attempts >= this.maxEscalationAttempts - 1 ? 'critical' : 'warning';
+        const escalatedMessage = `[ESCALATION ${alert.attempts + 1}/${this.maxEscalationAttempts}] ${alert.message}`;
+        logger.warn('Escalating unacknowledged alert', { kind, attempt: alert.attempts + 1, elapsedMs: elapsed });
+        try {
+          await sendPagerDutyAlert(
+            this.pagerDutyRoutingKey,
+            escalatedMessage,
+            { dedupKey: kind, ...alert.details, escalationAttempt: alert.attempts + 1 },
+            escalatedSeverity,
+          );
+          // Also re-notify other channels for visibility
+          await this._dispatch(kind, escalatedMessage, { ...alert.details, escalationAttempt: alert.attempts + 1 }, escalatedSeverity);
+        } catch (err) {
+          logger.error('Escalation failed', { kind, error: err.message });
+        }
+        alert.attempts += 1;
+        alert.sentAt = now; // Reset timer for next escalation window
+      } else if (alert.attempts >= this.maxEscalationAttempts) {
+        logger.error('Max escalation attempts reached, alert unacknowledged', { kind });
+        this._activeAlerts.delete(kind);
+      }
+    }
+    // Clean up if no more active alerts
+    if (this._activeAlerts.size === 0 && this._escalationCheckInterval) {
+      clearInterval(this._escalationCheckInterval);
+      this._escalationCheckInterval = null;
+    }
+  }
+
+  /**
+   * Acknowledge an alert by kind, stopping further escalation.
+   * Can be called by external systems (e.g., PagerDuty webhook handler).
+   */
+  acknowledgeAlert(kind) {
+    const alert = this._activeAlerts.get(kind);
+    if (alert) {
+      alert.acknowledged = true;
+      logger.info('Alert acknowledged, escalation stopped', { kind });
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -394,5 +527,7 @@ module.exports = {
   sendAlert,
   sendPagerDutyAlert,
   sendTelegramAlert,
+  sendEmailAlert,
+  buildEmailPayload,
   postWebhook,
 };
