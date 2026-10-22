@@ -1501,23 +1501,37 @@ pub enum DataKey {
     SimulatedUnderlyingPrice(Address),
 }
 
-/// Transient storage reentrancy guard ensuring reentrant calls revert immediately.
-pub struct ReentrancyGuard<'a>(&'a Env);
+/// Call frame representing a single entry in the call stack
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct CallFrame {
+    /// Contract address that was called
+    pub contract: Address,
+    /// Function selector that was invoked
+    pub function: Symbol,
+    /// Whether this frame has mutated state
+    pub state_mutated: bool,
+    /// Whether this is a read-only call (view function)
+    pub is_read_only: bool,
+    /// Depth of this frame in the call stack
+    pub depth: u32,
+}
+
+/// Call graph topology tracker for reentrancy detection
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct CallGraph {
+    /// Stack of call frames representing the current invocation path
+    pub frames: Vec<CallFrame>,
+    /// Set of contract addresses visited in this call graph (for cycle detection)
+    pub visited_contracts: Vec<Address>,
+    /// Whether any state mutation has occurred in the current transaction
+    pub state_mutated: bool,
+    /// Current call stack depth
+    pub depth: u32,
+}
 
 pub mod gas;
-
-impl<'a> ReentrancyGuard<'a> {
-    pub fn new(env: &'a Env) -> Self {
-        enter_security_guard(env);
-        Self(env)
-    }
-}
-
-impl<'a> Drop for ReentrancyGuard<'a> {
-    fn drop(&mut self) {
-        exit_security_guard(self.0);
-    }
-}
 
 pub mod carbon;
 pub mod ccip;
@@ -1834,13 +1848,16 @@ fn invest_task_gas(env: &Env, task_id: u64, config: &TaskConfig, amount: i128) {
     args.push_back(token_address.into_val(env));
     args.push_back(task_id.into_val(env));
     args.push_back(amount.into_val(env));
-    match env.try_invoke_contract::<Val, soroban_sdk::Error>(
+    let deposit_fn = liquidity.deposit_function.clone();
+    match security::try_invoke_contract_with_guard::<Val>(
+        env,
         &strategy.protocol_address,
-        &liquidity.deposit_function,
+        &deposit_fn,
         args,
+        false, // deposit is state-changing
     ) {
-        Ok(Ok(_)) => {}
-        _ => panic_with_error!(env, Error::YieldHarvestFailed),
+        Ok(_) => {}
+        Err(_) => panic_with_error!(env, Error::YieldHarvestFailed),
     }
     token_client.approve(
         &env.current_contract_address(),
@@ -1894,12 +1911,15 @@ fn ensure_task_liquid(env: &Env, task_id: u64, config: &TaskConfig, amount: i128
     args.push_back(token_address.into_val(env));
     args.push_back(task_id.into_val(env));
     args.push_back(amount_to_withdraw.into_val(env));
-    let received = match env.try_invoke_contract::<i128, soroban_sdk::Error>(
+    let withdraw_fn = liquidity.withdraw_function.clone();
+    let received = match security::try_invoke_contract_with_guard::<i128>(
+        env,
         &strategy.protocol_address,
-        &liquidity.withdraw_function,
+        &withdraw_fn,
         args,
+        false, // withdraw is state-changing
     ) {
-        Ok(Ok(received)) if received >= amount_to_withdraw => received,
+        Ok(received) if received >= amount_to_withdraw => received,
         _ => panic_with_error!(env, Error::YieldHarvestFailed),
     };
     let balance_after = token_client.balance(&contract_address);
@@ -5124,14 +5144,17 @@ impl SoroTaskContract {
                 call_args.push_back(prev_result);
             }
 
-            let result = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+            let step_fn = step.function.clone();
+            let result = security::try_invoke_contract_with_guard::<Val>(
+                &env,
                 &step.target,
-                &step.function,
+                &step_fn,
                 call_args,
+                false, // bundle steps are state-changing
             );
 
             let step_result = match result {
-                Ok(Ok(val)) => val,
+                Ok(val) => val,
                 _ => {
                     outcomes.push_back(BundleStepOutcome {
                         target: step.target.clone(),
@@ -5577,13 +5600,16 @@ impl SoroTaskContract {
             Some(ref resolver_address) => {
                 let mut resolver_call_args = Vec::<Val>::new(env);
                 resolver_call_args.push_back(config.args.clone().into_val(env));
+                let check_condition_fn = Symbol::new(env, "check_condition");
                 matches!(
-                    env.try_invoke_contract::<bool, soroban_sdk::Error>(
+                    security::try_invoke_contract_with_guard::<bool>(
+                        env,
                         resolver_address,
-                        &Symbol::new(env, "check_condition"),
+                        &check_condition_fn,
                         resolver_call_args,
+                        true, // resolver check_condition is typically read-only
                     ),
-                    Ok(Ok(true))
+                    Ok(true)
                 )
             }
             None => true,
@@ -5938,7 +5964,38 @@ impl SoroTaskContract {
                 );
                 return;
             }
-            env.invoke_contract::<Val>(&config.target, &config.function, config.args.clone());
+            match security::invoke_contract_with_guard::<Val>(
+                env,
+                &config.target,
+                &config.function,
+                config.args.clone(),
+                false, // target call is state-changing
+            ) {
+                Ok(_) => {}
+                Err(_) => {
+                    trace_steps.push_back(events::ExecutionStepRecord {
+                        step: ExecutionStep::CallTarget,
+                        result: StepResult::Failed,
+                        detail: Error::ReentrantCall as u32,
+                    });
+                    events::EventLogger::log_execution_step(
+                        env,
+                        task_id,
+                        keeper,
+                        ExecutionStep::CallTarget,
+                        StepResult::Failed,
+                        Error::ReentrantCall as u32,
+                    );
+                    Self::persist_execution_trace(
+                        env,
+                        task_id,
+                        keeper,
+                        trace_steps,
+                        ExecutionOutcome::Failed,
+                    );
+                    panic_with_error!(env, Error::ReentrantCall);
+                }
+            }
             trace_steps.push_back(events::ExecutionStepRecord {
                 step: ExecutionStep::CallTarget,
                 result: StepResult::Passed,
@@ -6229,8 +6286,16 @@ impl SoroTaskContract {
         }
 
         // Perform callback invocation with capital loan
-        let _callback_res =
-            env.invoke_contract::<Val>(&callback_target, &callback_fn, callback_args);
+        let _callback_res = match security::invoke_contract_with_guard::<Val>(
+            &env,
+            &callback_target,
+            &callback_fn,
+            callback_args,
+            false, // callback is state-changing
+        ) {
+            Ok(res) => res,
+            Err(_) => panic_with_error!(&env, Error::FlashSwapFailed),
+        };
 
         // Verify loan repayment + fee condition
         let fee_bps: i128 = 30; // 0.3% flash loan fee
@@ -7670,12 +7735,15 @@ impl SoroTaskContract {
 
         let quote_args: Vec<Val> =
             (gas_token.clone(), pref.payout_token.clone(), amount).into_val(env);
-        let expected_out: i128 = match env.try_invoke_contract::<i128, soroban_sdk::Error>(
+        let get_amount_out_fn = Symbol::new(env, "get_amount_out");
+        let expected_out: i128 = match security::try_invoke_contract_with_guard::<i128>(
+            env,
             &pref.router,
-            &Symbol::new(env, "get_amount_out"),
+            &get_amount_out_fn,
             quote_args,
+            true, // get_amount_out is read-only
         ) {
-            Ok(Ok(v)) if v > 0 => v,
+            Ok(v) if v > 0 => v,
             _ => return false,
         };
         let min_amount_out =
@@ -7699,12 +7767,15 @@ impl SoroTaskContract {
         )
             .into_val(env);
 
-        match env.try_invoke_contract::<i128, soroban_sdk::Error>(
+        let swap_fn = Symbol::new(env, "swap");
+        match security::try_invoke_contract_with_guard::<i128>(
+            env,
             &pref.router,
-            &Symbol::new(env, "swap"),
+            &swap_fn,
             swap_args,
+            false, // swap is state-changing
         ) {
-            Ok(Ok(amount_out)) if amount_out > 0 => {
+            Ok(amount_out) if amount_out > 0 => {
                 // The router is expected to self-enforce `min_amount_out`
                 // (it was passed the value precisely so it can revert if it
                 // can't meet it); a non-compliant router could still return
@@ -7917,12 +7988,15 @@ impl SoroTaskContract {
             Some(ref resolver_address) => {
                 let mut args = Vec::<Val>::new(&env);
                 args.push_back(config.args.clone().into_val(&env));
-                match env.try_invoke_contract::<bool, soroban_sdk::Error>(
+                let check_condition_fn = Symbol::new(&env, "check_condition");
+                match security::try_invoke_contract_with_guard::<bool>(
+                    &env,
                     resolver_address,
-                    &Symbol::new(&env, "check_condition"),
+                    &check_condition_fn,
                     args,
+                    true, // check_condition is read-only
                 ) {
-                    Ok(Ok(v)) => v,
+                    Ok(v) => v,
                     _ => false,
                 }
             }
@@ -9058,12 +9132,15 @@ impl SoroTaskContract {
         let mut harvest_args = strategy.harvest_args.clone();
         harvest_args.push_back(token_address.clone().into_val(env));
         harvest_args.push_back(task_id.into_val(env));
-        let harvested = match env.try_invoke_contract::<i128, soroban_sdk::Error>(
+        let harvest_fn = strategy.harvest_function.clone();
+        let harvested = match security::try_invoke_contract_with_guard::<i128>(
+            env,
             &strategy.protocol_address,
-            &strategy.harvest_function,
+            &harvest_fn,
             harvest_args,
+            false, // harvest is state-changing
         ) {
-            Ok(Ok(amount)) if amount >= 0 => amount,
+            Ok(amount) if amount >= 0 => amount,
             _ => return Err(Error::YieldHarvestFailed),
         };
 
@@ -9075,12 +9152,15 @@ impl SoroTaskContract {
         compound_args.push_back(token_address.into_val(env));
         compound_args.push_back(task_id.into_val(env));
         compound_args.push_back(harvested.into_val(env));
-        match env.try_invoke_contract::<Val, soroban_sdk::Error>(
+        let compound_fn = strategy.compound_function.clone();
+        match security::try_invoke_contract_with_guard::<Val>(
+            env,
             &strategy.protocol_address,
-            &strategy.compound_function,
+            &compound_fn,
             compound_args,
+            false, // compound is state-changing
         ) {
-            Ok(Ok(_)) => {}
+            Ok(_) => {}
             _ => return Err(Error::YieldHarvestFailed),
         }
 
@@ -9139,18 +9219,22 @@ impl SoroTaskContract {
 
         if should_harvest {
             // Execute harvest function
-            env.invoke_contract::<Val>(
+            security::invoke_contract_with_guard::<Val>(
+                env,
                 &strategy.protocol_address,
                 &strategy.harvest_function,
                 strategy.harvest_args.clone(),
-            );
+                false, // harvest is state-changing
+            )?;
 
             // Execute compound function
-            env.invoke_contract::<Val>(
+            security::invoke_contract_with_guard::<Val>(
+                env,
                 &strategy.protocol_address,
                 &strategy.compound_function,
                 strategy.compound_args.clone(),
-            );
+                false, // compound is state-changing
+            )?;
 
             // Emit YieldHarvested event
             env.events().publish(
@@ -10161,8 +10245,18 @@ impl SoroTaskContract {
         // Execute micro-tasks
         let mut executed_task_ids = Vec::new(&env);
         for task in update.micro_tasks.iter() {
-            // Execute each micro-task
-            env.invoke_contract::<Val>(&task.target, &task.function, task.args.clone());
+            // Execute each micro-task with reentrancy protection
+            let task_fn = task.function.clone();
+            match security::invoke_contract_with_guard::<Val>(
+                &env,
+                &task.target,
+                &task_fn,
+                task.args.clone(),
+                false, // micro-tasks are state-changing
+            ) {
+                Ok(_) => {}
+                Err(_) => panic_with_error!(&env, Error::BundleStepFailed),
+            }
             executed_task_ids.push_back(task.task_id);
         }
 
