@@ -48,4 +48,31 @@ We will acknowledge your report within **48 hours** and provide a timeline for r
 
 ---
 
+## Repository and Supply-Chain Security
+
+Because SoroTask accepts contributions from the public, `main` is protected by
+automated and manual gates:
+
+- **Security IOC Scan** — runs on every pull request and scans changed files for
+  editor auto-run tasks, install-time scripts, alternate package registries,
+  config-file injections, obfuscated payloads, credential material, binary/font
+  files, and suspicious network calls.
+- **Dependency Review** — fails pull requests that introduce high-severity known
+  vulnerabilities. It requires the repository dependency graph, which a repository
+  admin can enable under Settings → Code security and analysis.
+- **Code owner review** — changes to workflows, scripts, infrastructure, contracts,
+  proof code, dependency manifests, and shell scripts require review from
+  `@SoroLabs/core-devs`.
+- **Secret scanning and push protection** — GitHub blocks commits containing
+  detected credentials before they reach the repository.
+- **Dependabot alerts and security updates** — vulnerable dependencies are reported
+  and patched automatically.
+- **Fork pull request approval** — workflows on PRs from external contributors
+  require maintainer approval before running.
+
+Merging is blocked while a security check is failing. If you believe a check is
+producing a false positive, contact `security@sorolabs.org` rather than bypassing it.
+
+---
+
 _Safe Harbor: If you conduct your security research activities within this policy, we will not initiate legal action against you._
