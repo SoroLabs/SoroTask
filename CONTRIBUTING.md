@@ -18,8 +18,9 @@ Thanks for contributing to SoroTask. This project is split into four parts:
 5. [Code Style and Quality Checks](#code-style-and-quality-checks)
 6. [Commit Message Conventions](#commit-message-conventions)
 7. [Automated CI Requirements](#automated-ci-requirements)
-8. [Pull Request Expectations](#pull-request-expectations)
-9. [Reporting Bugs and Requesting Features](#reporting-bugs-and-requesting-features)
+8. [Security Requirements](#security-requirements)
+9. [Pull Request Expectations](#pull-request-expectations)
+10. [Reporting Bugs and Requesting Features](#reporting-bugs-and-requesting-features)
 
 ---
 
@@ -256,6 +257,11 @@ Closes #675
 
 All pull requests must pass the following checks before merging.
 
+### Repository-wide
+
+- **Security IOC Scan** — scans every changed file for malware and supply-chain indicators
+- **Dependency Review** — fails on high-severity known vulnerabilities in new dependencies
+
 ### Keeper (`keeper/**`)
 
 - **Lint** — ESLint with no errors or warnings
@@ -287,6 +293,44 @@ cd contract && cargo fmt --check && cargo clippy --all-targets && cargo test && 
 # Frontend
 cd frontend && npm run lint && npm run build
 ```
+
+---
+
+## Security Requirements
+
+SoroTask is a public repository that accepts community contributions, so every PR
+is reviewed for malware and supply-chain indicators before it is merged.
+
+### Never include
+
+- New `preinstall`, `install`, `postinstall`, `prepare`, or `prepublish` scripts in any `package.json`.
+- Code that fetches and executes remote content at install time or from config files
+  (`postcss`, `tailwind`, `eslint`, `next`, `jest`, `vite`, etc.).
+- Binary, font, executable, or compressed files unrelated to the change. Image assets
+  should be uploaded by a maintainer.
+- Secrets, API keys, tokens, or private keys.
+- Obfuscated or encoded payloads, or long unexplained code blocks appended to otherwise
+  normal files.
+- `.vscode/` automation files, or editor settings that run tasks automatically
+  (for example `task.allowAutomaticTasks`).
+
+### Dependency rules
+
+- Add dependencies only from the public npm registry or crates.io. Do not use `file:`,
+  `git:`, or URL-based specs in manifests without maintainer approval.
+- Update the lockfile together with the manifest.
+- Justify every new dependency in the PR description.
+
+### Security checks
+
+Every PR runs the **Security IOC Scan** and **Dependency Review** workflows. The IOC
+scan flags editor automation files, install-time scripts, alternate registries,
+config-file injections, obfuscation, credential material, and suspicious network calls.
+
+Maintainers may close a PR without further review if it contains any of the indicators
+above. Do not ask for a merge while a security check is failing.
+
+To report a vulnerability instead, follow [SECURITY.md](SECURITY.md).
 
 ---
 
