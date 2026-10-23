@@ -58,7 +58,8 @@ automated and manual gates:
   config-file injections, obfuscated payloads, credential material, binary/font
   files, and suspicious network calls.
 - **Dependency Review** — fails pull requests that introduce high-severity known
-  vulnerabilities.
+  vulnerabilities. It requires the repository dependency graph, which a repository
+  admin can enable under Settings → Code security and analysis.
 - **Code owner review** — changes to workflows, scripts, infrastructure, contracts,
   proof code, dependency manifests, and shell scripts require review from
   `@SoroLabs/core-devs`.
