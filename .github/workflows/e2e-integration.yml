@@ -63,7 +63,7 @@ jobs:
             wasm_file="../target/wasm32v1-none/release/soro_task_contract.wasm"
           fi
           if command -v wasm-opt >/dev/null 2>&1; then
-            wasm-opt -Oz "$wasm_file" -o "$wasm_file"
+            wasm-opt -Oz --strip-debug --strip-producers "$wasm_file" -o "$wasm_file"
           fi
 
       - name: Wait for Soroban RPC

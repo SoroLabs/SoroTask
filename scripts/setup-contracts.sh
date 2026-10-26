@@ -48,7 +48,7 @@ if [ -f "${WASM_PATH%.wasm}.optimized.wasm" ]; then
   WASM_PATH="${WASM_PATH%.wasm}.optimized.wasm"
 fi
 if command -v wasm-opt >/dev/null 2>&1; then
-  wasm-opt -Oz "$WASM_PATH" -o "$WASM_PATH"
+  wasm-opt -Oz --strip-debug --strip-producers "$WASM_PATH" -o "$WASM_PATH"
 fi
 echo "Using contract WASM at: $WASM_PATH"
 

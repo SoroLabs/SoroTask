@@ -110,10 +110,10 @@ pub fn prune_task(env: &Env, task_id: u64, caller: &soroban_sdk::Address) -> (i1
 
     // Only allow pruning of retired/expired tasks
     if status != TaskStatus::Retired && status != TaskStatus::Expired {
-        panic!("Task must be retired or expired");
+        panic!();
     }
 
-    let meta = storage::load_task_meta(env, task_id).expect("Task not found");
+    let meta = storage::load_task_meta(env, task_id).unwrap_or_else(|| panic!());
     let gas_balance = meta.gas_balance;
 
     if gas_balance <= 0 {

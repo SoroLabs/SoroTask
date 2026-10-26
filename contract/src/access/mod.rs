@@ -41,7 +41,7 @@ pub enum AccessError {
 /// Initialize the admin authority. Panics if already set.
 pub fn init_admin(env: &Env, admin: &Address) {
     if env.storage().instance().has(&AccessKey::Admin) {
-        panic!("admin already initialized");
+        panic!();
     }
     env.storage().instance().set(&AccessKey::Admin, admin);
 }
@@ -79,10 +79,10 @@ pub fn delegate(env: &Env, caller: &Address, delegatee: &Address, mask: u64, exp
     caller.require_auth();
     let caller_mask = effective_mask(env, caller);
     if mask & !caller_mask != 0 {
-        panic!("delegation exceeds caller permissions");
+        panic!();
     }
     if expires_at <= env.ledger().sequence() {
-        panic!("delegation already expired");
+        panic!();
     }
     let d = Delegation { mask, expires_at };
     env.storage()
@@ -155,7 +155,7 @@ pub fn has_permission(env: &Env, who: &Address, required: u64) -> bool {
 pub fn require_permission(env: &Env, who: &Address, required: u64) {
     who.require_auth();
     if !has_permission(env, who, required) {
-        panic!("insufficient permissions");
+        panic!();
     }
 }
 
@@ -163,7 +163,7 @@ pub fn require_permission(env: &Env, who: &Address, required: u64) {
 pub fn require_admin(env: &Env, who: &Address) {
     match get_admin(env) {
         Some(admin) if &admin == who => {}
-        _ => panic!("caller is not admin"),
+        _ => panic!(),
     }
 }
 
