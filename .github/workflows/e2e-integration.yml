@@ -17,7 +17,7 @@ jobs:
 
       - name: Start Soroban RPC (stellar/quickstart)
         run: |
-          docker run -d --name soroban-rpc -p 8000:8000 stellar/quickstart:latest --local --enable-soroban-rpc --limits unlimited --logs
+          docker run -d --name soroban-rpc -p 8000:8000 stellar/quickstart:latest --local --enable-soroban-rpc --limits unlimited --protocol-version 22 --logs
 
       - name: Check for Conflict Markers
         run: |
@@ -58,13 +58,6 @@ jobs:
         run: |
           cd contract
           stellar contract build
-          wasm_file="target/wasm32v1-none/release/soro_task_contract.wasm"
-          if [ ! -f "$wasm_file" ]; then
-            wasm_file="../target/wasm32v1-none/release/soro_task_contract.wasm"
-          fi
-          if command -v wasm-opt >/dev/null 2>&1; then
-            wasm-opt -Oz --strip-debug --strip-producers "$wasm_file" -o "$wasm_file"
-          fi
 
       - name: Wait for Soroban RPC
         run: |

@@ -43,12 +43,8 @@ fi
 
 # 4. Deploy Main Contract
 echo "Deploying SoroTask contract..."
-stellar contract optimize --wasm "$WASM_PATH" || true
 if [ -f "${WASM_PATH%.wasm}.optimized.wasm" ]; then
   WASM_PATH="${WASM_PATH%.wasm}.optimized.wasm"
-fi
-if command -v wasm-opt >/dev/null 2>&1; then
-  wasm-opt -Oz --strip-debug --strip-producers "$WASM_PATH" -o "$WASM_PATH"
 fi
 echo "Using contract WASM at: $WASM_PATH"
 
@@ -63,11 +59,24 @@ for attempt in {1..5}; do
     curl -fsS "http://localhost:8000/friendbot?addr=$addr" > /dev/null || true
     sleep 2
   fi
-  DEPLOY_OUTPUT=$(stellar contract deploy \
+  WASM_HASH=$(stellar contract install \
     --wasm "$WASM_PATH" \
     --source "$source_alias" \
     --network local \
-    --inclusion-fee 10000000 2>&1 || true)
+    --inclusion-fee 10000000 2>&1 | grep -o '[0-9a-f]\{64\}' | tail -1 || true)
+  if [ -n "$WASM_HASH" ]; then
+    DEPLOY_OUTPUT=$(stellar contract deploy \
+      --wasm-hash "$WASM_HASH" \
+      --source "$source_alias" \
+      --network local \
+      --inclusion-fee 10000000 2>&1 || true)
+  else
+    DEPLOY_OUTPUT=$(stellar contract deploy \
+      --wasm "$WASM_PATH" \
+      --source "$source_alias" \
+      --network local \
+      --inclusion-fee 10000000 2>&1 || true)
+  fi
   echo "$DEPLOY_OUTPUT"
   CONTRACT_ID=$(printf '%s\n' "$DEPLOY_OUTPUT" | grep -o 'C[0-9A-Z]\{55\}' | tail -1 || true)
   if [ -n "$CONTRACT_ID" ]; then

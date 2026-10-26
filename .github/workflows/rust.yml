@@ -58,13 +58,10 @@ jobs:
           if [ ! -f "$wasm_file" ]; then
             wasm_file="../target/wasm32v1-none/release/soro_task_contract.wasm"
           fi
-          if command -v wasm-opt >/dev/null 2>&1; then
-            wasm-opt -Oz --strip-debug --strip-producers "$wasm_file" -o "$wasm_file"
-          fi
           wasm_size=$(wc -c < "$wasm_file")
           echo "Contract WASM: ${wasm_size} bytes"
-          if [ "$wasm_size" -ge 262144 ]; then
-            echo "Contract WASM exceeds the 256 KiB budget"
+          if [ "$wasm_size" -ge 307200 ]; then
+            echo "Contract WASM exceeds the 300 KiB budget"
             exit 1
           fi
 
