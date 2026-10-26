@@ -43,6 +43,7 @@ jobs:
             sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
             cargo install --locked stellar-cli
           }
+          sudo apt-get update && sudo apt-get install -y binaryen || true
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           ~/.cargo/bin/stellar --version
 
@@ -57,6 +58,13 @@ jobs:
         run: |
           cd contract
           stellar contract build
+          wasm_file="target/wasm32v1-none/release/soro_task_contract.wasm"
+          if [ ! -f "$wasm_file" ]; then
+            wasm_file="../target/wasm32v1-none/release/soro_task_contract.wasm"
+          fi
+          if command -v wasm-opt >/dev/null 2>&1; then
+            wasm-opt -Oz "$wasm_file" -o "$wasm_file"
+          fi
 
       - name: Wait for Soroban RPC
         run: |

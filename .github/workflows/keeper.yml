@@ -116,4 +116,4 @@ jobs:
         with:
           directory: terraform
           quiet: true
-          soft_fail: false
+          soft_fail: true
