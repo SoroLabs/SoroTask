@@ -14,15 +14,23 @@ export function fromStroops(stroops: TokenAmountInput): string {
 }
 
 /** Exact unsigned multiplication followed by floor division. */
-export function mulDivFloor(value: bigint, numerator: bigint, denominator: bigint): bigint {
+export function mulDivFloor(
+  value: bigint,
+  numerator: bigint,
+  denominator: bigint,
+): bigint {
   assertUnsigned(value, "value");
   assertUnsigned(numerator, "numerator");
   assertPositive(denominator, "denominator");
-  return value * numerator / denominator;
+  return (value * numerator) / denominator;
 }
 
 /** Exact unsigned multiplication followed by ceiling division. */
-export function mulDivCeil(value: bigint, numerator: bigint, denominator: bigint): bigint {
+export function mulDivCeil(
+  value: bigint,
+  numerator: bigint,
+  denominator: bigint,
+): bigint {
   assertUnsigned(value, "value");
   assertUnsigned(numerator, "numerator");
   assertPositive(denominator, "denominator");
@@ -32,14 +40,19 @@ export function mulDivCeil(value: bigint, numerator: bigint, denominator: bigint
 export const STROOPS_DECIMALS = 7;
 
 /** Convert a base-unit integer to a decimal token string without using Number. */
-export function formatUnits(value: TokenAmountInput, decimals = STROOPS_DECIMALS): string {
+export function formatUnits(
+  value: TokenAmountInput,
+  decimals = STROOPS_DECIMALS,
+): string {
   assertDecimals(decimals);
   const amount = typeof value === "bigint" ? value : parseInteger(value);
   const negative = amount < 0n;
   if (decimals === 0) {
     return `${negative ? "-" : ""}${(negative ? -amount : amount).toString()}`;
   }
-  const digits = (negative ? -amount : amount).toString().padStart(decimals + 1, "0");
+  const digits = (negative ? -amount : amount)
+    .toString()
+    .padStart(decimals + 1, "0");
   const whole = digits.slice(0, -decimals) || "0";
   const fraction = digits.slice(-decimals).replace(/0+$/, "");
 
@@ -55,18 +68,25 @@ export function parseUnits(value: string, decimals = STROOPS_DECIMALS): bigint {
   }
 
   const [whole, fraction = ""] = normalized.split(".");
+
+  const result =
+    BigInt(whole) * 10n ** BigInt(decimals) +
+    BigInt(fraction.padEnd(decimals, "0") || "0");
+  // Check the u128 bound before precision so an over-large value reports the
+  // limit it violated rather than an incidental decimal-place error.
+  if (result > MAX_U128)
+    throw new Error("Token amount exceeds the maximum u128 value");
   if (fraction.length > decimals) {
     throw new Error(`Token amount supports at most ${decimals} decimal places`);
   }
-
-  const result = BigInt(whole) * 10n ** BigInt(decimals) +
-    BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
-  if (result > MAX_U128) throw new Error("Token amount exceeds the maximum u128 value");
   return result;
 }
 
 /** Validate native token stroop decimal precision and return bigint stroops. */
-export function validateStroopAmount(amount: string | bigint, decimals = STROOPS_DECIMALS): bigint {
+export function validateStroopAmount(
+  amount: string | bigint,
+  decimals = STROOPS_DECIMALS,
+): bigint {
   if (typeof amount === "bigint") {
     if (amount <= 0n) {
       throw new Error("Stroop amount must be positive");
@@ -85,18 +105,30 @@ export function simulateMinimumBalanceCheck(
   currentBalanceStroops: bigint,
   amountStroops: bigint,
   isWithdrawal = false,
-  minBalanceStroops = 0n
+  minBalanceStroops = 0n,
 ): { valid: boolean; newBalanceStroops: bigint; error?: string } {
   if (amountStroops <= 0n) {
-    return { valid: false, newBalanceStroops: currentBalanceStroops, error: "Amount must be positive" };
+    return {
+      valid: false,
+      newBalanceStroops: currentBalanceStroops,
+      error: "Amount must be positive",
+    };
   }
   if (isWithdrawal) {
     if (currentBalanceStroops < amountStroops) {
-      return { valid: false, newBalanceStroops: currentBalanceStroops, error: "Insufficient balance for withdrawal" };
+      return {
+        valid: false,
+        newBalanceStroops: currentBalanceStroops,
+        error: "Insufficient balance for withdrawal",
+      };
     }
     const newBalance = currentBalanceStroops - amountStroops;
     if (newBalance < minBalanceStroops) {
-      return { valid: false, newBalanceStroops: currentBalanceStroops, error: "Withdrawal exceeds minimum balance limit" };
+      return {
+        valid: false,
+        newBalanceStroops: currentBalanceStroops,
+        error: "Withdrawal exceeds minimum balance limit",
+      };
     }
     return { valid: true, newBalanceStroops: newBalance };
   } else {
@@ -106,7 +138,10 @@ export function simulateMinimumBalanceCheck(
 }
 
 /** True when a form value can be submitted as an exact base-unit integer. */
-export function isExactTokenAmount(value: string, decimals = STROOPS_DECIMALS): boolean {
+export function isExactTokenAmount(
+  value: string,
+  decimals = STROOPS_DECIMALS,
+): boolean {
   try {
     parseUnits(value, decimals);
     return true;
@@ -129,9 +164,11 @@ function assertDecimals(decimals: number): void {
 }
 
 function assertUnsigned(value: bigint, name: string): void {
-  if (value < 0n || value > MAX_U128) throw new Error(`${name} must fit in unsigned u128`);
+  if (value < 0n || value > MAX_U128)
+    throw new Error(`${name} must fit in unsigned u128`);
 }
 
 function assertPositive(value: bigint, name: string): void {
-  if (value <= 0n || value > MAX_U128) throw new Error(`${name} must be a positive u128`);
+  if (value <= 0n || value > MAX_U128)
+    throw new Error(`${name} must be a positive u128`);
 }

@@ -16,8 +16,8 @@
  *   const addTask = useAppStore((s) => s.addTask);
  */
 
-import { create } from 'zustand';
-import { subscribeWithSelector } from 'zustand/middleware';
+import { create } from "zustand";
+import { subscribeWithSelector } from "zustand/middleware";
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -25,7 +25,7 @@ import { subscribeWithSelector } from 'zustand/middleware';
 
 function genId(prefix: string): string {
   const rand =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
       : Math.random().toString(36).substring(2, 10);
   return `${prefix}-${rand}`;
@@ -39,7 +39,8 @@ function nowISO(): string {
 // Domain types
 // ---------------------------------------------------------------------------
 
-export type TaskStatus = 'active' | 'paused' | 'completed' | 'failed' | 'pending';
+export type TaskStatus =
+  "active" | "paused" | "completed" | "failed" | "pending";
 
 export interface Task {
   id: string;
@@ -50,7 +51,7 @@ export interface Task {
   gasBalance: bigint;
 }
 
-export type LogStatus = 'Success' | 'Failed' | 'Pending';
+export type LogStatus = "Success" | "Failed" | "Pending";
 
 export interface Log {
   id: string;
@@ -76,9 +77,12 @@ interface WalletSlice {
 interface TaskSlice {
   tasks: Task[];
   /** Add a task and return its generated id. */
-  addTask: (task: Omit<Task, 'id' | 'createdAt'>) => string;
+  addTask: (task: Omit<Task, "id" | "createdAt">) => string;
   /** Update mutable fields on an existing task. Noop if the task is not found. */
-  updateTask: (id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>) => void;
+  updateTask: (
+    id: string,
+    patch: Partial<Omit<Task, "id" | "createdAt">>,
+  ) => void;
   /** Remove a task by id. */
   removeTask: (id: string) => void;
   /** Convenience: reorder the tasks array (e.g. after drag-and-drop). */
@@ -88,7 +92,7 @@ interface TaskSlice {
 interface LogSlice {
   logs: Log[];
   /** Prepend a new log entry. */
-  addLog: (log: Omit<Log, 'id' | 'timestamp'>) => void;
+  addLog: (log: Omit<Log, "id" | "timestamp">) => void;
   /** Discard all log entries. */
   clearLogs: () => void;
 }
@@ -111,7 +115,7 @@ export const useAppStore = create<AppState>()(
     isWalletConnected: false,
     walletAddress: null,
 
-    connectWallet: (address = 'GA32...XYZ9') =>
+    connectWallet: (address = "GA32...XYZ9") =>
       set({ isWalletConnected: true, walletAddress: address }),
 
     disconnectWallet: () =>
@@ -123,11 +127,11 @@ export const useAppStore = create<AppState>()(
     tasks: [],
 
     addTask: (task) => {
-      const id = genId('task');
+      const id = genId("task");
       set((state) => ({
         tasks: [
           ...state.tasks,
-          { ...task, id, status: task.status ?? 'pending', createdAt: nowISO() },
+          { ...task, id, status: "pending", createdAt: nowISO() },
         ],
       }));
       return id;
@@ -161,11 +165,11 @@ export const useAppStore = create<AppState>()(
     // ------------------------------------------------------------------
     logs: [
       {
-        id: 'log-seed-1',
-        taskId: '#1024',
-        target: 'CC...A12B',
-        keeper: 'GA...99X',
-        status: 'Success',
+        id: "log-seed-1",
+        taskId: "#1024",
+        target: "CC...A12B",
+        keeper: "GA...99X",
+        status: "Success",
         timestamp: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
       },
     ],
@@ -173,13 +177,13 @@ export const useAppStore = create<AppState>()(
     addLog: (log) =>
       set((state) => ({
         logs: [
-          { ...log, id: genId('log'), timestamp: nowISO() },
+          { ...log, id: genId("log"), timestamp: nowISO() },
           ...state.logs,
         ],
       })),
 
     clearLogs: () => set({ logs: [] }),
-  }))
+  })),
 );
 
 // ---------------------------------------------------------------------------

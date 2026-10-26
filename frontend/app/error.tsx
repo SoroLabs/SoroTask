@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
+import { captureSentryException } from "@/src/lib/errors/tracking";
 
 interface Props {
   error: Error & { digest?: string };
@@ -17,7 +18,7 @@ export default function GlobalError({ error, reset }: Props) {
     });
 
     // Report to Sentry
-    Sentry.captureSentryException(error, {
+    captureSentryException(error, {
       tags: {
         type: "global_error",
         ...(error.digest && { digest: error.digest }),

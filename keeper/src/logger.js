@@ -8,6 +8,7 @@
  * - NDJSON output in production conforming 100% to structured JSON schema
  */
 
+const crypto = require('crypto');
 const pino = require('pino');
 const { extractOrCreateTraceContext, parseTraceParent } = require('../../scripts/traceContext');
 const { AuditLogger, getAuditLogger } = require('./auditLogger');
@@ -307,6 +308,11 @@ let _currentTraceId = null;
 let _currentSpanId = null;
 let _correlationId = null;
 
+// W3C trace IDs are 32 hex chars (16 bytes); span IDs are 16 hex chars (8 bytes).
+function randomHex(length) {
+  return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length);
+}
+
 function createTraceId() {
   return randomHex(32);
 }
@@ -479,10 +485,25 @@ function formatRecord(level, record) {
 function structured(level, record) {
   if (!DEFAULT_OPTIONS.enabled) return;
   const levelRank = LOG_LEVELS[level];
-  if (levelRank < LOG_LEVELS[DEFAULT_OPTIONS.level]) return;
+  if (levelRank > LOG_LEVELS[DEFAULT_OPTIONS.level]) return;
   const formatted = formatRecord(level, record);
   DEFAULT_OPTIONS.exporter.exportLog(fmtLogRecord(formatted));
   return formatted;
+}
+
+// Convert a flat log record into an OTLP-shaped LogRecord for exporters.
+function fmtLogRecord(record) {
+  const severityText = String(record.level || 'info').toUpperCase();
+  const { level, message, ...attributes } = record;
+  return {
+    timestamp: record.timestamp,
+    severityText,
+    severityNumber: severityNumberForLevel(severityText),
+    body: message,
+    attributes,
+    traceId: record.traceId || null,
+    spanId: record.spanId || null,
+  };
 }
 
 function info(record) {

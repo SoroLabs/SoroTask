@@ -60,7 +60,9 @@ export async function simulateTaskCall(
     throw new Error("Enter a valid contract function name.");
   }
   if (!StrKey.isValidEd25519PublicKey(sourceAddress)) {
-    throw new Error("Connect a valid Stellar account before simulating this call.");
+    throw new Error(
+      "Connect a valid Stellar account before simulating this call.",
+    );
   }
 
   const parsedArgs = parseFunctionArgs(input.functionArgs);
@@ -94,26 +96,33 @@ export async function simulateTaskCall(
   }
 
   const transactionData = simulation.transactionData;
-  const resources = transactionData.build().resources();
+  const resources = transactionData.build().resources;
   const minResourceFeeStroops = simulation.minResourceFee;
   const networkFeeStroops = inclusionFee;
-  const totalFeeStroops =
-    (BigInt(minResourceFeeStroops) + BigInt(networkFeeStroops)).toString();
+  const totalFeeStroops = (
+    BigInt(minResourceFeeStroops) + BigInt(networkFeeStroops)
+  ).toString();
   const stateChanges = simulation.stateChanges ?? [];
 
   return {
     minResourceFeeStroops,
     networkFeeStroops,
     totalFeeStroops,
-    cpuInstructions: Number(resources.instructions()),
-    storageReadBytes: resources.diskReadBytes(),
-    storageWriteBytes: resources.writeBytes(),
+    cpuInstructions: resources.instructions,
+    storageReadBytes: resources.diskReadBytes,
+    storageWriteBytes: resources.writeBytes,
     readOnlyEntries: transactionData.getReadOnly().length,
     readWriteEntries: transactionData.getReadWrite().length,
     stateChanges: {
-      created: stateChanges.filter(({ before, after }) => before === null && after !== null).length,
-      updated: stateChanges.filter(({ before, after }) => before !== null && after !== null).length,
-      removed: stateChanges.filter(({ before, after }) => before !== null && after === null).length,
+      created: stateChanges.filter(
+        ({ before, after }) => before === null && after !== null,
+      ).length,
+      updated: stateChanges.filter(
+        ({ before, after }) => before !== null && after !== null,
+      ).length,
+      removed: stateChanges.filter(
+        ({ before, after }) => before !== null && after === null,
+      ).length,
     },
     trace: [
       {
@@ -139,7 +148,9 @@ export async function simulateTaskCall(
 export function formatXlm(stroops: string): string {
   const amount = BigInt(stroops);
   const whole = amount / BigInt(STROOPS_PER_XLM);
-  const fraction = (amount % BigInt(STROOPS_PER_XLM)).toString().padStart(7, "0");
+  const fraction = (amount % BigInt(STROOPS_PER_XLM))
+    .toString()
+    .padStart(7, "0");
   return `${whole}.${fraction}`;
 }
 
@@ -151,7 +162,9 @@ function parseFunctionArgs(argsJson: string): unknown[] {
     throw new Error("Function arguments must be valid JSON.");
   }
   if (!Array.isArray(args)) {
-    throw new Error("Function arguments must be a JSON array, such as [\"task-1\", 5].");
+    throw new Error(
+      'Function arguments must be a JSON array, such as ["task-1", 5].',
+    );
   }
   return args;
 }
@@ -169,9 +182,14 @@ function toScVal(value: unknown): xdr.ScVal {
       typeof typedValue.__type !== "string" ||
       !ARGUMENT_TYPE_NAMES.has(typedValue.__type)
     ) {
-      throw new Error(`Unsupported contract argument type: ${String(typedValue.__type)}.`);
+      throw new Error(
+        `Unsupported contract argument type: ${String(typedValue.__type)}.`,
+      );
     }
-    if (typedValue.__type === "address" && typeof typedValue.value === "string") {
+    if (
+      typedValue.__type === "address" &&
+      typeof typedValue.value === "string"
+    ) {
       return Address.fromString(typedValue.value).toScVal();
     }
     return nativeToScVal(typedValue.value, {
@@ -193,13 +211,17 @@ function getActionableFailure(error: string): string {
     "Check that the contract is deployed on the selected network and that the function arguments match its interface.";
 
   if (/auth|authoriz|signature|soroban_auth/i.test(normalized)) {
-    guidance = "The call needs authorization. Confirm the connected account and required contract permissions.";
+    guidance =
+      "The call needs authorization. Confirm the connected account and required contract permissions.";
   } else if (/insufficient|balance|underfund/i.test(normalized)) {
-    guidance = "The source account may be unfunded. Fund it on the selected network and retry.";
+    guidance =
+      "The source account may be unfunded. Fund it on the selected network and retry.";
   } else if (/budget|instruction|resource/i.test(normalized)) {
-    guidance = "The call exceeded a Soroban resource limit. Reduce work or split the operation into smaller calls.";
+    guidance =
+      "The call exceeded a Soroban resource limit. Reduce work or split the operation into smaller calls.";
   } else if (/contract|wasm|not found|no such/i.test(normalized)) {
-    guidance = "Verify the contract address, selected network, and deployed function name.";
+    guidance =
+      "Verify the contract address, selected network, and deployed function name.";
   }
 
   return `${details || "The Soroban RPC rejected the simulation."} ${guidance}`;

@@ -29,7 +29,7 @@ export default function KeeperMetricsPage() {
       <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-3xl font-semibold text-slate-100">
-            Keeper Metrics & Rewards
+            Keeper Metrics
           </h1>
           <p className="mt-1 text-sm text-slate-400">
             Performance telemetry, fee spend, and batch gas refund / reward

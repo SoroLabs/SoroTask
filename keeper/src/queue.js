@@ -195,15 +195,147 @@ class DependencyGraph {
   }
 
   /**
-   * Compute batches of independent tasks using Kahn's topological sort.
+   * Returns in-memory adjacency list (parent -> array of dependent children).
+   * @returns {Map<string, string[]>}
+   */
+  getAdjacencyList() {
+    const adj = new Map();
+    for (const node of this.nodes) {
+      adj.set(node, []);
+    }
+    for (const [child, parents] of this.edges) {
+      for (const parent of parents) {
+        if (!adj.has(parent)) adj.set(parent, []);
+        adj.get(parent).push(child);
+      }
+    }
+    return adj;
+  }
+
+  /**
+   * Detects cycles using Tarjan's strongly connected components algorithm (#1448).
+   * Returns detected circular dependency cycles immediately.
+   *
+   * @returns {{ hasCycles: boolean, cycles: string[][], cyclicTaskIds: Set<string> }}
+   */
+  detectCycles() {
+    let index = 0;
+    const indices = new Map();
+    const lowlink = new Map();
+    const onStack = new Map();
+    const stack = [];
+    const sccs = [];
+
+    const strongConnect = (v) => {
+      indices.set(v, index);
+      lowlink.set(v, index);
+      index++;
+      stack.push(v);
+      onStack.set(v, true);
+
+      // Traversal following dependency edges (child -> parent)
+      const dependencies = this.edges.get(v) || new Set();
+      for (const dep of dependencies) {
+        if (!indices.has(dep)) {
+          strongConnect(dep);
+          lowlink.set(v, Math.min(lowlink.get(v), lowlink.get(dep)));
+        } else if (onStack.get(dep)) {
+          lowlink.set(v, Math.min(lowlink.get(v), indices.get(dep)));
+        }
+      }
+
+      if (lowlink.get(v) === indices.get(v)) {
+        const scc = [];
+        let w;
+        do {
+          w = stack.pop();
+          onStack.set(w, false);
+          scc.push(w);
+        } while (w !== v);
+        sccs.push(scc);
+      }
+    };
+
+    for (const node of this.nodes) {
+      if (!indices.has(node)) {
+        strongConnect(node);
+      }
+    }
+
+    // Filter SCCs: an SCC is a cycle if length > 1, or length == 1 with a self-loop
+    const cycles = sccs.filter(
+      (scc) => scc.length > 1 || (scc.length === 1 && (this.edges.get(scc[0]) || new Set()).has(scc[0]))
+    );
+
+    const cyclicTaskIds = new Set();
+    for (const cycle of cycles) {
+      for (const id of cycle) {
+        cyclicTaskIds.add(id);
+      }
+    }
+
+    return {
+      hasCycles: cycles.length > 0,
+      cycles,
+      cyclicTaskIds,
+    };
+  }
+
+  /**
+   * Find all transitive dependent children of a task.
+   * @param {string|number} taskId
+   * @returns {Set<string>}
+   */
+  findTransitiveDependents(taskId) {
+    const id = String(taskId);
+    const dependents = new Set();
+    const adj = this.getAdjacencyList();
+
+    const dfs = (curr) => {
+      const children = adj.get(curr) || [];
+      for (const child of children) {
+        if (!dependents.has(child)) {
+          dependents.add(child);
+          dfs(child);
+        }
+      }
+    };
+
+    dfs(id);
+    return dependents;
+  }
+
+  /**
+   * Checks if any parent or ancestor of taskId has failed.
+   * @param {string|number} taskId
+   * @param {Set<string|number>} failedTasks
+   * @returns {string|null}
+   */
+  getFailedParent(taskId, failedTasks) {
+    if (!failedTasks || failedTasks.size === 0) return null;
+    const parents = this.edges.get(String(taskId));
+    if (!parents) return null;
+
+    for (const p of parents) {
+      if (failedTasks.has(p) || failedTasks.has(Number(p))) {
+        return p;
+      }
+      const ancestorFail = this.getFailedParent(p, failedTasks);
+      if (ancestorFail) return ancestorFail;
+    }
+    return null;
+  }
+
+  /**
+   * Compute batches of independent tasks using topological sort.
    * Tasks in the same batch have no dependencies on each other and can be
-   * executed concurrently.  Tasks not registered in the graph are returned
-   * as a single independent batch at the front.
+   * executed concurrently. Tasks with detected cycles are excluded from valid batches.
    *
    * @param {string[]} taskIds - The full list of task IDs to schedule
+   * @param {Object} [options]
    * @returns {string[][]} Ordered array of concurrent batches
    */
-  resolveBatches(taskIds) {
+  resolveBatches(taskIds, options = {}) {
     const ids = taskIds.map(String);
     const inGraph = ids.filter((id) => this.nodes.has(id));
     const notInGraph = ids.filter((id) => !this.nodes.has(id));
@@ -212,16 +344,20 @@ class DependencyGraph {
       return notInGraph.length > 0 ? [notInGraph] : [];
     }
 
-    // Build in-degree map restricted to the requested taskIds
-    const inDegree = new Map();
-    const dependents = new Map(); // dep -> list of tasks that depend on it
+    // Run Tarjan SCC cycle detection
+    const { hasCycles, cyclicTaskIds } = this.detectCycles();
+    const nonCyclicNodes = inGraph.filter((id) => !cyclicTaskIds.has(id));
 
-    for (const id of inGraph) {
+    // Build in-degree map restricted to non-cyclic nodes
+    const inDegree = new Map();
+    const dependents = new Map();
+
+    for (const id of nonCyclicNodes) {
       inDegree.set(id, 0);
       dependents.set(id, []);
     }
 
-    for (const id of inGraph) {
+    for (const id of nonCyclicNodes) {
       const deps = this.edges.get(id) || new Set();
       for (const dep of deps) {
         if (inDegree.has(dep)) {
@@ -232,7 +368,7 @@ class DependencyGraph {
     }
 
     const batches = [];
-    let currentBatch = inGraph.filter((id) => inDegree.get(id) === 0);
+    let currentBatch = nonCyclicNodes.filter((id) => inDegree.get(id) === 0);
 
     while (currentBatch.length > 0) {
       batches.push([...currentBatch]);
@@ -247,10 +383,11 @@ class DependencyGraph {
       currentBatch = nextBatch;
     }
 
-    // Remaining tasks with non-zero in-degree form a cycle — execute them
-    // unconditionally in a final batch rather than deadlocking.
-    const remaining = inGraph.filter((id) => (inDegree.get(id) || 0) > 0);
-    if (remaining.length > 0) batches.push(remaining);
+    // If options.includeCyclicBatch is explicitly requested (fallback compatibility)
+    if (hasCycles && options.includeCyclicBatch) {
+      const remaining = Array.from(cyclicTaskIds).filter((id) => ids.includes(id));
+      if (remaining.length > 0) batches.push(remaining);
+    }
 
     // Prepend independent tasks that were not in the graph at all
     if (notInGraph.length > 0) batches.unshift(notInGraph);
@@ -424,7 +561,12 @@ class ExecutionQueue extends EventEmitter {
     this.failedTasks = new Set();
     this.retryTaskIds = new Set();
     this.shuttingDown = false;
+    this.drainingForReload = false;
     this.taskDueInfo = new Map();
+    // #1436 — Track active distributed locks and signal handlers for zero-downtime draining
+    this.activeLocks = new Map();
+    this.pendingTaskBuffer = [];
+    this._signalHandlers = new Map();
   }
 
   async initialize() {
@@ -475,6 +617,16 @@ class ExecutionQueue extends EventEmitter {
   }
 
   async enqueue(tasksToEnqueue, executorFn, taskConfigMap = {}) {
+    if (this.drainingForReload) {
+      if (Array.isArray(tasksToEnqueue) && tasksToEnqueue.length > 0) {
+        this.pendingTaskBuffer.push(...tasksToEnqueue);
+      }
+      this.logger.info('Queue is draining for hot reload, buffering tasks for replacement worker', {
+        bufferedCount: Array.isArray(tasksToEnqueue) ? tasksToEnqueue.length : 0,
+      });
+      return;
+    }
+
     if (this.shuttingDown) {
       this.logger.warn('Queue is shutting down, rejecting new execution batch', {
         taskCount: Array.isArray(tasksToEnqueue) ? tasksToEnqueue.length : 0,
@@ -519,6 +671,20 @@ class ExecutionQueue extends EventEmitter {
       this.dependencyGraph.addTask(item.taskId, deps);
     }
     const taskIdOrder = taskItems.map((i) => i.taskId);
+    // #1448 — Detect circular dependencies immediately via Tarjan's SCC algorithm
+    const cycleReport = this.dependencyGraph.detectCycles();
+    if (cycleReport.hasCycles) {
+      this.logger.error('Circular dependency detected immediately via Tarjan SCC algorithm', {
+        cycles: cycleReport.cycles,
+      });
+      this.emit('task:cycle_detected', cycleReport);
+      for (const cyclicId of cycleReport.cyclicTaskIds) {
+        this.emitTaskEvent('task:aborted', cyclicId, {
+          reason: 'circular_dependency',
+          cycles: cycleReport.cycles,
+        });
+      }
+    }
     const batches = this.dependencyGraph.resolveBatches(taskIdOrder);
 
     // Build a lookup so we can find the full taskItem by id quickly
@@ -542,6 +708,23 @@ class ExecutionQueue extends EventEmitter {
           }
 
           const taskId = taskItem.taskId;
+
+          // #1448 — Parent failures abort child tasks cleanly
+          const failedParent = this.dependencyGraph.getFailedParent(taskId, this.failedTasks);
+          if (failedParent) {
+            this.logger.warn('Child task aborted cleanly because parent task failed', {
+              taskId,
+              failedParent,
+            });
+            this.emitTaskEvent('task:aborted', taskId, {
+              reason: 'parent_failed',
+              failedParent,
+              taskId,
+            });
+            this.depth = Math.max(this.depth - 1, 0);
+            return;
+          }
+
           const initialContext = taskItem.context || {};
           let attemptContext = { ...initialContext };
           let distributedLockToken = null;
@@ -590,6 +773,7 @@ class ExecutionQueue extends EventEmitter {
                 attemptContext.fencingToken = distributedLockToken.fencingToken;
                 attemptContext.lockToken = distributedLockToken.token;
               }
+              this.activeLocks.set(String(taskId), distributedLockToken);
               this.emit('task:lock-acquired', taskId, distributedLockToken);
             }
 
@@ -677,6 +861,7 @@ class ExecutionQueue extends EventEmitter {
             if (distributedLockToken) {
               try {
                 await releaseLock(taskId, distributedLockToken);
+                this.activeLocks.delete(String(taskId));
                 this.emit('task:lock-released', taskId, distributedLockToken);
               } catch (err) {
                 this.logger.error('Error releasing lock', { taskId, error: err.message });
@@ -814,6 +999,7 @@ class ExecutionQueue extends EventEmitter {
               attemptContext.fencingToken = distributedLockToken.fencingToken;
               attemptContext.lockToken = distributedLockToken.token;
             }
+            this.activeLocks.set(String(taskId), distributedLockToken);
             this.emit('task:lock-acquired', taskId, distributedLockToken);
           }
 
@@ -874,6 +1060,7 @@ class ExecutionQueue extends EventEmitter {
           if (distributedLockToken) {
             try {
               await releaseLock(taskId, distributedLockToken);
+              this.activeLocks.delete(String(taskId));
               this.emit('task:lock-released', taskId, distributedLockToken);
             } catch (err) {
               this.logger.error('Error releasing lock', { taskId, error: err.message });
@@ -926,6 +1113,99 @@ class ExecutionQueue extends EventEmitter {
     return this.gracefulShutdown(options);
   }
 
+  /**
+   * Release all currently held distributed locks cleanly (#1436).
+   * @returns {Promise<{ releasedCount: number, taskIds: string[] }>}
+   */
+  async releaseActiveLocks() {
+    const releasedTaskIds = [];
+    for (const [taskId, token] of Array.from(this.activeLocks.entries())) {
+      try {
+        await releaseLock(taskId, token);
+        this.activeLocks.delete(taskId);
+        releasedTaskIds.push(taskId);
+        this.emit('task:lock-released', taskId, token);
+      } catch (err) {
+        this.logger.error('Error releasing lock during drain', { taskId, error: err.message });
+      }
+    }
+    return {
+      releasedCount: releasedTaskIds.length,
+      taskIds: releasedTaskIds,
+    };
+  }
+
+  /**
+   * Register SIGTERM and SIGINT handlers for graceful worker draining (#1436).
+   * @param {object} [options]
+   * @param {number} [options.drainTimeoutMs=10000]
+   * @param {Function} [options.onSignal]
+   */
+  registerSignalHandlers(options = {}) {
+    const drainTimeoutMs = parseInt(
+      options.drainTimeoutMs || process.env.SHUTDOWN_DRAIN_TIMEOUT_MS || 10000,
+      10
+    );
+    const signals = options.signals || ['SIGTERM', 'SIGINT'];
+
+    this.unregisterSignalHandlers();
+
+    for (const sig of signals) {
+      const handler = async () => {
+        this.logger.info(`Received ${sig}, draining execution queue`, { signal: sig, drainTimeoutMs });
+        this.emit('signal:received', { signal: sig });
+        if (typeof options.onSignal === 'function') {
+          await options.onSignal(sig);
+        }
+        await this.gracefulShutdown({ drainTimeoutMs });
+      };
+      process.on(sig, handler);
+      this._signalHandlers.set(sig, handler);
+    }
+
+    return Array.from(this._signalHandlers.keys());
+  }
+
+  /**
+   * Remove registered process signal handlers (#1436).
+   */
+  unregisterSignalHandlers() {
+    for (const [sig, handler] of this._signalHandlers.entries()) {
+      process.removeListener(sig, handler);
+    }
+    this._signalHandlers.clear();
+  }
+
+  /**
+   * Drain in-flight work for a zero-downtime hot code reload without dropping queued tasks (#1436).
+   * @param {object} [options]
+   * @param {number} [options.drainTimeoutMs=30000]
+   * @returns {Promise<object>}
+   */
+  async prepareForHotReload(options = {}) {
+    const drainTimeoutMs = parseInt(
+      options.drainTimeoutMs || process.env.HOT_RELOAD_DRAIN_TIMEOUT_MS || 30000,
+      10
+    );
+    this.drainingForReload = true;
+    const handoffTasks = [...this.pendingTaskBuffer];
+    this.pendingTaskBuffer = [];
+
+    const summary = await this.gracefulShutdown({
+      drainTimeoutMs,
+      preserveQueued: Boolean(options.preserveQueued),
+    });
+
+    const lockRelease = await this.releaseActiveLocks();
+
+    return {
+      ...summary,
+      handoffTasks,
+      locksReleased: lockRelease.releasedCount,
+      releasedLockTaskIds: lockRelease.taskIds,
+    };
+  }
+
   async gracefulShutdown(options = {}) {
     const drainTimeoutMs = parseInt(
       options.drainTimeoutMs || process.env.SHUTDOWN_DRAIN_TIMEOUT_MS || 30000,
@@ -943,8 +1223,10 @@ class ExecutionQueue extends EventEmitter {
     });
 
     this.shuttingDown = true;
-    this.limit.clearQueue();
-    this.depth = 0;
+    if (!options.preserveQueued) {
+      this.limit.clearQueue();
+      this.depth = 0;
+    }
 
     onProgress({ phase: 'clearing-queue', remaining: this.inFlight });
 
@@ -954,7 +1236,7 @@ class ExecutionQueue extends EventEmitter {
           await Promise.allSettled(this.activePromises);
         }
         while (this.inFlight > 0) {
-          await new Promise((r) => setTimeout(r, 50));
+          await new Promise((r) => setTimeout(r, 25));
           onProgress({ phase: 'draining', remaining: this.inFlight });
         }
         return true;
@@ -972,6 +1254,7 @@ class ExecutionQueue extends EventEmitter {
       }),
     ]);
 
+    const lockRelease = await this.releaseActiveLocks();
     const durationMs = Date.now() - startTime;
     const summary = {
       drained,
@@ -980,6 +1263,7 @@ class ExecutionQueue extends EventEmitter {
       durationMs,
       completedCount: this.completed,
       failedCount: this.failedCount,
+      locksReleased: lockRelease.releasedCount,
     };
 
     if (drained) {
@@ -1020,6 +1304,7 @@ class ExecutionQueue extends EventEmitter {
 
   async shutdown() {
     this.shuttingDown = true;
+    this.unregisterSignalHandlers();
     this.logger.info('Shutting down execution queue');
 
     await this.gracefulShutdown();
@@ -1038,6 +1323,14 @@ class ExecutionQueue extends EventEmitter {
     return (this.retryScheduler && typeof this.retryScheduler.getStatistics === 'function')
       ? this.retryScheduler.getStatistics()
       : { total: 0, pending: 0, overdue: 0 };
+  }
+
+  async runStressBenchmark(options = {}) {
+    const harness = new StressBenchmarkHarness({
+      ...options,
+      queue: this,
+    });
+    return harness.run(options);
   }
 }
 
@@ -1264,7 +1557,7 @@ function generateSyntheticTasks(count = 10000, options = {}) {
       function: i % 3 === 0 ? 'rebalance_pool' : (i % 3 === 1 ? 'harvest_yield' : 'settle_epoch'),
       args: [taskId],
       interval,
-      lastRun: lastRun,
+      last_run: lastRun,
       gas_balance: isUnderfunded ? 0 : 10_000 + (i % 5000),
       priority,
       bounty,
@@ -1413,7 +1706,7 @@ class StressBenchmarkHarness {
         getStatistics: () => ({ total: 0, pending: 0, overdue: 0 }),
         shutdown: async () => {},
       },
-    );
+    });
 
     // Ensure high throughput limiter on dedicated benchmark queue
     if (!this.queue) {
@@ -1632,6 +1925,7 @@ class StressBenchmarkHarness {
 
 module.exports = {
   ExecutionQueue,
+  TaskQueue: ExecutionQueue,
   KafkaTaskStream,
   DependencyGraph,
   RedisTaskPriorityQueue,

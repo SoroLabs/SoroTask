@@ -8,7 +8,7 @@ if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
     tracesSampleRate: 0.1,
-    sendDefaultPii: false,
+    dataCollection: { userInfo: false },
 
     // Same value-level scrubber as the client (Issue #1258). The server sees
     // request bodies the browser never does, so the key-name-only filter this
@@ -18,9 +18,9 @@ if (SENTRY_DSN) {
     },
 
     beforeBreadcrumb(breadcrumb) {
-      const scrubbed = scrubEvent({ breadcrumbs: [breadcrumb as never] } as never) as
-        | { breadcrumbs?: unknown[] }
-        | null;
+      const scrubbed = scrubEvent({
+        breadcrumbs: [breadcrumb as never],
+      } as never) as { breadcrumbs?: unknown[] } | null;
       return (scrubbed?.breadcrumbs?.[0] ?? null) as never;
     },
   });

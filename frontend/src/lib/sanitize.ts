@@ -29,7 +29,16 @@ const ALLOWED_TAGS = [
   "img",
 ];
 
-const ALLOWED_ATTR = ["href", "target", "rel", "class", "data-lang", "src", "alt", "title"];
+const ALLOWED_ATTR = [
+  "href",
+  "target",
+  "rel",
+  "class",
+  "data-lang",
+  "src",
+  "alt",
+  "title",
+];
 
 /**
  * Sanitizes an HTML string to prevent XSS.
@@ -45,7 +54,8 @@ export function sanitizeHtml(dirty: string): string {
   return DOMPurify.sanitize(dirty, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
+    ALLOWED_URI_REGEXP:
+      /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
     ADD_ATTR: ["target"],
     FORCE_BODY: false,
     RETURN_DOM: false,
@@ -91,15 +101,12 @@ export function sanitizeResolverOutput(output: unknown): string {
  * Called after sanitizeHtml so we only touch already-clean content.
  */
 export function addSafeLinkAttributes(html: string): string {
-  return html.replace(
-    /<a\s([^>]*)>/gi,
-    (match, attrs: string) => {
-      if (!/\bhref\s*=/i.test(attrs)) return match;
-      const safeAttrs = attrs.replace(
-        /\s(?:target|rel)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
-        "",
-      );
-      return `<a${safeAttrs} target="_blank" rel="noopener noreferrer">`;
-    },
-  );
+  return html.replace(/<a\s([^>]*)>/gi, (match, attrs: string) => {
+    if (!/\bhref\s*=/i.test(attrs)) return match;
+    const safeAttrs = attrs.replace(
+      /\s(?:target|rel)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+      "",
+    );
+    return `<a ${safeAttrs.trim()} target="_blank" rel="noopener noreferrer">`;
+  });
 }

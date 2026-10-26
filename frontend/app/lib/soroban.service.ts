@@ -1,10 +1,10 @@
 import {
+  rpc,
   TransactionBuilder,
   Account,
   Contract,
   xdr,
-} from "@stellar/stellar-sdk/base";
-import * as rpc from "@stellar/stellar-sdk/rpc";
+} from "@stellar/stellar-sdk";
 import { signTransaction } from "@stellar/freighter-api";
 import { EXPECTED_NETWORK_PASSPHRASE } from "./wallet";
 import { SorobanContractError } from "@/src/lib/errors/contractErrors";
@@ -29,7 +29,7 @@ export class SorobanService {
    */
   async simulateAndPrepare(
     tx: any,
-    networkPassphrase = EXPECTED_NETWORK_PASSPHRASE
+    networkPassphrase = EXPECTED_NETWORK_PASSPHRASE,
   ): Promise<any> {
     const simulation = await this.rpcServer.simulateTransaction(tx);
     if (!rpc.Api.isSimulationSuccess(simulation)) {
@@ -112,10 +112,15 @@ export class SorobanService {
     });
 
     // 4. Sign through Freighter
-    const signedTxXdr = await signTransaction(preparedTx.toXDR(), { networkPassphrase });
+    const signedTxXdr = await signTransaction(preparedTx.toXDR(), {
+      networkPassphrase,
+    });
 
     // Some versions of freighter return a string, some return an object
-    const finalXdrStr = typeof signedTxXdr === 'string' ? signedTxXdr : (signedTxXdr as any).signedTxXdr;
+    const finalXdrStr =
+      typeof signedTxXdr === "string"
+        ? signedTxXdr
+        : (signedTxXdr as any).signedTxXdr;
     if (!finalXdrStr) {
       throw new Error("Failed to sign transaction through Freighter");
     }
@@ -151,17 +156,20 @@ export class SorobanService {
     // 6. Poll with timeout handling
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
-      const statusResponse = await this.rpcServer.getTransaction(sendResponse.hash);
+      const statusResponse = await this.rpcServer.getTransaction(
+        sendResponse.hash,
+      );
 
       if (statusResponse.status === rpc.Api.GetTransactionStatus.SUCCESS) {
         return statusResponse as rpc.Api.GetSuccessfulTransactionResponse;
       }
 
       if (statusResponse.status === rpc.Api.GetTransactionStatus.FAILED) {
+        const resultXdr = statusResponse.resultXdr.toXDR("base64");
         throw new SorobanContractError(
-          `Transaction failed on-chain: ${statusResponse.resultXdr}`,
+          `Transaction failed on-chain: ${resultXdr}`,
           {
-            resultXdr: statusResponse.resultXdr,
+            resultXdr,
             diagnosticPayload: statusResponse.resultXdr,
           },
         );
@@ -177,10 +185,10 @@ export class SorobanService {
    * Extract authorization entries and verified on-chain u64 task ID from successful transaction response.
    */
   extractAuthEntriesAndTaskId(
-    response: rpc.Api.GetSuccessfulTransactionResponse
+    response: rpc.Api.GetSuccessfulTransactionResponse,
   ): { taskId: string; authEntriesCount: number } {
     let taskId = "";
-    let authEntriesCount = 0;
+    const authEntriesCount = 0;
 
     try {
       if ((response as any).returnValue) {
@@ -198,7 +206,9 @@ export class SorobanService {
     if (!taskId) {
       // Generate verified u64 task ID fallback from hash or timestamp integer
       const hashShort = (response.txHash || Date.now().toString()).slice(0, 12);
-      taskId = BigInt("0x" + hashShort.replace(/[^0-9a-fA-F]/g, "a")).toString();
+      taskId = BigInt(
+        "0x" + hashShort.replace(/[^0-9a-fA-F]/g, "a"),
+      ).toString();
     }
 
     return {
@@ -230,7 +240,8 @@ export class SorobanService {
     networkPassphrase?: string;
   }): Promise<{ taskId: string; transactionHash: string }> {
     const { nativeToScVal } = await import("@stellar/stellar-sdk");
-    const gasStroops = typeof gas === "bigint" ? gas : BigInt(Math.floor(gas * 10000000));
+    const gasStroops =
+      typeof gas === "bigint" ? gas : BigInt(Math.floor(gas * 10000000));
 
     const args = [
       nativeToScVal(target, { type: "address" }),

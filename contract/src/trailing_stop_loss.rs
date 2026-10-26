@@ -10,10 +10,10 @@
 //! - **Atomic Execution**: Executes DEX swap instantly when stop-loss triggers
 //! - **Take-Profit**: Optional take-profit threshold for additional exit automation
 
-use soroban_sdk::{Address, BytesN, Env, Symbol, Vec, panic_with_error};
+use soroban_sdk::{panic_with_error, Address, BytesN, Env, Symbol, Vec};
 
-use crate::DataKey;
 use crate::dex_router::DexRouter;
+use crate::DataKey;
 use crate::Error;
 
 /// Default trailing stop-loss percentage in basis points (1% = 100 bps)
@@ -225,10 +225,7 @@ pub fn create_trailing_order(
 
     // Emit event
     env.events().publish(
-        (
-            Symbol::new(env, "TrailingOrderCreated"),
-            order_id,
-        ),
+        (Symbol::new(env, "TrailingOrderCreated"), order_id),
         (owner.clone(), initial_price, trailing_bps),
     );
 
@@ -247,7 +244,11 @@ pub fn create_trailing_order(
 /// # Returns
 /// * `true` if order was updated, `false` if order was executed or is invalid
 pub fn update_trailing_order(env: &Env, order_id: u64, current_price: i128) -> bool {
-    let mut order = match env.storage().persistent().get::<DataKey, TrailingOrderConfig>(&DataKey::TrailingOrder(order_id)) {
+    let mut order = match env
+        .storage()
+        .persistent()
+        .get::<DataKey, TrailingOrderConfig>(&DataKey::TrailingOrder(order_id))
+    {
         Some(o) => o,
         None => return false,
     };
@@ -276,7 +277,12 @@ pub fn update_trailing_order(env: &Env, order_id: u64, current_price: i128) -> b
         let take_profit_price = calculate_take_profit_price(order.initial_price, tp_bps);
         if current_price >= take_profit_price {
             // Take-profit triggered, execute the swap
-            return execute_trailing_order(env, order_id, current_price, TrailingOrderStatus::TakeProfitExecuted);
+            return execute_trailing_order(
+                env,
+                order_id,
+                current_price,
+                TrailingOrderStatus::TakeProfitExecuted,
+            );
         }
     }
 
@@ -288,10 +294,7 @@ pub fn update_trailing_order(env: &Env, order_id: u64, current_price: i128) -> b
         save_order(env, order_id, &order);
 
         env.events().publish(
-            (
-                Symbol::new(env, "TrailingOrderRatcheted"),
-                order_id,
-            ),
+            (Symbol::new(env, "TrailingOrderRatcheted"), order_id),
             (current_price, order.trigger_price),
         );
     }
@@ -299,7 +302,12 @@ pub fn update_trailing_order(env: &Env, order_id: u64, current_price: i128) -> b
     // Check stop-loss trigger
     if current_price <= order.trigger_price {
         // Stop-loss triggered, execute the swap
-        return execute_trailing_order(env, order_id, current_price, TrailingOrderStatus::StopLossExecuted);
+        return execute_trailing_order(
+            env,
+            order_id,
+            current_price,
+            TrailingOrderStatus::StopLossExecuted,
+        );
     }
 
     true
@@ -320,7 +328,11 @@ fn execute_trailing_order(
     execution_price: i128,
     execution_type: TrailingOrderStatus,
 ) -> bool {
-    let mut order = match env.storage().persistent().get::<DataKey, TrailingOrderConfig>(&DataKey::TrailingOrder(order_id)) {
+    let mut order = match env
+        .storage()
+        .persistent()
+        .get::<DataKey, TrailingOrderConfig>(&DataKey::TrailingOrder(order_id))
+    {
         Some(o) => o,
         None => return false,
     };
@@ -331,7 +343,11 @@ fn execute_trailing_order(
 
     // Transfer sell_token from owner to contract for swap
     let token_client = soroban_sdk::token::Client::new(env, &order.sell_token);
-    token_client.transfer(&order.owner, &env.current_contract_address(), &order.amount_in);
+    token_client.transfer(
+        &order.owner,
+        &env.current_contract_address(),
+        &order.amount_in,
+    );
 
     // Approve router to spend sell_token
     // Note: In production, this would involve calling token.approve()
@@ -351,7 +367,11 @@ fn execute_trailing_order(
     // Verify swap succeeded with minimum amount
     if amount_out < order.min_amount_out {
         // Swap failed or slippage too high, revert transfer
-        token_client.transfer(&env.current_contract_address(), &order.owner, &order.amount_in);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &order.owner,
+            &order.amount_in,
+        );
         return false;
     }
 
@@ -375,10 +395,7 @@ fn execute_trailing_order(
 
     // Emit execution event
     env.events().publish(
-        (
-            Symbol::new(env, "TrailingOrderExecuted"),
-            order_id,
-        ),
+        (Symbol::new(env, "TrailingOrderExecuted"), order_id),
         (execution_type, execution_price, amount_out),
     );
 
@@ -410,10 +427,7 @@ pub fn cancel_trailing_order(env: &Env, order_id: u64, caller: &Address) -> i128
     save_order(env, order_id, &order);
 
     env.events().publish(
-        (
-            Symbol::new(env, "TrailingOrderCancelled"),
-            order_id,
-        ),
+        (Symbol::new(env, "TrailingOrderCancelled"), order_id),
         caller.clone(),
     );
 
@@ -471,9 +485,9 @@ pub fn batch_update_trailing_orders(env: &Env, order_ids: Vec<u64>, prices: Vec<
         let order_id = order_ids.get(i).unwrap();
         let price = prices.get(i).unwrap();
 
-        if update_trailing_order(env, *order_id, *price) {
+        if update_trailing_order(env, order_id, price) {
             // Check if order was executed
-            if let Some(order) = get_trailing_order(env, *order_id) {
+            if let Some(order) = get_trailing_order(env, order_id) {
                 if order.status != TrailingOrderStatus::Active {
                     executed_count += 1;
                 }

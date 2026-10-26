@@ -56,7 +56,10 @@ pub fn set_config(env: &Env, config: &CarbonConfig) {
 }
 
 pub fn get_ledger(env: &Env) -> CarbonLedger {
-    env.storage().instance().get(&CarbonKey::Ledger).unwrap_or_default()
+    env.storage()
+        .instance()
+        .get(&CarbonKey::Ledger)
+        .unwrap_or_default()
 }
 
 /// Records one execution's CPU usage and retires credits if the threshold is met.
@@ -82,7 +85,10 @@ fn retire(
     config: &CarbonConfig,
     ledger: &mut CarbonLedger,
 ) -> Option<RetirementCertificate> {
-    let credit_token = config.credit_token.as_ref().filter(|_| config.mg_per_credit_unit > 0)?;
+    let credit_token = config
+        .credit_token
+        .as_ref()
+        .filter(|_| config.mg_per_credit_unit > 0)?;
     let client = token::Client::new(env, credit_token);
     let owed = (ledger.carbon_debt_mg / config.mg_per_credit_unit) as i128;
     let credits = owed.min(client.balance(&env.current_contract_address()));
@@ -96,9 +102,14 @@ fn retire(
     ledger.total_retired_mg = ledger.total_retired_mg.saturating_add(offset);
     ledger.total_credits_retired += credits;
 
-    let counter = env.storage().instance().get::<_, u64>(&CarbonKey::CertificateCounter);
+    let counter = env
+        .storage()
+        .instance()
+        .get::<_, u64>(&CarbonKey::CertificateCounter);
     let id = counter.unwrap_or(0) + 1;
-    env.storage().instance().set(&CarbonKey::CertificateCounter, &id);
+    env.storage()
+        .instance()
+        .set(&CarbonKey::CertificateCounter, &id);
 
     let certificate = RetirementCertificate {
         id,
@@ -108,7 +119,11 @@ fn retire(
         timestamp: env.ledger().timestamp(),
     };
     env.events().publish(
-        (Symbol::new(env, EVENT_DOMAIN), Symbol::new(env, "carbon_retired"), id),
+        (
+            Symbol::new(env, EVENT_DOMAIN),
+            Symbol::new(env, "carbon_retired"),
+            id,
+        ),
         certificate.clone(),
     );
     Some(certificate)

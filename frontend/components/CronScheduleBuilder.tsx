@@ -1,437 +1,247 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
+
+export type SchedulePreset =
+  "every_15_min" | "hourly" | "daily" | "weekly" | "custom_seconds" | "cron";
 
 export interface CronScheduleBuilderProps {
-  /** Initial value in seconds */
-  value?: number;
-  /** Callback when schedule changes */
-  onChange: (seconds: number, cronExpression?: string) => void;
-  /** Label for the input */
-  label?: string;
-  /** Helper text */
-  helperText?: string;
+  initialSeconds?: number;
+  initialCron?: string;
+  initialTimezone?: string;
+  onScheduleChange?: (
+    intervalSeconds: number,
+    cronExpression?: string,
+    timezone?: string,
+  ) => void;
+  className?: string;
 }
 
-/** Preset schedule options (Medium: Dropdown for simple presets) */
-type SchedulePreset = "hourly" | "daily" | "weekly" | "custom";
+const PRESET_INTERVALS: Record<
+  SchedulePreset,
+  { label: string; seconds: number; cron: string }
+> = {
+  every_15_min: {
+    label: "Every 15 Minutes",
+    seconds: 900,
+    cron: "*/15 * * * *",
+  },
+  hourly: { label: "Hourly", seconds: 3600, cron: "0 * * * *" },
+  daily: { label: "Daily (Midnight)", seconds: 86400, cron: "0 0 * * *" },
+  weekly: { label: "Weekly (Sunday)", seconds: 604800, cron: "0 0 * * 0" },
+  custom_seconds: {
+    label: "Custom Seconds",
+    seconds: 300,
+    cron: "*/5 * * * *",
+  },
+  cron: { label: "Advanced Cron Expression", seconds: 3600, cron: "0 * * * *" },
+};
 
-interface PresetOption {
-  label: string;
-  value: SchedulePreset;
-  seconds: number;
-  description: string;
-}
+export const formatSecondsToReadable = (sec: number): string => {
+  if (sec <= 0) return "0 seconds";
+  const days = Math.floor(sec / 86400);
+  const hours = Math.floor((sec % 86400) / 3600);
+  const minutes = Math.floor((sec % 3600) / 60);
+  const seconds = sec % 60;
 
-const PRESET_OPTIONS: PresetOption[] = [
-  { label: "Hourly", value: "hourly", seconds: 3600, description: "Every hour" },
-  { label: "Daily", value: "daily", seconds: 86400, description: "Once per day" },
-  { label: "Weekly", value: "weekly", seconds: 604800, description: "Once per week" },
-  { label: "Custom", value: "custom", seconds: 0, description: "Set custom interval" },
-];
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0) parts.push(`${seconds}s`);
+  return parts.join(" ");
+};
 
-/** Parse cron expression to extract components */
-interface CronParts {
-  minute: string;
-  hour: string;
-  dayOfMonth: string;
-  month: string;
-  dayOfWeek: string;
-}
-
-function parseCronExpression(expression: string): CronParts | null {
-  const parts = expression.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-  
-  return {
-    minute: parts[0],
-    hour: parts[1],
-    dayOfMonth: parts[2],
-    month: parts[3],
-    dayOfWeek: parts[4],
-  };
-}
-
-/** Convert cron parts back to expression */
-function buildCronExpression(parts: CronParts): string {
-  return `${parts.minute} ${parts.hour} ${parts.dayOfMonth} ${parts.month} ${parts.dayOfWeek}`;
-}
-
-/** Calculate next N run times from a cron expression (Advanced: next-5-runs preview) */
-function getNextRuns(cronExpression: string, count: number = 5, timezone: string = "UTC"): Date[] {
-  const parts = parseCronExpression(cronExpression);
-  if (!parts) return [];
-  
-  const runs: Date[] = [];
-  const now = new Date();
-  
-  // Simple implementation - in production use a proper cron library
-  for (let i = 0; i < count && runs.length < count; i++) {
-    const next = new Date(now);
-    next.setSeconds(0, 0);
-    
-    // Parse minute and hour to find next occurrence
-    const minute = parts.minute === "*" ? next.getMinutes() : parseInt(parts.minute) || 0;
-    const hour = parts.hour === "*" ? next.getHours() : parseInt(parts.hour) || 0;
-    const dayOfMonth = parts.dayOfMonth === "*" ? next.getDate() : parseInt(parts.dayOfMonth) || 1;
-    const dayOfWeek = parts.dayOfWeek === "*" ? -1 : parseInt(parts.dayOfWeek) || 0;
-    
-    // Calculate next occurrence (simplified)
-    if (parts.minute !== "*") {
-      next.setMinutes(minute);
-    } else {
-      next.setMinutes(next.getMinutes() + 1);
-    }
-    
-    if (parts.hour !== "*") {
-      next.setHours(hour);
-    }
-    
-    if (parts.dayOfMonth !== "*") {
-      next.setDate(dayOfMonth);
-    }
-    
-    // If the calculated time is in the past, add appropriate interval
-    if (next <= now) {
-      if (parts.dayOfMonth !== "*") {
-        next.setDate(next.getDate() + 7);
-      } else if (parts.hour !== "*") {
-        next.setHours(next.getHours() + 1);
-      } else {
-        next.setMinutes(next.getMinutes() + 1);
-      }
-    }
-    
-    runs.push(next);
-  }
-  
-  return runs;
-}
-
-/** Convert seconds to human readable interval (Advanced: Automatic second interval calculation) */
-function formatInterval(seconds: number): string {
-  if (seconds < 60) return `${seconds} second${seconds !== 1 ? "s" : ""}`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} minute${seconds >= 120 ? "s" : ""}`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} hour${seconds >= 7200 ? "s" : ""}`;
-  if (seconds < 604800) return `${Math.floor(seconds / 86400)} day${seconds >= 172800 ? "s" : ""}`;
-  return `${Math.floor(seconds / 604800)} week${seconds >= 1209600 ? "s" : ""}`;
-}
-
-/** Available timezones for the schedule (Advanced: Timezone conversion) */
-const TIMEZONES = [
-  { value: "UTC", label: "UTC" },
-  { value: "America/New_York", label: "Eastern (US)" },
-  { value: "America/Los_Angeles", label: "Pacific (US)" },
-  { value: "Europe/London", label: "London" },
-  { value: "Europe/Paris", label: "Paris" },
-  { value: "Asia/Tokyo", label: "Tokyo" },
-  { value: "Asia/Shanghai", label: "Shanghai" },
-];
-
-export function CronScheduleBuilder({
-  value = 3600,
-  onChange,
-  label = "Schedule Interval",
-  helperText,
-}: CronScheduleBuilderProps) {
+export const CronScheduleBuilder: React.FC<CronScheduleBuilderProps> = ({
+  initialSeconds = 3600,
+  initialCron = "0 * * * *",
+  initialTimezone = "UTC",
+  onScheduleChange,
+  className = "",
+}) => {
   const [preset, setPreset] = useState<SchedulePreset>("hourly");
-  const [customSeconds, setCustomSeconds] = useState(String(value));
-  const [cronExpression, setCronExpression] = useState<string>("0 * * * *");
-  const [timezone, setTimezone] = useState("UTC");
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  
-  // Parse initial value to determine preset
+  const [intervalSeconds, setIntervalSeconds] =
+    useState<number>(initialSeconds);
+  const [cronExpression, setCronExpression] = useState<string>(initialCron);
+  const [timezone, setTimezone] = useState<string>(initialTimezone);
+
+  // Synchronize upstream
   useEffect(() => {
-    const matchedPreset = PRESET_OPTIONS.find(p => p.seconds === value);
-    if (matchedPreset) {
-      setPreset(matchedPreset.value);
-      setCustomSeconds(String(value));
-    } else {
-      setPreset("custom");
-      setCustomSeconds(String(value));
+    if (onScheduleChange) {
+      onScheduleChange(intervalSeconds, cronExpression, timezone);
     }
-  }, []);
-  
-  // Calculate seconds from preset or custom input
-  const currentSeconds = useMemo(() => {
-    if (preset === "custom") {
-      return parseInt(customSeconds) || 0;
+  }, [intervalSeconds, cronExpression, timezone, onScheduleChange]);
+
+  const handlePresetSelect = (p: SchedulePreset) => {
+    setPreset(p);
+    if (p !== "custom_seconds" && p !== "cron") {
+      const presetData = PRESET_INTERVALS[p];
+      setIntervalSeconds(presetData.seconds);
+      setCronExpression(presetData.cron);
     }
-    const selectedPreset = PRESET_OPTIONS.find(p => p.value === preset);
-    return selectedPreset?.seconds || 0;
-  }, [preset, customSeconds]);
-  
-  // Update cron expression when seconds change
-  useEffect(() => {
-    let cron = "* * * * *";
-    
-    if (currentSeconds >= 604800) {
-      // Weekly
-      cron = "0 0 * * 1"; // Monday at midnight
-    } else if (currentSeconds >= 86400) {
-      // Daily
-      cron = "0 0 * * *"; // Midnight daily
-    } else if (currentSeconds >= 3600) {
-      // Hourly
-      const minute = Math.floor(Math.random() * 60); // Random minute for distribution
-      cron = `${minute} * * * *`;
-    } else if (currentSeconds >= 60) {
-      // Minutes
-      const minuteInterval = Math.floor(currentSeconds / 60);
-      cron = `*/${minuteInterval} * * * *`;
-    } else {
-      // Seconds (not standard cron, use as minimum)
-      cron = `* * * * *`;
-    }
-    
-    setCronExpression(cron);
-  }, [currentSeconds]);
-  
-  // Handle preset change
-  const handlePresetChange = useCallback((newPreset: SchedulePreset) => {
-    setPreset(newPreset);
-    if (newPreset !== "custom") {
-      const selectedPreset = PRESET_OPTIONS.find(p => p.value === newPreset);
-      if (selectedPreset) {
-        setCustomSeconds(String(selectedPreset.seconds));
-        onChange(selectedPreset.seconds);
-      }
-    } else {
-      onChange(parseInt(customSeconds) || 0);
-    }
-  }, [customSeconds, onChange]);
-  
-  // Handle custom seconds change
-  const handleCustomSecondsChange = useCallback((value: string) => {
-    setCustomSeconds(value);
-    const seconds = parseInt(value) || 0;
-    onChange(seconds);
-  }, [onChange]);
-  
-  // Handle cron expression change
-  const handleCronChange = useCallback((part: keyof CronParts, val: string) => {
-    const parts = parseCronExpression(cronExpression) || {
-      minute: "*",
-      hour: "*",
-      dayOfMonth: "*",
-      month: "*",
-      dayOfWeek: "*",
-    };
-    parts[part] = val;
-    const newCron = buildCronExpression(parts);
-    setCronExpression(newCron);
-    
-    // Convert cron to seconds (approximate)
-    const seconds = convertCronToSeconds(newCron);
-    onChange(seconds, newCron);
-  }, [cronExpression, onChange]);
-  
-  // Next scheduled runs
+  };
+
+  // Preview next 5 mock runs based on interval seconds
   const nextRuns = useMemo(() => {
-    return getNextRuns(cronExpression, 5, timezone);
-  }, [cronExpression, timezone]);
+    const runs: string[] = [];
+    const now = Date.now();
+    const intervalMs = Math.max(10, intervalSeconds) * 1000;
+    for (let i = 1; i <= 5; i++) {
+      const date = new Date(now + intervalMs * i);
+      runs.push(
+        date.toISOString().replace("T", " ").substring(0, 19) +
+          ` (${timezone})`,
+      );
+    }
+    return runs;
+  }, [intervalSeconds, timezone]);
 
   return (
-    <div className="space-y-4">
-      {/* Label */}
-      {label && (
-        <label className="block text-sm font-medium text-neutral-300">
-          {label}
-        </label>
-      )}
-      
-      {/* Preset Dropdown (Medium: Hourly/Daily presets) */}
-      <div className="flex gap-2">
-        <select
-          value={preset}
-          onChange={(e) => handlePresetChange(e.target.value as SchedulePreset)}
-          className="bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 flex-1"
+    <div
+      className={`rounded-xl border border-neutral-800 bg-neutral-900/60 p-5 text-neutral-200 shadow-md ${className}`}
+    >
+      <div className="mb-4 flex items-center justify-between border-b border-neutral-800 pb-3">
+        <div>
+          <h3 className="text-base font-semibold text-white">
+            Recurring Schedule Builder
+          </h3>
+          <p className="text-xs text-neutral-400">
+            Configure autonomous task execution intervals or cron schedules.
+          </p>
+        </div>
+        <span className="rounded-md bg-emerald-950/60 px-2.5 py-1 text-xs font-mono font-medium text-emerald-400 border border-emerald-800/50">
+          {formatSecondsToReadable(intervalSeconds)}
+        </span>
+      </div>
+
+      {/* Preset Selector */}
+      <div className="mb-4">
+        <label
+          htmlFor="cron-frequency-preset"
+          className="mb-1.5 block text-xs font-medium text-neutral-300"
         >
-          {PRESET_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label} - {option.description}
+          Frequency Preset
+        </label>
+        <select
+          id="cron-frequency-preset"
+          value={preset}
+          onChange={(e) => handlePresetSelect(e.target.value as SchedulePreset)}
+          className="w-full rounded-lg border border-neutral-700 bg-neutral-800/80 px-3 py-2 text-sm text-neutral-100 focus:border-indigo-500 focus:outline-none"
+        >
+          {Object.entries(PRESET_INTERVALS).map(([key, val]) => (
+            <option key={key} value={key}>
+              {val.label}
             </option>
           ))}
         </select>
       </div>
-      
-      {/* Custom Seconds Input (Easy: Input field for interval in seconds) */}
-      {preset === "custom" && (
-        <div className="flex items-center gap-2">
+
+      {/* Custom Seconds Mode */}
+      {preset === "custom_seconds" && (
+        <div className="mb-4">
+          <label
+            htmlFor="cron-custom-seconds"
+            className="mb-1.5 block text-xs font-medium text-neutral-300"
+          >
+            Interval (in seconds)
+          </label>
           <input
+            id="cron-custom-seconds"
             type="number"
-            min="1"
-            value={customSeconds}
-            onChange={(e) => handleCustomSecondsChange(e.target.value)}
-            placeholder="Seconds"
-            className="bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 w-32"
+            min="10"
+            value={intervalSeconds}
+            onChange={(e) => {
+              const val = Math.max(1, parseInt(e.target.value || "1", 10));
+              setIntervalSeconds(val);
+            }}
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-800/80 px-3 py-2 text-sm text-neutral-100 font-mono focus:border-indigo-500 focus:outline-none"
           />
-          <span className="text-sm text-neutral-400">
-            = {formatInterval(parseInt(customSeconds) || 0)}
-          </span>
         </div>
       )}
-      
-      {/* Current interval display */}
-      {preset !== "custom" && (
-        <p className="text-sm text-neutral-400">
-          Current interval: {formatInterval(currentSeconds)}
-        </p>
-      )}
-      
-      {/* Advanced toggle */}
-      <button
-        type="button"
-        onClick={() => setShowAdvanced(!showAdvanced)}
-        className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
-      >
-        {showAdvanced ? "▼" : "▶"} 
-        {showAdvanced ? "Hide" : "Show"} Advanced Cron Options
-      </button>
-      
-      {/* Advanced: Full cron expression builder (Advanced: Full cron generator) */}
-      {showAdvanced && (
-        <div className="bg-neutral-900 rounded-lg border border-neutral-800 p-4 space-y-4">
-          <h4 className="text-sm font-semibold text-neutral-200">Cron Expression Builder</h4>
-          
-          {/* Cron expression input */}
+
+      {/* Advanced Cron Mode */}
+      {preset === "cron" && (
+        <div className="mb-4 space-y-3">
           <div>
-            <label className="block text-xs text-neutral-400 mb-1">Expression</label>
+            <label
+              htmlFor="cron-expression"
+              className="mb-1.5 block text-xs font-medium text-neutral-300"
+            >
+              Standard Cron Expression (5 Fields)
+            </label>
             <input
+              id="cron-expression"
               type="text"
               value={cronExpression}
-              onChange={(e) => {
-                setCronExpression(e.target.value);
-                const seconds = convertCronToSeconds(e.target.value);
-                onChange(seconds, e.target.value);
-              }}
+              onChange={(e) => setCronExpression(e.target.value)}
               placeholder="* * * * *"
-              className="bg-neutral-800 border border-neutral-700 rounded px-3 py-2 text-sm text-neutral-100 w-full font-mono"
+              className="w-full rounded-lg border border-neutral-700 bg-neutral-800/80 px-3 py-2 text-sm text-neutral-100 font-mono focus:border-indigo-500 focus:outline-none"
             />
-            <p className="text-[10px] text-neutral-500 mt-1">
-              Format: minute hour day-of-month month day-of-week
+            <p className="mt-1 text-[11px] text-neutral-500 font-mono">
+              minute · hour · day-of-month · month · day-of-week
             </p>
           </div>
-          
-          {/* Individual cron parts */}
-          <div className="grid grid-cols-5 gap-2">
-            <div>
-              <label className="block text-[10px] text-neutral-500 mb-1">Minute</label>
-              <input
-                type="text"
-                value={parseCronExpression(cronExpression)?.minute || "*"}
-                onChange={(e) => handleCronChange("minute", e.target.value)}
-                className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-100 w-full font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] text-neutral-500 mb-1">Hour</label>
-              <input
-                type="text"
-                value={parseCronExpression(cronExpression)?.hour || "*"}
-                onChange={(e) => handleCronChange("hour", e.target.value)}
-                className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-100 w-full font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] text-neutral-500 mb-1">Day</label>
-              <input
-                type="text"
-                value={parseCronExpression(cronExpression)?.dayOfMonth || "*"}
-                onChange={(e) => handleCronChange("dayOfMonth", e.target.value)}
-                className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-100 w-full font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] text-neutral-500 mb-1">Month</label>
-              <input
-                type="text"
-                value={parseCronExpression(cronExpression)?.month || "*"}
-                onChange={(e) => handleCronChange("month", e.target.value)}
-                className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-100 w-full font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] text-neutral-500 mb-1">Weekday</label>
-              <input
-                type="text"
-                value={parseCronExpression(cronExpression)?.dayOfWeek || "*"}
-                onChange={(e) => handleCronChange("dayOfWeek", e.target.value)}
-                className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-100 w-full font-mono"
-              />
-            </div>
-          </div>
-          
-          {/* Timezone selector (Advanced: Timezone conversion) */}
           <div>
-            <label className="block text-xs text-neutral-400 mb-1">Timezone</label>
-            <select
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-              className="bg-neutral-800 border border-neutral-700 rounded px-3 py-2 text-sm text-neutral-100 w-full"
+            <label
+              htmlFor="cron-interval-seconds"
+              className="mb-1.5 block text-xs font-medium text-neutral-300"
             >
-              {TIMEZONES.map((tz) => (
-                <option key={tz.value} value={tz.value}>
-                  {tz.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          
-          {/* Next 5 runs preview (Advanced: next-5-runs preview) */}
-          <div>
-            <label className="block text-xs text-neutral-400 mb-2">Next 5 Scheduled Runs</label>
-            <div className="space-y-1">
-              {nextRuns.map((run, i) => (
-                <div
-                  key={i}
-                  className="flex justify-between text-xs text-neutral-300 bg-neutral-800/50 rounded px-2 py-1"
-                >
-                  <span>{run.toLocaleDateString()}</span>
-                  <span className="font-mono">{run.toLocaleTimeString()}</span>
-                  <span className="text-neutral-500">{timezone}</span>
-                </div>
-              ))}
-            </div>
+              Equivalent Interval (Seconds)
+            </label>
+            <input
+              id="cron-interval-seconds"
+              type="number"
+              min="10"
+              value={intervalSeconds}
+              onChange={(e) =>
+                setIntervalSeconds(
+                  Math.max(1, parseInt(e.target.value || "1", 10)),
+                )
+              }
+              className="w-full rounded-lg border border-neutral-700 bg-neutral-800/80 px-3 py-2 text-sm text-neutral-100 font-mono focus:border-indigo-500 focus:outline-none"
+            />
           </div>
         </div>
       )}
-      
-      {/* Helper text */}
-      {helperText && (
-        <p className="text-xs text-neutral-500">{helperText}</p>
-      )}
+
+      {/* Timezone Selection */}
+      <div className="mb-4">
+        <label
+          htmlFor="cron-timezone"
+          className="mb-1.5 block text-xs font-medium text-neutral-300"
+        >
+          Execution Timezone
+        </label>
+        <select
+          id="cron-timezone"
+          value={timezone}
+          onChange={(e) => setTimezone(e.target.value)}
+          className="w-full rounded-lg border border-neutral-700 bg-neutral-800/80 px-3 py-2 text-sm text-neutral-100 focus:border-indigo-500 focus:outline-none"
+        >
+          <option value="UTC">UTC (Coordinated Universal Time)</option>
+          <option value="America/New_York">America/New_York (EST/EDT)</option>
+          <option value="Europe/London">Europe/London (GMT/BST)</option>
+          <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+          <option value="Australia/Sydney">Australia/Sydney (AEST/AEDT)</option>
+        </select>
+      </div>
+
+      {/* Next Execution Preview */}
+      <div className="mt-4 rounded-lg border border-neutral-800/90 bg-neutral-950/50 p-3.5">
+        <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
+          Next 5 Estimated Executions
+        </span>
+        <ul className="mt-2 space-y-1 text-xs font-mono text-neutral-300">
+          {nextRuns.map((run, idx) => (
+            <li key={idx} className="flex items-center space-x-2">
+              <span className="text-neutral-500">#{idx + 1}</span>
+              <span>{run}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
-}
-
-/** Convert cron expression to approximate seconds (Advanced: Automatic second interval calculation) */
-function convertCronToSeconds(cron: string): number {
-  const parts = parseCronExpression(cron);
-  if (!parts) return 3600;
-  
-  // Simple conversion - in production use a proper cron library
-  if (parts.dayOfMonth !== "*" && parts.dayOfMonth !== "?") {
-    return 604800; // Weekly or more
-  }
-  
-  if (parts.hour !== "*" && parts.hour !== "?") {
-    if (parts.minute === "*" || parts.minute === "0") {
-      return 86400; // Daily
-    }
-    return 3600; // Hourly
-  }
-  
-  if (parts.minute.startsWith("*/")) {
-    const interval = parseInt(parts.minute.slice(2)) || 1;
-    return interval * 60;
-  }
-  
-  if (parts.minute !== "*" && parts.minute !== "?") {
-    return 3600; // Hourly
-  }
-  
-  return 3600; // Default to hourly
-}
+};
 
 export default CronScheduleBuilder;

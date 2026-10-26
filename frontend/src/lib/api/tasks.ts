@@ -1,12 +1,11 @@
 import {
   generateCorrelationId,
-  propagateCorrelationIdToHeaders,
   attachCorrelationIdToHeaders,
   appendTraceContextToBody,
   describeTrace,
   makeSpan,
   endSpan,
-} from '@/src/lib/tracing';
+} from "@/src/lib/tracing";
 export type TaskStatus = "pending" | "running" | "success" | "failed";
 export interface Task {
   id: string;
@@ -224,23 +223,29 @@ const GRAPHQL_URL =
 async function fetchGraphQL(query: string, variables: any = {}) {
   const correlationId = generateCorrelationId();
   const span = makeSpan({
-    name: 'frontend→api fetchGraphQL',
+    name: "frontend→api fetchGraphQL",
     traceId: correlationId,
     attributes: {
-      'http.url': GRAPHQL_URL,
-      'http.method': 'POST',
-      'graphql.query': query,
-      'correlation.id': correlationId,
-      'tracing.origin': 'frontend',
+      "http.url": GRAPHQL_URL,
+      "http.method": "POST",
+      "graphql.query": query,
+      "correlation.id": correlationId,
+      "tracing.origin": "frontend",
     },
   });
-  const headers = attachCorrelationIdToHeaders({
-    'Content-Type': 'application/json',
-  }, correlationId);
-  const body = appendTraceContextToBody({
-    query,
-    variables,
-  }, correlationId);
+  const headers = attachCorrelationIdToHeaders(
+    {
+      "Content-Type": "application/json",
+    },
+    correlationId,
+  );
+  const body = appendTraceContextToBody(
+    {
+      query,
+      variables,
+    },
+    correlationId,
+  );
   const response = await fetch(GRAPHQL_URL, {
     method: "POST",
     headers,
@@ -270,10 +275,13 @@ async function fetchGraphQL(query: string, variables: any = {}) {
         GRAPHQL_URL,
       );
     }
-    endSpan(span, 'error', { 'graphql.error': msg });
+    endSpan(span, "error", { "graphql.error": msg });
     throw new Error(msg);
   }
-  endSpan(span, 'success', { 'graphql.data.keys': Object.keys(result.data ?? {}), 'response.status': response.status });
+  endSpan(span, "success", {
+    "graphql.data.keys": Object.keys(result.data ?? {}),
+    "response.status": response.status,
+  });
   return result.data;
 }
 
@@ -292,11 +300,11 @@ function mapTask(gqlTask: any): Task {
 
 // Batch (multi-select) operations — see frontend/app/tasks/bulk/
 import { buildLifecycleBatch, buildRefillBatch } from "./batchOps";
-import type { ScVal } from "@stellar/stellar-sdk";
+import type { xdr } from "@stellar/stellar-sdk";
 
 export interface BatchContractCall {
   method: string;
-  args: ScVal[];
+  args: xdr.ScVal[];
 }
 
 export interface BatchTaskResult {
@@ -319,11 +327,14 @@ async function runBatchContractCalls(
   try {
     const { SorobanService } = await import("../../../app/lib/soroban.service");
     const soroban = new SorobanService();
-    await soroban.executeBatchContractCalls({
-      publicKey: userAddress,
-      contractId,
-      calls,
-    });
+    for (const call of calls) {
+      await soroban.executeContractCall({
+        publicKey: userAddress,
+        contractId,
+        method: call.method,
+        args: call.args,
+      });
+    }
   } catch (err) {
     console.warn(`${label} batch contract call failed:`, err);
   }
@@ -843,7 +854,9 @@ export class EdgeCdnTaskCache {
   private purgeSlaMs: number;
   private provider: "cloudflare" | "fastly";
 
-  constructor(options: { purgeSlaMs?: number; provider?: "cloudflare" | "fastly" } = {}) {
+  constructor(
+    options: { purgeSlaMs?: number; provider?: "cloudflare" | "fastly" } = {},
+  ) {
     this.purgeSlaMs = options.purgeSlaMs ?? 150;
     this.provider = options.provider ?? "cloudflare";
   }
@@ -864,7 +877,12 @@ export class EdgeCdnTaskCache {
     return entry.value as T;
   }
 
-  set<T>(key: string, value: T, surrogateKeys: string[] = [], ttlMs = 300_000): void {
+  set<T>(
+    key: string,
+    value: T,
+    surrogateKeys: string[] = [],
+    ttlMs = 300_000,
+  ): void {
     const tags = Array.from(new Set([key, ...surrogateKeys]));
     this.entries.set(key, {
       value,
@@ -897,7 +915,8 @@ export class EdgeCdnTaskCache {
   }
 
   async purgeBySurrogateKeys(keys: string[]): Promise<EdgePurgeResult> {
-    const start = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const start =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
     const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
 
     for (const tag of uniqueKeys) {
@@ -911,7 +930,8 @@ export class EdgeCdnTaskCache {
       }
     }
 
-    const end = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const end =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
     const latencyMs = Number(Math.max(0, end - start).toFixed(3));
     this.purgesCompleted += 1;
     this.lastPurgeLatencyMs = latencyMs;

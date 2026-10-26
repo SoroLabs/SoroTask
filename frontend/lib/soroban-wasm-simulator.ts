@@ -1,18 +1,19 @@
 /**
  * soroban-wasm-simulator.ts - WASM-based Soroban Transaction Simulator
- * 
+ *
  * Provides browser-based transaction simulation using Soroban WASM runtime.
  * Allows users to simulate transactions locally before submitting to the network,
  * reducing failed transactions and improving user experience.
  */
 
 import {
+  rpc,
   TransactionBuilder,
+  Transaction,
   Account,
   Contract,
   xdr,
-} from '@stellar/stellar-sdk/base';
-import * as rpc from '@stellar/stellar-sdk/rpc';
+} from "@stellar/stellar-sdk";
 
 export interface SimulationResult {
   success: boolean;
@@ -40,7 +41,7 @@ export interface SorobanWasmSimulatorConfig {
 
 /**
  * Soroban WASM Simulator
- * 
+ *
  * Simulates Soroban contract calls in the browser using WASM.
  * Provides local transaction simulation without network calls.
  */
@@ -50,7 +51,7 @@ export class SorobanWasmSimulator {
   private cache: Map<string, SimulationResult>;
   private enableCache: boolean;
   private cacheSize: number;
-  
+
   constructor(config: SorobanWasmSimulatorConfig) {
     this.rpc = new rpc.Server(config.rpcUrl);
     this.networkPassphrase = config.networkPassphrase;
@@ -58,10 +59,10 @@ export class SorobanWasmSimulator {
     this.cacheSize = config.cacheSize ?? 100;
     this.cache = new Map();
   }
-  
+
   /**
    * Simulate a contract call locally
-   * 
+   *
    * @param contractId - Contract address
    * @param method - Method name to call
    * @param args - Method arguments as ScVal array
@@ -74,37 +75,42 @@ export class SorobanWasmSimulator {
     method: string,
     args: xdr.ScVal[],
     account: Account,
-    options: SimulationOptions = {}
+    options: SimulationOptions = {},
   ): Promise<SimulationResult> {
-    const cacheKey = this.getCacheKey(contractId, method, args, account.accountId());
-    
+    const cacheKey = this.getCacheKey(
+      contractId,
+      method,
+      args,
+      account.accountId(),
+    );
+
     if (this.enableCache && this.cache.has(cacheKey)) {
       return this.cache.get(cacheKey)!;
     }
-    
+
     try {
       // Build transaction
       const contract = new Contract(contractId);
       const tx = new TransactionBuilder(account, {
-        fee: '100',
+        fee: "100",
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(contract.call(method, ...args))
         .setTimeout(30)
         .build();
-      
+
       // Simulate using RPC (fallback to network simulation)
       // In production, this would use actual WASM simulation
       const simulation = await this.rpc.simulateTransaction(tx);
-      
+
       if (!rpc.Api.isSimulationSuccess(simulation)) {
         return {
           success: false,
-          error: simulation.error || 'Simulation failed',
+          error: simulation.error || "Simulation failed",
           events: simulation.events,
         };
       }
-      
+
       const result: SimulationResult = {
         success: true,
         result: simulation.result?.retval,
@@ -113,43 +119,46 @@ export class SorobanWasmSimulator {
         cpuInstructions: Number((simulation as any).cost?.cpuInstructions || 0),
         memoryBytes: Number((simulation as any).cost?.memoryBytes || 0),
       };
-      
+
       if (this.enableCache) {
         this.setCache(cacheKey, result);
       }
-      
+
       return result;
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? error.message : "Unknown error",
       };
     }
   }
-  
+
   /**
    * Simulate a full transaction with multiple operations
-   * 
+   *
    * @param transaction - Transaction to simulate
    * @param options - Simulation options
    * @returns Simulation result
    */
   async simulateTransaction(
-    transaction: TransactionBuilder,
-    options: SimulationOptions = {}
+    transaction: Transaction | TransactionBuilder,
+    options: SimulationOptions = {},
   ): Promise<SimulationResult> {
     try {
-      const tx = typeof (transaction as any).build === 'function' ? transaction.build() : transaction;
+      const tx =
+        transaction instanceof TransactionBuilder
+          ? transaction.build()
+          : transaction;
       const simulation = await this.rpc.simulateTransaction(tx);
-      
+
       if (!rpc.Api.isSimulationSuccess(simulation)) {
         return {
           success: false,
-          error: simulation.error || 'Simulation failed',
+          error: simulation.error || "Simulation failed",
           events: simulation.events,
         };
       }
-      
+
       return {
         success: true,
         result: simulation.result?.retval,
@@ -161,14 +170,14 @@ export class SorobanWasmSimulator {
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? error.message : "Unknown error",
       };
     }
   }
-  
+
   /**
    * Estimate gas costs for a transaction
-   * 
+   *
    * @param contractId - Contract address
    * @param method - Method name
    * @param args - Method arguments
@@ -179,60 +188,76 @@ export class SorobanWasmSimulator {
     contractId: string,
     method: string,
     args: xdr.ScVal[],
-    account: Account
+    account: Account,
   ): Promise<number> {
-    const result = await this.simulateContractCall(contractId, method, args, account);
-    
+    const result = await this.simulateContractCall(
+      contractId,
+      method,
+      args,
+      account,
+    );
+
     if (!result.success) {
-      throw new Error(result.error || 'Gas estimation failed');
+      throw new Error(result.error || "Gas estimation failed");
     }
-    
+
     // Convert CPU instructions to estimated gas
     // This is a simplified conversion - actual conversion depends on network
     const baseFee = 100;
     const resourceFee = result.cpuInstructions || 0;
-    
+
     return baseFee + resourceFee;
   }
-  
+
   /**
    * Validate a transaction before submission
-   * 
+   *
    * @param transaction - Transaction to validate
    * @returns Validation result with errors if any
    */
-  async validateTransaction(transaction: TransactionBuilder): Promise<{
+  async validateTransaction(
+    transaction: Transaction | TransactionBuilder,
+  ): Promise<{
     valid: boolean;
     errors: string[];
     warnings: string[];
   }> {
     const errors: string[] = [];
     const warnings: string[] = [];
-    
+
     try {
-      const tx = typeof (transaction as any).build === 'function' ? transaction.build() : transaction;
+      const tx =
+        transaction instanceof TransactionBuilder
+          ? transaction.build()
+          : transaction;
       const simulation = await this.rpc.simulateTransaction(tx);
-      
+
       if (!rpc.Api.isSimulationSuccess(simulation)) {
-        errors.push(simulation.error || 'Transaction simulation failed');
+        errors.push(simulation.error || "Transaction simulation failed");
       }
-      
+
       // Check for high resource usage
-      if ((simulation as any).cost?.cpuInstructions && (simulation as any).cost.cpuInstructions > 1000000) {
-        warnings.push('High CPU usage - transaction may be expensive');
+      if (
+        (simulation as any).cost?.cpuInstructions &&
+        (simulation as any).cost.cpuInstructions > 1000000
+      ) {
+        warnings.push("High CPU usage - transaction may be expensive");
       }
-      
-      if ((simulation as any).cost?.memoryBytes && (simulation as any).cost.memoryBytes > 100000) {
-        warnings.push('High memory usage - transaction may be expensive');
+
+      if (
+        (simulation as any).cost?.memoryBytes &&
+        (simulation as any).cost.memoryBytes > 100000
+      ) {
+        warnings.push("High memory usage - transaction may be expensive");
       }
-      
+
       return {
         valid: errors.length === 0,
         errors,
         warnings,
       };
     } catch (error) {
-      errors.push(error instanceof Error ? error.message : 'Validation failed');
+      errors.push(error instanceof Error ? error.message : "Validation failed");
       return {
         valid: false,
         errors,
@@ -240,10 +265,10 @@ export class SorobanWasmSimulator {
       };
     }
   }
-  
+
   /**
    * Get account for simulation
-   * 
+   *
    * @param publicKey - Account public key
    * @returns Account object
    */
@@ -251,23 +276,23 @@ export class SorobanWasmSimulator {
     const accountResponse = await this.rpc.getAccount(publicKey);
     return new Account(publicKey, accountResponse.sequenceNumber());
   }
-  
+
   /**
    * Get ledger info for simulation context
-   * 
+   *
    * @returns Latest ledger info
    */
   async getLedgerInfo(): Promise<rpc.Api.GetLatestLedgerResponse> {
     return await this.rpc.getLatestLedger();
   }
-  
+
   /**
    * Clear simulation cache
    */
   clearCache(): void {
     this.cache.clear();
   }
-  
+
   /**
    * Get cache statistics
    */
@@ -277,7 +302,7 @@ export class SorobanWasmSimulator {
       maxSize: this.cacheSize,
     };
   }
-  
+
   /**
    * Generate cache key
    */
@@ -285,14 +310,12 @@ export class SorobanWasmSimulator {
     contractId: string,
     method: string,
     args: xdr.ScVal[],
-    publicKey: string
+    publicKey: string,
   ): string {
-    const argsHash = args
-      .map(arg => arg.toXDR().toString())
-      .join(':');
+    const argsHash = args.map((arg) => arg.toXDR().toString()).join(":");
     return `${contractId}:${method}:${publicKey}:${argsHash}`;
   }
-  
+
   /**
    * Set cache entry with size limit
    */
@@ -313,16 +336,34 @@ export class SorobanWasmSimulator {
  */
 export function useSorobanWasmSimulator(config: SorobanWasmSimulatorConfig) {
   const simulator = new SorobanWasmSimulator(config);
-  
+
   return {
     simulator,
-    simulateContractCall: (contractId: string, method: string, args: xdr.ScVal[], account: Account, options?: SimulationOptions) =>
-      simulator.simulateContractCall(contractId, method, args, account, options),
-    simulateTransaction: (transaction: TransactionBuilder, options?: SimulationOptions) =>
-      simulator.simulateTransaction(transaction, options),
-    estimateGas: (contractId: string, method: string, args: xdr.ScVal[], account: Account) =>
-      simulator.estimateGas(contractId, method, args, account),
-    validateTransaction: (transaction: TransactionBuilder) =>
+    simulateContractCall: (
+      contractId: string,
+      method: string,
+      args: xdr.ScVal[],
+      account: Account,
+      options?: SimulationOptions,
+    ) =>
+      simulator.simulateContractCall(
+        contractId,
+        method,
+        args,
+        account,
+        options,
+      ),
+    simulateTransaction: (
+      transaction: Transaction | TransactionBuilder,
+      options?: SimulationOptions,
+    ) => simulator.simulateTransaction(transaction, options),
+    estimateGas: (
+      contractId: string,
+      method: string,
+      args: xdr.ScVal[],
+      account: Account,
+    ) => simulator.estimateGas(contractId, method, args, account),
+    validateTransaction: (transaction: Transaction | TransactionBuilder) =>
       simulator.validateTransaction(transaction),
     getAccount: (publicKey: string) => simulator.getAccount(publicKey),
     getLedgerInfo: () => simulator.getLedgerInfo(),

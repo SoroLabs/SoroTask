@@ -5,11 +5,8 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useState,
 } from "react";
-import {
-  ThemeProvider as NextThemesProvider,
-  useTheme as useNextTheme,
-} from "next-themes";
 import { initHoudiniThemeEngine } from "@/src/lib/theme/houdiniThemeEngine";
 
 export type ThemeMode = "light" | "dark" | "system" | "high-contrast";
@@ -24,17 +21,39 @@ const ThemeContext = createContext<ThemeContextValue>({
   setMode: () => {},
 });
 
-function ThemeStateProvider({ children }: { children: React.ReactNode }) {
-  const { theme, setTheme } = useNextTheme();
-  const mode: ThemeMode =
-    theme === "light" || theme === "dark" || theme === "high-contrast"
-      ? theme
-      : "system";
+const THEME_STORAGE_KEY = "theme";
 
-  const setMode = useCallback(
-    (nextMode: ThemeMode) => setTheme(nextMode),
-    [setTheme],
+function isThemeMode(value: unknown): value is ThemeMode {
+  return (
+    value === "light" ||
+    value === "dark" ||
+    value === "system" ||
+    value === "high-contrast"
   );
+}
+
+function resolveTheme(mode: ThemeMode): Exclude<ThemeMode, "system"> {
+  if (mode !== "system") return mode;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const [mode, setModeState] = useState<ThemeMode>("system");
+
+  const applyTheme = useCallback((nextMode: ThemeMode) => {
+    document.documentElement.setAttribute("data-theme", resolveTheme(nextMode));
+  }, []);
+
+  // Hydrate from localStorage once on mount. An unusable stored value falls
+  // back to the system preference rather than leaving the document unthemed.
+  useEffect(() => {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    const nextMode = isThemeMode(saved) ? saved : "system";
+    setModeState(nextMode);
+    applyTheme(nextMode);
+  }, [applyTheme]);
 
   useEffect(() => {
     void initHoudiniThemeEngine({
@@ -51,24 +70,28 @@ function ThemeStateProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  // Keep `system` in sync with OS preference changes.
+  useEffect(() => {
+    if (mode !== "system") return;
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = () => applyTheme("system");
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, [mode, applyTheme]);
+
+  const setMode = useCallback(
+    (nextMode: ThemeMode) => {
+      setModeState(nextMode);
+      localStorage.setItem(THEME_STORAGE_KEY, nextMode);
+      applyTheme(nextMode);
+    },
+    [applyTheme],
+  );
+
   return (
     <ThemeContext.Provider value={{ mode, setMode }}>
       {children}
     </ThemeContext.Provider>
-  );
-}
-
-export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  return (
-    <NextThemesProvider
-      attribute="data-theme"
-      defaultTheme="system"
-      enableSystem
-      themes={["light", "dark", "high-contrast"]}
-      storageKey="theme"
-    >
-      <ThemeStateProvider>{children}</ThemeStateProvider>
-    </NextThemesProvider>
   );
 }
 

@@ -8,17 +8,24 @@ import {
   useTasks,
   useUpdateTask,
 } from "../tasks";
-import {
-  __resetMockApi,
-  __setMockApi,
-} from "../../lib/mockApi/tasks";
+import { __resetMockApi, __setMockApi } from "../../lib/mockApi/tasks";
 import { taskKeys } from "../../lib/query/keys";
+
+// The hooks talk to the real API module, but these tests exercise cache
+// behaviour against the in-memory mock. Swap the implementation while keeping
+// the module surface (and therefore the hook contracts) intact.
+jest.mock("@/src/lib/api/tasks", () =>
+  jest.requireActual("../../lib/mockApi/tasks"),
+);
 
 function makeWrapper(client?: QueryClient) {
   const queryClient =
     client ??
     new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
     });
   return {
     queryClient,
@@ -169,9 +176,9 @@ describe("useUpdateTask", () => {
     });
 
     expect(
-      (queryClient.getQueryData<{ intervalSec: number }>(
+      queryClient.getQueryData<{ intervalSec: number }>(
         taskKeys.detail("task-1"),
-      ))?.intervalSec,
+      )?.intervalSec,
     ).toBe(9999);
   });
 

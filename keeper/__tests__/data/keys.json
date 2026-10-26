@@ -1,16 +1,16 @@
 {
   "testkey": {
     "keyId": "testkey",
-    "publicPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEADROslPKMgTnpPenJHCMVWg7tu9o3InVpoeLt/jZw9Ks=\n-----END PUBLIC KEY-----\n",
+    "publicPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEATP03Wvhj3IToNsl7yNmM/7w/FtGUldDSKSOnYKgU8d4=\n-----END PUBLIC KEY-----\n",
     "algorithm": "ed25519",
     "active": true,
-    "createdAt": "2026-09-14T12:30:59.160Z"
+    "createdAt": "2026-10-26T12:43:50.618Z"
   },
   "k1": {
     "keyId": "k1",
-    "publicPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAO5F1abrkIZQEnjiYbYOBkJRXb7gdPtGz0ZOhwxhIMK0=\n-----END PUBLIC KEY-----\n",
+    "publicPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAncDhEbcZv6ugZQUDnih7WRzaVtNtbhwQJYE14BAqhbQ=\n-----END PUBLIC KEY-----\n",
     "algorithm": "ed25519",
     "active": true,
-    "createdAt": "2026-09-14T12:30:59.168Z"
+    "createdAt": "2026-10-26T12:43:50.620Z"
   }
 }

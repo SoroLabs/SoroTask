@@ -209,7 +209,7 @@ export function getStoredLocalePreference(): Locale | undefined {
 
   try {
     const stored = localStorage.getItem("sorotask_locale");
-    return isLocale(stored ?? undefined) ? stored : undefined;
+    return stored && isLocale(stored) ? stored : undefined;
   } catch {
     // localStorage not available
   }

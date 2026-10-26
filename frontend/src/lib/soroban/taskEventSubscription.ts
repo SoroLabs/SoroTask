@@ -20,7 +20,8 @@ import type {
 const logger = createLogger("soroban-task-event-subscription");
 
 const DEFAULT_RPC_URL =
-  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || "https://rpc-futurenet.stellar.org";
+  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
+  "https://rpc-futurenet.stellar.org";
 const DEFAULT_POLL_INTERVAL_MS = 4000;
 
 // Contract event topics are expected to follow the convention
@@ -81,7 +82,7 @@ export function parseTaskChainEvent(
       txHash: event.txHash,
       ledger: event.ledger,
       ledgerClosedAt: event.ledgerClosedAt,
-      inSuccessfulContractCall: event.inSuccessfulContractCall,
+      inSuccessfulContractCall: event.inSuccessfulContractCall ?? false,
       payload,
       observedAt: Date.now(),
     };

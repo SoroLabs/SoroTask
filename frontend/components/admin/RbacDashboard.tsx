@@ -41,30 +41,95 @@ type AuditEvent = {
 };
 
 const CAPABILITIES: Capability[] = [
-  { key: "create", label: "Create", description: "Create protocol tasks", bit: 0 },
-  { key: "pause", label: "Pause", description: "Pause protocol operations", bit: 1 },
-  { key: "emergency", label: "Emergency", description: "Trigger emergency controls", bit: 2 },
-  { key: "sweep", label: "Sweep", description: "Withdraw protocol funds", bit: 3 },
-  { key: "upgrade", label: "Upgrade", description: "Upgrade protocol contracts", bit: 4 },
+  {
+    key: "create",
+    label: "Create",
+    description: "Create protocol tasks",
+    bit: 0,
+  },
+  {
+    key: "pause",
+    label: "Pause",
+    description: "Pause protocol operations",
+    bit: 1,
+  },
+  {
+    key: "emergency",
+    label: "Emergency",
+    description: "Trigger emergency controls",
+    bit: 2,
+  },
+  {
+    key: "sweep",
+    label: "Sweep",
+    description: "Withdraw protocol funds",
+    bit: 3,
+  },
+  {
+    key: "upgrade",
+    label: "Upgrade",
+    description: "Upgrade protocol contracts",
+    bit: 4,
+  },
 ];
 
 const INITIAL_ROLES: ProtocolRole[] = [
-  { id: "protocol-admin", name: "Protocol Admin", description: "Full protocol control", permissions: 31 },
-  { id: "operator", name: "Operator", description: "Operations and emergency response", permissions: 6 },
-  { id: "treasury", name: "Treasury", description: "Treasury management", permissions: 8 },
-  { id: "observer", name: "Observer", description: "Read-only monitoring", permissions: 0 },
+  {
+    id: "protocol-admin",
+    name: "Protocol Admin",
+    description: "Full protocol control",
+    permissions: 31,
+  },
+  {
+    id: "operator",
+    name: "Operator",
+    description: "Operations and emergency response",
+    permissions: 6,
+  },
+  {
+    id: "treasury",
+    name: "Treasury",
+    description: "Treasury management",
+    permissions: 8,
+  },
+  {
+    id: "observer",
+    name: "Observer",
+    description: "Read-only monitoring",
+    permissions: 0,
+  },
 ];
 
 const INITIAL_ASSIGNMENTS: Assignment[] = [
-  { id: "assignment-1", principal: "GAB7…Q4KP", roleId: "protocol-admin", status: "active" },
-  { id: "assignment-2", principal: "GC2M…8VXD", roleId: "operator", status: "active" },
-  { id: "assignment-3", principal: "GDF9…2JLA", roleId: "treasury", status: "active" },
-  { id: "assignment-4", principal: "GBK1…5WNP", roleId: "observer", status: "active" },
+  {
+    id: "assignment-1",
+    principal: "GAB7…Q4KP",
+    roleId: "protocol-admin",
+    status: "active",
+  },
+  {
+    id: "assignment-2",
+    principal: "GC2M…8VXD",
+    roleId: "operator",
+    status: "active",
+  },
+  {
+    id: "assignment-3",
+    principal: "GDF9…2JLA",
+    roleId: "treasury",
+    status: "active",
+  },
+  {
+    id: "assignment-4",
+    principal: "GBK1…5WNP",
+    roleId: "observer",
+    status: "active",
+  },
 ];
 
 const INITIAL_DELEGATIONS: Delegation[] = [
   {
-    id: "ticket-1042",
+    id: "delegation-1042",
     principal: "GCF2…7KLM",
     roleId: "operator",
     expiresAt: "2026-10-26T17:00:00.000Z",
@@ -72,7 +137,7 @@ const INITIAL_DELEGATIONS: Delegation[] = [
     status: "active",
   },
   {
-    id: "ticket-1041",
+    id: "delegation-1041",
     principal: "GAQ8…3NRT",
     roleId: "treasury",
     expiresAt: "2026-10-24T12:00:00.000Z",
@@ -129,7 +194,9 @@ function makeEvent(action: AuditEvent["action"], summary: string): AuditEvent {
 export function RbacDashboard() {
   const [roles, setRoles] = useState(INITIAL_ROLES);
   const [selectedRoleId, setSelectedRoleId] = useState(INITIAL_ROLES[1].id);
-  const [draftPermissions, setDraftPermissions] = useState(INITIAL_ROLES[1].permissions);
+  const [draftPermissions, setDraftPermissions] = useState(
+    INITIAL_ROLES[1].permissions,
+  );
   const [assignments, setAssignments] = useState(INITIAL_ASSIGNMENTS);
   const [delegations, setDelegations] = useState(INITIAL_DELEGATIONS);
   const [audit, setAudit] = useState(INITIAL_AUDIT);
@@ -142,10 +209,15 @@ export function RbacDashboard() {
   const [auditSearch, setAuditSearch] = useState("");
   const [now, setNow] = useState(0);
 
-  const selectedRole = roles.find((role) => role.id === selectedRoleId) ?? roles[0];
-  const activeAssignments = assignments.filter((assignment) => assignment.status === "active");
+  const selectedRole =
+    roles.find((role) => role.id === selectedRoleId) ?? roles[0];
+  const activeAssignments = assignments.filter(
+    (assignment) => assignment.status === "active",
+  );
   const activeDelegations = delegations.filter(
-    (delegation) => delegation.status === "active" && new Date(delegation.expiresAt).getTime() > now,
+    (delegation) =>
+      delegation.status === "active" &&
+      new Date(delegation.expiresAt).getTime() > now,
   );
 
   useEffect(() => {
@@ -156,7 +228,8 @@ export function RbacDashboard() {
   const filteredAudit = useMemo(
     () =>
       audit.filter((event) => {
-        const matchesFilter = auditFilter === "all" || event.action === auditFilter;
+        const matchesFilter =
+          auditFilter === "all" || event.action === auditFilter;
         const query = auditSearch.trim().toLowerCase();
         const matchesSearch =
           !query ||
@@ -166,11 +239,14 @@ export function RbacDashboard() {
     [audit, auditFilter, auditSearch],
   );
 
-  const addAudit = (event: AuditEvent) => setAudit((current) => [event, ...current]);
+  const addAudit = (event: AuditEvent) =>
+    setAudit((current) => [event, ...current]);
 
   const selectRole = (nextRoleId: string) => {
     setSelectedRoleId(nextRoleId);
-    setDraftPermissions(roles.find((role) => role.id === nextRoleId)?.permissions ?? 0);
+    setDraftPermissions(
+      roles.find((role) => role.id === nextRoleId)?.permissions ?? 0,
+    );
   };
 
   const togglePermission = (bit: number) => {
@@ -180,15 +256,24 @@ export function RbacDashboard() {
   const savePermissions = () => {
     const changed = selectedRole.permissions ^ draftPermissions;
     if (!changed) return;
-    const changedLabels = CAPABILITIES.filter((capability) => changed & (1 << capability.bit))
+    const changedLabels = CAPABILITIES.filter(
+      (capability) => changed & (1 << capability.bit),
+    )
       .map((capability) => capability.label)
       .join(", ");
     setRoles((current) =>
       current.map((role) =>
-        role.id === selectedRoleId ? { ...role, permissions: draftPermissions } : role,
+        role.id === selectedRoleId
+          ? { ...role, permissions: draftPermissions }
+          : role,
       ),
     );
-    addAudit(makeEvent("permission", `${selectedRole.name} permissions updated: ${changedLabels}`));
+    addAudit(
+      makeEvent(
+        "permission",
+        `${selectedRole.name} permissions updated: ${changedLabels}`,
+      ),
+    );
   };
 
   const submitAssignment = (event: FormEvent<HTMLFormElement>) => {
@@ -196,10 +281,20 @@ export function RbacDashboard() {
     const selected = roles.find((role) => role.id === roleId);
     if (!selected || !principal.trim()) return;
     setAssignments((current) => [
-      { id: `${Date.now()}`, principal: principal.trim(), roleId, status: "active" },
+      {
+        id: `${Date.now()}`,
+        principal: principal.trim(),
+        roleId,
+        status: "active",
+      },
       ...current,
     ]);
-    addAudit(makeEvent("assignment", `${selected.name} role assigned to ${principal.trim()}`));
+    addAudit(
+      makeEvent(
+        "assignment",
+        `${selected.name} role assigned to ${principal.trim()}`,
+      ),
+    );
     setPrincipal("");
     setAssignmentDialogOpen(false);
   };
@@ -211,7 +306,12 @@ export function RbacDashboard() {
         item.id === assignment.id ? { ...item, status: "revoked" } : item,
       ),
     );
-    addAudit(makeEvent("revocation", `${role?.name ?? "Protocol"} role revoked from ${assignment.principal}`));
+    addAudit(
+      makeEvent(
+        "revocation",
+        `${role?.name ?? "Protocol"} role revoked from ${assignment.principal}`,
+      ),
+    );
   };
 
   const submitDelegation = (event: FormEvent<HTMLFormElement>) => {
@@ -229,7 +329,12 @@ export function RbacDashboard() {
       },
       ...current,
     ]);
-    addAudit(makeEvent("delegation", `${selected.name} delegation requested for ${principal.trim()}`));
+    addAudit(
+      makeEvent(
+        "delegation",
+        `${selected.name} delegation requested for ${principal.trim()}`,
+      ),
+    );
     setPrincipal("");
     setExpiresAt("");
     setDelegationDialogOpen(false);
@@ -239,10 +344,17 @@ export function RbacDashboard() {
     const role = roles.find((item) => item.id === delegation.roleId);
     setDelegations((current) =>
       current.map((item) =>
-        item.id === delegation.id ? { ...item, approvals: 2, status: "active" } : item,
+        item.id === delegation.id
+          ? { ...item, approvals: 2, status: "active" }
+          : item,
       ),
     );
-    addAudit(makeEvent("delegation", `${role?.name ?? "Protocol"} delegation approved for ${delegation.principal}`));
+    addAudit(
+      makeEvent(
+        "delegation",
+        `${role?.name ?? "Protocol"} delegation approved for ${delegation.principal}`,
+      ),
+    );
   };
 
   const revokeDelegation = (delegation: Delegation) => {
@@ -251,7 +363,12 @@ export function RbacDashboard() {
         item.id === delegation.id ? { ...item, status: "revoked" } : item,
       ),
     );
-    addAudit(makeEvent("revocation", `Delegation ${delegation.id} revoked for ${delegation.principal}`));
+    addAudit(
+      makeEvent(
+        "revocation",
+        `Delegation ${delegation.id} revoked for ${delegation.principal}`,
+      ),
+    );
   };
 
   return (
@@ -262,9 +379,12 @@ export function RbacDashboard() {
             <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-blue-400">
               Security / Access control
             </p>
-            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">RBAC administration</h1>
+            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+              RBAC administration
+            </h1>
             <p className="mt-2 max-w-2xl text-sm text-neutral-400">
-              Manage protocol roles, granular permissions, and time-limited delegation tickets.
+              Manage protocol roles, granular permissions, and time-limited
+              delegation tickets.
             </p>
           </div>
           <div className="flex items-center gap-2 self-start rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-200 sm:self-auto">
@@ -273,13 +393,31 @@ export function RbacDashboard() {
           </div>
         </header>
 
-        <section className="grid gap-4 sm:grid-cols-3" aria-label="RBAC summary">
+        <section
+          className="grid gap-4 sm:grid-cols-3"
+          aria-label="RBAC summary"
+        >
           {[
-            { label: "Protocol roles", value: roles.length, detail: "Configured permission sets" },
-            { label: "Authorized operators", value: activeAssignments.length, detail: "Active role assignments" },
-            { label: "Active delegations", value: activeDelegations.length, detail: "Time-limited access tickets" },
+            {
+              label: "Protocol roles",
+              value: roles.length,
+              detail: "Configured permission sets",
+            },
+            {
+              label: "Authorized operators",
+              value: activeAssignments.length,
+              detail: "Active role assignments",
+            },
+            {
+              label: "Active delegations",
+              value: activeDelegations.length,
+              detail: "Time-limited access tickets",
+            },
           ].map((metric) => (
-            <div key={metric.label} className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-5">
+            <div
+              key={metric.label}
+              className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-5"
+            >
               <p className="text-sm text-neutral-400">{metric.label}</p>
               <p className="mt-3 text-3xl font-semibold">{metric.value}</p>
               <p className="mt-1 text-xs text-neutral-500">{metric.detail}</p>
@@ -291,8 +429,12 @@ export function RbacDashboard() {
           <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70">
             <div className="flex flex-wrap items-start justify-between gap-3 border-b border-neutral-800 p-5">
               <div>
-                <h2 className="text-lg font-semibold">Authorized protocol roles</h2>
-                <p className="mt-1 text-sm text-neutral-400">Select a role to inspect its permission bitmask.</p>
+                <h2 className="text-lg font-semibold">
+                  Authorized protocol roles
+                </h2>
+                <p className="mt-1 text-sm text-neutral-400">
+                  Select a role to inspect its permission bitmask.
+                </p>
               </div>
               <span className="rounded-full bg-neutral-800 px-2.5 py-1 font-mono text-xs text-neutral-300">
                 {activeAssignments.length} active
@@ -300,7 +442,9 @@ export function RbacDashboard() {
             </div>
             <div className="divide-y divide-neutral-800">
               {roles.map((role) => {
-                const activeCount = activeAssignments.filter((item) => item.roleId === role.id).length;
+                const activeCount = activeAssignments.filter(
+                  (item) => item.roleId === role.id,
+                ).length;
                 const selected = role.id === selectedRoleId;
                 return (
                   <button
@@ -314,11 +458,17 @@ export function RbacDashboard() {
                   >
                     <span>
                       <span className="block font-medium">{role.name}</span>
-                      <span className="mt-1 block text-xs text-neutral-400">{role.description}</span>
+                      <span className="mt-1 block text-xs text-neutral-400">
+                        {role.description}
+                      </span>
                     </span>
                     <span className="shrink-0 text-right">
-                      <span className="block font-mono text-xs text-neutral-300">0x{role.permissions.toString(16).padStart(2, "0")}</span>
-                      <span className="mt-1 block text-xs text-neutral-500">{activeCount} assigned</span>
+                      <span className="block font-mono text-xs text-neutral-300">
+                        0x{role.permissions.toString(16).padStart(2, "0")}
+                      </span>
+                      <span className="mt-1 block text-xs text-neutral-500">
+                        {activeCount} assigned
+                      </span>
                     </span>
                   </button>
                 );
@@ -330,7 +480,9 @@ export function RbacDashboard() {
             <div className="flex flex-wrap items-start justify-between gap-3 border-b border-neutral-800 p-5">
               <div>
                 <h2 className="text-lg font-semibold">Permission matrix</h2>
-                <p className="mt-1 text-sm text-neutral-400">Toggle capabilities for {selectedRole.name}.</p>
+                <p className="mt-1 text-sm text-neutral-400">
+                  Toggle capabilities for {selectedRole.name}.
+                </p>
               </div>
               <span className="rounded-full border border-neutral-700 px-2.5 py-1 font-mono text-xs text-neutral-300">
                 Bitmask 0x{draftPermissions.toString(16).padStart(2, "0")}
@@ -348,14 +500,22 @@ export function RbacDashboard() {
                   </thead>
                   <tbody className="divide-y divide-neutral-800">
                     {CAPABILITIES.map((capability) => {
-                      const enabled = Boolean(draftPermissions & (1 << capability.bit));
+                      const enabled = Boolean(
+                        draftPermissions & (1 << capability.bit),
+                      );
                       return (
                         <tr key={capability.key}>
                           <td className="py-3">
-                            <span className="block font-medium">{capability.label}</span>
-                            <span className="text-xs text-neutral-500">{capability.description}</span>
+                            <span className="block font-medium">
+                              {capability.label}
+                            </span>
+                            <span className="text-xs text-neutral-500">
+                              {capability.description}
+                            </span>
                           </td>
-                          <td className="font-mono text-neutral-400">0x{(1 << capability.bit).toString(16)}</td>
+                          <td className="font-mono text-neutral-400">
+                            0x{(1 << capability.bit).toString(16)}
+                          </td>
                           <td className="text-center">
                             <input
                               type="checkbox"
@@ -372,7 +532,9 @@ export function RbacDashboard() {
                 </table>
               </div>
               <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-neutral-800 pt-4">
-                <p className="text-xs text-neutral-500">Edits apply to this preview only.</p>
+                <p className="text-xs text-neutral-500">
+                  Edits apply to this preview only.
+                </p>
                 <button
                   type="button"
                   onClick={savePermissions}
@@ -390,7 +552,9 @@ export function RbacDashboard() {
           <div className="flex flex-col justify-between gap-4 border-b border-neutral-800 p-5 sm:flex-row sm:items-center">
             <div>
               <h2 className="text-lg font-semibold">Role assignments</h2>
-              <p className="mt-1 text-sm text-neutral-400">Grant or revoke protocol access for authorized principals.</p>
+              <p className="mt-1 text-sm text-neutral-400">
+                Grant or revoke protocol access for authorized principals.
+              </p>
             </div>
             <button
               type="button"
@@ -413,12 +577,23 @@ export function RbacDashboard() {
               <tbody className="divide-y divide-neutral-800">
                 {assignments.map((assignment) => (
                   <tr key={assignment.id}>
-                    <td className="px-5 py-4 font-mono text-neutral-300">{assignment.principal}</td>
-                    <td className="px-5 py-4">{roles.find((role) => role.id === assignment.roleId)?.name}</td>
+                    <td className="px-5 py-4 font-mono text-neutral-300">
+                      {assignment.principal}
+                    </td>
                     <td className="px-5 py-4">
-                      <span className={`rounded-full px-2.5 py-1 text-xs ${
-                        assignment.status === "active" ? "bg-emerald-500/10 text-emerald-300" : "bg-neutral-800 text-neutral-400"
-                      }`}>
+                      {
+                        roles.find((role) => role.id === assignment.roleId)
+                          ?.name
+                      }
+                    </td>
+                    <td className="px-5 py-4">
+                      <span
+                        className={`rounded-full px-2.5 py-1 text-xs ${
+                          assignment.status === "active"
+                            ? "bg-emerald-500/10 text-emerald-300"
+                            : "bg-neutral-800 text-neutral-400"
+                        }`}
+                      >
                         {assignment.status}
                       </span>
                     </td>
@@ -446,7 +621,9 @@ export function RbacDashboard() {
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800 p-5">
               <div>
                 <h2 className="text-lg font-semibold">Delegation tickets</h2>
-                <p className="mt-1 text-sm text-neutral-400">Time-expiring grants require 2 of 3 approvals.</p>
+                <p className="mt-1 text-sm text-neutral-400">
+                  Time-expiring grants require 2 of 3 approvals.
+                </p>
               </div>
               <button
                 type="button"
@@ -459,29 +636,41 @@ export function RbacDashboard() {
             <div className="divide-y divide-neutral-800">
               {delegations.map((delegation) => {
                 const expired =
-                  delegation.status === "active" && new Date(delegation.expiresAt).getTime() <= now;
+                  delegation.status === "active" &&
+                  new Date(delegation.expiresAt).getTime() <= now;
                 const displayStatus = expired ? "expired" : delegation.status;
                 return (
                   <div key={delegation.id} className="space-y-3 p-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <p className="font-mono text-sm text-neutral-200">{delegation.principal}</p>
+                        <p className="font-mono text-sm text-neutral-200">
+                          {delegation.principal}
+                        </p>
                         <p className="mt-1 text-xs text-neutral-400">
-                          {roles.find((role) => role.id === delegation.roleId)?.name} · expires {formatDate(delegation.expiresAt)}
+                          {
+                            roles.find((role) => role.id === delegation.roleId)
+                              ?.name
+                          }{" "}
+                          · expires {formatDate(delegation.expiresAt)}
                         </p>
                       </div>
-                      <span className={`rounded-full px-2.5 py-1 text-xs ${
-                        displayStatus === "active"
-                          ? "bg-emerald-500/10 text-emerald-300"
-                          : displayStatus === "pending"
-                            ? "bg-amber-500/10 text-amber-200"
-                            : "bg-neutral-800 text-neutral-400"
-                      }`}>
+                      <span
+                        className={`rounded-full px-2.5 py-1 text-xs ${
+                          displayStatus === "active"
+                            ? "bg-emerald-500/10 text-emerald-300"
+                            : displayStatus === "pending"
+                              ? "bg-amber-500/10 text-amber-200"
+                              : "bg-neutral-800 text-neutral-400"
+                        }`}
+                      >
                         {displayStatus}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-xs text-neutral-500">{delegation.id} · {delegation.approvals}/2 approvals</span>
+                      <span className="text-xs text-neutral-500">
+                        {delegation.id} ·{" "}
+                        <span>{delegation.approvals}/2 approvals</span>
+                      </span>
                       <div className="flex gap-3">
                         {delegation.status === "pending" && (
                           <button
@@ -514,7 +703,9 @@ export function RbacDashboard() {
           <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70">
             <div className="border-b border-neutral-800 p-5">
               <h2 className="text-lg font-semibold">Role audit timeline</h2>
-              <p className="mt-1 text-sm text-neutral-400">Filter and search role and permission changes.</p>
+              <p className="mt-1 text-sm text-neutral-400">
+                Filter and search role and permission changes.
+              </p>
               <div className="mt-4 flex flex-col gap-2 sm:flex-row">
                 <select
                   value={auditFilter}
@@ -538,29 +729,43 @@ export function RbacDashboard() {
               </div>
             </div>
             <ol className="space-y-0 p-5">
-              {filteredAudit.length ? filteredAudit.map((event, index) => (
-                <li key={event.id} className="relative flex gap-4 pb-6 last:pb-0">
-                  {index < filteredAudit.length - 1 && (
-                    <span className="absolute left-[5px] top-3 h-full w-px bg-neutral-800" aria-hidden="true" />
-                  )}
-                  <span className="relative mt-1.5 h-3 w-3 shrink-0 rounded-full border-2 border-blue-400 bg-neutral-900" />
-                  <div className="min-w-0">
-                    <p className="text-sm text-neutral-200">{event.summary}</p>
-                    <p className="mt-1 text-xs text-neutral-500">
-                      {formatDate(event.createdAt)} · by <span className="font-mono">{event.actor}</span>
-                    </p>
-                  </div>
+              {filteredAudit.length ? (
+                filteredAudit.map((event, index) => (
+                  <li
+                    key={event.id}
+                    className="relative flex gap-4 pb-6 last:pb-0"
+                  >
+                    {index < filteredAudit.length - 1 && (
+                      <span
+                        className="absolute left-[5px] top-3 h-full w-px bg-neutral-800"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span className="relative mt-1.5 h-3 w-3 shrink-0 rounded-full border-2 border-blue-400 bg-neutral-900" />
+                    <div className="min-w-0">
+                      <p className="text-sm text-neutral-200">
+                        {event.summary}
+                      </p>
+                      <p className="mt-1 text-xs text-neutral-500">
+                        {formatDate(event.createdAt)} · by{" "}
+                        <span className="font-mono">{event.actor}</span>
+                      </p>
+                    </div>
+                  </li>
+                ))
+              ) : (
+                <li className="py-8 text-center text-sm text-neutral-500">
+                  No matching audit events.
                 </li>
-              )) : (
-                <li className="py-8 text-center text-sm text-neutral-500">No matching audit events.</li>
               )}
             </ol>
           </div>
         </section>
 
         <p className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-4 text-xs leading-relaxed text-neutral-400">
-          Preview only: role changes, approvals, revocations, and audit events are held in page state. No wallet signature,
-          contract call, persistent audit log, or real-time on-chain update is performed.
+          Preview only: role changes, approvals, revocations, and audit events
+          are held in page state. No wallet signature, contract call, persistent
+          audit log, or real-time on-chain update is performed.
         </p>
       </div>
 
@@ -575,7 +780,9 @@ export function RbacDashboard() {
           }}
         >
           <form
-            onSubmit={delegationDialogOpen ? submitDelegation : submitAssignment}
+            onSubmit={
+              delegationDialogOpen ? submitDelegation : submitAssignment
+            }
             className="w-full max-w-lg space-y-5 rounded-2xl border border-neutral-700 bg-neutral-900 p-6 shadow-2xl"
             role="dialog"
             aria-modal="true"
@@ -583,7 +790,9 @@ export function RbacDashboard() {
           >
             <div>
               <h2 id="role-dialog-title" className="text-xl font-semibold">
-                {delegationDialogOpen ? "Create delegation ticket" : "Assign protocol role"}
+                {delegationDialogOpen
+                  ? "Create delegation ticket"
+                  : "Assign protocol role"}
               </h2>
               <p className="mt-1 text-sm text-neutral-400">
                 {delegationDialogOpen
@@ -608,7 +817,11 @@ export function RbacDashboard() {
                 onChange={(event) => setRoleId(event.target.value)}
                 className={`${controlClass} w-full`}
               >
-                {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                {roles.map((role) => (
+                  <option key={role.id} value={role.id}>
+                    {role.name}
+                  </option>
+                ))}
               </select>
             </label>
             {delegationDialogOpen && (
@@ -635,8 +848,13 @@ export function RbacDashboard() {
               >
                 Cancel
               </button>
-              <button type="submit" className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold hover:bg-blue-400">
-                {delegationDialogOpen ? "Create preview ticket" : "Grant preview role"}
+              <button
+                type="submit"
+                className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold hover:bg-blue-400"
+              >
+                {delegationDialogOpen
+                  ? "Create preview ticket"
+                  : "Grant preview role"}
               </button>
             </div>
           </form>

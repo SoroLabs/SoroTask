@@ -116,7 +116,7 @@ describe("TasksPage pagination", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     expect(screen.getByText("Showing 11-20 of 23 tasks")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText("Search tasks..."), {
+    fireEvent.change(screen.getByPlaceholderText(/Search tasks/), {
       target: { value: "rebalance" },
     });
 

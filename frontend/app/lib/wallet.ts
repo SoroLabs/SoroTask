@@ -17,7 +17,13 @@ import {
   getNetworkDetails,
   WatchWalletChanges,
 } from "@stellar/freighter-api";
-import { FreighterWalletProvider, AlbedoWalletProvider, XBullWalletProvider, LobstrWalletProvider } from "./wallet-providers";
+import {
+  FreighterWalletProvider,
+  AlbedoWalletProvider,
+  XBullWalletProvider,
+  LobstrWalletProvider,
+} from "./wallet-providers";
+import { EXPECTED_NETWORK_PASSPHRASE } from "./wallet-provider";
 
 export type NetworkDetails = {
   network: string;
@@ -32,10 +38,7 @@ export type WalletSession = {
 };
 
 export type WalletError =
-  | "NOT_INSTALLED"
-  | "USER_REJECTED"
-  | "WRONG_NETWORK"
-  | "UNKNOWN";
+  "NOT_INSTALLED" | "USER_REJECTED" | "WRONG_NETWORK" | "UNKNOWN";
 
 export class WalletConnectionError extends Error {
   constructor(
@@ -48,8 +51,7 @@ export class WalletConnectionError extends Error {
 }
 
 /** Expected network passphrase for SoroTask (Futurenet, matching keeper config). */
-export const EXPECTED_NETWORK_PASSPHRASE =
-  "Test SDF Future Network ; October 2022";
+export { EXPECTED_NETWORK_PASSPHRASE };
 
 const E2E_MOCK_ADDRESS =
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -144,9 +146,9 @@ export async function connectWallet(): Promise<WalletSession> {
   // 3. Fetch network details
   // Add a small delay to prevent race conditions in the Freighter extension's internal state
   await new Promise((resolve) => setTimeout(resolve, 500));
-  
+
   let networkResult = await getNetworkDetails();
-  
+
   // Retry once if it fails, just in case Freighter's message port isn't fully ready
   if (networkResult.error) {
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -181,7 +183,9 @@ export async function connectWallet(): Promise<WalletSession> {
 const withTimeout = <T>(promise: Promise<T>, ms: number = 3000): Promise<T> => {
   return Promise.race([
     promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms))
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms),
+    ),
   ]);
 };
 
@@ -193,7 +197,7 @@ const withTimeout = <T>(promise: Promise<T>, ms: number = 3000): Promise<T> => {
 export async function restoreSession(): Promise<WalletSession | null> {
   if (isE2EMockWalletEnabled()) return null;
   if (typeof window === "undefined") return null;
-  
+
   // If the user explicitly disconnected, do not auto-rehydrate.
   if (localStorage.getItem("sorotask_wallet_disconnected") === "true") {
     return null;
@@ -321,7 +325,9 @@ const walletProviders = {
   lobstr: new LobstrWalletProvider(),
 };
 
-export async function checkWalletAvailability(walletId: SupportedWallet): Promise<boolean> {
+export async function checkWalletAvailability(
+  walletId: SupportedWallet,
+): Promise<boolean> {
   const provider = walletProviders[walletId];
   return provider?.isAvailable() ?? false;
 }
@@ -336,10 +342,15 @@ export async function getAvailableWallets(): Promise<SupportedWallet[]> {
   return available;
 }
 
-export async function connectWalletWith(walletId: SupportedWallet): Promise<WalletSession> {
+export async function connectWalletWith(
+  walletId: SupportedWallet,
+): Promise<WalletSession> {
   const provider = walletProviders[walletId];
   if (!provider) {
-    throw new WalletConnectionError("UNKNOWN", `Wallet ${walletId} not supported`);
+    throw new WalletConnectionError(
+      "UNKNOWN",
+      `Wallet ${walletId} not supported`,
+    );
   }
 
   const result = await provider.connect();
@@ -355,7 +366,11 @@ export async function connectWalletWith(walletId: SupportedWallet): Promise<Wall
 
   const stored: StoredSession = {
     providerId: walletId,
-    ...session,
+    address: session.address,
+    networkPassphrase: session.network.networkPassphrase,
+    network: session.network.network,
+    networkUrl: session.network.networkUrl,
+    sorobanRpcUrl: session.network.sorobanRpcUrl,
     timestamp: Date.now(),
   };
   saveSession(stored);
@@ -365,7 +380,10 @@ export async function connectWalletWith(walletId: SupportedWallet): Promise<Wall
 }
 
 export async function restoreWalletSession(): Promise<WalletSession | null> {
-  if (typeof window !== "undefined" && localStorage.getItem(DISCONNECT_KEY) === "true") {
+  if (
+    typeof window !== "undefined" &&
+    localStorage.getItem(DISCONNECT_KEY) === "true"
+  ) {
     return null;
   }
 

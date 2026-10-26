@@ -1,10 +1,11 @@
 import {
   ALL_CONTRACT_ERROR_CATEGORIES,
   decodeContractDiagnostic,
+  decodeSorobanContractError,
   isContractErrorCategory,
   mapContractError,
-  CONTRACT_ERROR_DEFINITIONS,
 } from "../contractErrors";
+import { RAW_ERROR_FIXTURES } from "../fixtures";
 
 describe("mapContractError", () => {
   it.each(ALL_CONTRACT_ERROR_CATEGORIES)(
@@ -27,9 +28,8 @@ describe("mapContractError", () => {
 
   it("maps named Soroban host error types without numeric codes", () => {
     expect(
-      mapContractError(
-        new Error("HostError: Error(Budget, CpuLimitExceeded)"),
-      ).category,
+      mapContractError(new Error("HostError: Error(Budget, CpuLimitExceeded)"))
+        .category,
     ).toBe("INSUFFICIENT_GAS");
   });
 
@@ -115,12 +115,12 @@ describe("mapContractError", () => {
   });
 
   it("classifies HTTP 5xx status codes as SERVER_ERROR", () => {
-    expect(
-      mapContractError({ message: "boom", status: 502 }).category,
-    ).toBe("SERVER_ERROR");
-    expect(
-      mapContractError({ message: "boom", status: "503" }).category,
-    ).toBe("SERVER_ERROR");
+    expect(mapContractError({ message: "boom", status: 502 }).category).toBe(
+      "SERVER_ERROR",
+    );
+    expect(mapContractError({ message: "boom", status: "503" }).category).toBe(
+      "SERVER_ERROR",
+    );
   });
 
   it("recognises token allowance failures as a token approval requirement", () => {
@@ -160,5 +160,28 @@ describe("mapContractError", () => {
     expect(decoded).not.toBeNull();
     expect(decoded?.code).toBe(418);
     expect(decoded?.name).toBe("KeeperBondInsufficient");
+  });
+
+  it("flags retry-vs-fix actions correctly for the user-recovery path", () => {
+    const rejected = mapContractError(RAW_ERROR_FIXTURES.WALLET_REJECTED);
+    expect(rejected.action).toBe("retry");
+    expect(rejected.retryable).toBe(true);
+
+    const args = mapContractError(RAW_ERROR_FIXTURES.INVALID_ARGS);
+    expect(args.action).toBe("fix_input");
+    expect(args.retryable).toBe(false);
+
+    const network = mapContractError(RAW_ERROR_FIXTURES.NETWORK_ERROR);
+    expect(network.action).toBe("wait");
+    expect(network.retryable).toBe(true);
+
+    const dup = mapContractError(RAW_ERROR_FIXTURES.DUPLICATE_TRANSACTION);
+    expect(dup.action).toBe("none");
+    expect(dup.retryable).toBe(false);
+  });
+
+  it("isContractErrorCategory recognises known categories only", () => {
+    expect(isContractErrorCategory("WALLET_REJECTED")).toBe(true);
+    expect(isContractErrorCategory("NOT_A_CATEGORY")).toBe(false);
   });
 });

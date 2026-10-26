@@ -10,7 +10,12 @@ import { useEffect, useState } from "react";
 import { useWallet } from "@/app/context/WalletContext";
 import { isFreighterInstalled, truncateAddress } from "@/app/lib/wallet";
 import { Modal, ModalFooter } from "@/components/Modal";
-import { FreighterWalletProvider, AlbedoWalletProvider, XBullWalletProvider, LobstrWalletProvider, MockWalletProvider } from "@/app/lib/wallet-providers";
+import {
+  FreighterWalletProvider,
+  AlbedoWalletProvider,
+  XBullWalletProvider,
+  LobstrWalletProvider,
+} from "@/app/lib/wallet-providers";
 
 const FREIGHTER_INSTALL_URL = "https://www.freighter.app/";
 
@@ -64,16 +69,25 @@ function WalletLogo({ name }: { name: string }) {
 interface WalletOption {
   id: string;
   name: string;
-  provider: { isAvailable(): Promise<boolean> };
-  connect(): Promise<{ address: string; networkPassphrase: string; network: string; networkUrl: string; sorobanRpcUrl?: string }>;
 }
 
 const WALLET_OPTIONS: WalletOption[] = [
-  { id: "freighter", name: "Freighter", provider: new FreighterWalletProvider(), connect: () => (new FreighterWalletProvider() as any).connect() },
-  { id: "albedo", name: "Albedo", provider: new AlbedoWalletProvider(), connect: () => (new AlbedoWalletProvider() as any).connect() },
-  { id: "xbull", name: "xBull", provider: new XBullWalletProvider(), connect: () => (new XBullWalletProvider() as any).connect() },
-  { id: "lobstr", name: "LOBSTR", provider: new LobstrWalletProvider(), connect: () => (new LobstrWalletProvider() as any).connect() },
+  { id: "freighter", name: "Freighter" },
+  { id: "albedo", name: "Albedo" },
+  { id: "xbull", name: "xBull" },
+  { id: "lobstr", name: "LOBSTR" },
 ];
+
+function FreighterLogo() {
+  return (
+    <div
+      className="flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-600/20 text-2xl ring-1 ring-violet-500/30"
+      aria-hidden="true"
+    >
+      🦊
+    </div>
+  );
+}
 
 function secondaryButtonClassName() {
   return "px-4 py-2 text-sm font-medium text-neutral-300 bg-neutral-800 rounded-lg hover:bg-neutral-700 transition-colors focus:outline-none focus:ring-2 focus:ring-neutral-500 disabled:opacity-50 disabled:cursor-not-allowed";
@@ -83,7 +97,10 @@ function primaryButtonClassName() {
   return "px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-500 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed";
 }
 
-export function WalletConnectionModal({ open, onClose }: WalletConnectionModalProps) {
+export function WalletConnectionModal({
+  open,
+  onClose,
+}: WalletConnectionModalProps) {
   const {
     status,
     session,
@@ -95,8 +112,12 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
     clearError,
   } = useWallet();
 
-  const [freighterInstalled, setFreighterInstalled] = useState<boolean | null>(null);
-  const [availableWallets, setAvailableWallets] = useState<Set<string>>(new Set());
+  const [freighterInstalled, setFreighterInstalled] = useState<boolean | null>(
+    null,
+  );
+  const [availableWallets, setAvailableWallets] = useState<Set<string>>(
+    new Set(),
+  );
   const [selectedWallet, setSelectedWallet] = useState<string | null>(null);
 
   useEffect(() => {
@@ -131,14 +152,6 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
   }, [open]);
 
   const handleWalletSelect = (walletId: string) => setSelectedWallet(walletId);
-
-  const handleConnectWithWallet = async (wallet: WalletOption) => {
-    try {
-      await wallet.connect();
-    } catch (err) {
-      console.error(`Failed to connect ${wallet.name}:`, err);
-    }
-  };
 
   const isConnecting = status === "connecting";
   const isConnected = status === "connected" && session !== null;
@@ -263,20 +276,56 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
               <div className="mt-2 text-sm text-red-200/90 space-y-3">
                 {errorCode === "WRONG_NETWORK" ? (
                   <>
-                    <p>Switch to <strong>Futurenet</strong> in Freighter, then try again.</p>
+                    <p>
+                      Switch to <strong>Futurenet</strong> in Freighter, then
+                      try again.
+                    </p>
                     <div className="rounded border border-red-500/20 bg-red-950/30 p-3 mt-3 text-xs leading-relaxed space-y-2">
-                      <p className="font-semibold text-red-200">Can't find Futurenet?</p>
+                      <p className="font-semibold text-red-200">
+                        Can't find Futurenet?
+                      </p>
                       <ol className="list-decimal pl-4 space-y-1">
                         <li>Open Freighter Settings (⚙️) ➝ Preferences</li>
-                        <li>Turn on <strong>"Developer Mode"</strong> or <strong>"Show Test Networks"</strong></li>
-                        <li>Go to <strong>Network</strong> ➝ <strong>Add Custom Network</strong></li>
+                        <li>
+                          Turn on <strong>"Developer Mode"</strong> or{" "}
+                          <strong>"Show Test Networks"</strong>
+                        </li>
+                        <li>
+                          Go to <strong>Network</strong> ➝{" "}
+                          <strong>Add Custom Network</strong>
+                        </li>
                       </ol>
                       <ul className="pl-1 pt-1 space-y-1 text-red-200/80">
-                        <li><span className="font-medium text-red-200">Name:</span> Futurenet</li>
-                        <li><span className="font-medium text-red-200">RPC URL:</span> https://rpc-futurenet.stellar.org</li>
-                        <li><span className="font-medium text-red-200">Horizon URL:</span> https://horizon-futurenet.stellar.org</li>
-                        <li><span className="font-medium text-red-200">Passphrase:</span> Test SDF Future Network ; October 2022</li>
-                        <li><span className="font-medium text-red-200">Friendbot URL:</span> https://friendbot-futurenet.stellar.org/</li>
+                        <li>
+                          <span className="font-medium text-red-200">
+                            Name:
+                          </span>{" "}
+                          Futurenet
+                        </li>
+                        <li>
+                          <span className="font-medium text-red-200">
+                            RPC URL:
+                          </span>{" "}
+                          https://rpc-futurenet.stellar.org
+                        </li>
+                        <li>
+                          <span className="font-medium text-red-200">
+                            Horizon URL:
+                          </span>{" "}
+                          https://horizon-futurenet.stellar.org
+                        </li>
+                        <li>
+                          <span className="font-medium text-red-200">
+                            Passphrase:
+                          </span>{" "}
+                          Test SDF Future Network ; October 2022
+                        </li>
+                        <li>
+                          <span className="font-medium text-red-200">
+                            Friendbot URL:
+                          </span>{" "}
+                          https://friendbot-futurenet.stellar.org/
+                        </li>
                       </ul>
                     </div>
                   </>
@@ -302,8 +351,9 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
                   Freighter extension not detected
                 </p>
                 <p className="mt-1 text-sm text-neutral-400">
-                  Install Freighter for Chrome, Firefox, or Brave to connect your
-                  Stellar wallet. You can still browse SoroTask without a wallet.
+                  Install Freighter for Chrome, Firefox, or Brave to connect
+                  your Stellar wallet. You can still browse SoroTask without a
+                  wallet.
                 </p>
               </div>
             </div>
@@ -342,7 +392,9 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
                     >
                       <WalletLogo name={wallet.name} />
                       <div className="text-left">
-                        <p className="text-sm font-medium text-neutral-200">{wallet.name}</p>
+                        <p className="text-sm font-medium text-neutral-200">
+                          {wallet.name}
+                        </p>
                         <p className="text-xs text-neutral-400">
                           {isAvailable ? "Click to connect" : "Not installed"}
                         </p>
@@ -458,8 +510,10 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
                 {freighterInstalled === null
                   ? "Checking…"
                   : selectedWallet
-                    ? `Connect with ${WALLET_OPTIONS.find(w => w.id === selectedWallet)?.name || "Wallet"}`
-                    : "Connect Wallet"}
+                    ? `Connect with ${WALLET_OPTIONS.find((w) => w.id === selectedWallet)?.name || "Wallet"}`
+                    : freighterInstalled
+                      ? "Connect with Freighter"
+                      : "Connect Wallet"}
               </button>
             </>
           )}
@@ -475,6 +529,8 @@ export function WalletConnectionSummary() {
   if (status !== "connected" || !session) return null;
 
   return (
-    <span className="font-mono text-sm">{truncateAddress(session.address)}</span>
+    <span className="font-mono text-sm">
+      {truncateAddress(session.address)}
+    </span>
   );
 }

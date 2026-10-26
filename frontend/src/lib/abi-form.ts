@@ -46,12 +46,12 @@ export interface ScSpecTupleType {
   elements: Array<SorobanScType | ScSpecTypeDef>;
 }
 
-export type ScSpecTypeDef = 
-  | SorobanScType 
-  | ScSpecVectorType 
-  | ScSpecMapType 
-  | ScSpecArrayType 
-  | ScSpecOptionType 
+export type ScSpecTypeDef =
+  | SorobanScType
+  | ScSpecVectorType
+  | ScSpecMapType
+  | ScSpecArrayType
+  | ScSpecOptionType
   | ScSpecTupleType;
 
 export interface AbiParam {
@@ -73,7 +73,8 @@ export interface ContractAbi {
   functions: AbiFunction[];
 }
 
-export type FormFieldValue = string | boolean | unknown[] | Record<string, unknown>;
+export type FormFieldValue =
+  string | boolean | unknown[] | Record<string, unknown>;
 
 export interface AbiFormField {
   param: AbiParam;
@@ -91,9 +92,19 @@ const schemas: Record<SorobanScType, z.ZodType<unknown>> = {
   u32: z.number().int().min(0).max(4294967295),
   i32: z.number().int().min(-2147483648).max(2147483647),
   u64: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-  i64: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
-  u128: z.string().regex(/^\d+$/, "Must be non-negative integer").transform(Number),
-  i128: z.string().regex(/^-?\d+$/, "Must be integer").transform(Number),
+  i64: z
+    .number()
+    .int()
+    .min(-Number.MAX_SAFE_INTEGER)
+    .max(Number.MAX_SAFE_INTEGER),
+  u128: z
+    .string()
+    .regex(/^\d+$/, "Must be non-negative integer")
+    .transform(Number),
+  i128: z
+    .string()
+    .regex(/^-?\d+$/, "Must be integer")
+    .transform(Number),
   u256: z.string().regex(/^\d+$/, "Must be non-negative integer"),
   i256: z.string().regex(/^-?\d+$/, "Must be integer"),
   bool: z.boolean(),
@@ -117,28 +128,46 @@ function getSpecTypeSchema(spec: ScSpecTypeDef): z.ZodType<unknown> {
   if (typeof spec === "string") {
     return schemas[spec] || z.string();
   }
-  
+
   switch (spec.type) {
     case "vec":
       return z.array(getSpecTypeSchema(spec.elementType as ScSpecTypeDef));
     case "map":
       return z.record(
         z.string(), // keys are strings for form
-        getSpecTypeSchema(spec.valueType as ScSpecTypeDef)
+        getSpecTypeSchema(spec.valueType as ScSpecTypeDef),
       );
     case "array":
-      return z.array(getSpecTypeSchema(spec.elementType as ScSpecTypeDef)).min(spec.size).max(spec.size);
+      return z
+        .array(getSpecTypeSchema(spec.elementType as ScSpecTypeDef))
+        .min(spec.size)
+        .max(spec.size);
     case "option":
-      return z.union([getSpecTypeSchema(spec.innerType as ScSpecTypeDef), z.null()]);
-    case "tuple":
-      return z.tuple(spec.elements.map(e => getSpecTypeSchema(e as ScSpecTypeDef)));
+      return z.union([
+        getSpecTypeSchema(spec.innerType as ScSpecTypeDef),
+        z.null(),
+      ]);
+    case "tuple": {
+      const elementSchemas = spec.elements.map((e) =>
+        getSpecTypeSchema(e as ScSpecTypeDef),
+      );
+      if (elementSchemas.length === 0) return z.tuple([]);
+      const [first, ...rest] = elementSchemas;
+      return z.tuple([first, ...rest]);
+    }
     default:
       return z.string();
   }
 }
 
-function validateValueWithZod(value: FormFieldValue, param: AbiParam): string | null {
-  if (param.optional && (value === "" || value === null || value === undefined)) {
+function validateValueWithZod(
+  value: FormFieldValue,
+  param: AbiParam,
+): string | null {
+  if (
+    param.optional &&
+    (value === "" || value === null || value === undefined)
+  ) {
     return null;
   }
 
@@ -150,7 +179,13 @@ function validateValueWithZod(value: FormFieldValue, param: AbiParam): string | 
   try {
     const schema = getZodSchema(param);
     // For strings, parse as the appropriate type
-    if (typeof value === "string" && param.type !== "string" && param.type !== "bytes" && param.type !== "bytesN" && param.type !== "address") {
+    if (
+      typeof value === "string" &&
+      param.type !== "string" &&
+      param.type !== "bytes" &&
+      param.type !== "bytesN" &&
+      param.type !== "address"
+    ) {
       const parsed = schema.parse(Number(value));
       return null;
     }
@@ -158,7 +193,7 @@ function validateValueWithZod(value: FormFieldValue, param: AbiParam): string | 
     return null;
   } catch (e) {
     if (e instanceof z.ZodError) {
-      return e.errors[0]?.message || "Invalid value";
+      return e.issues[0]?.message || "Invalid value";
     }
     return "Invalid value";
   }
@@ -191,7 +226,9 @@ export function updateField(
 
   const error = validateValue(value, field.param);
   const updated = { ...state.fields, [name]: { ...field, value, error } };
-  const isValid = Object.values(updated).every((f) => f.error === null && (f.param.optional || f.value !== ""));
+  const isValid = Object.values(updated).every(
+    (f) => f.error === null && (f.param.optional || f.value !== ""),
+  );
 
   return { fields: updated, isValid };
 }
@@ -206,7 +243,9 @@ export function validateAll(state: AbiFormState): AbiFormState {
   return { fields, isValid };
 }
 
-export function serializeArgs(state: AbiFormState): Record<string, FormFieldValue> {
+export function serializeArgs(
+  state: AbiFormState,
+): Record<string, FormFieldValue> {
   const args: Record<string, FormFieldValue> = {};
   for (const [name, field] of Object.entries(state.fields)) {
     args[name] = field.value;
@@ -214,7 +253,7 @@ export function serializeArgs(state: AbiFormState): Record<string, FormFieldValu
   return args;
 }
 
-/** 
+/**
  * Encode a value to XDR ScVal format (simulated).
  * In production, this would use @stellar/stellar-sdk's xdr module.
  */
@@ -269,7 +308,12 @@ function encodeComplexType(value: unknown, spec: ScSpecTypeDef): unknown {
       const arr = Array.isArray(value) ? value : [];
       return {
         tag: "Vec",
-        values: arr.map(v => encodeToScVal(v, { name: "", type: spec.elementType as SorobanScType })),
+        values: arr.map((v) =>
+          encodeToScVal(v, {
+            name: "",
+            type: spec.elementType as SorobanScType,
+          }),
+        ),
       };
     }
     case "map": {
@@ -278,7 +322,10 @@ function encodeComplexType(value: unknown, spec: ScSpecTypeDef): unknown {
         tag: "Map",
         values: Object.entries(obj).map(([k, v]) => ({
           key: { tag: "String", values: [k] },
-          val: encodeToScVal(v, { name: "", type: spec.valueType as SorobanScType }),
+          val: encodeToScVal(v, {
+            name: "",
+            type: spec.valueType as SorobanScType,
+          }),
         })),
       };
     }
@@ -286,8 +333,8 @@ function encodeComplexType(value: unknown, spec: ScSpecTypeDef): unknown {
       const arr = Array.isArray(value) ? value : [];
       return {
         tag: "Tuple",
-        values: spec.elements.map((el, i) => 
-          encodeToScVal(arr[i], { name: "", type: el as SorobanScType })
+        values: spec.elements.map((el, i) =>
+          encodeToScVal(arr[i], { name: "", type: el as SorobanScType }),
         ),
       };
     }
@@ -298,7 +345,7 @@ function encodeComplexType(value: unknown, spec: ScSpecTypeDef): unknown {
 
 /** Encode all form arguments to XDR ScVal bytes */
 export function encodeArgsToXdr(
-  state: AbiFormState
+  state: AbiFormState,
 ): Array<{ name: string; value: unknown }> {
   return Object.entries(state.fields).map(([name, field]) => ({
     name,
@@ -313,17 +360,18 @@ export function encodeArgsToXdr(
  */
 export async function fetchAbiFromRegistry(
   contractId: string,
-  network: "testnet" | "mainnet" = "testnet"
+  network: "testnet" | "mainnet" = "testnet",
 ): Promise<ContractAbi> {
-  const registryUrl = network === "testnet"
-    ? "https://soroban-testnet.sorotask.io/registry"
-    : "https://soroban.sorotask.io/registry";
-  
+  const registryUrl =
+    network === "testnet"
+      ? "https://soroban-testnet.sorotask.io/registry"
+      : "https://soroban.sorotask.io/registry";
+
   const response = await fetch(`${registryUrl}/abi/${contractId}`);
-  
+
   if (!response.ok) {
     throw new Error(`Failed to fetch ABI: ${response.statusText}`);
   }
-  
+
   return response.json();
 }

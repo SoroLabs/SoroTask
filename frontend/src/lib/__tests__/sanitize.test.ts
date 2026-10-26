@@ -49,7 +49,12 @@ describe("sanitizeHtml", () => {
   });
 
   it("preserves allowed formatting tags", () => {
-    const tags = ["<strong>b</strong>", "<em>i</em>", "<s>s</s>", "<code>c</code>"];
+    const tags = [
+      "<strong>b</strong>",
+      "<em>i</em>",
+      "<s>s</s>",
+      "<code>c</code>",
+    ];
     for (const tag of tags) {
       expect(sanitizeHtml(tag)).toContain(tag);
     }
@@ -68,7 +73,7 @@ describe("sanitizeHtml", () => {
 
   it("preserves blockquote", () => {
     expect(sanitizeHtml("<blockquote>quote</blockquote>")).toContain(
-      "<blockquote>quote</blockquote>"
+      "<blockquote>quote</blockquote>",
     );
   });
 
@@ -128,13 +133,14 @@ describe("addSafeLinkAttributes", () => {
   });
 
   it("overrides unsafe target and rel values", () => {
-    const input = '<a href="https://example.com" target="_self" rel="opener">link</a>';
+    const input =
+      '<a href="https://example.com" target="_self" rel="opener">link</a>';
     const result = addSafeLinkAttributes(input);
 
     expect(result).toBe(
       '<a href="https://example.com" target="_blank" rel="noopener noreferrer">link</a>',
     );
-    expect(result).not.toContain("opener");
+    expect(result).not.toContain('rel="opener"');
   });
 
   it("handles multiple links", () => {

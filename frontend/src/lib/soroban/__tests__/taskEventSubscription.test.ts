@@ -3,6 +3,7 @@ import {
   getTaskEventSubscription,
   parseTaskChainEvent,
 } from "../taskEventSubscription";
+import type { rpc } from "@stellar/stellar-sdk";
 
 jest.mock("@stellar/stellar-sdk", () => ({
   scValToNative: (scVal: any) => scVal.__native,
@@ -19,7 +20,9 @@ function fakeScVal(native: unknown) {
   return { __native: native } as any;
 }
 
-function fakeEvent(overrides: Partial<any> = {}) {
+function fakeEvent(
+  overrides: Partial<rpc.Api.EventResponse> = {},
+): rpc.Api.EventResponse {
   return {
     id: "evt-1",
     type: "contract",
@@ -32,7 +35,7 @@ function fakeEvent(overrides: Partial<any> = {}) {
     topic: [fakeScVal("task_executed"), fakeScVal("42")],
     value: fakeScVal({ gasUsed: 100 }),
     ...overrides,
-  };
+  } as rpc.Api.EventResponse;
 }
 
 describe("parseTaskChainEvent", () => {
@@ -57,7 +60,9 @@ describe("parseTaskChainEvent", () => {
   });
 
   it("returns null when the event carries no task id", () => {
-    const parsed = parseTaskChainEvent(fakeEvent({ topic: [fakeScVal("task_executed")] }));
+    const parsed = parseTaskChainEvent(
+      fakeEvent({ topic: [fakeScVal("task_executed")] }),
+    );
     expect(parsed).toBeNull();
   });
 
@@ -81,7 +86,9 @@ describe("SorobanTaskEventSubscription", () => {
 
   beforeEach(() => {
     jest.useFakeTimers();
-    getEvents = jest.fn().mockResolvedValue({ events: [], cursor: "cursor-1", latestLedger: 200 });
+    getEvents = jest
+      .fn()
+      .mockResolvedValue({ events: [], cursor: "cursor-1", latestLedger: 200 });
     getLatestLedger = jest.fn().mockResolvedValue({ sequence: 200 });
 
     subscription = new SorobanTaskEventSubscription({
@@ -113,14 +120,20 @@ describe("SorobanTaskEventSubscription", () => {
   });
 
   it("emits a parsed event for each raw event returned by getEvents", async () => {
-    getEvents.mockResolvedValueOnce({ events: [fakeEvent()], cursor: "cursor-2", latestLedger: 201 });
+    getEvents.mockResolvedValueOnce({
+      events: [fakeEvent()],
+      cursor: "cursor-2",
+      latestLedger: 201,
+    });
     const handler = jest.fn();
     subscription.on("event", handler);
 
     subscription.acquire();
     await jest.runOnlyPendingTimersAsync();
 
-    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ taskId: "42", eventType: "task_executed" }));
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: "42", eventType: "task_executed" }),
+    );
   });
 
   it("switches to cursor-based pagination after the first poll", async () => {
@@ -169,7 +182,11 @@ describe("SorobanTaskEventSubscription", () => {
 
     expect(errorHandler).toHaveBeenCalledWith(expect.any(Error));
 
-    getEvents.mockResolvedValueOnce({ events: [], cursor: "cursor-3", latestLedger: 202 });
+    getEvents.mockResolvedValueOnce({
+      events: [],
+      cursor: "cursor-3",
+      latestLedger: 202,
+    });
     await jest.advanceTimersByTimeAsync(1000);
     expect(getEvents).toHaveBeenCalledTimes(2);
   });
@@ -177,14 +194,26 @@ describe("SorobanTaskEventSubscription", () => {
 
 describe("getTaskEventSubscription", () => {
   it("returns the same instance for the same contract + rpc url", () => {
-    const a = getTaskEventSubscription({ contractId: "CSAME", rpcUrl: "https://rpc.example" });
-    const b = getTaskEventSubscription({ contractId: "CSAME", rpcUrl: "https://rpc.example" });
+    const a = getTaskEventSubscription({
+      contractId: "CSAME",
+      rpcUrl: "https://rpc.example",
+    });
+    const b = getTaskEventSubscription({
+      contractId: "CSAME",
+      rpcUrl: "https://rpc.example",
+    });
     expect(a).toBe(b);
   });
 
   it("returns a different instance for a different contract", () => {
-    const a = getTaskEventSubscription({ contractId: "CONE", rpcUrl: "https://rpc.example" });
-    const b = getTaskEventSubscription({ contractId: "CTWO", rpcUrl: "https://rpc.example" });
+    const a = getTaskEventSubscription({
+      contractId: "CONE",
+      rpcUrl: "https://rpc.example",
+    });
+    const b = getTaskEventSubscription({
+      contractId: "CTWO",
+      rpcUrl: "https://rpc.example",
+    });
     expect(a).not.toBe(b);
   });
 });

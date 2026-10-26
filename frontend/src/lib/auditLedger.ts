@@ -22,7 +22,8 @@ import type { AuditLogEntry } from "../../app/types/auditLog";
 export const AUDIT_LEDGER_STORAGE_KEY = "sorotask.audit-ledger";
 export const AUDIT_SIGNER_STORAGE_KEY = "sorotask.audit-ledger-signer";
 export const AUDIT_ANCHOR_STORAGE_KEY = "sorotask.audit-ledger-anchors";
-export const AUDIT_WALLET_BINDING_STORAGE_KEY = "sorotask.audit-wallet-bindings";
+export const AUDIT_WALLET_BINDING_STORAGE_KEY =
+  "sorotask.audit-wallet-bindings";
 
 export type AuditEntryPayload = Record<string, unknown>;
 
@@ -83,7 +84,7 @@ function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
 }
 
-function fromBase64(value: string): Uint8Array {
+function fromBase64(value: string): Uint8Array<ArrayBuffer> {
   if (typeof atob === "function") {
     const binary = atob(value);
     const bytes = new Uint8Array(binary.length);
@@ -117,7 +118,10 @@ export function canonicalJson(value: unknown): string {
 }
 
 async function sha256Hex(subtle: SubtleCrypto, value: string): Promise<string> {
-  const digest = await subtle.digest("SHA-256", new TextEncoder().encode(value));
+  const digest = await subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -196,7 +200,9 @@ let activeSignerActor: string | null = null;
 export async function getOrCreateAuditSigner(
   actor?: string,
   cryptoImpl: typeof globalThis.crypto = globalThis.crypto,
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): Promise<AuditSigner> {
   if (activeSigner && (!actor || activeSignerActor === actor)) {
     return activeSigner;
@@ -220,7 +226,9 @@ export function resetAuditSigner(): void {
  * the user's connected wallet address and local WebCrypto audit keys.
  */
 export function loadWalletSignerBindings(
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): Record<string, WalletSignerBinding> {
   if (!storage) return {};
   try {
@@ -234,7 +242,9 @@ export function loadWalletSignerBindings(
 export function bindWalletSigner(
   walletAddress: string,
   publicKey: string,
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): void {
   if (!storage || !walletAddress) return;
   const bindings = loadWalletSignerBindings(storage);
@@ -248,7 +258,9 @@ export function bindWalletSigner(
 
 export function getWalletSignerPublicKey(
   walletAddress: string,
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): string | null {
   const bindings = loadWalletSignerBindings(storage);
   return bindings[walletAddress]?.publicKey ?? null;
@@ -261,7 +273,9 @@ export function getWalletSignerPublicKey(
 export async function verifyWalletSignature(
   entry: SignedAuditLogEntry,
   expectedWallet?: string,
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
   cryptoImpl: typeof globalThis.crypto = globalThis.crypto,
 ): Promise<{ valid: boolean; reason?: string }> {
   if (expectedWallet && entry.actor !== expectedWallet) {
@@ -297,7 +311,10 @@ export async function verifyWalletSignature(
       new TextEncoder().encode(entry.payloadHash),
     );
     if (!signatureValid) {
-      return { valid: false, reason: "Cryptographic signature verification failed" };
+      return {
+        valid: false,
+        reason: "Cryptographic signature verification failed",
+      };
     }
   } catch (err) {
     return {
@@ -329,24 +346,32 @@ export async function appendAuditEntry(
   } = {},
 ): Promise<SignedAuditLogEntry> {
   const storage =
-    options.storage ?? (typeof window === "undefined" ? null : window.localStorage);
+    options.storage ??
+    (typeof window === "undefined" ? null : window.localStorage);
   const cryptoImpl = options.cryptoImpl ?? globalThis.crypto;
   const signer =
-    options.signer ?? (await getOrCreateAuditSigner(params.actor, cryptoImpl, storage));
+    options.signer ??
+    (await getOrCreateAuditSigner(params.actor, cryptoImpl, storage));
   const now = options.now ?? (() => Date.now());
   const nextId =
     options.id ??
     (() =>
       typeof cryptoImpl !== "undefined" &&
       "randomUUID" in cryptoImpl &&
-      typeof (cryptoImpl as { randomUUID?: () => string }).randomUUID === "function"
+      typeof (cryptoImpl as { randomUUID?: () => string }).randomUUID ===
+        "function"
         ? (cryptoImpl as { randomUUID: () => string }).randomUUID()
         : `audit-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
 
   const entries = loadAuditLedger(storage);
-  const prevHash = entries.length > 0 ? entries[entries.length - 1].payloadHash : null;
+  const prevHash =
+    entries.length > 0 ? entries[entries.length - 1].payloadHash : null;
 
-  const payload = { ...params.payload, action: params.action, actor: params.actor };
+  const payload = {
+    ...params.payload,
+    action: params.action,
+    actor: params.actor,
+  };
   const contentHash = await computePayloadHash(payload, cryptoImpl);
   const timestamp = now();
   const sequence = entries.length;
@@ -468,7 +493,9 @@ export async function logTaskDeleted(
 }
 
 export function loadAuditLedger(
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): SignedAuditLogEntry[] {
   if (!storage) return [];
   try {
@@ -482,7 +509,9 @@ export function loadAuditLedger(
 }
 
 export function clearAuditLedger(
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): void {
   if (!storage) return;
   storage.removeItem(AUDIT_LEDGER_STORAGE_KEY);
@@ -493,7 +522,9 @@ export function clearAuditLedger(
  * On-chain Anchor Storage and Management
  */
 export function loadAuditAnchors(
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): OnChainAuditAnchor[] {
   if (!storage) return [];
   try {
@@ -508,15 +539,22 @@ export function loadAuditAnchors(
 
 export function saveAuditAnchor(
   anchor: OnChainAuditAnchor,
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): void {
   if (!storage) return;
   const existing = loadAuditAnchors(storage);
-  storage.setItem(AUDIT_ANCHOR_STORAGE_KEY, JSON.stringify([...existing, anchor]));
+  storage.setItem(
+    AUDIT_ANCHOR_STORAGE_KEY,
+    JSON.stringify([...existing, anchor]),
+  );
 }
 
 export function getLatestAnchor(
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): OnChainAuditAnchor | null {
   const anchors = loadAuditAnchors(storage);
   return anchors.length > 0 ? anchors[anchors.length - 1] : null;
@@ -673,7 +711,11 @@ export async function verifyAuditLedger(
         new TextEncoder().encode(entry.payloadHash),
       );
     } catch {
-      return { valid: false, brokenAt: index, reason: "invalid signature encoding" };
+      return {
+        valid: false,
+        brokenAt: index,
+        reason: "invalid signature encoding",
+      };
     }
     if (!signatureValid) {
       return { valid: false, brokenAt: index, reason: "invalid signature" };
@@ -899,12 +941,16 @@ export function downloadAuditExport(
 export function tamperAuditEntry(
   index: number,
   patch: Partial<SignedAuditLogEntry>,
-  storage: Storage | null = typeof window === "undefined" ? null : window.localStorage,
+  storage: Storage | null = typeof window === "undefined"
+    ? null
+    : window.localStorage,
 ): SignedAuditLogEntry[] {
   if (!storage) return [];
   const entries = loadAuditLedger(storage);
   if (index < 0 || index >= entries.length) return entries;
-  const modified = entries.map((e, idx) => (idx === index ? { ...e, ...patch } : e));
+  const modified = entries.map((e, idx) =>
+    idx === index ? { ...e, ...patch } : e,
+  );
   storage.setItem(AUDIT_LEDGER_STORAGE_KEY, JSON.stringify(modified));
   return modified;
 }

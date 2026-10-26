@@ -124,6 +124,8 @@ module.exports = {
   getSharedProver,
   DEFAULT_MAX_ARTIFACTS,
   PROVE_BUDGET_MS,
+};
+
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
 if (!isMainThread) {
@@ -245,5 +247,12 @@ class ZKProverCluster {
 }
 
 module.exports = {
+  sha256Hex,
+  verifyArtifactChecksum,
+  verifyArtifactFile,
+  LocalProverDaemon,
+  getSharedProver,
+  DEFAULT_MAX_ARTIFACTS,
+  PROVE_BUDGET_MS,
   ZKProverCluster,
 };

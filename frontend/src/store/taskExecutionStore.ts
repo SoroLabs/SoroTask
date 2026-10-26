@@ -1,26 +1,28 @@
 /**
  * Task Execution Store (Zustand)
- * 
+ *
  * Manages the state of task execution events, logs, and status updates.
  * Automatically syncs with the task execution stream client.
  */
 
-import { create } from 'zustand';
+import { create } from "zustand";
 import {
   TaskExecutionState,
   TaskExecutionEvent,
   ExecutionLogEntry,
   ExecutionStatus,
   ExecutionTrace,
-} from '@/src/types/taskExecution';
+} from "@/src/types/taskExecution";
 
 // Toast notification callback
 let toastHandler: ((msg: string, type?: string) => void) | null = null;
-export function setExecutionToastHandler(fn: (msg: string, type?: string) => void) {
+export function setExecutionToastHandler(
+  fn: (msg: string, type?: string) => void,
+) {
   toastHandler = fn;
 }
 
-function showToast(msg: string, type = 'success') {
+function showToast(msg: string, type = "success") {
   toastHandler?.(msg, type);
 }
 
@@ -58,7 +60,7 @@ export interface ExecutionStore {
 
 const createInitialExecutionState = (taskId: string): TaskExecutionState => ({
   taskId,
-  status: 'pending',
+  status: "pending",
   logs: [],
 });
 
@@ -99,7 +101,10 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
           [taskId]: {
             ...execution,
             status,
-            startedAt: status === 'executing' ? new Date().toISOString() : execution.startedAt,
+            startedAt:
+              status === "executing"
+                ? new Date().toISOString()
+                : execution.startedAt,
           },
         },
       };
@@ -165,7 +170,7 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
           ...current.executions,
           [taskId]: {
             ...execution,
-            status: 'failed',
+            status: "failed",
             error: { code, message },
           },
         },
@@ -187,7 +192,7 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
       if (success) {
         showToast(`Task ${taskId} executed successfully!`);
       } else {
-        showToast(`Task ${taskId} execution failed`, 'error');
+        showToast(`Task ${taskId} execution failed`, "error");
       }
 
       return {
@@ -195,7 +200,7 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
           ...current.executions,
           [taskId]: {
             ...execution,
-            status: success ? 'completed' : 'failed',
+            status: success ? "completed" : "failed",
             completedAt: new Date().toISOString(),
             gasUsed,
             transactionId,
@@ -245,3 +250,46 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
     set({ executions: {} });
   },
 }));
+
+// ── Standalone execution feed ─────────────────────────────────────────────────
+
+export interface ExecutionRecord {
+  taskId: string;
+  txHash: string;
+  status: string;
+  timestamp: number;
+  gasSpentStroops: number;
+}
+
+export interface ExecutionFeedStore {
+  addExecution: (execution: ExecutionRecord) => void;
+  getExecutions: () => ExecutionRecord[];
+  getUnreadCount: () => number;
+  clearUnread: () => void;
+}
+
+/**
+ * Creates an isolated feed of recently observed executions. Useful for
+ * components that only need the unread badge and latest execution list
+ * without subscribing to the full Zustand execution graph.
+ */
+export function createExecutionStore(): ExecutionFeedStore {
+  const executions: ExecutionRecord[] = [];
+  let unreadCount = 0;
+
+  return {
+    addExecution(execution) {
+      executions.push(execution);
+      unreadCount += 1;
+    },
+    getExecutions() {
+      return [...executions];
+    },
+    getUnreadCount() {
+      return unreadCount;
+    },
+    clearUnread() {
+      unreadCount = 0;
+    },
+  };
+}

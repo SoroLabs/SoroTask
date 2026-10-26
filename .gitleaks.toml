@@ -27,4 +27,7 @@ paths = [
 ]
 
 commits = []
-regexes = []
+regexes = [
+  # Stellar account (G...) and contract (C...) public addresses are not secrets.
+  '''[GC][A-Z2-7]{55}''',
+]

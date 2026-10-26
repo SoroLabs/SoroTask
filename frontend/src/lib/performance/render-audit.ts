@@ -56,8 +56,8 @@ export function recordRender(
   const record: RenderRecord = {
     component,
     phase,
-    actualDurationMs: Number(actualDurationMs.toFixed(2)),
-    baseDurationMs: Number(baseDurationMs.toFixed(2)),
+    actualDurationMs: Math.round(actualDurationMs * 100) / 100,
+    baseDurationMs: Math.round(baseDurationMs * 100) / 100,
     at: new Date(now).toISOString(),
   };
 

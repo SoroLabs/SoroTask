@@ -13,7 +13,7 @@ let _currentCorrelationId: string | null = null;
 
 const TRACE_ID_REGEX = /^[0-9a-fA-F]{32}$/;
 
-export type SpanStatus = 'pending' | 'success' | 'error';
+export type SpanStatus = "pending" | "success" | "error";
 
 export interface Span {
   id: string;
@@ -29,7 +29,7 @@ export interface Span {
 
 export interface TraceEvent {
   name: string;
-  time 기정: number;
+  time: number;
   attributes?: Record<string, unknown>;
 }
 
@@ -37,7 +37,7 @@ export interface TraceContext {
   traceId: string;
   correlationId: string;
   /** When true, the originating service is the frontend browser. */
-  origin: 'frontend' | 'api-gateway' | 'keeper' | 'soroban';
+  origin: "frontend" | "api-gateway" | "keeper" | "soroban";
 }
 
 // Simple monotonic-ish ID generator that is safe to use in the browser.
@@ -45,9 +45,9 @@ function cryptoRandomHex(bytes: number): string {
   const chars: string[] = [];
   for (let i = 0; i < bytes; i += 1) {
     const n = (Math.random() * 256) | 0;
-    chars.push(n.toString(16).padStart(2, '0'));
+    chars.push(n.toString(16).padStart(2, "0"));
   }
-  return chars.join('');
+  return chars.join("");
 }
 
 /** Generate a fresh 128-bit trace/correlation id on the client. */
@@ -62,8 +62,8 @@ export function attachCorrelationIdToHeaders(
 ): Record<string, string> {
   return {
     ...headers,
-    'x-correlation-id': correlationId,
-    'x-trace-id': correlationId,
+    "x-correlation-id": correlationId,
+    "x-trace-id": correlationId,
   };
 }
 
@@ -77,7 +77,7 @@ export function appendTraceContextToBody<T>(
     _trace: {
       traceId: correlationId,
       correlationId,
-      origin: 'frontend',
+      origin: "frontend",
     },
   } as T & { _trace?: TraceContext };
 }
@@ -93,11 +93,14 @@ export function setCurrentCorrelationId(id: string | null): void {
 }
 
 /** Build an absolute URL for the current request, if available. */
-export function describeTrace(traceId: string, attrs: Record<string, unknown> = {}): TraceContext {
+export function describeTrace(
+  traceId: string,
+  attrs: Record<string, unknown> = {},
+): TraceContext {
   return {
     traceId,
     correlationId: traceId,
-    origin: 'frontend',
+    origin: "frontend",
     ...attrs,
   } as unknown as TraceContext;
 }
@@ -109,7 +112,7 @@ export function makeSpan(span: {
   parentId?: string;
   name: string;
   attributes?: Record<string, unknown>;
-  origin?: TraceContext['origin'];
+  origin?: TraceContext["origin"];
 }): Span {
   const now = Date.now();
   return {
@@ -118,11 +121,11 @@ export function makeSpan(span: {
     parentId: span.parentId,
     name: span.name,
     startTime: now,
-    status: 'pending',
+    status: "pending",
     attributes: {
       ...(span.attributes ?? {}),
-      'tracing.origin': span.origin ?? 'frontend',
-      'correlation.id': span.traceId,
+      "tracing.origin": span.origin ?? "frontend",
+      "correlation.id": span.traceId,
     },
     events: [],
   };
@@ -141,7 +144,7 @@ export function endSpan(
   }
   span.events.push({
     name: `span.${status}`,
-    time 기정: Date.now(),
+    time: Date.now(),
     attributes: attrs ?? {},
   });
   return span;
@@ -153,7 +156,7 @@ export interface TraceEnvelope {
   correlationId: string;
   spanId?: string;
   name: string;
-  origin: TraceContext['origin'];
+  origin: TraceContext["origin"];
   startTime: number;
   endTime?: number;
   status: SpanStatus;
@@ -166,7 +169,9 @@ export function envelopeFromSpan(span: Span, name = span.name): TraceEnvelope {
     correlationId: span.traceId,
     spanId: span.id,
     name,
-    origin: (span.attributes['tracing.origin'] as TraceContext['origin']) ?? 'frontend',
+    origin:
+      (span.attributes["tracing.origin"] as TraceContext["origin"]) ??
+      "frontend",
     startTime: span.startTime,
     endTime: span.endTime,
     status: span.status,
@@ -188,17 +193,24 @@ export function restoreCorrelationId(id: string | null): void {
 
 /** Validate that a string looks like a W3C trace id (hex, 32 chars). */
 export function isValidTraceId(value: unknown): boolean {
-  return typeof value === 'string' && TRACE_ID_REGEX.test(value);
+  return typeof value === "string" && TRACE_ID_REGEX.test(value);
 }
 
 /** Export a compact trace summary useful for attaching to error reports or audit events. */
-export function summarizeTrace(span: Span): Pick<TraceEnvelope, 'traceId' | 'correlationId' | 'spanId' | 'name' | 'origin' | 'status'> {
+export function summarizeTrace(
+  span: Span,
+): Pick<
+  TraceEnvelope,
+  "traceId" | "correlationId" | "spanId" | "name" | "origin" | "status"
+> {
   return {
     traceId: span.traceId,
     correlationId: span.traceId,
     spanId: span.id,
     name: span.name,
-    origin: (span.attributes['tracing.origin'] as TraceContext['origin']) ?? 'frontend',
+    origin:
+      (span.attributes["tracing.origin"] as TraceContext["origin"]) ??
+      "frontend",
     status: span.status,
   };
 }

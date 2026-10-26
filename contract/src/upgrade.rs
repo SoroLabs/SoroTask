@@ -11,7 +11,7 @@
 //! - Users have 48 hours to inspect changes and withdraw funds
 //! - Emergency guardians can freeze upgrades during the timelock
 
-use soroban_sdk::{panic_with_error, Address, Bytes, BytesN, Env, Symbol};
+use soroban_sdk::{panic_with_error, Address, Bytes, BytesN, Env, Symbol, Vec};
 
 use crate::admin::{require_proxy_admin, set_proxy_config};
 use crate::storage::{self, STORAGE_SCHEMA_VERSION};
@@ -325,7 +325,7 @@ pub fn initialize_guardians(env: &Env, admin: &Address, guardians: Vec<Address>)
 
     // Set threshold to majority of guardians
     let threshold = ((guardians.len() as u32 + 1) / 2).max(EMERGENCY_GUARDIAN_THRESHOLD);
-    
+
     config.guardians = guardians;
     config.threshold = threshold;
     config.initialized = true;
@@ -413,12 +413,7 @@ pub fn propose_upgrade_with_announcement(
             Symbol::new(env, "UpgradeCodeHashAnnounced"),
             Symbol::new(env, "v1"),
         ),
-        (
-            new_wasm_hash,
-            new_version,
-            execute_after,
-            now,
-        ),
+        (new_wasm_hash, new_version, execute_after, now),
     );
 }
 
@@ -445,7 +440,7 @@ pub fn emergency_freeze_upgrade(env: &Env, guardian: &Address, reason: Option<By
     // Verify caller is a guardian
     let mut is_guardian = false;
     for g in guardian_config.guardians.iter() {
-        if *g == *guardian {
+        if g == *guardian {
             is_guardian = true;
             break;
         }
@@ -464,7 +459,7 @@ pub fn emergency_freeze_upgrade(env: &Env, guardian: &Address, reason: Option<By
     }
 
     public_proposal.emergency_frozen = true;
-    
+
     env.storage()
         .instance()
         .set(&DataKey::PublicUpgradeProposal, &public_proposal);
@@ -477,7 +472,11 @@ pub fn emergency_freeze_upgrade(env: &Env, guardian: &Address, reason: Option<By
 }
 
 /// Emergency unfreeze an upgrade (requires threshold guardian signatures)
-pub fn emergency_unfreeze_upgrade(env: &Env, guardian: &Address, signatures: Vec<GuardianSignature>) {
+pub fn emergency_unfreeze_upgrade(
+    env: &Env,
+    guardian: &Address,
+    signatures: Vec<GuardianSignature>,
+) {
     guardian.require_auth();
 
     let guardian_config = load_guardian_config(env);
@@ -494,7 +493,7 @@ pub fn emergency_unfreeze_upgrade(env: &Env, guardian: &Address, signatures: Vec
     let mut valid_signatures = 0;
     for sig in signatures.iter() {
         for g in guardian_config.guardians.iter() {
-            if *g == sig.guardian {
+            if g == sig.guardian {
                 valid_signatures += 1;
                 break;
             }
@@ -514,7 +513,7 @@ pub fn emergency_unfreeze_upgrade(env: &Env, guardian: &Address, signatures: Vec
     }
 
     public_proposal.emergency_frozen = false;
-    
+
     env.storage()
         .instance()
         .set(&DataKey::PublicUpgradeProposal, &public_proposal);
@@ -535,7 +534,7 @@ pub fn is_upgrade_frozen(env: &Env) -> bool {
 }
 
 /// Get upgrade proposal details for user inspection
-pub fn get_upgrade_for_inspection(env: &Env) -> Option<(BytesN<32>, u64, u64, bool, Bytes)> {
+pub fn get_upgrade_for_inspection(env: &Env) -> Option<(BytesN<32>, u32, u64, bool, Bytes)> {
     get_public_proposal(env).map(|p| {
         (
             p.inner.new_wasm_hash,

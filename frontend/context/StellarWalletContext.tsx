@@ -5,23 +5,69 @@ import React, {
   useState,
   useCallback,
   ReactNode,
-} from 'react';
+} from "react";
 
 export const WalletNetwork = {
-  TESTNET: 'TESTNET',
-  PUBLIC: 'PUBLIC',
+  TESTNET: "TESTNET",
+  PUBLIC: "PUBLIC",
 } as const;
 
-export type WalletNetwork = typeof WalletNetwork[keyof typeof WalletNetwork];
+export type WalletNetwork = (typeof WalletNetwork)[keyof typeof WalletNetwork];
 
 export const ALLOW_ALL_MODULES = true;
-export const FREIGHTER_ID = 'freighter';
-export const ALBEDO_ID = 'albedo';
-export const XBULL_ID = 'xbull';
-export const LOBSTR_ID = 'lobstr';
+export const FREIGHTER_ID = "freighter";
+export const ALBEDO_ID = "albedo";
+export const XBULL_ID = "xbull";
+export const LOBSTR_ID = "lobstr";
 
+/**
+ * Local stand-in for @creit.tech/stellar-wallets-kit (removed from the build
+ * in 6e1d1c81). It keeps the small API surface this context relies on and
+ * delegates the actual connection to the app's wallet providers.
+ */
 export class StellarWalletsKit {
-  constructor(public config: any) {}
+  private selectedWalletId: string | null;
+  private address: string | null = null;
+
+  constructor(
+    public config: {
+      network?: WalletNetwork;
+      selectedWalletId?: string;
+      modules?: unknown;
+    } = {},
+  ) {
+    this.selectedWalletId = config.selectedWalletId ?? null;
+  }
+
+  setWallet(walletId: string) {
+    this.selectedWalletId = walletId;
+  }
+
+  async getAddress(): Promise<{ address: string }> {
+    const { connectWalletWith } = await import("@/app/lib/wallet");
+    const walletId = (this.selectedWalletId ?? FREIGHTER_ID) as
+      "freighter" | "albedo" | "xbull" | "lobstr";
+    const session = await connectWalletWith(walletId);
+    this.address = session.address;
+    return { address: session.address };
+  }
+
+  async openModal(options: {
+    onWalletSelected: (option: {
+      id: string;
+      name: string;
+    }) => void | Promise<void>;
+  }): Promise<void> {
+    const walletId = this.selectedWalletId ?? FREIGHTER_ID;
+    await options.onWalletSelected({
+      id: walletId,
+      name: walletId.charAt(0).toUpperCase() + walletId.slice(1),
+    });
+  }
+
+  async disconnect(): Promise<void> {
+    this.address = null;
+  }
 }
 
 interface WalletState {
@@ -46,12 +92,12 @@ interface StellarWalletContextType extends WalletState {
 
 // Use sessionStorage so the persisted session is scoped to the browser tab
 // and is automatically cleared when the tab is closed (per issue #881).
-const STORAGE_KEY = 'stellar_wallet_session';
-const storage = typeof window !== 'undefined' ? window.sessionStorage : null;
+const STORAGE_KEY = "stellar_wallet_session";
+const storage = typeof window !== "undefined" ? window.sessionStorage : null;
 
-const StellarWalletContext = createContext<StellarWalletContextType | undefined>(
-  undefined,
-);
+const StellarWalletContext = createContext<
+  StellarWalletContextType | undefined
+>(undefined);
 
 export const StellarWalletProvider: React.FC<{ children: ReactNode }> = ({
   children,
@@ -89,8 +135,11 @@ export const StellarWalletProvider: React.FC<{ children: ReactNode }> = ({
     const savedSession = storage?.getItem(STORAGE_KEY);
     if (!savedSession) return;
 
-    let parsed: { address: string; walletId: string; savedNetwork?: WalletNetwork } | null =
-      null;
+    let parsed: {
+      address: string;
+      walletId: string;
+      savedNetwork?: WalletNetwork;
+    } | null = null;
     try {
       parsed = JSON.parse(savedSession);
     } catch {
@@ -159,7 +208,7 @@ export const StellarWalletProvider: React.FC<{ children: ReactNode }> = ({
         },
       });
     } catch (error) {
-      console.error('Error connecting to wallet:', error);
+      console.error("Error connecting to wallet:", error);
     }
   }, [kit, network]);
 
@@ -176,19 +225,16 @@ export const StellarWalletProvider: React.FC<{ children: ReactNode }> = ({
     storage?.removeItem(STORAGE_KEY);
   }, [kit, network]);
 
-  const switchNetwork = useCallback(
-    (newNetwork: WalletNetwork) => {
-      setNetwork(newNetwork);
-      setWalletState((prev) => {
-        const updated = { ...prev, network: newNetwork };
-        if (prev.isConnected) {
-          storage?.setItem(STORAGE_KEY, JSON.stringify(updated));
-        }
-        return updated;
-      });
-    },
-    [],
-  );
+  const switchNetwork = useCallback((newNetwork: WalletNetwork) => {
+    setNetwork(newNetwork);
+    setWalletState((prev) => {
+      const updated = { ...prev, network: newNetwork };
+      if (prev.isConnected) {
+        storage?.setItem(STORAGE_KEY, JSON.stringify(updated));
+      }
+      return updated;
+    });
+  }, []);
 
   const dismissSessionExpired = useCallback(() => setSessionExpired(false), []);
 

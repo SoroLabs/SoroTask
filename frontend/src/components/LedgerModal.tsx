@@ -6,9 +6,11 @@ import {
   isLedgerWebUsbSupported,
   buildStellarPath,
   openLedgerDevice,
+  encodeSignatureForRpc,
   HardwareWalletConnectionError,
   type HardwareWalletSession,
   type LedgerStellarBridge,
+  type LedgerDerivationPath,
 } from "@/app/lib/hardwareWallet";
 
 export type LedgerModalProps = {
@@ -57,9 +59,9 @@ export function LedgerModal({
     isLedgerWebUsbSupported().then(setIsUsbSupported);
   }, []);
 
-  const activePath =
+  const activePath: LedgerDerivationPath =
     useCustomPath && customPath.trim()
-      ? customPath.trim()
+      ? (customPath.trim() as LedgerDerivationPath)
       : buildStellarPath(accountIndex);
 
   const handleConnect = useCallback(async () => {
@@ -81,7 +83,6 @@ export function LedgerModal({
       // Get address with the chosen BIP-44 derivation path
       const result = await devBridge.getAddress({
         path: activePath,
-        verifyOnDevice: false,
       });
 
       setPublicKey(result.address);
@@ -141,7 +142,7 @@ export function LedgerModal({
       setStep("connected");
       setDevicePrompt(null);
       if (onSignComplete) {
-        onSignComplete(signResult.signature);
+        onSignComplete(encodeSignatureForRpc(signResult.signature));
       }
     } catch (err: unknown) {
       setStep("error");

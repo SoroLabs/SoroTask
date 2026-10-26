@@ -23,12 +23,5 @@
     "lint-staged": "^17.5.1",
     "prettier": "^3.9.10",
     "tsx": "npm:tsx@latest"
-  },
-  "workspaces": [
-    "frontend",
-    "keeper",
-    "indexer",
-    "zk-proof-service",
-    "backend-abi-registry"
-  ]
+  }
 }

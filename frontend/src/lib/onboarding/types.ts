@@ -1,9 +1,5 @@
 export type OnboardingStepId =
-  | "welcome"
-  | "board"
-  | "dashboard"
-  | "keeper-metrics"
-  | "wallet";
+  "welcome" | "board" | "dashboard" | "keeper-metrics" | "wallet" | "sandbox";
 
 export type OnboardingStep = {
   id: OnboardingStepId;

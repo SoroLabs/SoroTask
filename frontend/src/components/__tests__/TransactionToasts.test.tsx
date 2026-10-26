@@ -1,7 +1,21 @@
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  act,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import { TransactionToasts } from "../TransactionToasts";
 import { TrackedTransaction } from "@/app/context/WalletContext";
+import {
+  emitRateLimit,
+  cancelCurrentRateLimit,
+  executeWithRateLimitRetry,
+  parseRetryAfterHeader,
+  calculateExponentialBackoff,
+  RateLimitError,
+} from "../../lib/api/tasks";
 
 describe("TransactionToasts and RBF Flow", () => {
   const mockStuckTx: TrackedTransaction = {
@@ -115,16 +129,40 @@ describe("TransactionToasts and RBF Flow", () => {
       expect(onSpeedUp).toHaveBeenCalledWith("tx-stuck-1", 150);
       expect(
         screen.getByText(/Replacement transaction broadcast successfully/i),
-import { render, screen, act, fireEvent } from "@testing-library/react";
-import { TransactionToasts } from "../TransactionToasts";
-import {
-  emitRateLimit,
-  cancelCurrentRateLimit,
-  executeWithRateLimitRetry,
-  parseRetryAfterHeader,
-  calculateExponentialBackoff,
-  RateLimitError,
-} from "../../lib/api/tasks";
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("allows dismissing a transaction toast", () => {
+    const onDismiss = jest.fn();
+    render(
+      <TransactionToasts
+        customTransactions={[mockPendingTx]}
+        onDismiss={onDismiss}
+      />,
+    );
+
+    const dismissBtn = screen.getByRole("button", { name: /Dismiss toast/i });
+    fireEvent.click(dismissBtn);
+
+    expect(onDismiss).toHaveBeenCalledWith("tx-fresh-2");
+  });
+
+  it("renders replaced transaction state properly", () => {
+    const replacedTx: TrackedTransaction = {
+      ...mockStuckTx,
+      status: "replaced",
+      replacedByTxHash: "0x999988887777",
+    };
+
+    render(<TransactionToasts customTransactions={[replacedTx]} />);
+
+    expect(
+      screen.getByText(/Replaced by bumped transaction/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/→ 0x9999888877/i)).toBeInTheDocument();
+  });
+});
 
 describe("Rate Limit & Retry Visualizer (Issue #1520)", () => {
   beforeEach(() => {
@@ -269,34 +307,6 @@ describe("Rate Limit & Retry Visualizer (Issue #1520)", () => {
     });
   });
 
-  it("allows dismissing a transaction toast", () => {
-    const onDismiss = jest.fn();
-    render(
-      <TransactionToasts
-        customTransactions={[mockPendingTx]}
-        onDismiss={onDismiss}
-      />,
-    );
-
-    const dismissBtn = screen.getByRole("button", { name: /Dismiss toast/i });
-    fireEvent.click(dismissBtn);
-
-    expect(onDismiss).toHaveBeenCalledWith("tx-fresh-2");
-  });
-
-  it("renders replaced transaction state properly", () => {
-    const replacedTx: TrackedTransaction = {
-      ...mockStuckTx,
-      status: "replaced",
-      replacedByTxHash: "0x999988887777",
-    };
-
-    render(<TransactionToasts customTransactions={[replacedTx]} />);
-
-    expect(
-      screen.getByText(/Replaced by bumped transaction/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/→ 0x9999888877/i)).toBeInTheDocument();
   describe("executeWithRateLimitRetry", () => {
     it("retries on rate limit errors and succeeds when resolved", async () => {
       let callCount = 0;

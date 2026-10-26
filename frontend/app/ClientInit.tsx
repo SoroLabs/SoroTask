@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import * as Sentry from "@sentry/nextjs";
 import { instrumentFetch } from "@/src/lib/errors/fetchTracker";
 import { SYNC_TAG } from "@/src/lib/offline/backgroundSync";
 import { telemetry } from "@/src/lib/telemetry";

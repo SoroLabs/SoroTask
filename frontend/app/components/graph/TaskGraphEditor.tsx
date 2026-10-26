@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import React, { useCallback, useState, useRef } from 'react';
+import React, { useCallback, useState, useRef } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -8,10 +8,13 @@ import ReactFlow, {
   Panel,
   type Node,
   type Edge,
-} from 'reactflow';
-import 'reactflow/dist/style.css';
-import { useTaskGraphEditor, type TaskNodeData } from '@/hooks/useTaskGraphEditor';
-import { TaskNode } from '@/src/components/graph/TaskNode';
+} from "reactflow";
+import "reactflow/dist/style.css";
+import {
+  useTaskGraphEditor,
+  type TaskNodeData,
+} from "@/src/hooks/useTaskGraphEditor";
+import { TaskNode } from "@/src/components/graph/TaskNode";
 
 const nodeTypes = { taskNode: TaskNode };
 
@@ -41,23 +44,23 @@ export function TaskGraphEditor({
     runLayout,
   } = useTaskGraphEditor(initialNodes, initialEdges);
 
-  const [newTaskLabel, setNewTaskLabel] = useState('');
+  const [newTaskLabel, setNewTaskLabel] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleAddNode = () => {
     if (newTaskLabel.trim()) {
       addNode(newTaskLabel.trim());
-      setNewTaskLabel('');
+      setNewTaskLabel("");
     }
   };
 
   const handleExport = () => {
     const json = exportJson();
-    const blob = new Blob([json], { type: 'application/json' });
+    const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
-    a.download = 'task-graph.json';
+    a.download = "task-graph.json";
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -89,7 +92,7 @@ export function TaskGraphEditor({
       >
         <Background color="#374151" gap={16} />
         <Controls />
-        <MiniMap nodeColor={() => '#3b82f6'} />
+        <MiniMap nodeColor={() => "#3b82f6"} />
         <Panel position="top-left">
           {!readOnly && (
             <div className="flex gap-2 bg-slate-800 p-2 rounded-lg">
@@ -99,9 +102,12 @@ export function TaskGraphEditor({
                 onChange={(e) => setNewTaskLabel(e.target.value)}
                 placeholder="Task name"
                 className="bg-slate-700 text-slate-100 px-3 py-1 rounded text-sm"
-                onKeyDown={(e) => e.key === 'Enter' && handleAddNode()}
+                onKeyDown={(e) => e.key === "Enter" && handleAddNode()}
               />
-              <button onClick={handleAddNode} className="bg-blue-600 text-white px-3 py-1 rounded text-sm">
+              <button
+                onClick={handleAddNode}
+                className="bg-blue-600 text-white px-3 py-1 rounded text-sm"
+              >
                 Add
               </button>
             </div>
@@ -109,18 +115,36 @@ export function TaskGraphEditor({
         </Panel>
         <Panel position="top-right">
           <div className="flex gap-2 bg-slate-800 p-2 rounded-lg">
-            <button onClick={runLayout} className="bg-emerald-600 text-white px-3 py-1 rounded text-sm">
+            <button
+              onClick={runLayout}
+              className="bg-emerald-600 text-white px-3 py-1 rounded text-sm"
+            >
               Auto Layout
             </button>
-            <button onClick={handleExport} className="bg-slate-600 text-white px-3 py-1 rounded text-sm">
+            <button
+              onClick={handleExport}
+              className="bg-slate-600 text-white px-3 py-1 rounded text-sm"
+            >
               Export
             </button>
-            <button onClick={() => fileInputRef.current?.click()} className="bg-slate-600 text-white px-3 py-1 rounded text-sm">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="bg-slate-600 text-white px-3 py-1 rounded text-sm"
+            >
               Import
             </button>
-            <input ref={fileInputRef} type="file" accept=".json" onChange={handleImport} className="hidden" />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json"
+              onChange={handleImport}
+              className="hidden"
+            />
             {onSave && (
-              <button onClick={() => onSave(nodes, edges)} className="bg-blue-600 text-white px-3 py-1 rounded text-sm">
+              <button
+                onClick={() => onSave(nodes, edges)}
+                className="bg-blue-600 text-white px-3 py-1 rounded text-sm"
+              >
                 Save
               </button>
             )}

@@ -186,7 +186,9 @@ export function parseTemplateJson(json: string): ParseResult {
 /**
  * Loads a community task template from IPFS attempting multiple fallback gateways.
  */
-export async function fetchTemplateFromIpfs(cid: string): Promise<TaskTemplate> {
+export async function fetchTemplateFromIpfs(
+  cid: string,
+): Promise<TaskTemplate> {
   let lastError: Error | null = null;
   for (const gateway of IPFS_GATEWAYS) {
     try {
@@ -205,7 +207,7 @@ export async function fetchTemplateFromIpfs(cid: string): Promise<TaskTemplate> 
     }
   }
   throw new Error(
-    `Failed to load template from IPFS across gateways: ${lastError?.message || "Unknown gateway timeout"}`
+    `Failed to load template from IPFS across gateways: ${lastError?.message || "Unknown gateway timeout"}`,
   );
 }
 
@@ -491,6 +493,9 @@ export const COMMUNITY_TEMPLATES: TaskTemplate[] = [
     intervalSeconds: 86_400,
     timezone: "UTC",
     usageCount: 1_284,
+    communityRating: 4.9,
+    ratingCount: 1240,
+    onChainRatingVerified: true,
     blocks: [
       {
         instanceId: "harvest-claim",
@@ -562,6 +567,9 @@ export const COMMUNITY_TEMPLATES: TaskTemplate[] = [
     intervalSeconds: 3600,
     timezone: "UTC",
     usageCount: 3_907,
+    communityRating: 4.7,
+    ratingCount: 3900,
+    onChainRatingVerified: true,
     blocks: [
       {
         instanceId: "sweep-transfer",
@@ -605,6 +613,9 @@ export const COMMUNITY_TEMPLATES: TaskTemplate[] = [
     intervalSeconds: 21_600,
     timezone: "UTC",
     usageCount: 612,
+    communityRating: 4.6,
+    ratingCount: 612,
+    onChainRatingVerified: true,
     blocks: [
       {
         instanceId: "rebalance-swap",
@@ -663,6 +674,9 @@ export const COMMUNITY_TEMPLATES: TaskTemplate[] = [
     intervalSeconds: 604_800,
     timezone: "UTC",
     usageCount: 388,
+    communityRating: 4.8,
+    ratingCount: 388,
+    onChainRatingVerified: true,
     blocks: [
       {
         instanceId: "compound-stake",
@@ -710,6 +724,9 @@ export const COMMUNITY_TEMPLATES: TaskTemplate[] = [
     intervalSeconds: 604_800,
     timezone: "UTC",
     usageCount: 145,
+    communityRating: 4.4,
+    ratingCount: 145,
+    onChainRatingVerified: false,
     blocks: [
       {
         instanceId: "gov-vote",

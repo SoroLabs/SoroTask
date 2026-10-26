@@ -15,7 +15,9 @@ jest.mock("@stellar/stellar-sdk", () => {
     rpc: {
       ...original.rpc,
       Server: jest.fn().mockImplementation(() => ({
-        getAccount: jest.fn().mockResolvedValue({ sequenceNumber: () => "12345" }),
+        getAccount: jest
+          .fn()
+          .mockResolvedValue({ sequenceNumber: () => "12345" }),
         simulateTransaction: jest.fn().mockResolvedValue({
           errorResultXdr: null,
         }),
@@ -48,7 +50,7 @@ jest.mock("@stellar/stellar-sdk", () => {
           destination: MOCK_ADDRESS,
           asset: original.Asset.native(),
           amount: "10",
-        })
+        }),
       ),
     })),
   };
@@ -62,7 +64,9 @@ describe("SorobanService", () => {
         toXDR: jest.fn().mockReturnValue("preparedXdr"),
       }),
     } as any);
-    jest.spyOn(TransactionBuilder, "fromXDR").mockReturnValue("signedTxObj" as any);
+    jest
+      .spyOn(TransactionBuilder, "fromXDR")
+      .mockReturnValue("signedTxObj" as any);
     const service = new SorobanService();
 
     const result = await service.executeContractCall({
@@ -72,7 +76,10 @@ describe("SorobanService", () => {
     });
 
     expect(result.status).toBe("SUCCESS");
-    expect(signTransaction).toHaveBeenCalledWith("preparedXdr", expect.any(Object));
+    expect(signTransaction).toHaveBeenCalledWith(
+      "preparedXdr",
+      expect.any(Object),
+    );
   });
 
   it("throws on simulation failure", async () => {
@@ -80,7 +87,9 @@ describe("SorobanService", () => {
     (service as any).rpcServer.simulateTransaction.mockResolvedValueOnce({
       errorResultXdr: "someerror",
     });
-    (rpc.Api.isSimulationSuccess as jest.Mock).mockReturnValueOnce(false);
+    (rpc.Api.isSimulationSuccess as unknown as jest.Mock).mockReturnValueOnce(
+      false,
+    );
 
     const failure = service.executeContractCall({
       publicKey: MOCK_ADDRESS,

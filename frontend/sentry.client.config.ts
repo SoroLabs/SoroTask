@@ -41,9 +41,9 @@ if (SENTRY_DSN) {
     // Breadcrumbs are the highest-risk field: console output, fetch URLs and
     // click targets from the seconds before the crash.
     beforeBreadcrumb(breadcrumb) {
-      const scrubbed = scrubEvent({ breadcrumbs: [breadcrumb as never] } as never) as
-        | { breadcrumbs?: unknown[] }
-        | null;
+      const scrubbed = scrubEvent({
+        breadcrumbs: [breadcrumb as never],
+      } as never) as { breadcrumbs?: unknown[] } | null;
       return (scrubbed?.breadcrumbs?.[0] ?? null) as never;
     },
 
@@ -60,8 +60,10 @@ if (SENTRY_DSN) {
 
     // Sending the URL of a page the user is on is fine; sending the query
     // string is not, and the scrubber handles that in `request.url`.
-    sendDefaultPii: false,
+    dataCollection: { userInfo: false },
 
-    debug: process.env.NODE_ENV === "development" && process.env.SENTRY_DEBUG === "true",
+    debug:
+      process.env.NODE_ENV === "development" &&
+      process.env.SENTRY_DEBUG === "true",
   });
 }

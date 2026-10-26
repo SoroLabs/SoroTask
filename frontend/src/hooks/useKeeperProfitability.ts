@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * useKeeperProfitability Hook
@@ -9,17 +9,17 @@
  * the UI keeps rendering through RPC failures and network partitions.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createLogger } from '@/src/lib/logger';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createLogger } from "@/src/lib/logger";
 import {
   createResilientSource,
   ResilientSource,
-} from '@/src/lib/keeper-profitability/resilientSource';
+} from "@/src/lib/keeper-profitability/resilientSource";
 import {
   EconomicsFetcher,
   ProfitabilityResult,
   ResilientSourceConfig,
-} from '@/src/lib/keeper-profitability/types';
+} from "@/src/lib/keeper-profitability/types";
 import {
   breakEvenGasPrice,
   buildGasPriceLadder,
@@ -33,9 +33,89 @@ import {
   roiAcrossHistory,
   RoiHistorySummary,
   sweepGasPrices,
-} from '@/src/lib/keeper-profitability/costs';
+} from "@/src/lib/keeper-profitability/costs";
 
-const logger = createLogger('useKeeperProfitability');
+const logger = createLogger("useKeeperProfitability");
+
+/** 1 XLM is 10,000,000 stroops. */
+const STROOPS_PER_XLM = 10_000_000;
+
+/**
+ * Soroban prices CPU instructions in 10,000-instruction units: 100 stroops per
+ * unit is the network's reference rate, so `baseFeeStroops` is the price of one
+ * such unit rather than of a single instruction.
+ */
+const GAS_UNITS_PER_FEE_UNIT = 10_000;
+
+export interface KeeperProfitabilityInput {
+  /** Bounty paid for a successful execution, in XLM. */
+  bountyRewardXLM: number;
+  /** CPU instruction limit for the transaction. */
+  gasLimit: number;
+  /** Fee in stroops per 10,000 gas units. */
+  baseFeeStroops: number;
+  /** Non-gas operating costs (RPC, infrastructure) in XLM. */
+  infraOverheadXLM?: number;
+}
+
+export interface KeeperProfitabilityBreakdown {
+  /** Gas cost of the execution, in XLM. */
+  gasCostXLM: number;
+  /** Non-gas operating costs, in XLM. */
+  infraOverheadXLM: number;
+  /** Gas plus overhead, in XLM. */
+  totalCostXLM: number;
+  /** Bounty minus total cost, in XLM. May be negative. */
+  netProfitXLM: number;
+  /** Net profit as a percentage of total cost. */
+  roiPercentage: number;
+  isProfitable: boolean;
+}
+
+/**
+ * Pure profitability model for a single keeper execution.
+ *
+ * Kept free of React so the component can render synchronously on every
+ * keystroke and the economics can be unit tested without a renderer.
+ */
+export function calculateKeeperProfitability(
+  input: KeeperProfitabilityInput,
+): KeeperProfitabilityBreakdown {
+  const bounty =
+    Number.isFinite(input.bountyRewardXLM) && input.bountyRewardXLM > 0
+      ? input.bountyRewardXLM
+      : 0;
+  const gasLimit =
+    Number.isFinite(input.gasLimit) && input.gasLimit > 0 ? input.gasLimit : 0;
+  const baseFee =
+    Number.isFinite(input.baseFeeStroops) && input.baseFeeStroops > 0
+      ? input.baseFeeStroops
+      : 0;
+  const overhead =
+    Number.isFinite(input.infraOverheadXLM) && (input.infraOverheadXLM ?? 0) > 0
+      ? (input.infraOverheadXLM as number)
+      : 0;
+
+  const gasCostXLM =
+    ((gasLimit / GAS_UNITS_PER_FEE_UNIT) * baseFee) / STROOPS_PER_XLM;
+  const totalCostXLM = gasCostXLM + overhead;
+  const netProfitXLM = bounty - totalCostXLM;
+  const roiPercentage =
+    totalCostXLM > 0
+      ? (netProfitXLM / totalCostXLM) * 100
+      : netProfitXLM > 0
+        ? Number.POSITIVE_INFINITY
+        : 0;
+
+  return {
+    gasCostXLM,
+    infraOverheadXLM: overhead,
+    totalCostXLM,
+    netProfitXLM,
+    roiPercentage,
+    isProfitable: netProfitXLM > 0,
+  };
+}
 
 export interface UseKeeperProfitabilityOptions {
   fetcher: EconomicsFetcher;
@@ -58,7 +138,7 @@ export interface UseKeeperProfitabilityResult {
 
 const EMPTY: ProfitabilityResult = {
   points: [],
-  status: 'offline',
+  status: "offline",
   updatedAt: 0,
   fromCache: false,
   error: null,
@@ -67,7 +147,9 @@ const EMPTY: ProfitabilityResult = {
 };
 
 /** Fetches recent base-fee observations for the forecaster. */
-export type GasPriceFetcher = (signal?: AbortSignal) => Promise<GasPriceSample[]>;
+export type GasPriceFetcher = (
+  signal?: AbortSignal,
+) => Promise<GasPriceSample[]>;
 
 export function useKeeperProfitability(
   options: UseKeeperProfitabilityOptions,
@@ -76,7 +158,10 @@ export function useKeeperProfitability(
 
   // Stable key over the source-affecting config so polling restarts only when
   // a meaningful value changes, never on every render.
-  const configKey = useMemo(() => JSON.stringify(options.config ?? {}), [options.config]);
+  const configKey = useMemo(
+    () => JSON.stringify(options.config ?? {}),
+    [options.config],
+  );
 
   const sourceRef = useRef<ResilientSource | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -110,8 +195,8 @@ export function useKeeperProfitability(
       const next = await source.fetch(controller.signal);
       if (mountedRef.current && !controller.signal.aborted) {
         setResult(next);
-        if (next.status !== 'live') {
-          logger.warn('Profitability source degraded', {
+        if (next.status !== "live") {
+          logger.warn("Profitability source degraded", {
             status: next.status,
             error: next.error,
           });
@@ -236,7 +321,7 @@ export function useKeeperProfitForecast(
       }
     } catch (error) {
       if (mountedRef.current && !controller.signal.aborted) {
-        logger.warn('Gas price fetch failed', {
+        logger.warn("Gas price fetch failed", {
           error: error instanceof Error ? error.message : String(error),
         });
         setFailed(true);
@@ -286,7 +371,8 @@ export function useKeeperProfitForecast(
     () =>
       projectMargin({
         ...input,
-        gasPriceXlm: forecast.current > 0 ? forecast.current : input.gasPriceXlm,
+        gasPriceXlm:
+          forecast.current > 0 ? forecast.current : input.gasPriceXlm,
       }),
     [input, forecast.current],
   );
@@ -301,11 +387,18 @@ export function useKeeperProfitForecast(
   );
 
   const sweep = useMemo(
-    () => sweepGasPrices(input, buildGasPriceLadder(breakEven, forecast, sweepSteps)),
+    () =>
+      sweepGasPrices(
+        input,
+        buildGasPriceLadder(breakEven, forecast, sweepSteps),
+      ),
     [input, breakEven, forecast, sweepSteps],
   );
 
-  const history = useMemo(() => roiAcrossHistory(input, samples), [input, samples]);
+  const history = useMemo(
+    () => roiAcrossHistory(input, samples),
+    [input, samples],
+  );
 
   return {
     current,

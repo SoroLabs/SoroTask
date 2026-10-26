@@ -13,8 +13,8 @@
 //! - Vote delegation support
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes,
-    BytesN, Env, IntoVal, Symbol, TryFromVal, TryIntoVal, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, xdr::ToXdr, Address,
+    Bytes, BytesN, Env, IntoVal, Symbol, TryFromVal, TryIntoVal, Val, Vec,
 };
 
 use crate::events::EventLogger;
@@ -139,16 +139,16 @@ pub struct GovernanceConfig {
     pub emergency_guardian: Address,
 }
 
-impl Default for GovernanceConfig {
-    fn default() -> Self {
+impl GovernanceConfig {
+    fn uninitialized(env: &Env) -> Self {
         Self {
-            admin: Address::from_u32(0),
+            admin: crate::unset_address(env),
             voting_period_ledgers: DEFAULT_VOTING_PERIOD_LEDGERS,
             quorum_bps: DEFAULT_QUORUM_BPS,
             approval_threshold_bps: DEFAULT_APPROVAL_THRESHOLD_BPS,
             min_proposal_bounty: 1000,
             execution_reward_bps: 100, // 1% of execution value
-            emergency_guardian: Address::from_u32(0),
+            emergency_guardian: crate::unset_address(env),
         }
     }
 }
@@ -164,7 +164,7 @@ pub fn load_config(env: &Env) -> GovernanceConfig {
     env.storage()
         .instance()
         .get(&DataKey::GovernanceConfig)
-        .unwrap_or_default()
+        .unwrap_or_else(|| GovernanceConfig::uninitialized(env))
 }
 
 /// Save governance configuration
@@ -211,12 +211,10 @@ pub fn load_vote(env: &Env, proposal_id: u64, voter: &Address) -> Option<VoteRec
 
 /// Save a vote record
 fn save_vote(env: &Env, proposal_id: u64, vote: &VoteRecord) {
-    env.storage()
-        .persistent()
-        .set(
-            &DataKey::GovernanceVote(proposal_id, vote.voter.clone()),
-            vote,
-        );
+    env.storage().persistent().set(
+        &DataKey::GovernanceVote(proposal_id, vote.voter.clone()),
+        vote,
+    );
 }
 
 /// Load vote snapshot for a proposal
@@ -240,14 +238,13 @@ fn save_snapshot(env: &Env, snapshot: &VoteSnapshot) {
 /// Initialize governance system with admin
 pub fn initialize(env: &Env, admin: &Address, guardian: &Address, voting_token: &Address) {
     admin.require_auth();
-    
+
     // Verify we're not re-initializing
-    let config = load_config(env);
-    if config.admin != Address::from_u32(0) {
+    if env.storage().instance().has(&DataKey::GovernanceConfig) {
         panic_with_error!(env, Error::AlreadyInitialized);
     }
 
-    let mut config = GovernanceConfig::default();
+    let mut config = GovernanceConfig::uninitialized(env);
     config.admin = admin.clone();
     config.emergency_guardian = guardian.clone();
     save_config(env, &config);
@@ -280,7 +277,7 @@ pub fn create_proposal(
     proposer.require_auth();
 
     let config = load_config(env);
-    
+
     // Validate bounty
     if bounty < config.min_proposal_bounty {
         panic_with_error!(env, Error::GovernanceInvalidVotingPower);
@@ -399,16 +396,26 @@ pub fn cast_vote(
 
         // Remove old vote from tallies
         match existing_vote.choice {
-            VoteChoice::For => proposal.votes_for = proposal.votes_for.saturating_sub(existing_vote.weight),
-            VoteChoice::Against => proposal.votes_against = proposal.votes_against.saturating_sub(existing_vote.weight),
-            VoteChoice::Abstain => proposal.votes_abstain = proposal.votes_abstain.saturating_sub(existing_vote.weight),
+            VoteChoice::For => {
+                proposal.votes_for = proposal.votes_for.saturating_sub(existing_vote.weight)
+            }
+            VoteChoice::Against => {
+                proposal.votes_against = proposal.votes_against.saturating_sub(existing_vote.weight)
+            }
+            VoteChoice::Abstain => {
+                proposal.votes_abstain = proposal.votes_abstain.saturating_sub(existing_vote.weight)
+            }
         }
 
         // Add new vote
         match choice {
             VoteChoice::For => proposal.votes_for = proposal.votes_for.saturating_add(weight_diff),
-            VoteChoice::Against => proposal.votes_against = proposal.votes_against.saturating_add(weight_diff),
-            VoteChoice::Abstain => proposal.votes_abstain = proposal.votes_abstain.saturating_add(weight_diff),
+            VoteChoice::Against => {
+                proposal.votes_against = proposal.votes_against.saturating_add(weight_diff)
+            }
+            VoteChoice::Abstain => {
+                proposal.votes_abstain = proposal.votes_abstain.saturating_add(weight_diff)
+            }
         }
 
         // Update voter count only if switching from/to zero weight
@@ -419,8 +426,12 @@ pub fn cast_vote(
         // New vote
         match choice {
             VoteChoice::For => proposal.votes_for = proposal.votes_for.saturating_add(voting_power),
-            VoteChoice::Against => proposal.votes_against = proposal.votes_against.saturating_add(voting_power),
-            VoteChoice::Abstain => proposal.votes_abstain = proposal.votes_abstain.saturating_add(voting_power),
+            VoteChoice::Against => {
+                proposal.votes_against = proposal.votes_against.saturating_add(voting_power)
+            }
+            VoteChoice::Abstain => {
+                proposal.votes_abstain = proposal.votes_abstain.saturating_add(voting_power)
+            }
         }
 
         proposal.voter_count = proposal.voter_count.saturating_add(1);
@@ -454,24 +465,24 @@ pub fn compute_snapshot(env: &Env, proposal_id: u64) -> VoteSnapshot {
         .unwrap_or_else(|| panic_with_error!(env, Error::GovernanceProposalNotFound));
 
     let total_votes = proposal.votes_for + proposal.votes_against + proposal.votes_abstain;
-    
+
     // Compute deterministic hash of snapshot data
     // Format: proposal_id || snapshot_block || total_voting || for || against || abstain
     let mut hash_input = Bytes::new(env);
     let proposal_bytes = proposal_id.to_xdr(env);
-    hash_input.extend_from_slice(&proposal_bytes);
+    hash_input.append(&proposal_bytes);
     let block_bytes = proposal.end_block.to_xdr(env);
-    hash_input.extend_from_slice(&block_bytes);
+    hash_input.append(&block_bytes);
     let total_bytes = total_votes.to_xdr(env);
-    hash_input.extend_from_slice(&total_bytes);
+    hash_input.append(&total_bytes);
     let for_bytes = proposal.votes_for.to_xdr(env);
-    hash_input.extend_from_slice(&for_bytes);
+    hash_input.append(&for_bytes);
     let against_bytes = proposal.votes_against.to_xdr(env);
-    hash_input.extend_from_slice(&against_bytes);
+    hash_input.append(&against_bytes);
     let abstain_bytes = proposal.votes_abstain.to_xdr(env);
-    hash_input.extend_from_slice(&abstain_bytes);
+    hash_input.append(&abstain_bytes);
 
-    let snapshot_hash = env.crypto().sha256(&hash_input).into();
+    let snapshot_hash: BytesN<32> = env.crypto().sha256(&hash_input).into();
 
     let snapshot = VoteSnapshot {
         proposal_id,
@@ -480,7 +491,7 @@ pub fn compute_snapshot(env: &Env, proposal_id: u64) -> VoteSnapshot {
         votes_for: proposal.votes_for,
         votes_against: proposal.votes_against,
         votes_abstain: proposal.votes_abstain,
-        snapshot_hash,
+        snapshot_hash: snapshot_hash.clone(),
         computed_at: env.ledger().timestamp(),
     };
 
@@ -536,20 +547,20 @@ pub fn check_proposal_status(env: &Env, proposal_id: u64) -> VoteStatus {
 }
 
 /// Execute a passed proposal (keeper callable)
-pub fn execute_proposal(env: &Env, keeper: &Address, proposal_id: u64) -> Result<i128, GovernanceError> {
+pub fn execute_proposal(env: &Env, keeper: &Address, proposal_id: u64) -> Result<i128, Error> {
     keeper.require_auth();
 
     let mut proposal = load_proposal(env, proposal_id)
-        .unwrap_or_else(|| panic_with_error!(env, GovernanceError::ProposalNotFound));
+        .unwrap_or_else(|| panic_with_error!(env, Error::GovernanceProposalNotFound));
 
     // Check current status
     let status = check_proposal_status(env, proposal_id);
-    
+
     if status != VoteStatus::Passed {
         if status == VoteStatus::Active {
-            panic_with_error!(env, GovernanceError::VotingEnded); // Voting not ended yet
+            panic_with_error!(env, Error::GovernanceVotingEnded); // Voting not ended yet
         }
-        panic_with_error!(env, GovernanceError::ProposalNotPassed);
+        panic_with_error!(env, Error::GovernanceProposalNotPassed);
     }
 
     // Update status to executed
@@ -592,14 +603,14 @@ pub fn emergency_cancel(env: &Env, guardian: &Address, proposal_id: u64) {
 
     let config = load_config(env);
     if config.emergency_guardian != *guardian {
-        panic_with_error!(env, GovernanceError::Unauthorized);
+        panic_with_error!(env, Error::Unauthorized);
     }
 
     let mut proposal = load_proposal(env, proposal_id)
-        .unwrap_or_else(|| panic_with_error!(env, GovernanceError::ProposalNotFound));
+        .unwrap_or_else(|| panic_with_error!(env, Error::GovernanceProposalNotFound));
 
     if proposal.status == VoteStatus::Executed {
-        panic_with_error!(env, GovernanceError::ProposalNotFound); // Already executed
+        panic_with_error!(env, Error::GovernanceProposalNotFound); // Already executed
     }
 
     proposal.status = VoteStatus::Cancelled;
@@ -623,26 +634,26 @@ pub fn update_config(
 
     let mut config = load_config(env);
     if config.admin != *admin {
-        panic_with_error!(env, GovernanceError::Unauthorized);
+        panic_with_error!(env, Error::Unauthorized);
     }
 
     if let Some(vp) = voting_period_ledgers {
         if vp < MIN_VOTING_PERIOD_LEDGERS {
-            panic_with_error!(env, GovernanceError::VotingPeriodTooShort);
+            panic_with_error!(env, Error::GovernanceVotingPeriodTooShort);
         }
         config.voting_period_ledgers = vp;
     }
 
     if let Some(q) = quorum_bps {
         if q > 10000 {
-            panic_with_error!(env, GovernanceError::InvalidThreshold);
+            panic_with_error!(env, Error::GovernanceInvalidThreshold);
         }
         config.quorum_bps = q;
     }
 
     if let Some(t) = approval_threshold_bps {
         if t > 10000 {
-            panic_with_error!(env, GovernanceError::InvalidThreshold);
+            panic_with_error!(env, Error::GovernanceInvalidThreshold);
         }
         config.approval_threshold_bps = t;
     }
@@ -651,7 +662,11 @@ pub fn update_config(
 
     env.events().publish(
         (Symbol::new(env, "GovernanceConfigUpdated"),),
-        (config.voting_period_ledgers, config.quorum_bps, config.approval_threshold_bps),
+        (
+            config.voting_period_ledgers,
+            config.quorum_bps,
+            config.approval_threshold_bps,
+        ),
     );
 }
 
