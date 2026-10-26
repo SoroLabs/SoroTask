@@ -106,9 +106,11 @@ const indicatorLogger = createLogger('indicator-registry');
  */
 class DynamicTraceSampler {
   constructor(options = {}) {
-    this.samplingRate = Number(options.samplingRate || process.env.TRACE_SAMPLE_RATE || 0.1);
-    this.minRate = Number(options.minRate || 0.01);
-    this.maxRate = Number(options.maxRate || 1.0);
+    this.samplingRate = options.samplingRate !== undefined
+      ? Number(options.samplingRate)
+      : Number(process.env.TRACE_SAMPLE_RATE || 0.1);
+    this.minRate = options.minRate !== undefined ? Number(options.minRate) : 0.01;
+    this.maxRate = options.maxRate !== undefined ? Number(options.maxRate) : 1.0;
     this.cpuOverheadRatio = 0.002; // < 0.2% CPU overhead
   }
 

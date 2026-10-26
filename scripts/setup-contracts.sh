@@ -43,9 +43,6 @@ fi
 
 # 4. Deploy Main Contract
 echo "Deploying SoroTask contract..."
-if [ -f "${WASM_PATH%.wasm}.optimized.wasm" ]; then
-  WASM_PATH="${WASM_PATH%.wasm}.optimized.wasm"
-fi
 echo "Using contract WASM at: $WASM_PATH"
 
 CONTRACT_ID=""
