@@ -175,7 +175,7 @@ jobs:
         run: |
           cd frontend
           npx playwright install --with-deps chromium
-          npx playwright test
+          npx playwright test --project=chromium
 
       - name: Collect Service Logs
         if: failure()
