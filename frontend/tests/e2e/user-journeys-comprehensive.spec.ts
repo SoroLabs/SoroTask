@@ -85,6 +85,22 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
   test("User Journey 2: Mock Freighter wallet connection and account switching", async ({
     page,
   }) => {
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem(
+          "sorotask_product_tour_state",
+          JSON.stringify({
+            completed: true,
+            dismissed: true,
+            currentStep: 0,
+            rewardClaimed: true,
+          }),
+        );
+      } catch {
+        // ignore
+      }
+    });
+
     const wallet = new MockWalletProvider(page);
     await page.goto("/");
 
