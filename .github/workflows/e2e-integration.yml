@@ -17,7 +17,7 @@ jobs:
 
       - name: Start Soroban RPC (stellar/quickstart)
         run: |
-          docker run -d --name soroban-rpc -p 8000:8000 stellar/quickstart:latest --local --enable-soroban-rpc --limits unlimited --logs
+          docker run -d --name soroban-rpc -p 8000:8000 stellar/quickstart:testing --local --enable-soroban-rpc --limits unlimited --logs
 
       - name: Check for Conflict Markers
         run: |

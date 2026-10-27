@@ -56,11 +56,18 @@ for attempt in {1..5}; do
     curl -fsS "http://localhost:8000/friendbot?addr=$addr" > /dev/null || true
     sleep 2
   fi
-  WASM_HASH=$(stellar contract install \
+  WASM_HASH=$(stellar contract upload \
     --wasm "$WASM_PATH" \
     --source "$source_alias" \
     --network local \
     --inclusion-fee 10000000 2>&1 | grep -o '[0-9a-f]\{64\}' | tail -1 || true)
+  if [ -z "$WASM_HASH" ]; then
+    WASM_HASH=$(stellar contract install \
+      --wasm "$WASM_PATH" \
+      --source "$source_alias" \
+      --network local \
+      --inclusion-fee 10000000 2>&1 | grep -o '[0-9a-f]\{64\}' | tail -1 || true)
+  fi
   if [ -n "$WASM_HASH" ]; then
     DEPLOY_OUTPUT=$(stellar contract deploy \
       --wasm-hash "$WASM_HASH" \
@@ -96,11 +103,19 @@ echo "CONTRACT_ID: $CONTRACT_ID"
 echo "Deploying Mock Target contract..."
 TARGET_ID=""
 for attempt in {1..3}; do
-  DEPLOY_OUTPUT=$(stellar contract deploy \
-    --wasm "$WASM_PATH" \
-    --source deployer \
-    --network local \
-    --inclusion-fee 10000000 2>&1 || true)
+  if [ -n "$WASM_HASH" ]; then
+    DEPLOY_OUTPUT=$(stellar contract deploy \
+      --wasm-hash "$WASM_HASH" \
+      --source deployer \
+      --network local \
+      --inclusion-fee 10000000 2>&1 || true)
+  else
+    DEPLOY_OUTPUT=$(stellar contract deploy \
+      --wasm "$WASM_PATH" \
+      --source deployer \
+      --network local \
+      --inclusion-fee 10000000 2>&1 || true)
+  fi
   TARGET_ID=$(printf '%s\n' "$DEPLOY_OUTPUT" | grep -o 'C[0-9A-Z]\{55\}' | tail -1 || true)
   if [ -n "$TARGET_ID" ]; then
     break
@@ -114,8 +129,11 @@ echo "TARGET_ID: $TARGET_ID"
 echo "Deploying Native Token contract..."
 # Note: stellar contract asset deploy --asset native is deprecated in some versions but works in 21.x.x
 # Some versions use stellar contract id asset native
-TOKEN_ID=$(stellar contract id asset --asset native --network local || stellar contract id asset native --network local)
-stellar contract asset deploy --asset native --source deployer --network local || true
+TOKEN_ID=$(stellar contract id asset --asset native --network local 2>/dev/null || stellar contract id asset native --network local 2>/dev/null || true)
+DEPLOY_TOKEN_OUTPUT=$(stellar contract asset deploy --asset native --source deployer --network local 2>&1 || true)
+if [ -z "$TOKEN_ID" ]; then
+  TOKEN_ID=$(printf '%s\n' "$DEPLOY_TOKEN_OUTPUT" | grep -o 'C[0-9A-Z]\{55\}' | tail -1 || true)
+fi
 echo "TOKEN_ID: $TOKEN_ID"
 
 # 7. Initialize Main Contract
