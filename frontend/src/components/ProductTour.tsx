@@ -66,49 +66,28 @@ interface TourState {
 }
 
 export function ProductTour() {
-  const [isOpen, setIsOpen] = useState(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed: TourState = JSON.parse(stored);
-        return !parsed.completed && !parsed.dismissed;
-      }
-      return true;
-    } catch {
-      return true;
-    }
-  });
-
-  const [currentStepIndex, setCurrentStepIndex] = useState(() => {
-    if (typeof window === "undefined") return 0;
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed: TourState = JSON.parse(stored);
-        return parsed.currentStep || 0;
-      }
-      return 0;
-    } catch {
-      return 0;
-    }
-  });
-
-  const [rewardClaimed, setRewardClaimed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed: TourState = JSON.parse(stored);
-        return parsed.rewardClaimed ?? false;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  });
-
+  const [mounted, setMounted] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [rewardClaimed, setRewardClaimed] = useState(false);
   const [isDeployingSimulated, setIsDeployingSimulated] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const parsed: TourState = JSON.parse(stored);
+        setIsOpen(!parsed.completed && !parsed.dismissed);
+        setCurrentStepIndex(parsed.currentStep || 0);
+        setRewardClaimed(parsed.rewardClaimed ?? false);
+      } else {
+        setIsOpen(true);
+      }
+    } catch {
+      setIsOpen(true);
+    }
+  }, []);
 
   const saveState = useCallback((updates: Partial<TourState>) => {
     if (typeof window === "undefined") return;
@@ -184,6 +163,10 @@ export function ProductTour() {
     setIsOpen(false);
     saveState({ completed: true });
   };
+
+  if (!mounted) {
+    return null;
+  }
 
   const currentStep = TOUR_STEPS[currentStepIndex];
 

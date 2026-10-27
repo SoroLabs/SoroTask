@@ -59,6 +59,15 @@ export default auth((req) => {
   // Handle callback URL preservation
   const callbackUrl = req.nextUrl.searchParams.get("callbackUrl") || pathname;
 
+  // In E2E mock mode, bypass redirect to allow test automation
+  const isE2E = process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true";
+  if (isE2E) {
+    return addSecurityHeaders(
+      NextResponse.next({ request: { headers: requestHeaders } }),
+      csp,
+    );
+  }
+
   // If user is not authenticated and trying to access a protected route
   if (!isAuthenticated && !isPublicRoute) {
     const signInUrl = new URL("/auth/signin", req.url);
