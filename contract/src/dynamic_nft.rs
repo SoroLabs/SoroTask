@@ -26,8 +26,8 @@
 //! attach tier rules to a collection they do not control.
 
 use soroban_sdk::{
-    contracttype, panic_with_error, vec, xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal,
-    String, Symbol, Vec,
+    contracttype, panic_with_error, vec, xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal, String,
+    Symbol, Vec,
 };
 
 use crate::Error;
@@ -110,8 +110,8 @@ fn validate_tiers(env: &Env, tiers: &Vec<NftTier>) {
             panic_with_error!(env, Error::InvalidNftTiers);
         }
         if let Some(prev) = previous {
-            let rank_not_harder = prev.max_rank != 0
-                && (tier.max_rank == 0 || tier.max_rank > prev.max_rank);
+            let rank_not_harder =
+                prev.max_rank != 0 && (tier.max_rank == 0 || tier.max_rank > prev.max_rank);
             if tier.min_volume < prev.min_volume
                 || tier.min_staking_seconds < prev.min_staking_seconds
                 || prev.required_achievements & !tier.required_achievements != 0

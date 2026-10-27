@@ -12,11 +12,11 @@
 //! - Automated waterfall distribution of channel funds
 //! - Timeout penalties for unresponsive parties
 
-use soroban_sdk::{Address, Bytes, BytesN, Env, Symbol, Vec, panic_with_error};
+use soroban_sdk::{panic_with_error, xdr::ToXdr, Address, Bytes, BytesN, Env, Symbol, Vec};
 
 use crate::security::ReentrancyGuard;
+use crate::state_channel::{receipt_payload, ChannelCloseRequest, ChannelState, ChannelStatus};
 use crate::{DataKey, Error};
-use crate::state_channel::{ChannelStatus, ChannelState, ChannelCloseRequest, receipt_payload};
 
 /// Challenge window for unilateral exits: 24 hours
 pub const MERKLE_CHALLENGE_WINDOW_SECONDS: u64 = 24 * 60 * 60;
@@ -125,9 +125,10 @@ fn load_substate(env: &Env, channel_id: u64, nonce: u64) -> Option<ChannelSubSta
 
 /// Saves a sub-state.
 fn save_substate(env: &Env, substate: &ChannelSubState) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::ChannelSubState(substate.channel_id, substate.nonce), substate);
+    env.storage().persistent().set(
+        &DataKey::ChannelSubState(substate.channel_id, substate.nonce),
+        substate,
+    );
 }
 
 /// Gets the participant index in the channel.
@@ -146,22 +147,18 @@ fn get_participant_index(state: &ChannelState, who: &Address) -> Option<u32> {
 ///
 /// In production, this would implement full Merkle verification.
 /// For this implementation, we perform a simplified check.
-fn verify_merkle_proof(
-    env: &Env,
-    root: &BytesN<32>,
-    proof: &MerkleProof,
-) -> bool {
+fn verify_merkle_proof(env: &Env, root: &BytesN<32>, proof: &MerkleProof) -> bool {
     // Simplified verification - in production, implement full Merkle tree verification
     // by hashing the leaf with each proof element along the path
-    
+
     // For now, we verify the proof structure is valid
     if proof.proof.len() == 0 && *root == proof.leaf {
         return true;
     }
-    
+
     // Placeholder: implement full Merkle verification here
     // Each step: hash = sha256(left || right) or sha256(right || left) depending on path
-    
+
     true
 }
 
@@ -193,8 +190,7 @@ pub fn open_merkle_channel(
     }
 
     // Validate parallel arrays
-    if participants.len() != public_keys.len() 
-        || participants.len() != initial_balances.len() {
+    if participants.len() != public_keys.len() || participants.len() != initial_balances.len() {
         panic_with_error!(env, Error::InvalidChannelParticipants);
     }
 
@@ -241,7 +237,7 @@ pub fn open_merkle_channel(
     // Create Merkle channel state
     let merkle_state = MerkleChannelState {
         base: base_state,
-        merkle_root: initial_merkle_root,
+        merkle_root: initial_merkle_root.clone(),
         substate_counter: 0,
         challenge_deadline: 0,
         unilateral_exit_pending: false,
@@ -259,10 +255,7 @@ pub fn open_merkle_channel(
     save_substate(env, &initial_substate);
 
     env.events().publish(
-        (
-            Symbol::new(env, "MerkleChannelOpened"),
-            counter,
-        ),
+        (Symbol::new(env, "MerkleChannelOpened"), counter),
         merkle_state.substate_counter,
     );
 
@@ -275,15 +268,15 @@ pub fn open_merkle_channel(
 /// we use a simplified approach: root = sha256(channel_id || nonce || balances).
 fn calculate_merkle_root(env: &Env, balances: &Vec<i128>, channel_id: u64) -> BytesN<32> {
     // Simplified: hash the concatenated balance data
-    let mut data = Bytes::from_slice(env, &channel_id.to_xdr(env));
-    
+    let mut data = channel_id.to_xdr(env);
+
     let mut i = 0;
     while i < balances.len() {
         let balance = balances.get(i).unwrap();
         data.append(&balance.to_xdr(env));
         i += 1;
     }
-    
+
     env.crypto().sha256(&data).to_bytes()
 }
 
@@ -335,27 +328,27 @@ pub fn submit_closing_state(
         let signature = signatures
             .get(i)
             .unwrap_or_else(|| panic_with_error!(env, Error::ChannelInvalidSignature));
-        
-        let idx = get_participant_index(base, signer)
+
+        let idx = get_participant_index(base, &signer)
             .unwrap_or_else(|| panic_with_error!(env, Error::Unauthorized));
         let public_key = base
             .public_keys
             .get(idx)
             .unwrap_or_else(|| panic_with_error!(env, Error::ChannelInvalidSignature));
-        
+
         let payload = receipt_payload(env, channel_id, nonce, &state_hash);
         env.crypto()
-            .ed25519_verify(&public_key, &payload, signature);
-        
+            .ed25519_verify(&public_key, &payload, &signature);
+
         i += 1;
     }
 
     // Update balances and Merkle root
     base.balances = balances.clone();
     base.nonce = nonce;
-    
+
     let new_merkle_root = calculate_merkle_root(env, &balances, channel_id);
-    merkle_state.merkle_root = new_merkle_root;
+    merkle_state.merkle_root = new_merkle_root.clone();
     merkle_state.substate_counter += 1;
 
     // Create new sub-state
@@ -371,27 +364,29 @@ pub fn submit_closing_state(
     save_merkle_channel(env, &merkle_state);
 
     env.events().publish(
-        (
-            Symbol::new(env, "MerkleClosingStateSubmitted"),
-            channel_id,
-        ),
+        (Symbol::new(env, "MerkleClosingStateSubmitted"), channel_id),
         nonce,
     );
 }
 
 /// Calculates a state hash from channel data.
-fn calculate_state_hash(env: &Env, channel_id: u64, nonce: u64, balances: &Vec<i128>) -> BytesN<32> {
+fn calculate_state_hash(
+    env: &Env,
+    channel_id: u64,
+    nonce: u64,
+    balances: &Vec<i128>,
+) -> BytesN<32> {
     let mut data = Bytes::from_slice(env, b"MerkleStateChannelv1");
     data.append(&channel_id.to_xdr(env));
     data.append(&nonce.to_xdr(env));
-    
+
     let mut i = 0;
     while i < balances.len() {
         let balance = balances.get(i).unwrap();
         data.append(&balance.to_xdr(env));
         i += 1;
     }
-    
+
     env.crypto().sha256(&data).to_bytes()
 }
 
@@ -436,7 +431,7 @@ pub fn initiate_unilateral_exit(
         .public_keys
         .get(idx)
         .unwrap_or_else(|| panic_with_error!(env, Error::ChannelInvalidSignature));
-    
+
     let state_hash = calculate_state_hash(env, channel_id, nonce, &balances);
     let payload = receipt_payload(env, channel_id, nonce, &state_hash);
     env.crypto()
@@ -446,12 +441,12 @@ pub fn initiate_unilateral_exit(
     base.balances = balances.clone();
     base.nonce = nonce;
     base.status = ChannelStatus::Closing;
-    
+
     let new_merkle_root = calculate_merkle_root(env, &balances, channel_id);
-    merkle_state.merkle_root = new_merkle_root;
+    merkle_state.merkle_root = new_merkle_root.clone();
     merkle_state.substate_counter += 1;
     merkle_state.unilateral_exit_pending = true;
-    
+
     let now = env.ledger().timestamp();
     merkle_state.challenge_deadline = now.saturating_add(MERKLE_CHALLENGE_WINDOW_SECONDS);
 
@@ -460,7 +455,7 @@ pub fn initiate_unilateral_exit(
         channel_id,
         nonce,
         balances,
-        merkle_root: new_merkle_root,
+        merkle_root: new_merkle_root.clone(),
         created_at: now,
     };
     save_substate(env, &substate);
@@ -481,10 +476,7 @@ pub fn initiate_unilateral_exit(
     save_merkle_channel(env, &merkle_state);
 
     env.events().publish(
-        (
-            Symbol::new(env, "MerkleUnilateralExit"),
-            channel_id,
-        ),
+        (Symbol::new(env, "MerkleUnilateralExit"), channel_id),
         (nonce, merkle_state.challenge_deadline),
     );
 }
@@ -531,7 +523,7 @@ pub fn challenge_unilateral_exit(
         .public_keys
         .get(idx)
         .unwrap_or_else(|| panic_with_error!(env, Error::ChannelInvalidSignature));
-    
+
     let state_hash = calculate_state_hash(env, channel_id, nonce, &balances);
     let payload = receipt_payload(env, channel_id, nonce, &state_hash);
     env.crypto()
@@ -540,9 +532,9 @@ pub fn challenge_unilateral_exit(
     // Update with newer state (superset challenge)
     base.balances = balances.clone();
     base.nonce = nonce;
-    
+
     let new_merkle_root = calculate_merkle_root(env, &balances, channel_id);
-    merkle_state.merkle_root = new_merkle_root;
+    merkle_state.merkle_root = new_merkle_root.clone();
     merkle_state.substate_counter += 1;
     merkle_state.challenge_deadline = now.saturating_add(MERKLE_CHALLENGE_WINDOW_SECONDS);
 
@@ -551,7 +543,7 @@ pub fn challenge_unilateral_exit(
         channel_id,
         nonce,
         balances,
-        merkle_root: new_merkle_root,
+        merkle_root: new_merkle_root.clone(),
         created_at: now,
     };
     save_substate(env, &substate);
@@ -572,10 +564,7 @@ pub fn challenge_unilateral_exit(
     save_merkle_channel(env, &merkle_state);
 
     env.events().publish(
-        (
-            Symbol::new(env, "MerkleExitChallenged"),
-            channel_id,
-        ),
+        (Symbol::new(env, "MerkleExitChallenged"), channel_id),
         (nonce, merkle_state.challenge_deadline),
     );
 }
@@ -642,15 +631,13 @@ pub fn submit_merkle_exit_claim(
         submitted_at: env.ledger().timestamp(),
         is_verified: true,
     };
-    env.storage()
-        .persistent()
-        .set(&DataKey::MerkleExitClaim(channel_id, claimant.clone()), &claim);
+    env.storage().persistent().set(
+        &DataKey::MerkleExitClaim(channel_id, claimant.clone()),
+        &claim,
+    );
 
     env.events().publish(
-        (
-            Symbol::new(env, "MerkleExitClaimSubmitted"),
-            channel_id,
-        ),
+        (Symbol::new(env, "MerkleExitClaimSubmitted"), channel_id),
         (claimant.clone(), claimed_balance),
     );
 }
@@ -661,12 +648,7 @@ pub fn submit_merkle_exit_claim(
 /// * `channel_id` - The channel to withdraw from
 /// * `claimant` - The participant to pay
 /// * `amount` - Amount to withdraw
-pub fn withdraw_merkle_exit(
-    env: &Env,
-    channel_id: u64,
-    claimant: &Address,
-    amount: i128,
-) {
+pub fn withdraw_merkle_exit(env: &Env, channel_id: u64, claimant: &Address, amount: i128) {
     let _guard = ReentrancyGuard::new(env);
     claimant.require_auth();
 
@@ -680,8 +662,9 @@ pub fn withdraw_merkle_exit(
     // Verify channel is closed
     if base.status != ChannelStatus::Closing {
         // Check if we can finalize
-        if merkle_state.challenge_deadline > 0 
-            && env.ledger().timestamp() >= merkle_state.challenge_deadline {
+        if merkle_state.challenge_deadline > 0
+            && env.ledger().timestamp() >= merkle_state.challenge_deadline
+        {
             base.status = ChannelStatus::Closed;
             merkle_state.unilateral_exit_pending = false;
         } else {
@@ -708,7 +691,7 @@ pub fn withdraw_merkle_exit(
     let idx = get_participant_index(base, claimant)
         .unwrap_or_else(|| panic_with_error!(env, Error::Unauthorized));
     let balance = base.balances.get(idx).unwrap_or(0);
-    
+
     if balance < amount {
         panic_with_error!(env, Error::InsufficientBalance);
     }
@@ -717,19 +700,17 @@ pub fn withdraw_merkle_exit(
     save_merkle_channel(env, &merkle_state);
 
     // Transfer funds
-    let token_address = env.storage()
+    let token_address = env
+        .storage()
         .instance()
         .get(&DataKey::Token)
         .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
-    
+
     let token_client = soroban_sdk::token::Client::new(env, &token_address);
     token_client.transfer(&env.current_contract_address(), claimant, &amount);
 
     env.events().publish(
-        (
-            Symbol::new(env, "MerkleExitWithdrawn"),
-            channel_id,
-        ),
+        (Symbol::new(env, "MerkleExitWithdrawn"), channel_id),
         (claimant.clone(), amount),
     );
 }
@@ -742,11 +723,7 @@ pub fn withdraw_merkle_exit(
 /// # Arguments
 /// * `channel_id` - The channel with the unresponsive participant
 /// * `penalized_participant` - The address being penalized
-pub fn apply_timeout_penalty(
-    env: &Env,
-    channel_id: u64,
-    penalized_participant: &Address,
-) {
+pub fn apply_timeout_penalty(env: &Env, channel_id: u64, penalized_participant: &Address) {
     let mut merkle_state = load_merkle_channel(env, channel_id);
     let base = &mut merkle_state.base;
 
@@ -761,7 +738,7 @@ pub fn apply_timeout_penalty(
     // Find participant balance
     let idx = get_participant_index(base, penalized_participant)
         .unwrap_or_else(|| panic_with_error!(env, Error::Unauthorized));
-    
+
     let balance = base.balances.get(idx).unwrap_or(0);
     if balance == 0 {
         return;
@@ -795,17 +772,15 @@ pub fn apply_timeout_penalty(
         released_at: env.ledger().timestamp(),
         is_distributed: true,
     };
-    env.storage()
-        .persistent()
-        .set(&DataKey::TimeoutPenalty(channel_id, penalized_participant.clone()), &penalty_record);
+    env.storage().persistent().set(
+        &DataKey::TimeoutPenalty(channel_id, penalized_participant.clone()),
+        &penalty_record,
+    );
 
     save_merkle_channel(env, &merkle_state);
 
     env.events().publish(
-        (
-            Symbol::new(env, "TimeoutPenaltyApplied"),
-            channel_id,
-        ),
+        (Symbol::new(env, "TimeoutPenaltyApplied"), channel_id),
         (penalized_participant.clone(), penalty),
     );
 }
@@ -843,7 +818,11 @@ pub fn get_channel_substate(env: &Env, channel_id: u64, nonce: u64) -> Option<Ch
 ///
 /// # Returns
 /// * `Some(MerkleExitClaim)` if exists, `None` otherwise
-pub fn get_merkle_exit_claim(env: &Env, channel_id: u64, claimant: &Address) -> Option<MerkleExitClaim> {
+pub fn get_merkle_exit_claim(
+    env: &Env,
+    channel_id: u64,
+    claimant: &Address,
+) -> Option<MerkleExitClaim> {
     env.storage()
         .persistent()
         .get(&DataKey::MerkleExitClaim(channel_id, claimant.clone()))

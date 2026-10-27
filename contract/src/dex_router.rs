@@ -1,17 +1,19 @@
-
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec, Symbol, panic_with_error};
+use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 
 // DEX router implementation for multi-hop routing and slippage protection
+#[contract]
 pub struct DexRouter;
 
 #[contractimpl]
 impl DexRouter {
+    #[allow(clippy::too_many_arguments)]
     pub fn execute_swap(
         env: &Env,
+        _router: Address,
         path: Vec<Address>,
         amount_in: i128,
         min_amount_out: i128,
-        to: Address,
+        _to: Address,
         deadline: u64,
     ) -> i128 {
         if env.ledger().timestamp() > deadline {
@@ -31,7 +33,7 @@ impl DexRouter {
         for i in 0..path.len() - 1 {
             let _token_in = path.get(i).unwrap();
             let _token_out = path.get(i + 1).unwrap();
-            
+
             // Invoke pair/pool swap here
             // current_amount = swapped_amount;
         }
@@ -40,7 +42,7 @@ impl DexRouter {
             // Slippage > limit, aborts swap
             return 0;
         }
-        
+
         current_amount
     }
 }

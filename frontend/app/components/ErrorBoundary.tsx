@@ -5,7 +5,9 @@ import * as Sentry from "@sentry/nextjs";
 
 export interface ErrorBoundaryProps {
   children: ReactNode;
-  fallback?: ReactNode;
+  fallback?:
+    | ReactNode
+    | ((props: { error: Error; resetError: () => void }) => ReactNode);
   section?: string;
   onRetry?: () => void;
   walletProvider?: string;
@@ -30,7 +32,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
     const providerName =
       walletProvider ||
       (typeof window !== "undefined"
-        ? ((window as Record<string, unknown>)
+        ? ((window as unknown as Record<string, unknown>)
             .staminaWalletProvider as string) ||
           process.env.NEXT_PUBLIC_WALLET_PROVIDER ||
           "Freighter"
@@ -86,6 +88,9 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
 
     if (!error) return children;
 
+    if (typeof fallback === "function") {
+      return fallback({ error, resetError: this.reset });
+    }
     if (fallback) return fallback;
 
     return (

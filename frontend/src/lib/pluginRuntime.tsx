@@ -39,7 +39,9 @@ export function resolvePluginEntry(
     url.password ||
     url.hash
   ) {
-    throw new Error("Plugin entry must use HTTPS and cannot contain credentials or a fragment");
+    throw new Error(
+      "Plugin entry must use HTTPS and cannot contain credentials or a fragment",
+    );
   }
 
   const allowedOrigins = new Set([window.location.origin]);
@@ -141,7 +143,10 @@ export function createSandboxedPluginComponent(
           return;
         }
 
-        if (new TextEncoder().encode(serializedContext).byteLength > MAX_CONTEXT_BYTES) {
+        if (
+          new TextEncoder().encode(serializedContext).byteLength >
+          MAX_CONTEXT_BYTES
+        ) {
           fail("Plugin context exceeds the 64 KiB limit");
           return;
         }

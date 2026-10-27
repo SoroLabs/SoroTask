@@ -1,5 +1,9 @@
 import * as Sentry from "@/src/lib/errors/sentry";
 
+// Re-export the canonical implementation so callers can import all tracking
+// helpers from a single module.
+export { captureSentryException } from "@/src/lib/errors/sentry";
+
 export function initializeErrorTracking(userData: {
   id: string;
   walletAddress?: string;
@@ -28,14 +32,14 @@ export function trackNavigation(to: string, from?: string) {
 export function trackApiRequest(
   url: string,
   method: string = "GET",
-  statusCode?: number
+  statusCode?: number,
 ) {
   const level = statusCode && statusCode >= 400 ? "warning" : "info";
   Sentry.addSentryBreadcrumb(
     "http",
     `${method} ${url}${statusCode ? ` (${statusCode})` : ""}`,
     { url, method, statusCode },
-    level
+    level,
   );
 }
 
@@ -43,26 +47,42 @@ export function trackApiError(
   url: string,
   method: string,
   error: Error,
-  response?: Response
+  response?: Response,
 ) {
   Sentry.addSentryBreadcrumb(
     "http",
     `API error: ${method} ${url}`,
     { url, method, errorMessage: error.message, statusCode: response?.status },
-    "error"
+    "error",
   );
   Sentry.captureSentryException(error, {
     tags: { type: "api_error", endpoint: url, method },
-    extra: { url, method, statusCode: response?.status, statusText: response?.statusText },
+    extra: {
+      url,
+      method,
+      statusCode: response?.status,
+      statusText: response?.statusText,
+    },
   });
 }
 
-export function trackWalletAction(action: string, details?: Record<string, unknown>) {
+export function trackWalletAction(
+  action: string,
+  details?: Record<string, unknown>,
+) {
   Sentry.addSentryBreadcrumb("wallet", `Wallet action: ${action}`, details);
 }
 
-export function trackWalletError(error: Error, context?: Record<string, unknown>) {
-  Sentry.addSentryBreadcrumb("wallet", `Wallet error: ${error.message}`, context, "error");
+export function trackWalletError(
+  error: Error,
+  context?: Record<string, unknown>,
+) {
+  Sentry.addSentryBreadcrumb(
+    "wallet",
+    `Wallet error: ${error.message}`,
+    context,
+    "error",
+  );
   Sentry.captureSentryException(error, {
     tags: { type: "wallet_error" },
     extra: context,
@@ -72,7 +92,7 @@ export function trackWalletError(error: Error, context?: Record<string, unknown>
 export function trackUserAction(
   action: string,
   element: string,
-  details?: Record<string, unknown>
+  details?: Record<string, unknown>,
 ) {
   Sentry.addSentryBreadcrumb("ui.action", `User clicked: ${action}`, {
     element,
@@ -80,14 +100,21 @@ export function trackUserAction(
   });
 }
 
-export function trackPerformance(metric: string, value: number, unit: string = "ms") {
-  Sentry.addSentryBreadcrumb("performance", `Performance: ${metric}`, { value, unit });
+export function trackPerformance(
+  metric: string,
+  value: number,
+  unit: string = "ms",
+) {
+  Sentry.addSentryBreadcrumb("performance", `Performance: ${metric}`, {
+    value,
+    unit,
+  });
 }
 
 export function trackSocketEvent(
   event: string,
   direction: "sent" | "received" | "subscribed",
-  extraData?: Record<string, unknown>
+  extraData?: Record<string, unknown>,
 ) {
   Sentry.addSentryBreadcrumb("socket", `Socket ${direction}: ${event}`, {
     direction,
@@ -96,15 +123,26 @@ export function trackSocketEvent(
   });
 }
 
-export function trackSocketError(error: Error, context?: Record<string, unknown>) {
-  Sentry.addSentryBreadcrumb("socket", `Socket error: ${error.message}`, context, "error");
+export function trackSocketError(
+  error: Error,
+  context?: Record<string, unknown>,
+) {
+  Sentry.addSentryBreadcrumb(
+    "socket",
+    `Socket error: ${error.message}`,
+    context,
+    "error",
+  );
   Sentry.captureSentryException(error, {
     tags: { type: "socket_error" },
     extra: context,
   });
 }
 
-export function setTaskContext(taskId: string | number, taskData?: Record<string, unknown>) {
+export function setTaskContext(
+  taskId: string | number,
+  taskData?: Record<string, unknown>,
+) {
   Sentry.setSentryContext("task", { taskId, ...taskData });
 }
 
@@ -120,7 +158,7 @@ export class TrackedError extends Error {
   constructor(
     message: string,
     public code?: string,
-    public context?: Record<string, unknown>
+    public context?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "TrackedError";
@@ -133,7 +171,7 @@ export class TrackedError extends Error {
 
 export async function trackAsync<T>(
   fn: () => Promise<T>,
-  context?: { operation: string; taskId?: string | number; userId?: string }
+  context?: { operation: string; taskId?: string | number; userId?: string },
 ): Promise<T> {
   const startTime = Date.now();
   try {
@@ -158,7 +196,7 @@ export async function trackAsync<T>(
 
 export function trackSync<T>(
   fn: () => T,
-  context?: { operation: string; taskId?: string | number }
+  context?: { operation: string; taskId?: string | number },
 ): T {
   const startTime = Date.now();
   try {
@@ -175,5 +213,3 @@ export function trackSync<T>(
     throw err;
   }
 }
-
-

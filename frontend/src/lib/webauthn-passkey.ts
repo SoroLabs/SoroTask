@@ -1,5 +1,5 @@
-const RP_NAME = 'SoroTask';
-const RP_ID = process.env.NEXT_PUBLIC_RP_ID || 'localhost';
+const RP_NAME = "SoroTask";
+const RP_ID = process.env.NEXT_PUBLIC_RP_ID || "localhost";
 const CHALLENGE_TIMEOUT = 60000;
 
 interface PasskeyCredential {
@@ -23,7 +23,7 @@ interface AuthenticationOptions {
 
 function bufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
-  let binary = '';
+  let binary = "";
   for (let i = 0; i < bytes.byteLength; i++) {
     binary += String.fromCharCode(bytes[i]);
   }
@@ -45,7 +45,7 @@ export class WebAuthnPasskeyService {
   async isWebAuthnSupported(): Promise<boolean> {
     return !!(
       window.PublicKeyCredential &&
-      typeof window.PublicKeyCredential === 'function'
+      typeof window.PublicKeyCredential === "function"
     );
   }
 
@@ -58,7 +58,9 @@ export class WebAuthnPasskeyService {
     }
   }
 
-  async createCredential(options: CreateCredentialOptions): Promise<PasskeyCredential> {
+  async createCredential(
+    options: CreateCredentialOptions,
+  ): Promise<PasskeyCredential> {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
 
     const createOptions: CredentialCreationOptions = {
@@ -74,23 +76,25 @@ export class WebAuthnPasskeyService {
           displayName: options.displayName,
         },
         pubKeyCredParams: [
-          { alg: -7, type: 'public-key' },
-          { alg: -257, type: 'public-key' },
+          { alg: -7, type: "public-key" },
+          { alg: -257, type: "public-key" },
         ],
         authenticatorSelection: {
-          authenticatorAttachment: 'platform',
-          userVerification: 'required',
-          residentKey: 'preferred',
+          authenticatorAttachment: "platform",
+          userVerification: "required",
+          residentKey: "preferred",
         },
         timeout: CHALLENGE_TIMEOUT,
-        attestation: 'none',
+        attestation: "none",
       },
     };
 
-    const credential = await navigator.credentials.create(createOptions) as PublicKeyCredential;
+    const credential = (await navigator.credentials.create(
+      createOptions,
+    )) as PublicKeyCredential;
 
     if (!credential) {
-      throw new Error('Failed to create credential');
+      throw new Error("Failed to create credential");
     }
 
     const response = credential.response as AuthenticatorAttestationResponse;
@@ -119,11 +123,13 @@ export class WebAuthnPasskeyService {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
 
     const allowCredentials = options.credentialId
-      ? [{
-          type: 'public-key' as const,
-          id: base64ToBuffer(options.credentialId),
-          transports: ['internal'] as const,
-        }]
+      ? [
+          {
+            type: "public-key" as const,
+            id: base64ToBuffer(options.credentialId),
+            transports: ["internal"] as AuthenticatorTransport[],
+          },
+        ]
       : undefined;
 
     const getOptions: CredentialRequestOptions = {
@@ -131,15 +137,17 @@ export class WebAuthnPasskeyService {
         challenge,
         rpId: RP_ID,
         allowCredentials,
-        userVerification: 'required',
+        userVerification: "required",
         timeout: CHALLENGE_TIMEOUT,
       },
     };
 
-    const assertion = await navigator.credentials.get(getOptions) as PublicKeyCredential;
+    const assertion = (await navigator.credentials.get(
+      getOptions,
+    )) as PublicKeyCredential;
 
     if (!assertion) {
-      throw new Error('Authentication failed');
+      throw new Error("Authentication failed");
     }
 
     const response = assertion.response as AuthenticatorAssertionResponse;
@@ -152,7 +160,10 @@ export class WebAuthnPasskeyService {
     };
   }
 
-  async registerPasskey(userId: string, username: string): Promise<PasskeyCredential> {
+  async registerPasskey(
+    userId: string,
+    username: string,
+  ): Promise<PasskeyCredential> {
     const credential = await this.createCredential({
       userId,
       username,
@@ -173,7 +184,10 @@ export class WebAuthnPasskeyService {
       return false;
     }
 
-    const counterValid = this.verifyCounter(credential.counter, authenticatorData);
+    const counterValid = this.verifyCounter(
+      credential.counter,
+      authenticatorData,
+    );
     if (!counterValid) {
       return false;
     }
@@ -183,7 +197,10 @@ export class WebAuthnPasskeyService {
     return true;
   }
 
-  private verifyCounter(storedCounter: number, authenticatorData: Uint8Array): boolean {
+  private verifyCounter(
+    storedCounter: number,
+    authenticatorData: Uint8Array,
+  ): boolean {
     const currentCounter = this.extractCounter(authenticatorData);
     return currentCounter > storedCounter;
   }
@@ -205,14 +222,16 @@ export class WebAuthnPasskeyService {
     return this.credentialStore.delete(credentialId);
   }
 
-  async deriveStellarAccountKey(credential: PasskeyCredential): Promise<string> {
+  async deriveStellarAccountKey(
+    credential: PasskeyCredential,
+  ): Promise<string> {
     const keyData = credential.publicKey.slice(0, 32);
     let hash = 0;
     for (let i = 0; i < keyData.length; i++) {
       hash = ((hash << 5) - hash + keyData[i]) | 0;
     }
     const accountIndex = Math.abs(hash) % 1000;
-    return `G${accountIndex.toString().padStart(55, '0')}`;
+    return `G${accountIndex.toString().padStart(55, "0")}`;
   }
 }
 

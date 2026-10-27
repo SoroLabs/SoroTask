@@ -103,10 +103,13 @@ const simulationMessages: Record<NotificationCategoryId, string> = {
   taskFailed: "Task #1048 failed during its last keeper run.",
   taskRecovered: "Task #1048 recovered after the latest retry.",
   gasLow: "Task #212 has less than 20% gas remaining.",
-  taskPaused: "Task #333 was paused because its contract target rejected execution.",
+  taskPaused:
+    "Task #333 was paused because its contract target rejected execution.",
   executionSuccess: "Task #501 completed its scheduled execution successfully.",
-  executionSkipped: "Task #902 was skipped because its interval window shifted.",
-  weeklyDigest: "Your weekly digest is ready with uptime, gas, and skip trends.",
+  executionSkipped:
+    "Task #902 was skipped because its interval window shifted.",
+  weeklyDigest:
+    "Your weekly digest is ready with uptime, gas, and skip trends.",
 };
 
 function formatRelativeTimestamp(value: string | null): string {
@@ -163,9 +166,8 @@ export function NotificationPreferenceCenter() {
   const [saved, setSaved] = useState<NotificationPreferences>(
     defaultNotificationPreferences,
   );
-  const [permission, setPermission] = useState<BrowserPermissionState>(
-    "unsupported",
-  );
+  const [permission, setPermission] =
+    useState<BrowserPermissionState>("unsupported");
   const [saveMessage, setSaveMessage] = useState("No unsaved changes");
   const [simulationFeed, setSimulationFeed] = useState<SimulationEntry[]>([]);
   const [isSaving, startTransition] = useTransition();
@@ -176,7 +178,9 @@ export function NotificationPreferenceCenter() {
     setSaved(initialPreferences);
     setPermission(getBrowserPermissionState());
     setSaveMessage(
-      initialPreferences.updatedAt ? "Preferences loaded" : "Using smart defaults",
+      initialPreferences.updatedAt
+        ? "Preferences loaded"
+        : "Using smart defaults",
     );
     setExternalEndpointDrafts({
       webhook: {
@@ -217,7 +221,11 @@ export function NotificationPreferenceCenter() {
 
   const [externalEndpointDrafts, setExternalEndpointDrafts] = useState<
     Record<ExternalChannelId, { url: string; secret: string }>
-  >({ webhook: { url: "", secret: "" }, telegram: { url: "", secret: "" }, discord: { url: "", secret: "" } });
+  >({
+    webhook: { url: "", secret: "" },
+    telegram: { url: "", secret: "" },
+    discord: { url: "", secret: "" },
+  });
   const [pingResults, setPingResults] = useState<
     Partial<Record<ExternalChannelId, { ok: boolean; detail: string }>>
   >({});
@@ -246,7 +254,11 @@ export function NotificationPreferenceCenter() {
         const walletPublicKey = user?.address ?? "";
         const externalEndpoints = { ...draft.externalEndpoints };
 
-        for (const channel of ["webhook", "telegram", "discord"] as ExternalChannelId[]) {
+        for (const channel of [
+          "webhook",
+          "telegram",
+          "discord",
+        ] as ExternalChannelId[]) {
           const endpointDraft = externalEndpointDrafts[channel];
           const url = resolveChannelUrl(channel, endpointDraft).trim();
           if (!endpointDraft.secret) {
@@ -263,7 +275,10 @@ export function NotificationPreferenceCenter() {
           }
           externalEndpoints[channel] = {
             url: url,
-            secret: await encryptChannelSecret(endpointDraft.secret, walletPublicKey),
+            secret: await encryptChannelSecret(
+              endpointDraft.secret,
+              walletPublicKey,
+            ),
           };
         }
 
@@ -351,7 +366,8 @@ export function NotificationPreferenceCenter() {
     (category) => category.priority === "Critical",
   ).length;
   const enabledCriticalCategories = notificationCategories.filter(
-    (category) => category.priority === "Critical" && draft.categories[category.id],
+    (category) =>
+      category.priority === "Critical" && draft.categories[category.id],
   ).length;
 
   return (
@@ -364,11 +380,13 @@ export function NotificationPreferenceCenter() {
                 Notification Preference Center
               </p>
               <h1 className="max-w-xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-                One place to tune noisy alerts into a dependable operating signal.
+                One place to tune noisy alerts into a dependable operating
+                signal.
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-slate-200/80 sm:text-base">
-                Control browser push, the in-app activity feed, and email delivery
-                without losing sight of which task events still break through.
+                Control browser push, the in-app activity feed, and email
+                delivery without losing sight of which task events still break
+                through.
               </p>
             </div>
 
@@ -414,7 +432,9 @@ export function NotificationPreferenceCenter() {
               <button
                 type="button"
                 onClick={requestPermission}
-                disabled={permission === "granted" || permission === "unsupported"}
+                disabled={
+                  permission === "granted" || permission === "unsupported"
+                }
                 className="rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-white/25 disabled:text-white/70"
               >
                 {permission === "denied"
@@ -445,8 +465,8 @@ export function NotificationPreferenceCenter() {
                   Decide where alerts should arrive
                 </h2>
                 <p className="max-w-2xl text-sm leading-6 text-slate-300">
-                  Channels are global. Category toggles below decide which events
-                  are worth sending through those paths.
+                  Channels are global. Category toggles below decide which
+                  events are worth sending through those paths.
                 </p>
               </div>
 
@@ -458,7 +478,9 @@ export function NotificationPreferenceCenter() {
                       : "bg-emerald-500/15 text-emerald-200"
                   }`}
                 >
-                  {dirty ? "Unsaved changes" : formatRelativeTimestamp(saved.updatedAt)}
+                  {dirty
+                    ? "Unsaved changes"
+                    : formatRelativeTimestamp(saved.updatedAt)}
                 </span>
                 <button
                   type="button"
@@ -475,130 +497,145 @@ export function NotificationPreferenceCenter() {
               Multi-channel endpoints (webhook / Telegram / Discord)
             </p>
             <div className="mt-3 grid gap-4 md:grid-cols-3">
-              {(["webhook", "telegram", "discord"] as ExternalChannelId[]).map((channel) => {
-                const ping = pingResults[channel];
-                return (
-                  <div
-                    key={`endpoint-${channel}`}
-                    className="rounded-3xl border border-white/10 bg-white/[0.03] p-4"
-                  >
-                    <div className="space-y-3">
-                      <span className="text-sm font-semibold text-white">
-                        {channelCopy[channel].label}
-                      </span>
-                      <input
-                        aria-label={`${channelCopy[channel].label} endpoint URL`}
-                        type="url"
-                        placeholder="https://hooks.example.com/…"
-                        value={externalEndpointDrafts[channel].url}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          setExternalEndpointDrafts((current) => ({
-                            ...current,
-                            [channel]: { ...current[channel], url: value },
-                          }));
-                          setDraft((current) => ({
-                            ...current,
-                            channels: { ...current.channels, [channel]: true },
-                          }));
-                          setSaveMessage("Unsaved changes ready");
-                        }}
-                        className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
-                      />
-                      <input
-                        aria-label={`${channelCopy[channel].label} secret`}
-                        type="password"
-                        placeholder={
-                          draft.externalEndpoints[channel].secret
-                            ? "Secret stored (encrypted) — enter to replace"
-                            : "Secret (encrypted with your wallet key)"
-                        }
-                        value={externalEndpointDrafts[channel].secret}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          setExternalEndpointDrafts((current) => ({
-                            ...current,
-                            [channel]: { ...current[channel], secret: value },
-                          }));
-                          if (value) {
+              {(["webhook", "telegram", "discord"] as ExternalChannelId[]).map(
+                (channel) => {
+                  const ping = pingResults[channel];
+                  return (
+                    <div
+                      key={`endpoint-${channel}`}
+                      className="rounded-3xl border border-white/10 bg-white/[0.03] p-4"
+                    >
+                      <div className="space-y-3">
+                        <span className="text-sm font-semibold text-white">
+                          {channelCopy[channel].label}
+                        </span>
+                        <input
+                          aria-label={`${channelCopy[channel].label} endpoint URL`}
+                          type="url"
+                          placeholder="https://hooks.example.com/…"
+                          value={externalEndpointDrafts[channel].url}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setExternalEndpointDrafts((current) => ({
+                              ...current,
+                              [channel]: { ...current[channel], url: value },
+                            }));
                             setDraft((current) => ({
                               ...current,
-                              channels: { ...current.channels, [channel]: true },
+                              channels: {
+                                ...current.channels,
+                                [channel]: true,
+                              },
                             }));
                             setSaveMessage("Unsaved changes ready");
+                          }}
+                          className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
+                        />
+                        <input
+                          aria-label={`${channelCopy[channel].label} secret`}
+                          type="password"
+                          placeholder={
+                            draft.externalEndpoints[channel].secret
+                              ? "Secret stored (encrypted) — enter to replace"
+                              : "Secret (encrypted with your wallet key)"
                           }
-                        }}
-                        className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => runTestPing(channel)}
-                        className="w-full rounded-full border border-teal-300/30 px-4 py-2 text-sm font-medium text-teal-100 transition hover:bg-teal-300/10"
-                      >
-                        Send test ping
-                      </button>
-                      {ping ? (
-                        <span
-                          className={`block text-xs ${
-                            ping.ok ? "text-emerald-300" : "text-rose-300"
-                          }`}
+                          value={externalEndpointDrafts[channel].secret}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setExternalEndpointDrafts((current) => ({
+                              ...current,
+                              [channel]: { ...current[channel], secret: value },
+                            }));
+                            if (value) {
+                              setDraft((current) => ({
+                                ...current,
+                                channels: {
+                                  ...current.channels,
+                                  [channel]: true,
+                                },
+                              }));
+                              setSaveMessage("Unsaved changes ready");
+                            }
+                          }}
+                          className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => runTestPing(channel)}
+                          aria-label={
+                            channel === "webhook"
+                              ? "Send test ping"
+                              : `Send test ping via ${channelCopy[channel].label}`
+                          }
+                          className="w-full rounded-full border border-teal-300/30 px-4 py-2 text-sm font-medium text-teal-100 transition hover:bg-teal-300/10"
                         >
-                          {ping.detail}
-                        </span>
-                      ) : null}
+                          Send test ping
+                        </button>
+                        {ping ? (
+                          <span
+                            className={`block text-xs ${
+                              ping.ok ? "text-emerald-300" : "text-rose-300"
+                            }`}
+                          >
+                            {ping.detail}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                },
+              )}
             </div>
 
             <div className="mt-6 grid gap-4 md:grid-cols-3">
-              {(Object.keys(channelCopy) as NotificationChannel[]).map((channel) => {
-                const blocked =
-                  channel === "browser" && permission !== "granted";
+              {(Object.keys(channelCopy) as NotificationChannel[]).map(
+                (channel) => {
+                  const blocked =
+                    channel === "browser" && permission !== "granted";
 
-                return (
-                  <label
-                    key={channel}
-                    className="group rounded-3xl border border-white/10 bg-white/[0.03] p-4 transition hover:border-teal-300/30 hover:bg-white/[0.05]"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-lg font-semibold text-white">
-                            {channelCopy[channel].label}
-                          </span>
-                          {blocked ? (
-                            <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-200">
-                              Blocked by browser
+                  return (
+                    <label
+                      key={channel}
+                      className="group rounded-3xl border border-white/10 bg-white/[0.03] p-4 transition hover:border-teal-300/30 hover:bg-white/[0.05]"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg font-semibold text-white">
+                              {channelCopy[channel].label}
                             </span>
-                          ) : null}
+                            {blocked ? (
+                              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-200">
+                                Blocked by browser
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="text-sm leading-6 text-slate-300">
+                            {channelCopy[channel].description}
+                          </p>
                         </div>
-                        <p className="text-sm leading-6 text-slate-300">
-                          {channelCopy[channel].description}
-                        </p>
-                      </div>
 
-                      <input
-                        aria-label={channelCopy[channel].label}
-                        type="checkbox"
-                        checked={draft.channels[channel]}
-                        onChange={(event) => {
-                          setDraft((current) => ({
-                            ...current,
-                            channels: {
-                              ...current.channels,
-                              [channel]: event.target.checked,
-                            },
-                          }));
-                          setSaveMessage("Unsaved changes ready");
-                        }}
-                        className="mt-1 h-5 w-5 rounded border-white/20 bg-slate-900 text-teal-300 focus:ring-teal-300"
-                      />
-                    </div>
-                  </label>
-                );
-              })}
+                        <input
+                          aria-label={channelCopy[channel].label}
+                          type="checkbox"
+                          checked={draft.channels[channel]}
+                          onChange={(event) => {
+                            setDraft((current) => ({
+                              ...current,
+                              channels: {
+                                ...current.channels,
+                                [channel]: event.target.checked,
+                              },
+                            }));
+                            setSaveMessage("Unsaved changes ready");
+                          }}
+                          className="mt-1 h-5 w-5 rounded border-white/20 bg-slate-900 text-teal-300 focus:ring-teal-300"
+                        />
+                      </div>
+                    </label>
+                  );
+                },
+              )}
             </div>
             <p className="mt-4 text-sm text-slate-400">{saveMessage}</p>
           </div>
@@ -689,33 +726,38 @@ export function NotificationPreferenceCenter() {
                                 Live routing
                               </p>
                               <div className="mt-2 flex flex-wrap gap-2">
-                                {(Object.keys(channelCopy) as NotificationChannel[]).map(
-                                  (channel) => {
-                                    const override =
-                                      draft.categoryChannels[category.id];
-                                    const selected = override
-                                      ? override.includes(channel)
-                                      : false;
-                                    return (
-                                      <button
-                                        key={`route-${category.id}-${channel}`}
-                                        type="button"
-                                        aria-pressed={selected}
-                                        aria-label={`Route ${category.label} via ${channelCopy[channel].label}`}
-                                        onClick={() =>
-                                          toggleCategoryChannel(category.id, channel)
-                                        }
-                                        className={`rounded-full px-3 py-1 text-xs font-medium transition ${
-                                          selected
-                                            ? "bg-teal-300 text-slate-950"
-                                            : "bg-white/8 text-slate-300 hover:bg-white/12"
-                                        }`}
-                                      >
-                                        {channelCopy[channel].label}
-                                      </button>
-                                    );
-                                  },
-                                )}
+                                {(
+                                  Object.keys(
+                                    channelCopy,
+                                  ) as NotificationChannel[]
+                                ).map((channel) => {
+                                  const override =
+                                    draft.categoryChannels[category.id];
+                                  const selected = override
+                                    ? override.includes(channel)
+                                    : false;
+                                  return (
+                                    <button
+                                      key={`route-${category.id}-${channel}`}
+                                      type="button"
+                                      aria-pressed={selected}
+                                      aria-label={`Route ${category.label} via ${channelCopy[channel].label}`}
+                                      onClick={() =>
+                                        toggleCategoryChannel(
+                                          category.id,
+                                          channel,
+                                        )
+                                      }
+                                      className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                                        selected
+                                          ? "bg-teal-300 text-slate-950"
+                                          : "bg-white/8 text-slate-300 hover:bg-white/12"
+                                      }`}
+                                    >
+                                      {channelCopy[channel].label}
+                                    </button>
+                                  );
+                                })}
                               </div>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {activeChannels.length > 0 ? (
@@ -762,8 +804,8 @@ export function NotificationPreferenceCenter() {
               See what would happen right now
             </h2>
             <p className="mt-2 text-sm leading-6 text-slate-300">
-              Every simulated event respects the current draft settings, so teams
-              can verify signal paths before saving.
+              Every simulated event respects the current draft settings, so
+              teams can verify signal paths before saving.
             </p>
 
             <div className="mt-5 space-y-3">
@@ -810,7 +852,8 @@ export function NotificationPreferenceCenter() {
                           key={channel}
                           className="rounded-full bg-amber-500/15 px-3 py-1 text-xs font-medium text-amber-100"
                         >
-                          {channelCopy[channel].label} blocked by browser permission
+                          {channelCopy[channel].label} blocked by browser
+                          permission
                         </span>
                       ))}
                     </div>
@@ -818,8 +861,9 @@ export function NotificationPreferenceCenter() {
                 ))
               ) : (
                 <div className="rounded-3xl border border-dashed border-white/15 bg-white/[0.02] p-5 text-sm leading-6 text-slate-400">
-                  Run a simulation on any category to preview the actual delivery
-                  channels and confirm whether browser permission will allow it.
+                  Run a simulation on any category to preview the actual
+                  delivery channels and confirm whether browser permission will
+                  allow it.
                 </div>
               )}
             </div>
@@ -831,16 +875,17 @@ export function NotificationPreferenceCenter() {
             </p>
             <div className="mt-3 space-y-3 text-sm leading-6 text-slate-300">
               <p>
-                If browser push stays blocked, leave critical task alerts enabled
-                in the in-app feed so operators still see a durable activity trail.
+                If browser push stays blocked, leave critical task alerts
+                enabled in the in-app feed so operators still see a durable
+                activity trail.
               </p>
               <p>
-                Use email for slower summaries and escalation-friendly events such
-                as low gas balance or paused tasks.
+                Use email for slower summaries and escalation-friendly events
+                such as low gas balance or paused tasks.
               </p>
               <p>
-                Save after changes to keep the same routing behavior on your next
-                visit to SoroTask.
+                Save after changes to keep the same routing behavior on your
+                next visit to SoroTask.
               </p>
             </div>
           </section>

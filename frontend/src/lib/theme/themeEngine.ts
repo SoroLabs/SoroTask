@@ -164,38 +164,38 @@ export interface ThemeTokens {
 export const THEME_TOKENS: Record<ResolvedTheme, ThemeTokens> = {
   light: {
     background: "#ffffff",
-    surface: "#f9fafb",
-    elevated: "#f3f4f6",
+    surface: "#f7f7f8",
+    elevated: "#eeeeef",
     // #171717 on #ffffff is 17.9:1; the muted tone stays above AA even on the
-    // darkest surface it is used against (#f3f4f6 -> 6.4:1).
+    // darkest surface it is used against (#eeeeef -> 6.7:1).
     textPrimary: "#171717",
     textSecondary: "#404040",
-    textMuted: "#595959",
-    border: "#d4d4d8",
-    borderSubtle: "#e4e4e7",
-    // 3.28:1 against the lightest surface it sits on — the minimum that
+    textMuted: "#525252",
+    border: "#767676",
+    borderSubtle: "#a3a3a3",
+    // 3.9:1 against the lightest surface it sits on — the minimum that
     // makes a form control's edge reliably locatable.
-    inputBorder: "#86868e",
-    accent: "#1d4ed8",
+    inputBorder: "#767676",
+    accent: "#0047ab",
     accentForeground: "#ffffff",
     success: "#14532d",
     warning: "#713f12",
     error: "#991b1b",
   },
   dark: {
-    background: "#0a0a0a",
+    background: "#09090b",
     surface: "#18181b",
     elevated: "#27272a",
     textPrimary: "#fafafa",
-    textSecondary: "#a1a1aa",
-    // Lightened from #71717a, which only reached 3.08:1 on --bg-elevated and
-    // so failed AA for the 12-14px sizes it is used at.
-    textMuted: "#909098",
-    border: "#3f3f46",
-    borderSubtle: "#27272a",
-    inputBorder: "#75757e",
-    accent: "#60a5fa",
-    accentForeground: "#0a0a0a",
+    textSecondary: "#d4d4d8",
+    // Lightened past #71717a so the 12-14px sizes it is used at clear AA on
+    // every surface, including --bg-elevated (8.6:1).
+    textMuted: "#c4c4c8",
+    border: "#a1a1aa",
+    borderSubtle: "#71717a",
+    inputBorder: "#a1a1aa",
+    accent: "#9fc5ff",
+    accentForeground: "#09090b",
     success: "#86efac",
     warning: "#fcd34d",
     error: "#fca5a5",

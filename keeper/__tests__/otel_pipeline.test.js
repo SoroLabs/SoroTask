@@ -21,10 +21,12 @@ describe('Issue #1435: Prometheus & OpenTelemetry Distributed Tracing Pipeline',
 
     it('always samples high-priority, error, or forceSample contexts', () => {
       const sampler = new DynamicTraceSampler({ samplingRate: 0.0 });
+      const spy = jest.spyOn(Math, 'random').mockReturnValue(0.99);
       expect(sampler.shouldSample({ error: true })).toBe(true);
       expect(sampler.shouldSample({ forceSample: true })).toBe(true);
       expect(sampler.shouldSample({ priority: 'high' })).toBe(true);
       expect(sampler.shouldSample({ priority: 'normal' })).toBe(false);
+      spy.mockRestore();
     });
 
     it('guarantees estimated CPU overhead strictly < 1%', () => {

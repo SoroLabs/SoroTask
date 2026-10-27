@@ -12,9 +12,8 @@ jobs:
     name: Evaluate Dependabot / GHSA security alerts
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
-      security-events: write
+      contents: read
+      security-events: read
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -24,10 +23,16 @@ jobs:
       - name: Fetch Dependabot alerts
         id: alerts
         run: |
-          ALERTS=$(gh api repos/${{ github.repository }}/dependabot/alerts --jq '.[] | select(.state == "open") | {number, severity: .security_advisory.severity, package: .security_advisory.package.name, advisory_id: .security_advisory.github_advisory_id, cve: .security_advisory.cve_ids[0]}')
-          echo "alerts<<EOF" >> $GITHUB_OUTPUT
-          echo "$ALERTS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          if ALERTS=$(gh api repos/${{ github.repository }}/dependabot/alerts \
+            --jq '.[] | select(.state == "open") | {number, severity: .security_advisory.severity, package: .security_advisory.package.name, advisory_id: .security_advisory.github_advisory_id, cve: .security_advisory.cve_ids[0]}'); then
+            echo "alerts<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$ALERTS" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Dependabot alerts unavailable::The workflow token could not read Dependabot alerts (HTTP 403). Alert-driven automation is skipped; set a PAT with the security_events scope in repo secrets to enable it."
+            echo "alerts<<EOF" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

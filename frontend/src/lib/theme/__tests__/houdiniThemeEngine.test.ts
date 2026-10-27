@@ -20,7 +20,6 @@ describe("houdiniThemeEngine", () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    // @ts-expect-error test reset
     global.CSS = originalCSS;
     jest.clearAllMocks();
   });
@@ -50,7 +49,9 @@ describe("houdiniThemeEngine", () => {
     applyThemeTokens(fallback);
     const style = document.documentElement.style;
 
-    expect(style.getPropertyValue("--theme-background")).toBe(fallback.background);
+    expect(style.getPropertyValue("--theme-background")).toBe(
+      fallback.background,
+    );
     expect(style.getPropertyValue("--fallback-bg")).toBe(fallback.background);
   });
 
@@ -87,9 +88,9 @@ describe("houdiniThemeEngine", () => {
 
     expect(result.source).toBe("fallback");
     expect(onError).toHaveBeenCalled();
-    expect(document.documentElement.style.getPropertyValue("--fallback-bg")).toBe(
-      fallback.background,
-    );
+    expect(
+      document.documentElement.style.getPropertyValue("--fallback-bg"),
+    ).toBe(fallback.background);
   });
 
   it("uses external theme when available", async () => {
@@ -112,8 +113,8 @@ describe("houdiniThemeEngine", () => {
 
     expect(result.source).toBe("external");
     expect(result.usingHoudini).toBe(true);
-    expect(document.documentElement.style.getPropertyValue("--theme-accent")).toBe(
-      "#22c55e",
-    );
+    expect(
+      document.documentElement.style.getPropertyValue("--theme-accent"),
+    ).toBe("#22c55e");
   });
 });

@@ -41,6 +41,24 @@ const TONE: Record<
     iconBg: "bg-blue-500/15 text-blue-300",
     icon: "…",
   },
+  increase_gas: {
+    ring: "border-orange-500/30",
+    bg: "bg-orange-500/5",
+    iconBg: "bg-orange-500/15 text-orange-300",
+    icon: "↑",
+  },
+  reconnect_wallet: {
+    ring: "border-violet-500/30",
+    bg: "bg-violet-500/5",
+    iconBg: "bg-violet-500/15 text-violet-300",
+    icon: "↻",
+  },
+  switch_network: {
+    ring: "border-cyan-500/30",
+    bg: "bg-cyan-500/5",
+    iconBg: "bg-cyan-500/15 text-cyan-300",
+    icon: "⇄",
+  },
   none: {
     ring: "border-neutral-600/40",
     bg: "bg-neutral-700/10",
@@ -59,7 +77,8 @@ export function ContractErrorBanner({
   const [showDebug, setShowDebug] = useState(false);
   const action = actionOverride ?? error.action;
   const tone = TONE[action];
-  const showRetry = Boolean(onRetry) && (action === "retry" || action === "fix_input");
+  const showRetry =
+    Boolean(onRetry) && (action === "retry" || action === "fix_input");
   const showWait = action === "wait";
 
   return (

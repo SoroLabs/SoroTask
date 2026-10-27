@@ -336,7 +336,6 @@ export function TradingChart() {
       const orderY = priceToY(order.price, canvas.height);
       if (Math.abs(y - orderY) < 14) {
         setDraggingOrderId(order.id);
-        setSelectedOrder(order);
         setDragPrice(order.price);
         break;
       }

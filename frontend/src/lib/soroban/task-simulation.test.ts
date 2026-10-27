@@ -11,11 +11,11 @@ const mockTransactionBuilder = {
 };
 const mockTransactionData = {
   build: () => ({
-    resources: () => ({
-      instructions: () => 145000,
-      diskReadBytes: () => 2048,
-      writeBytes: () => 1024,
-    }),
+    resources: {
+      instructions: 145000,
+      diskReadBytes: 2048,
+      writeBytes: 1024,
+    },
   }),
   getReadOnly: () => [{}, {}],
   getReadWrite: () => [{}],
@@ -35,7 +35,8 @@ jest.mock("@stellar/stellar-sdk", () => {
       Api: {
         ...actual.rpc.Api,
         isSimulationSuccess: jest.fn(
-          (simulation) => "success" in simulation && simulation.success === true,
+          (simulation) =>
+            "success" in simulation && simulation.success === true,
         ),
       },
       Server: jest.fn(() => mockServer),
@@ -81,7 +82,9 @@ describe("Soroban task pre-flight simulation", () => {
   it("reports fees and resource usage from the Soroban RPC response", async () => {
     const result = await simulateTaskCall(simulationInput);
 
-    expect(mockServer.simulateTransaction).toHaveBeenCalledWith(mockTransaction);
+    expect(mockServer.simulateTransaction).toHaveBeenCalledWith(
+      mockTransaction,
+    );
     expect(result).toMatchObject({
       minResourceFeeStroops: "56000",
       networkFeeStroops: "12000",

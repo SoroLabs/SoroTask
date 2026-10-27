@@ -1,7 +1,7 @@
-import { Worker } from 'worker_threads';
+import { Worker } from "worker_threads";
 
 interface FuzzInput {
-  type: 'epoch' | 'timestamp' | 'balance' | 'price';
+  type: "epoch" | "timestamp" | "balance" | "price";
   value: number;
   description: string;
 }
@@ -24,6 +24,8 @@ interface FuzzConfig {
 
 const DEFAULT_CONFIG: FuzzConfig = {
   iterations: 10000,
+  conditions: {},
+  resolverCode: "",
   timeoutMs: 100,
 };
 
@@ -39,7 +41,7 @@ export class FuzzingSandbox {
 
   async runFuzzing(
     resolverCode: string,
-    conditions: Record<string, any>
+    conditions: Record<string, any>,
   ): Promise<{
     totalIterations: number;
     failures: FuzzResult[];
@@ -63,7 +65,7 @@ export class FuzzingSandbox {
       const result = await this.evaluateCondition(
         resolverCode,
         conditions,
-        input
+        input,
       );
 
       processed++;
@@ -96,25 +98,25 @@ export class FuzzingSandbox {
       const rand = Math.random();
       if (rand < 0.25) {
         inputs.push({
-          type: 'epoch',
+          type: "epoch",
           value: this.fuzzEpoch(),
           description: `Epoch fuzz #${i}`,
         });
       } else if (rand < 0.5) {
         inputs.push({
-          type: 'timestamp',
+          type: "timestamp",
           value: this.fuzzTimestamp(),
           description: `Timestamp fuzz #${i}`,
         });
       } else if (rand < 0.75) {
         inputs.push({
-          type: 'balance',
+          type: "balance",
           value: this.fuzzBalance(),
           description: `Balance fuzz #${i}`,
         });
       } else {
         inputs.push({
-          type: 'price',
+          type: "price",
           value: this.fuzzPrice(),
           description: `Price fuzz #${i}`,
         });
@@ -159,13 +161,16 @@ export class FuzzingSandbox {
   private async evaluateCondition(
     resolverCode: string,
     conditions: Record<string, any>,
-    input: FuzzInput
+    input: FuzzInput,
   ): Promise<FuzzResult> {
     try {
       const result = this.simulateResolver(resolverCode, conditions, input);
 
       return {
-        iteration: input.type === 'epoch' ? parseInt(input.value.toString()) : this.results.length,
+        iteration:
+          input.type === "epoch"
+            ? parseInt(input.value.toString())
+            : this.results.length,
         input,
         success: result.success,
         error: result.error,
@@ -177,7 +182,7 @@ export class FuzzingSandbox {
         iteration: this.results.length,
         input,
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? error.message : "Unknown error",
         deadlock: false,
         panic: true,
       };
@@ -187,14 +192,14 @@ export class FuzzingSandbox {
   private simulateResolver(
     resolverCode: string,
     conditions: Record<string, any>,
-    input: FuzzInput
+    input: FuzzInput,
   ): { success: boolean; error?: string; deadlock: boolean; panic: boolean } {
     try {
-      if (input.value < 0 && input.type === 'balance') {
+      if (input.value < 0 && input.type === "balance") {
         return { success: false, deadlock: true, panic: false };
       }
 
-      if (input.value === 0 && input.type === 'price') {
+      if (input.value === 0 && input.type === "price") {
         return { success: false, deadlock: false, panic: true };
       }
 
@@ -202,9 +207,9 @@ export class FuzzingSandbox {
         return { success: false, deadlock: true, panic: false };
       }
 
-      return { success: true };
+      return { success: true, deadlock: false, panic: false };
     } catch {
-      return { success: false, panic: true };
+      return { success: false, deadlock: false, panic: true };
     }
   }
 
@@ -214,7 +219,7 @@ export class FuzzingSandbox {
     recommendations: string[];
   } {
     const edgeCases = this.results.filter(
-      (r) => !r.success || r.deadlock || r.panic
+      (r) => !r.success || r.deadlock || r.panic,
     );
 
     const recommendations: string[] = [];
@@ -223,16 +228,16 @@ export class FuzzingSandbox {
 
     if (deadlockCount > 0) {
       recommendations.push(
-        `Add guard conditions for edge-case timestamps and zero-balance states to prevent deadlocks (${deadlockCount} found)`
+        `Add guard conditions for edge-case timestamps and zero-balance states to prevent deadlocks (${deadlockCount} found)`,
       );
     }
     if (panicCount > 0) {
       recommendations.push(
-        `Add overflow checks and zero-price guards to prevent panics (${panicCount} found)`
+        `Add overflow checks and zero-price guards to prevent panics (${panicCount} found)`,
       );
     }
     if (edgeCases.length === 0) {
-      recommendations.push('All fuzz tests passed! No issues detected.');
+      recommendations.push("All fuzz tests passed! No issues detected.");
     }
 
     return {
@@ -248,6 +253,8 @@ export class FuzzingSandbox {
   }
 }
 
-export function createFuzzSandbox(config?: Partial<FuzzConfig>): FuzzingSandbox {
+export function createFuzzSandbox(
+  config?: Partial<FuzzConfig>,
+): FuzzingSandbox {
   return new FuzzingSandbox(config);
 }

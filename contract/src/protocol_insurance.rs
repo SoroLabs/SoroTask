@@ -12,10 +12,12 @@
 //! - Waterfall haircut logic to prevent fund drain
 //! - Risk tranches for different coverage levels
 
-use soroban_sdk::{Address, Bytes, Env, Symbol, Vec, panic_with_error};
+use soroban_sdk::{panic_with_error, Address, Bytes, Env, Symbol, Vec};
 
+use crate::insurance::{
+    self, claimable_balance, funded_balance, record_claim_payment, record_premium,
+};
 use crate::DataKey;
-use crate::insurance::{self, claimable_balance, funded_balance, record_claim_payment, record_premium};
 use crate::Error;
 
 /// Minimum stake required to become an insurance underwriter
@@ -160,7 +162,11 @@ pub struct InsurancePoolStats {
 /// Initializes the insurance pool with default tranches.
 fn initialize_tranches(env: &Env) {
     // Only initialize if not already set
-    if env.storage().instance().has(&DataKey::InsuranceTrancheInitialized) {
+    if env
+        .storage()
+        .instance()
+        .has(&DataKey::InsuranceTrancheInitialized)
+    {
         return;
     }
 
@@ -281,11 +287,12 @@ pub fn stake_as_underwriter(env: &Env, underwriter: &Address, amount: i128) -> u
     }
 
     // Transfer stake amount from underwriter
-    let token_address = env.storage()
+    let token_address = env
+        .storage()
         .instance()
         .get(&DataKey::Token)
         .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
-    
+
     let token_client = soroban_sdk::token::Client::new(env, &token_address);
     token_client.transfer(underwriter, &env.current_contract_address(), &amount);
 
@@ -313,19 +320,18 @@ pub fn stake_as_underwriter(env: &Env, underwriter: &Address, amount: i128) -> u
     save_underwriter(env, underwriter, &stake);
 
     // Update total underwriter stake
-    let total_stake: i128 = env.storage()
+    let total_stake: i128 = env
+        .storage()
         .instance()
         .get(&DataKey::TotalInsuranceUnderwriterStake)
         .unwrap_or(0);
-    env.storage()
-        .instance()
-        .set(&DataKey::TotalInsuranceUnderwriterStake, &(total_stake.saturating_add(amount)));
+    env.storage().instance().set(
+        &DataKey::TotalInsuranceUnderwriterStake,
+        &(total_stake.saturating_add(amount)),
+    );
 
     env.events().publish(
-        (
-            Symbol::new(env, "UnderwriterStaked"),
-            underwriter.clone(),
-        ),
+        (Symbol::new(env, "UnderwriterStaked"), underwriter.clone()),
         (amount, tranche),
     );
 
@@ -340,7 +346,7 @@ pub fn stake_as_underwriter(env: &Env, underwriter: &Address, amount: i128) -> u
 ///
 /// # Returns
 /// * The actual amount unstaked (may be less if exposure exists)
-pub fn unstake_as_underwriter(env: &Env, underwriter: &Address, amount: i128) -> i128 {
+pub fn unstake_as_underwriter(env: &Env, underwriter: &Address, mut amount: i128) -> i128 {
     underwriter.require_auth();
 
     if amount <= 0 {
@@ -373,28 +379,32 @@ pub fn unstake_as_underwriter(env: &Env, underwriter: &Address, amount: i128) ->
     save_underwriter(env, underwriter, &stake);
 
     // Return funds to underwriter
-    let token_address = env.storage()
+    let token_address = env
+        .storage()
         .instance()
         .get(&DataKey::Token)
         .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
-    
+
     let token_client = soroban_sdk::token::Client::new(env, &token_address);
-    token_client.transfer(&env.current_contract_address(), underwriter, &unstake_amount);
+    token_client.transfer(
+        &env.current_contract_address(),
+        underwriter,
+        &unstake_amount,
+    );
 
     // Update total stake
-    let total_stake: i128 = env.storage()
+    let total_stake: i128 = env
+        .storage()
         .instance()
         .get(&DataKey::TotalInsuranceUnderwriterStake)
         .unwrap_or(0);
-    env.storage()
-        .instance()
-        .set(&DataKey::TotalInsuranceUnderwriterStake, &(total_stake.saturating_sub(unstake_amount)));
+    env.storage().instance().set(
+        &DataKey::TotalInsuranceUnderwriterStake,
+        &(total_stake.saturating_sub(unstake_amount)),
+    );
 
     env.events().publish(
-        (
-            Symbol::new(env, "UnderwriterUnstaked"),
-            underwriter.clone(),
-        ),
+        (Symbol::new(env, "UnderwriterUnstaked"), underwriter.clone()),
         unstake_amount,
     );
 
@@ -471,10 +481,7 @@ pub fn submit_insurance_claim(
     save_insurance_pool_stats(env, &stats);
 
     env.events().publish(
-        (
-            Symbol::new(env, "InsuranceClaimSubmitted"),
-            claim_id,
-        ),
+        (Symbol::new(env, "InsuranceClaimSubmitted"), claim_id),
         (claimant.clone(), task_id, claim_amount),
     );
 
@@ -505,7 +512,8 @@ pub fn certify_insurance_claim(
         panic_with_error!(env, Error::InsufficientBalance);
     }
 
-    let mut claim: ProtocolInsuranceClaim = env.storage()
+    let mut claim: ProtocolInsuranceClaim = env
+        .storage()
         .persistent()
         .get(&DataKey::ProtocolInsuranceClaim(claim_id))
         .unwrap_or_else(|| panic_with_error!(env, Error::TaskNotFound));
@@ -530,10 +538,7 @@ pub fn certify_insurance_claim(
         .set(&DataKey::ProtocolInsuranceClaim(claim_id), &claim);
 
     env.events().publish(
-        (
-            Symbol::new(env, "InsuranceClaimCertified"),
-            claim_id,
-        ),
+        (Symbol::new(env, "InsuranceClaimCertified"), claim_id),
         (approved_amount, risk_level),
     );
 }
@@ -545,7 +550,8 @@ pub fn certify_insurance_claim(
 /// # Arguments
 /// * `claim_id` - The claim to process
 pub fn process_insurance_claim(env: &Env, claim_id: u64) -> i128 {
-    let mut claim: ProtocolInsuranceClaim = env.storage()
+    let mut claim: ProtocolInsuranceClaim = env
+        .storage()
         .persistent()
         .get(&DataKey::ProtocolInsuranceClaim(claim_id))
         .unwrap_or_else(|| panic_with_error!(env, Error::TaskNotFound));
@@ -568,13 +574,18 @@ pub fn process_insurance_claim(env: &Env, claim_id: u64) -> i128 {
     let payout_amount = execute_waterfall_payout(env, claim.approved_amount);
 
     // Transfer payout to claimant
-    let token_address = env.storage()
+    let token_address = env
+        .storage()
         .instance()
         .get(&DataKey::Token)
         .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
-    
+
     let token_client = soroban_sdk::token::Client::new(env, &token_address);
-    token_client.transfer(&env.current_contract_address(), &claim.claimant, &payout_amount);
+    token_client.transfer(
+        &env.current_contract_address(),
+        &claim.claimant,
+        &payout_amount,
+    );
 
     // Record the payment
     record_claim_payment(env, payout_amount);
@@ -595,10 +606,7 @@ pub fn process_insurance_claim(env: &Env, claim_id: u64) -> i128 {
     save_insurance_pool_stats(env, &stats);
 
     env.events().publish(
-        (
-            Symbol::new(env, "InsuranceClaimPaid"),
-            claim_id,
-        ),
+        (Symbol::new(env, "InsuranceClaimPaid"), claim_id),
         payout_amount,
     );
 
@@ -616,7 +624,8 @@ pub fn process_insurance_claim(env: &Env, claim_id: u64) -> i128 {
 /// # Returns
 /// * The actual amount paid out
 fn execute_waterfall_payout(env: &Env, amount: i128) -> i128 {
-    let total_stake: i128 = env.storage()
+    let total_stake: i128 = env
+        .storage()
         .instance()
         .get(&DataKey::TotalInsuranceUnderwriterStake)
         .unwrap_or(0);
@@ -656,7 +665,8 @@ fn update_underwriter_exposure(env: &Env, keeper: &Address, payout_amount: i128)
 /// * `claim_id` - The claim to reject
 /// * `reason` - Reason for rejection
 pub fn reject_insurance_claim(env: &Env, claim_id: u64, reason: Bytes) {
-    let mut claim: ProtocolInsuranceClaim = env.storage()
+    let mut claim: ProtocolInsuranceClaim = env
+        .storage()
         .persistent()
         .get(&DataKey::ProtocolInsuranceClaim(claim_id))
         .unwrap_or_else(|| panic_with_error!(env, Error::TaskNotFound));
@@ -679,10 +689,7 @@ pub fn reject_insurance_claim(env: &Env, claim_id: u64, reason: Bytes) {
     save_insurance_pool_stats(env, &stats);
 
     env.events().publish(
-        (
-            Symbol::new(env, "InsuranceClaimRejected"),
-            claim_id,
-        ),
+        (Symbol::new(env, "InsuranceClaimRejected"), claim_id),
         reason,
     );
 }
@@ -703,7 +710,7 @@ pub fn accrue_protocol_fees(env: &Env, fee_amount: i128) -> i128 {
     }
 
     let allocation = fee_amount * INSURANCE_FEE_ALLOCATION_BPS as i128 / 10000;
-    
+
     if allocation > 0 {
         record_premium(env, allocation);
     }
@@ -735,11 +742,12 @@ pub fn claim_underwriter_rewards(env: &Env, underwriter: &Address) -> i128 {
     save_underwriter(env, underwriter, &stake);
 
     // Transfer rewards
-    let token_address = env.storage()
+    let token_address = env
+        .storage()
         .instance()
         .get(&DataKey::Token)
         .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
-    
+
     let token_client = soroban_sdk::token::Client::new(env, &token_address);
     token_client.transfer(&env.current_contract_address(), underwriter, &rewards);
 
@@ -795,7 +803,7 @@ pub fn get_risk_tranches(env: &Env) -> Vec<RiskTranche> {
     env.storage()
         .instance()
         .get(&DataKey::InsuranceTranches)
-        .unwrap_or_else(Vec::new)
+        .unwrap_or_else(|| Vec::new(env))
 }
 
 #[cfg(test)]
@@ -806,7 +814,7 @@ mod tests {
     fn test_tranche_calculation() {
         // Test tranche assignment based on stake amount
         let env = Env::default();
-        
+
         // These would need proper env setup in actual tests
         assert_eq!(calculate_tranche(&env, 500), 1); // Below minimum
         assert_eq!(calculate_tranche(&env, 1000), 1); // Bronze
@@ -817,7 +825,9 @@ mod tests {
 
     #[test]
     fn test_waterfall_ratios() {
-        assert_eq!(TRANCHE_1_RATIO_BPS + TRANCHE_2_RATIO_BPS + 
-                   TRANCHE_3_RATIO_BPS + TRANCHE_4_RATIO_BPS, 10000);
+        assert_eq!(
+            TRANCHE_1_RATIO_BPS + TRANCHE_2_RATIO_BPS + TRANCHE_3_RATIO_BPS + TRANCHE_4_RATIO_BPS,
+            10000
+        );
     }
 }

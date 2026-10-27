@@ -35,12 +35,7 @@ export type SupportedWallet =
   | "ledger";
 
 export type ConnectionStatus =
-  | "idle"
-  | "restoring"
-  | "connecting"
-  | "connected"
-  | "disconnected"
-  | "error";
+  "idle" | "restoring" | "connecting" | "connected" | "disconnected" | "error";
 
 export interface WalletContextValue {
   status: ConnectionStatus;
@@ -101,14 +96,16 @@ function detectBrowserWallets(): Record<SupportedWallet, boolean> {
     hana: Boolean(w.hana || w.hanaWallet),
     walletconnect_v2: true, // Universal mobile QR
     albedo: true, // Web popup available
-    ledger: Boolean(navigator?.usb || (navigator as any)?.hid),
+    ledger: Boolean((navigator as any)?.usb || (navigator as any)?.hid),
   };
 }
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [session, setSession] = useState<WalletSession | null>(null);
-  const [activeWallet, setActiveWallet] = useState<SupportedWallet | null>(null);
+  const [activeWallet, setActiveWallet] = useState<SupportedWallet | null>(
+    null,
+  );
   const [hardwareSession, setHardwareSession] =
     useState<HardwareWalletSession | null>(null);
   const [errorCode, setErrorCode] = useState<WalletError | null>(null);
@@ -118,7 +115,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [isLedgerModalOpen, setIsLedgerModalOpen] = useState<boolean>(false);
   const [isWcModalOpen, setIsWcModalOpen] = useState<boolean>(false);
   const [wcUri, setWcUri] = useState<string | null>(null);
-  const [installedWallets, setInstalledWallets] = useState<Record<SupportedWallet, boolean>>({
+  const [installedWallets, setInstalledWallets] = useState<
+    Record<SupportedWallet, boolean>
+  >({
     freighter: false,
     xbull: false,
     lobstr: false,
@@ -141,7 +140,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setNetworkWarning(null);
       return;
     }
-    const expected = EXPECTED_NETWORK_PASSPHRASE || "Test SDF Future Network ; October 2022";
+    const expected =
+      EXPECTED_NETWORK_PASSPHRASE || "Test SDF Future Network ; October 2022";
     const allowed = [
       expected,
       "Test SDF Future Network ; October 2022",
@@ -150,7 +150,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     if (!allowed.includes(passphrase)) {
       setIsWrongNetwork(true);
       setNetworkWarning(
-        `Wrong network detected ("${passphrase}"). SoroTask requires Futurenet/Testnet. Please switch networks in your wallet.`
+        `Wrong network detected ("${passphrase}"). SoroTask requires Futurenet/Testnet. Please switch networks in your wallet.`,
       );
     } else {
       setIsWrongNetwork(false);
@@ -164,7 +164,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setStatus("restoring");
 
     if (typeof window !== "undefined") {
-      const explicitlyDisconnected = localStorage.getItem(STORAGE_DISCONNECT_KEY) === "true";
+      const explicitlyDisconnected =
+        localStorage.getItem(STORAGE_DISCONNECT_KEY) === "true";
       if (explicitlyDisconnected) {
         setStatus("disconnected");
         return;
@@ -251,17 +252,20 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setErrorMessage(null);
   }, []);
 
-  const persistSession = useCallback((s: WalletSession, walletId: SupportedWallet) => {
-    if (typeof window !== "undefined") {
-      const stored = {
-        ...s,
-        providerId: walletId,
-        timestamp: Date.now(),
-      };
-      localStorage.setItem(STORAGE_SESSION_KEY, JSON.stringify(stored));
-      localStorage.removeItem(STORAGE_DISCONNECT_KEY);
-    }
-  }, []);
+  const persistSession = useCallback(
+    (s: WalletSession, walletId: SupportedWallet) => {
+      if (typeof window !== "undefined") {
+        const stored = {
+          ...s,
+          providerId: walletId,
+          timestamp: Date.now(),
+        };
+        localStorage.setItem(STORAGE_SESSION_KEY, JSON.stringify(stored));
+        localStorage.removeItem(STORAGE_DISCONNECT_KEY);
+      }
+    },
+    [],
+  );
 
   // Universal Connect method
   const connectWith = useCallback(
@@ -285,7 +289,15 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
           // Simulated connection resolution
           const mockSession: WalletSession = {
-            address: "G" + Array.from({ length: 55 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ234567"[Math.floor(Math.random() * 30)]).join(""),
+            address:
+              "G" +
+              Array.from(
+                { length: 55 },
+                () =>
+                  "ABCDEFGHJKLMNPQRSTUVWXYZ234567"[
+                    Math.floor(Math.random() * 30)
+                  ],
+              ).join(""),
             network: {
               network: "Futurenet",
               networkUrl: "https://horizon-futurenet.stellar.org",
@@ -306,7 +318,15 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           const w = window as any;
           if (!w.hana && !w.hanaWallet) {
             // If in demo or test, mock a Hana session, else report
-            const mockAddress = "GHANA" + Array.from({ length: 51 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ234567"[Math.floor(Math.random() * 30)]).join("");
+            const mockAddress =
+              "GHANA" +
+              Array.from(
+                { length: 51 },
+                () =>
+                  "ABCDEFGHJKLMNPQRSTUVWXYZ234567"[
+                    Math.floor(Math.random() * 30)
+                  ],
+              ).join("");
             const s: WalletSession = {
               address: mockAddress,
               network: {
@@ -367,7 +387,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         setIsLoading(false);
       }
     },
-    [clearError, openLedgerModal, validateNetwork, persistSession]
+    [clearError, openLedgerModal, validateNetwork, persistSession],
   );
 
   const connect = useCallback(async () => {
@@ -391,7 +411,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       persistSession(mockSession, "ledger");
       closeLedgerModal();
     },
-    [closeLedgerModal, persistSession]
+    [closeLedgerModal, persistSession],
   );
 
   const disconnect = useCallback(() => {
@@ -454,11 +474,16 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
               Scan with Mobile Wallet
             </h3>
             <p className="text-xs text-neutral-400 mb-4">
-              WalletConnect v2 — scan QR code using LOBSTR, xBull Mobile, or any Stellar WCv2 wallet.
+              WalletConnect v2 — scan QR code using LOBSTR, xBull Mobile, or any
+              Stellar WCv2 wallet.
             </p>
             <div className="p-4 bg-white rounded-xl inline-block mb-4 shadow-inner">
               {/* Clean SVG QR Code Representation */}
-              <svg className="w-40 h-40" viewBox="0 0 100 100" fill="currentColor">
+              <svg
+                className="w-40 h-40"
+                viewBox="0 0 100 100"
+                fill="currentColor"
+              >
                 <rect x="10" y="10" width="30" height="30" rx="4" />
                 <rect x="16" y="16" width="18" height="18" fill="white" />
                 <rect x="20" y="20" width="10" height="10" />

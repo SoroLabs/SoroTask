@@ -16,7 +16,9 @@ type OptimisticTxReconcilerPanelProps = {
 const STATE_LABELS: Record<OptimisticTxState, string> = {
   optimistic: "Optimistic",
   confirmed: "Confirmed",
+  finalized: "Finalized",
   rolled_back: "Rolled back",
+  reorg_rolled_back: "Reorg rolled back",
   conflict: "Conflict",
   stale: "Stale",
 };
@@ -24,7 +26,9 @@ const STATE_LABELS: Record<OptimisticTxState, string> = {
 const STATE_STYLES: Record<OptimisticTxState, string> = {
   optimistic: "text-sky-300 border-sky-800 bg-sky-950/40",
   confirmed: "text-emerald-300 border-emerald-800 bg-emerald-950/35",
+  finalized: "text-emerald-200 border-emerald-700 bg-emerald-900/40",
   rolled_back: "text-red-300 border-red-800 bg-red-950/35",
+  reorg_rolled_back: "text-rose-300 border-rose-800 bg-rose-950/35",
   conflict: "text-amber-300 border-amber-800 bg-amber-950/35",
   stale: "text-violet-300 border-violet-800 bg-violet-950/35",
 };
@@ -32,7 +36,9 @@ const STATE_STYLES: Record<OptimisticTxState, string> = {
 const SUMMARY_ORDER: OptimisticTxState[] = [
   "optimistic",
   "confirmed",
+  "finalized",
   "rolled_back",
+  "reorg_rolled_back",
   "conflict",
   "stale",
 ];
@@ -51,9 +57,12 @@ export function OptimisticTxReconcilerPanel({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold">Optimistic Transaction Reconciler</h2>
+          <h2 className="text-sm font-semibold">
+            Optimistic Transaction Reconciler
+          </h2>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-neutral-400">
-            Tracks optimistic task mutations against server and on-chain confirmations.
+            Tracks optimistic task mutations against server and on-chain
+            confirmations.
           </p>
         </div>
         <span className="rounded-full border border-neutral-700 px-3 py-1 text-xs text-neutral-400">
@@ -79,7 +88,10 @@ export function OptimisticTxReconcilerPanel({
         </p>
       ) : (
         <div className="mt-4 overflow-x-auto rounded-lg border border-neutral-800">
-          <table className="w-full text-left text-xs" aria-label="Tracked optimistic transactions">
+          <table
+            className="w-full text-left text-xs"
+            aria-label="Tracked optimistic transactions"
+          >
             <thead className="bg-neutral-900 text-neutral-400">
               <tr>
                 <th className="px-3 py-2 font-medium">Client Tx</th>
@@ -90,12 +102,19 @@ export function OptimisticTxReconcilerPanel({
             </thead>
             <tbody>
               {transactions.map((transaction) => (
-                <tr key={transaction.clientTxId} className="border-t border-neutral-800">
+                <tr
+                  key={transaction.clientTxId}
+                  className="border-t border-neutral-800"
+                >
                   <td className="px-3 py-2 font-mono text-neutral-300">
                     {transaction.clientTxId}
                   </td>
-                  <td className="px-3 py-2 text-neutral-300">{transaction.taskId}</td>
-                  <td className="px-3 py-2 text-neutral-400">{transaction.operation}</td>
+                  <td className="px-3 py-2 text-neutral-300">
+                    {transaction.taskId}
+                  </td>
+                  <td className="px-3 py-2 text-neutral-400">
+                    {transaction.operation}
+                  </td>
                   <td className="px-3 py-2">
                     <span
                       className={`rounded border px-2 py-0.5 ${STATE_STYLES[transaction.state]}`}
@@ -112,7 +131,9 @@ export function OptimisticTxReconcilerPanel({
 
       {latestAudit ? (
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-3">
-          <p className="text-xs font-semibold text-neutral-300">Latest audit event</p>
+          <p className="text-xs font-semibold text-neutral-300">
+            Latest audit event
+          </p>
           <p className="mt-1 text-sm text-neutral-200">{latestAudit.message}</p>
           <pre
             aria-label="Latest audit payload"

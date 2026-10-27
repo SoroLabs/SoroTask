@@ -1,4 +1,4 @@
-import { auth } from "@/app/api/auth/[...nextauth]/route";
+import { auth } from "@/app/auth";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { generateCsp } from "@/lib/csp-generator";
@@ -12,9 +12,15 @@ function addSecurityHeaders(response: NextResponse, csp: string): NextResponse {
   response.headers.set("Content-Security-Policy", csp);
   response.headers.set("X-Frame-Options", "DENY");
   response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+  response.headers.set(
+    "Strict-Transport-Security",
+    "max-age=63072000; includeSubDomains; preload",
+  );
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  response.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  response.headers.set(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=()",
+  );
   return response;
 }
 
@@ -53,6 +59,15 @@ export default auth((req) => {
   // Handle callback URL preservation
   const callbackUrl = req.nextUrl.searchParams.get("callbackUrl") || pathname;
 
+  // In E2E mock mode, bypass redirect to allow test automation
+  const isE2E = process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true";
+  if (isE2E) {
+    return addSecurityHeaders(
+      NextResponse.next({ request: { headers: requestHeaders } }),
+      csp,
+    );
+  }
+
   // If user is not authenticated and trying to access a protected route
   if (!isAuthenticated && !isPublicRoute) {
     const signInUrl = new URL("/auth/signin", req.url);
@@ -65,12 +80,18 @@ export default auth((req) => {
   if (isAuthenticated && pathname === "/auth/signin") {
     // Check if there's a callback URL to redirect to
     const redirectTo = req.nextUrl.searchParams.get("callbackUrl") || "/";
-    return addSecurityHeaders(NextResponse.redirect(new URL(redirectTo, req.url)), csp);
+    return addSecurityHeaders(
+      NextResponse.redirect(new URL(redirectTo, req.url)),
+      csp,
+    );
   }
 
   // If user is authenticated and trying to access error page, redirect to home
   if (isAuthenticated && pathname === "/auth/error") {
-    return addSecurityHeaders(NextResponse.redirect(new URL("/", req.url)), csp);
+    return addSecurityHeaders(
+      NextResponse.redirect(new URL("/", req.url)),
+      csp,
+    );
   }
 
   return addSecurityHeaders(

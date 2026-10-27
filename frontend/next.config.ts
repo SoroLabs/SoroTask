@@ -1,6 +1,5 @@
 import type { NextConfig } from "next";
-import createNextIntlPlugin from "next-intl/plugin";
-import { withSentryConfig } from "@sentry/nextjs";
+import { withSentryConfig } from "@sentry/nextjs/config";
 
 const securityHeaders = [
   {
@@ -29,7 +28,9 @@ const securityHeaders = [
   },
 ];
 
-const pluginFrameOrigins = (process.env.NEXT_PUBLIC_SOROTASK_PLUGIN_ORIGINS ?? "")
+const pluginFrameOrigins = (
+  process.env.NEXT_PUBLIC_SOROTASK_PLUGIN_ORIGINS ?? ""
+)
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean)
@@ -76,6 +77,7 @@ const nextConfig: NextConfig = {
       {
         source: "/:path*",
         headers: [
+          ...securityHeaders,
           {
             key: "Content-Security-Policy",
             value: `frame-src 'self' ${pluginFrameOrigins.join(" ")};`,
@@ -86,7 +88,14 @@ const nextConfig: NextConfig = {
   },
 };
 
-const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
+// next-intl's plugin resolves its internal requires against `document.baseURI`
+// when a DOM is present, which breaks under Jest's jsdom environment. The
+// security-headers test imports this config to inspect `headers()`, so skip the
+// plugin there while leaving the real Next build path untouched.
+const withNextIntl: (config: NextConfig) => NextConfig =
+  process.env.NODE_ENV === "test"
+    ? (config) => config
+    : require("next-intl/plugin")("./i18n/request.ts");
 
 const withIntl = withNextIntl(nextConfig);
 
@@ -103,6 +112,7 @@ export default withSentryConfig(withIntl, {
   authToken: process.env.SENTRY_AUTH_TOKEN,
   silent: !process.env.CI,
   widenClientFileUpload: true,
-  hideSourceMaps: true,
-  disableLogger: true,
+  sourcemaps: {
+    deleteSourcemapsAfterUpload: true,
+  },
 });

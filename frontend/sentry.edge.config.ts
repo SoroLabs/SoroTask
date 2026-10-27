@@ -8,7 +8,7 @@ if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
     tracesSampleRate: 0.1,
-    sendDefaultPii: false,
+    dataCollection: { userInfo: false },
 
     // The edge runtime sees auth headers on every request it proxies, so it
     // gets the same scrubber as client and server (Issue #1258).

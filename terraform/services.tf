@@ -18,6 +18,7 @@ resource "aws_db_instance" "primary" {
 
   allocated_storage       = 100
   backup_retention_period = 7
+  copy_tags_to_snapshot   = true
   db_name                 = "sorotask"
   deletion_protection     = true
   multi_az                = true
@@ -37,12 +38,14 @@ resource "aws_db_instance" "primary" {
 
 # ── Redis (ElastiCache) encrypted in transit and at rest ─────────────────────
 resource "aws_elasticache_replication_group" "primary" {
-  replication_group_id = "sorotask-${var.environment}"
-  description          = "SoroTask ${var.environment} cache"
-  node_type            = "cache.t4g.small"
-  num_cache_clusters   = 2
-  parameter_group_name = "default.redis7"
-  port                 = 6379
+  replication_group_id       = "sorotask-${var.environment}"
+  description                = "SoroTask ${var.environment} cache"
+  node_type                  = "cache.t4g.small"
+  num_cache_clusters         = 2
+  parameter_group_name       = "default.redis7"
+  port                       = 6379
+  automatic_failover_enabled = true
+  multi_az_enabled           = true
 
   at_rest_encryption_enabled = true
   subnet_group_name          = aws_elasticache_subnet_group.primary.name

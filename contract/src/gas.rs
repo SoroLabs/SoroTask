@@ -700,7 +700,8 @@ pub fn quote_congestion(env: &Env, keeper: Option<&Address>) -> CongestionQuote 
     quote.baseline_fee = baseline;
     quote.effective_fee = bid.min(current).min(cap);
 
-    let spiking = current.saturating_mul(BPS) >= baseline.saturating_mul(config.trigger_bps as i128);
+    let spiking =
+        current.saturating_mul(BPS) >= baseline.saturating_mul(config.trigger_bps as i128);
     if spiking && quote.effective_fee > baseline {
         quote.surcharge = (quote.effective_fee - baseline)
             .saturating_mul(units)

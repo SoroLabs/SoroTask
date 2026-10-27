@@ -14,8 +14,9 @@ interface RichTextRendererProps {
 }
 
 const RENDER_EXTENSIONS = [
-  // Disable StarterKit's built-in link handling to avoid duplicate extension warning
-  StarterKit.configure({ codeBlock: false }),
+  // StarterKit v3 bundles Link/CodeBlock; disable both so the explicitly
+  // configured extensions below are the single source of truth.
+  StarterKit.configure({ codeBlock: false, link: false }),
   CodeBlock,
   Link.configure({ openOnClick: false }),
 ];
@@ -41,7 +42,7 @@ export default function RichTextRenderer({
     <div
       className={`prose prose-invert max-w-none ${className}`}
       data-testid={testId}
-      // eslint-disable-next-line react/no-danger
+
       dangerouslySetInnerHTML={{ __html: safeHtml }}
     />
   );

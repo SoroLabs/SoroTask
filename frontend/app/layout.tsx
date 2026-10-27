@@ -7,7 +7,6 @@ import { ClientInit } from "./ClientInit";
 import { AppProviders } from "@/app/components/AppProviders";
 import { AIAssistantProvider } from "@/components/AIAssistant";
 import { ErrorBoundary } from "@sentry/nextjs";
-import { ThemeProvider } from "./theme/ThemeProvider";
 import { ThemeProvider } from "next-themes";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
@@ -16,13 +15,10 @@ import { ThemeInitScript } from "./theme-init";
 import { THEME_STORAGE_KEY } from "@/src/lib/theme/themeEngine";
 import { PriceTicker } from "@/src/components/PriceTicker";
 
-function GlobalErrorFallback({ resetError }: any) {
-import { TransactionToasts } from "@/src/components/TransactionToasts";
-
 function GlobalErrorFallback({
   resetError,
 }: {
-  error: Error;
+  error: unknown;
   resetError: () => void;
 }) {
   return (
@@ -71,26 +67,22 @@ export const viewport: Viewport = {
   ],
   width: "device-width",
   initialScale: 1,
+  maximumScale: 1,
 };
 
 export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const [locale, messages] = await Promise.all([getLocale(), getMessages()]);
-
-  return (
-    <html
-      lang={locale}
-      dir={getTextDirection(locale)}
-      suppressHydrationWarning
-    >
   const nonce = (await headers()).get("x-nonce");
   if (!nonce) {
-    throw new Error("Missing CSP nonce. Ensure the security proxy runs for this page.");
+    throw new Error(
+      "Missing CSP nonce. Ensure the security proxy runs for this page.",
+    );
   }
 
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang={locale} dir={getTextDirection(locale)} suppressHydrationWarning>
       <head>
         <link
           rel="preconnect"
@@ -115,7 +107,7 @@ export default async function RootLayout({
             `,
           }}
         />
-        <ThemeInitScript />
+        <ThemeInitScript nonce={nonce} />
       </head>
       <body className="antialiased min-h-dvh w-full overflow-x-clip">
         <NextIntlClientProvider locale={locale} messages={messages}>
@@ -129,6 +121,7 @@ export default async function RootLayout({
             >
               <AIAssistantProvider>
                 <AppProviders defaultLocale={locale}>
+                  <ClientInit />
                   <PriceTicker />
                   <CommandPalette />
                   {children}
@@ -137,31 +130,6 @@ export default async function RootLayout({
             </ThemeProvider>
           </ErrorBoundary>
         </NextIntlClientProvider>
-        <ClientInit />
-        <ThemeInitScript nonce={nonce} />
-      </head>
-      <body className="antialiased min-h-dvh w-full overflow-x-clip">
-        <ClientInit />
-        <ErrorBoundary fallback={GlobalErrorFallback}>
-          <ThemeProvider>
-          <ThemeProvider
-            attribute="data-theme"
-            defaultTheme="system"
-            enableSystem
-            storageKey={THEME_STORAGE_KEY}
-            disableTransitionOnChange
-          >
-            <AIAssistantProvider>
-              <AppProviders>
-                <ClientInit />
-                <PriceTicker />
-                <CommandPalette />
-                <TransactionToasts />
-                {children}
-              </AppProviders>
-            </AIAssistantProvider>
-          </ThemeProvider>
-        </ErrorBoundary>
         <PwaRegistration />
       </body>
     </html>

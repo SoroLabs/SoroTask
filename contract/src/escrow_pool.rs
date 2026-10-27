@@ -13,8 +13,8 @@
 //! - Interest is distributed proportionally based on share ownership
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes,
-    BytesN, Env, Symbol, TryIntoVal, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN,
+    Env, Symbol, TryIntoVal, Val, Vec,
 };
 
 use crate::events::EventLogger;
@@ -95,10 +95,10 @@ pub struct PoolConfig {
     pub is_active: bool,
 }
 
-impl Default for PoolConfig {
-    fn default() -> Self {
+impl PoolConfig {
+    fn uninitialized(env: &Env) -> Self {
         Self {
-            admin: Address::from_u32(0),
+            admin: crate::unset_address(env),
             yield_strategy: None,
             harvest_function: None,
             yield_distribution_interval: DEFAULT_YIELD_STRATEGY_DURATION,
@@ -166,7 +166,7 @@ fn load_pool_config(env: &Env) -> PoolConfig {
     env.storage()
         .instance()
         .get(&DataKey::EscrowPoolConfig)
-        .unwrap_or_default()
+        .unwrap_or_else(|| PoolConfig::uninitialized(env))
 }
 
 /// Save pool configuration
@@ -224,7 +224,7 @@ pub fn initialize(env: &Env, admin: &Address, yield_strategy: Address) {
     admin.require_auth();
 
     let mut config = load_pool_config(env);
-    if config.admin != Address::from_u32(0) {
+    if env.storage().instance().has(&DataKey::EscrowPoolConfig) {
         panic_with_error!(env, Error::AlreadyInitialized);
     }
 
@@ -235,10 +235,8 @@ pub fn initialize(env: &Env, admin: &Address, yield_strategy: Address) {
 
     save_pool_config(env, &config);
 
-    env.events().publish(
-        (Symbol::new(env, "EscrowPoolInitialized"),),
-        admin.clone(),
-    );
+    env.events()
+        .publish((Symbol::new(env, "EscrowPoolInitialized"),), admin.clone());
 }
 
 /// Deposit tokens into the pool and receive shares (SC-PROD-34 Easy)
@@ -263,7 +261,7 @@ pub fn deposit(
     }
 
     let mut token_state = load_token_state(env, token);
-    
+
     // Calculate shares to mint
     let shares = if token_state.total_shares == 0 || token_state.underlying_amount == 0 {
         // First depositor gets shares 1:1 with precision
@@ -362,7 +360,7 @@ pub fn withdraw(
     // Update sub-account
     sub_account.shares = sub_account.shares.saturating_sub(share_amount);
     sub_account.last_yield_update = env.ledger().timestamp();
-    
+
     if sub_account.shares > 0 {
         save_sub_account(env, &sub_account);
     } else {
@@ -374,7 +372,13 @@ pub fn withdraw(
     // Emit withdrawal event
     env.events().publish(
         (Symbol::new(env, "EscrowPoolWithdraw"),),
-        (owner.clone(), token.clone(), token_amount, share_amount, yield_earned),
+        (
+            owner.clone(),
+            token.clone(),
+            token_amount,
+            share_amount,
+            yield_earned,
+        ),
     );
 
     WithdrawalResult {
@@ -385,16 +389,9 @@ pub fn withdraw(
 }
 
 /// Update accumulated yield for a sub-account
-fn update_account_yield(
-    env: &Env,
-    account: &mut VirtualSubAccount,
-    token_state: &PoolTokenState,
-) {
+fn update_account_yield(env: &Env, account: &mut VirtualSubAccount, token_state: &PoolTokenState) {
     // Calculate yield since last update: shares * (current_yield_per_share - last_yield_per_share)
-    let yield_delta = account
-        .shares
-        .saturating_mul(token_state.yield_per_share)
-        / YIELD_PRECISION;
+    let yield_delta = account.shares.saturating_mul(token_state.yield_per_share) / YIELD_PRECISION;
 
     account.accumulated_yield = account.accumulated_yield.saturating_add(yield_delta);
     account.last_yield_update = env.ledger().timestamp();
@@ -424,43 +421,43 @@ pub fn update_yield_per_share(env: &Env, token: &Address, new_yield: i128) {
 /// Returns the amount of yield harvested
 pub fn harvest_yield(env: &Env, token: &Address) -> i128 {
     let config = load_pool_config(env);
-    
+
     if let Some(strategy) = config.yield_strategy {
         // In production, this would call the yield strategy contract
         // For now, we simulate yield generation based on TVL and APY
-        
+
         let token_state = load_token_state(env, token);
         let tvl = token_state.underlying_amount;
-        
+
         if tvl > 0 {
             // Calculate simulated yield (in production, this comes from the strategy)
             // APY of ~5% annualized, prorated for the distribution period
             let apy_bps: i128 = 500; // 5% APY
-            let period_fraction: i128 = (config.yield_distribution_interval as i128 * 10000)
-                / (365 * 24 * 60 * 60); // Fraction of year
-            
+            let period_fraction: i128 =
+                (config.yield_distribution_interval as i128 * 10000) / (365 * 24 * 60 * 60); // Fraction of year
+
             let yield_amount = tvl * apy_bps * period_fraction / (10000 * 10000);
-            
+
             if yield_amount > 0 {
                 // Update token state with new yield
                 update_yield_per_share(env, token, yield_amount);
-                
+
                 // Update pending yield in config
                 let mut config = load_pool_config(env);
                 config.pending_yield = config.pending_yield.saturating_add(yield_amount);
                 config.last_distribution = env.ledger().timestamp();
                 save_pool_config(env, &config);
-                
+
                 env.events().publish(
                     (Symbol::new(env, "YieldHarvested"),),
                     (token.clone(), yield_amount),
                 );
-                
+
                 return yield_amount;
             }
         }
     }
-    
+
     0
 }
 
@@ -473,19 +470,19 @@ pub fn claim_yield(env: &Env, owner: &Address, token: &Address) -> i128 {
 
     let token_state = load_token_state(env, token);
     update_account_yield(env, &mut sub_account, &token_state);
-    
+
     let yield_claimed = sub_account.accumulated_yield;
-    
+
     if yield_claimed > 0 {
         sub_account.accumulated_yield = 0;
         save_sub_account(env, &sub_account);
-        
+
         env.events().publish(
             (Symbol::new(env, "YieldClaimed"),),
             (owner.clone(), token.clone(), yield_claimed),
         );
     }
-    
+
     yield_claimed
 }
 
@@ -516,10 +513,10 @@ pub fn get_sub_account_balance(env: &Env, owner: &Address, token: &Address) -> (
 /// Get pool statistics for a token
 pub fn get_pool_stats(env: &Env, token: &Address) -> (i128, i128, i128, i128) {
     let token_state = load_token_state(env, token);
-    
+
     // Calculate total value in pool
     let total_value = token_state.underlying_amount;
-    
+
     // Calculate shares per token (for display)
     let shares_per_token = if total_value > 0 {
         (token_state.total_shares * SHARE_PRECISION) / total_value
@@ -559,10 +556,8 @@ pub fn add_supported_token(env: &Env, admin: &Address, token: &Address) {
     // Initialize token state if not exists
     let _ = load_token_state(env, token);
 
-    env.events().publish(
-        (Symbol::new(env, "TokenAddedToPool"),),
-        token.clone(),
-    );
+    env.events()
+        .publish((Symbol::new(env, "TokenAddedToPool"),), token.clone());
 }
 
 /// Update yield strategy
@@ -574,22 +569,16 @@ pub fn update_yield_strategy(env: &Env, admin: &Address, strategy: Address) {
         panic_with_error!(env, Error::Unauthorized);
     }
 
-    config.yield_strategy = Some(strategy);
+    config.yield_strategy = Some(strategy.clone());
     save_pool_config(env, &config);
 
-    env.events().publish(
-        (Symbol::new(env, "YieldStrategyUpdated"),),
-        strategy,
-    );
+    env.events()
+        .publish((Symbol::new(env, "YieldStrategyUpdated"),), strategy);
 }
 
 /// Emergency withdraw (bypasses shares, returns underlying directly)
 /// Used when users need to exit during upgrade or emergency
-pub fn emergency_withdraw(
-    env: &Env,
-    owner: &Address,
-    token: &Address,
-) -> i128 {
+pub fn emergency_withdraw(env: &Env, owner: &Address, token: &Address) -> i128 {
     owner.require_auth();
 
     let sub_account = match load_sub_account(env, owner, token) {
@@ -598,7 +587,7 @@ pub fn emergency_withdraw(
     };
 
     let token_state = load_token_state(env, token);
-    
+
     // Calculate amount without going through yield
     let amount = if token_state.total_shares > 0 {
         (sub_account.shares * token_state.underlying_amount) / token_state.total_shares
@@ -610,13 +599,13 @@ pub fn emergency_withdraw(
         // Clear sub-account
         let key = sub_account_key(owner, token);
         env.storage().persistent().remove(&key);
-        
+
         // Update token state
         let mut ts = load_token_state(env, token);
         ts.total_shares = ts.total_shares.saturating_sub(sub_account.shares);
         ts.underlying_amount = ts.underlying_amount.saturating_sub(amount);
         save_token_state(env, &ts);
-        
+
         env.events().publish(
             (Symbol::new(env, "EmergencyWithdraw"),),
             (owner.clone(), token.clone(), amount),
@@ -652,12 +641,12 @@ mod tests {
         // First: 1000 tokens -> 1000 * PRECISION shares, total_shares = 1000 * PRECISION
         let first_deposit = 1000i128;
         let first_shares = first_deposit * SHARE_PRECISION;
-        
+
         // Second: 500 tokens -> 500 * total_shares / 1000 = 500 * PRECISION shares
         let second_deposit = 500i128;
         let total_underlying = first_deposit;
         let total_shares = first_shares;
-        
+
         let second_shares = second_deposit * total_shares / total_underlying;
         assert_eq!(second_shares, 500 * SHARE_PRECISION);
     }
@@ -667,11 +656,11 @@ mod tests {
         // After deposit: 1000 tokens, 1000 * PRECISION shares
         let underlying = 1000i128;
         let shares = 1000i128 * SHARE_PRECISION;
-        
+
         // Withdraw 500 shares -> 500 * 1000 / 1000 = 500 tokens
         let withdraw_shares = 500i128 * SHARE_PRECISION;
         let token_amount = withdraw_shares * underlying / shares;
-        
+
         assert_eq!(token_amount, 500);
     }
 }

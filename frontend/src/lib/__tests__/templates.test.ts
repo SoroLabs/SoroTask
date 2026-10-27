@@ -32,6 +32,9 @@ const VALID: TaskTemplate = {
   intervalSeconds: 3600,
   timezone: "UTC",
   usageCount: 0,
+  communityRating: 4.5,
+  ratingCount: 10,
+  onChainRatingVerified: true,
   blocks: [
     {
       instanceId: "step-1",

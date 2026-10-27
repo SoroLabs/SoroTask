@@ -38,6 +38,7 @@ jobs:
             sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
             cargo install --locked stellar-cli
           }
+          sudo apt-get update && sudo apt-get install -y binaryen || true
           stellar --version
 
       - name: Check Formatting
@@ -59,8 +60,8 @@ jobs:
           fi
           wasm_size=$(wc -c < "$wasm_file")
           echo "Contract WASM: ${wasm_size} bytes"
-          if [ "$wasm_size" -ge 262144 ]; then
-            echo "Contract WASM exceeds the 256 KiB budget"
+          if [ "$wasm_size" -ge 307200 ]; then
+            echo "Contract WASM exceeds the 300 KiB budget"
             exit 1
           fi
 

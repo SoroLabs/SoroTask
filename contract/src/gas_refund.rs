@@ -12,10 +12,10 @@
 //! - Automated dust consolidation on task deregistration
 //! - Prevention of dust lockup across completed/canceled tasks
 
-use soroban_sdk::{Address, Env, Symbol, Vec, panic_with_error};
+use soroban_sdk::{panic_with_error, Address, Bytes, Env, Symbol, Vec};
 
-use crate::DataKey;
 use crate::gas::EscrowManager;
+use crate::DataKey;
 use crate::Error;
 
 /// Minimum dust threshold for automatic sweeping (10 units)
@@ -116,9 +116,10 @@ fn load_yield_accumulator(env: &Env, creator: &Address, name: &Bytes) -> Option<
 
 /// Saves a yield accumulator.
 fn save_yield_accumulator(env: &Env, creator: &Address, name: &Bytes, acc: &YieldAccumulator) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::YieldAccumulator(creator.clone(), name.clone()), acc);
+    env.storage().persistent().set(
+        &DataKey::YieldAccumulator(creator.clone(), name.clone()),
+        acc,
+    );
 }
 
 /// Gets the default yield accumulator for a creator.
@@ -189,7 +190,7 @@ pub fn record_gas_consumption(
 
     // Calculate refund amount (unused gas)
     let refund = gas_allocated.saturating_sub(gas_consumed);
-    
+
     // Only refund if there's unused gas and execution succeeded
     let refund_amount = if execution_success && refund > 0 {
         calculate_gas_refund(env, refund)
@@ -208,9 +209,10 @@ pub fn record_gas_consumption(
         execution_success,
         executed_at: env.ledger().timestamp(),
     };
-    env.storage()
-        .persistent()
-        .set(&DataKey::GasConsumption(task_id, env.ledger().sequence()), &record);
+    env.storage().persistent().set(
+        &DataKey::GasConsumption(task_id, env.ledger().sequence()),
+        &record,
+    );
 
     // Credit refund to creator's yield accumulator
     if refund_amount > 0 {
@@ -224,10 +226,7 @@ pub fn record_gas_consumption(
     update_gas_usage_stats(env, gas_consumed, refund_amount, 0);
 
     env.events().publish(
-        (
-            Symbol::new(env, "GasConsumptionRecorded"),
-            task_id,
-        ),
+        (Symbol::new(env, "GasConsumptionRecorded"), task_id),
         (gas_allocated, gas_consumed, refund_amount),
     );
 
@@ -244,11 +243,11 @@ pub fn record_gas_consumption(
 fn calculate_gas_refund(env: &Env, unused_gas: i128) -> i128 {
     // Get current gas prices
     let config = get_gas_price_config(env);
-    
+
     // Calculate refund based on gas prices
     // This is a simplified calculation - in production, use actual gas modeling
     let refund = unused_gas * config.base_fee / 1000;
-    
+
     refund
 }
 
@@ -296,10 +295,7 @@ fn credit_refund_to_accumulator(env: &Env, creator: &Address, amount: i128) {
     save_yield_accumulator(env, creator, &name, &accumulator);
 
     env.events().publish(
-        (
-            Symbol::new(env, "RefundCredited"),
-            creator.clone(),
-        ),
+        (Symbol::new(env, "RefundCredited"), creator.clone()),
         amount,
     );
 }
@@ -311,7 +307,8 @@ fn credit_refund_to_accumulator(env: &Env, creator: &Address, amount: i128) {
 /// * `creator` - The task creator
 /// * `unused_gas` - Unused gas from execution
 fn update_dust_record(env: &Env, task_id: u64, creator: &Address, unused_gas: i128) {
-    let mut dust = match env.storage()
+    let mut dust = match env
+        .storage()
         .persistent()
         .get::<DataKey, DustRecord>(&DataKey::TaskDust(task_id))
     {
@@ -351,7 +348,8 @@ fn update_dust_record(env: &Env, task_id: u64, creator: &Address, unused_gas: i1
 /// # Returns
 /// * The amount of dust swept
 pub fn sweep_task_dust(env: &Env, task_id: u64, creator: &Address) -> i128 {
-    let mut dust = match env.storage()
+    let mut dust = match env
+        .storage()
         .persistent()
         .get::<DataKey, DustRecord>(&DataKey::TaskDust(task_id))
     {
@@ -389,10 +387,7 @@ pub fn sweep_task_dust(env: &Env, task_id: u64, creator: &Address) -> i128 {
         .set(&DataKey::TaskDust(task_id), &dust);
 
     env.events().publish(
-        (
-            Symbol::new(env, "DustSwept"),
-            task_id,
-        ),
+        (Symbol::new(env, "DustSwept"), task_id),
         (dust_amount, sweep_value),
     );
 
@@ -402,7 +397,8 @@ pub fn sweep_task_dust(env: &Env, task_id: u64, creator: &Address) -> i128 {
 /// Checks if a task is being retired (used to force dust sweep).
 fn is_task_retiring(env: &Env, task_id: u64) -> bool {
     // Check if task status is retired or expired
-    if let Some(status) = env.storage()
+    if let Some(status) = env
+        .storage()
         .persistent()
         .get::<DataKey, crate::TaskStatus>(&DataKey::TaskStatus(task_id))
     {
@@ -418,7 +414,8 @@ fn is_task_retiring(env: &Env, task_id: u64) -> bool {
 /// * `refunds_issued` - Refunds issued this period
 /// * `dust_swept` - Dust swept this period
 fn update_gas_usage_stats(env: &Env, gas_consumed: i128, refunds_issued: i128, dust_swept: i128) {
-    let mut stats: GasUsageStats = env.storage()
+    let mut stats: GasUsageStats = env
+        .storage()
         .instance()
         .get(&DataKey::GasUsageStats)
         .unwrap_or(GasUsageStats {
@@ -434,7 +431,8 @@ fn update_gas_usage_stats(env: &Env, gas_consumed: i128, refunds_issued: i128, d
     stats.total_refunds_issued = stats.total_refunds_issued.saturating_add(refunds_issued);
     stats.total_dust_swept = stats.total_dust_swept.saturating_add(dust_swept);
     stats.total_tasks_processed += 1;
-    stats.average_gas_per_task = stats.total_gas_consumed / stats.total_tasks_processed.max(1);
+    stats.average_gas_per_task =
+        stats.total_gas_consumed / stats.total_tasks_processed.max(1) as i128;
     stats.last_updated = env.ledger().timestamp();
 
     env.storage()
@@ -452,19 +450,19 @@ fn update_gas_usage_stats(env: &Env, gas_consumed: i128, refunds_issued: i128, d
 /// # Returns
 /// * Total dust swept across all tasks
 pub fn batch_sweep_dust(env: &Env, task_ids: Vec<u64>) -> i128 {
-    let mut total_swept = 0;
+    let mut total_swept: i128 = 0;
     let mut i = 0;
 
     while i < task_ids.len() {
         let task_id = task_ids.get(i).unwrap();
-        
+
         // Get creator from task config (simplified - would need actual lookup)
         // In production, fetch from task storage
-        if let Some(config) = crate::task::get_config(env, *task_id) {
-            let swept = sweep_task_dust(env, *task_id, &config.creator);
+        if let Some(config) = crate::task::get_config(env, task_id) {
+            let swept = sweep_task_dust(env, task_id, &config.creator);
             total_swept = total_swept.saturating_add(swept);
         }
-        
+
         i += 1;
     }
 
@@ -498,7 +496,8 @@ pub fn harvest_yield_accumulator(env: &Env, creator: &Address, name: Option<Byte
     }
 
     // Transfer accumulated amount to creator
-    let token_address = env.storage()
+    let token_address = env
+        .storage()
         .instance()
         .get(&DataKey::Token)
         .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
@@ -512,10 +511,7 @@ pub fn harvest_yield_accumulator(env: &Env, creator: &Address, name: Option<Byte
     save_yield_accumulator(env, creator, &acc_name, &accumulator);
 
     env.events().publish(
-        (
-            Symbol::new(env, "YieldHarvested"),
-            creator.clone(),
-        ),
+        (Symbol::new(env, "YieldHarvested"), creator.clone()),
         amount,
     );
 
@@ -568,9 +564,7 @@ pub fn get_gas_usage_stats(env: &Env) -> GasUsageStats {
 /// # Returns
 /// * Dust record if exists
 pub fn get_task_dust(env: &Env, task_id: u64) -> Option<DustRecord> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::TaskDust(task_id))
+    env.storage().persistent().get(&DataKey::TaskDust(task_id))
 }
 
 /// Queries a specific gas consumption record.
@@ -581,7 +575,11 @@ pub fn get_task_dust(env: &Env, task_id: u64) -> Option<DustRecord> {
 ///
 /// # Returns
 /// * Gas consumption record if exists
-pub fn get_gas_consumption_record(env: &Env, task_id: u64, sequence: u32) -> Option<GasConsumptionRecord> {
+pub fn get_gas_consumption_record(
+    env: &Env,
+    task_id: u64,
+    sequence: u32,
+) -> Option<GasConsumptionRecord> {
     env.storage()
         .persistent()
         .get(&DataKey::GasConsumption(task_id, sequence))
@@ -624,7 +622,7 @@ pub fn update_gas_price_config(env: &Env, cpu_price: i128, mem_price: i128, base
 /// # Returns
 /// * Estimated refund amount
 pub fn estimate_refund(gas_allocated: i128, expected_usage: i128) -> i128 {
-    if gas_allocated <= 0 || expected_usage < 0 {
+    if gas_allocated <= 0 || expected_usage < 0 || expected_usage >= gas_allocated {
         return 0;
     }
     gas_allocated.saturating_sub(expected_usage)

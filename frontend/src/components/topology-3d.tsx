@@ -1,20 +1,20 @@
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 interface NodeData {
   id: string;
-  type: 'task' | 'keeper' | 'cluster';
+  type: "task" | "keeper" | "cluster";
   position: THREE.Vector3;
   color: number;
   size: number;
   label: string;
-  status: 'active' | 'idle' | 'failed';
+  status: "active" | "idle" | "failed";
 }
 
 interface EdgeData {
   from: string;
   to: string;
-  type: 'dependency' | 'execution' | 'data';
+  type: "dependency" | "execution" | "data";
   active: boolean;
 }
 
@@ -59,7 +59,7 @@ export class TaskTopologyVisualizer {
       75,
       container.clientWidth / container.clientHeight,
       0.1,
-      1000
+      1000,
     );
     this.camera.position.set(0, 0, this.config.cameraDistance);
 
@@ -77,8 +77,8 @@ export class TaskTopologyVisualizer {
 
     this.animate();
 
-    window.addEventListener('resize', () => this.onResize());
-    this.renderer.domElement.addEventListener('click', (e) => this.onClick(e));
+    window.addEventListener("resize", () => this.onResize());
+    this.renderer.domElement.addEventListener("click", (e) => this.onClick(e));
   }
 
   private setupLights(): void {
@@ -105,10 +105,7 @@ export class TaskTopologyVisualizer {
       positions[i * 3 + 2] = (Math.random() - 0.5) * 100;
     }
 
-    geometry.setAttribute(
-      'position',
-      new THREE.BufferAttribute(positions, 3)
-    );
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
 
     const material = new THREE.PointsMaterial({
       size: 0.1,
@@ -136,7 +133,7 @@ export class TaskTopologyVisualizer {
     this.nodes.set(data.id, mesh);
     this.nodeData.set(data.id, data);
 
-    if (data.status === 'active') {
+    if (data.status === "active") {
       this.addPulseEffect(mesh, data.color);
     }
   }
@@ -167,7 +164,7 @@ export class TaskTopologyVisualizer {
     requestAnimationFrame(scaleAnim);
   }
 
-  addEdge(fromId: string, toId: string, type: EdgeData['type']): void {
+  addEdge(fromId: string, toId: string, type: EdgeData["type"]): void {
     const fromNode = this.nodes.get(fromId);
     const toNode = this.nodes.get(toId);
     if (!fromNode || !toNode) return;
@@ -178,7 +175,11 @@ export class TaskTopologyVisualizer {
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
     const material = new THREE.LineBasicMaterial({
       color:
-        type === 'execution' ? 0x00ff00 : type === 'dependency' ? 0xffaa00 : 0x6666ff,
+        type === "execution"
+          ? 0x00ff00
+          : type === "dependency"
+            ? 0xffaa00
+            : 0x6666ff,
       transparent: true,
       opacity: 0.5,
     });
@@ -199,7 +200,12 @@ export class TaskTopologyVisualizer {
   highlightNode(id: string): void {
     const node = this.nodes.get(id);
     if (node) {
-      node.material.opacity = 1.0;
+      const materials = Array.isArray(node.material)
+        ? node.material
+        : [node.material];
+      materials.forEach((material) => {
+        material.opacity = 1.0;
+      });
       node.scale.set(1.5, 1.5, 1.5);
       this.selectedNode = id;
     }
@@ -208,7 +214,12 @@ export class TaskTopologyVisualizer {
   resetHighlight(id: string): void {
     const node = this.nodes.get(id);
     if (node) {
-      node.material.opacity = 0.8;
+      const materials = Array.isArray(node.material)
+        ? node.material
+        : [node.material];
+      materials.forEach((material) => {
+        material.opacity = 0.8;
+      });
       node.scale.set(1, 1, 1);
       this.selectedNode = null;
     }
@@ -224,8 +235,14 @@ export class TaskTopologyVisualizer {
 
     this.nodes.forEach((node, id) => {
       const data = this.nodeData.get(id);
-      if (data?.status === 'active') {
-        node.material.emissiveIntensity = 0.3 + Math.sin(Date.now() * 0.005) * 0.2;
+      if (data?.status === "active") {
+        const materials = Array.isArray(node.material)
+          ? node.material
+          : [node.material];
+        materials.forEach((material) => {
+          (material as THREE.MeshStandardMaterial).emissiveIntensity =
+            0.3 + Math.sin(Date.now() * 0.005) * 0.2;
+        });
       }
     });
 
@@ -238,7 +255,9 @@ export class TaskTopologyVisualizer {
     this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
     this.raycaster.setFromCamera(this.mouse, this.camera);
-    const intersects = this.raycaster.intersectObjects(Array.from(this.nodes.values()));
+    const intersects = this.raycaster.intersectObjects(
+      Array.from(this.nodes.values()),
+    );
 
     if (intersects.length > 0) {
       const nodeId = intersects[0].object.userData.id;
@@ -281,7 +300,7 @@ export class TaskTopologyVisualizer {
 
 export function createTopologyVisualizer(
   containerId: string,
-  config?: Partial<TopologyConfig>
+  config?: Partial<TopologyConfig>,
 ): TaskTopologyVisualizer {
   const container = document.getElementById(containerId);
   if (!container) {

@@ -15,12 +15,33 @@
   --text-muted: #525252;
   --accent: #0047ab;
   --accent-hover: #003780;
+  --accent-foreground: #ffffff;
   --accent-shadow: rgba(0, 71, 171, 0.18);
+  --status-success: #14532d;
+  --status-warning: #713f12;
+  --status-error: #991b1b;
   --input-bg: #ffffff;
   --input-border: #767676;
   --focus-ring-color: #0047ab;
   --focus-ring-offset: 3px;
   --focus-ring-width: 3px;
+}
+
+/* The theme engine contract also keys the light palette on an explicit
+   attribute, so `data-theme="light"` is self-describing alongside dark/oled. */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --background: #ffffff;
+  --bg-surface: #f7f7f8;
+  --bg-elevated: #eeeeef;
+  --text-primary: #171717;
+  --text-secondary: #404040;
+  --text-muted: #525252;
+  --border: #767676;
+  --input-border: #767676;
+  --accent: #0047ab;
+  --accent-foreground: #ffffff;
 }
 
 [data-theme="dark"] {
@@ -38,10 +59,39 @@
   --text-muted: #c4c4c8;
   --accent: #9fc5ff;
   --accent-hover: #c3dcff;
+  --accent-foreground: #09090b;
   --accent-shadow: rgba(159, 197, 255, 0.2);
+  --status-success: #86efac;
+  --status-warning: #fcd34d;
+  --status-error: #fca5a5;
   --input-bg: #09090b;
   --input-border: #a1a1aa;
   --focus-ring-color: #9fc5ff;
+}
+
+[data-theme="oled"] {
+  color-scheme: dark;
+  --background: #000000;
+  --foreground: #ffffff;
+  --bg-base: #000000;
+  --bg-surface: #0a0a0a;
+  --bg-elevated: #171717;
+  --bg-overlay: rgba(0, 0, 0, 0.8);
+  --border: #a3a3a3;
+  --border-subtle: #52525b;
+  --text-primary: #ffffff;
+  --text-secondary: #e5e5e5;
+  --text-muted: #d4d4d8;
+  --accent: #93c5fd;
+  --accent-hover: #bfdbfe;
+  --accent-foreground: #000000;
+  --accent-shadow: rgba(147, 197, 253, 0.35);
+  --status-success: #bbf7d0;
+  --status-warning: #fde68a;
+  --status-error: #fecaca;
+  --input-bg: #000000;
+  --input-border: #a3a3a3;
+  --focus-ring-color: #93c5fd;
 }
 
 [data-theme="high-contrast"] {

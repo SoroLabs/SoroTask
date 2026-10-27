@@ -17,7 +17,7 @@ jobs:
 
       - name: Start Soroban RPC (stellar/quickstart)
         run: |
-          docker run -d --name soroban-rpc -p 8000:8000 stellar/quickstart:latest --local --enable-soroban-rpc --limits unlimited --logs
+          docker run -d --name soroban-rpc -p 8000:8000 stellar/quickstart:testing --local --enable-soroban-rpc --enable-soroban-diagnostic-events --limits unlimited --logs
 
       - name: Check for Conflict Markers
         run: |
@@ -43,6 +43,7 @@ jobs:
             sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
             cargo install --locked stellar-cli
           }
+          sudo apt-get update && sudo apt-get install -y binaryen || true
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           ~/.cargo/bin/stellar --version
 
@@ -56,6 +57,8 @@ jobs:
       - name: Build Smart Contracts
         run: |
           cd contract
+          stellar contract build
+          cd crates/e2e_contract
           stellar contract build
 
       - name: Wait for Soroban RPC
@@ -172,7 +175,7 @@ jobs:
         run: |
           cd frontend
           npx playwright install --with-deps chromium
-          npx playwright test
+          npx playwright test --project=chromium
 
       - name: Collect Service Logs
         if: failure()

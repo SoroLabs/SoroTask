@@ -43,8 +43,7 @@ function TasksPageContent() {
     wallet.status === "connected" ? wallet.session?.address : undefined;
   const network = Object.values(NETWORKS).find(
     (candidate) =>
-      candidate.networkPassphrase ===
-      wallet.session?.network.networkPassphrase,
+      candidate.networkPassphrase === wallet.session?.network.networkPassphrase,
   );
   const contractId = network?.contractId ?? NETWORKS.futurenet.contractId;
   const pauseMutation = usePauseTask();
@@ -330,11 +329,12 @@ function TasksPageContent() {
                 />
               ))}
             </div>
-            {(pauseMutation.error || resumeMutation.error) && (
-              <p role="alert" className="text-sm text-red-300">
-                {pauseMutation.error?.message ?? resumeMutation.error?.message}
-              </p>
-            )}
+          )}
+
+          {(pauseMutation.error || resumeMutation.error) && (
+            <p role="alert" className="text-sm text-red-300">
+              {pauseMutation.error?.message ?? resumeMutation.error?.message}
+            </p>
           )}
 
           {!isLoading && tasks && tasks.length === 0 && (
@@ -369,11 +369,6 @@ function TasksPageContent() {
                   />
                 ))}
               </div>
-              {(pauseMutation.error || resumeMutation.error) && (
-                <p role="alert" className="text-sm text-red-300">
-                  {pauseMutation.error?.message ?? resumeMutation.error?.message}
-                </p>
-              )}
               <div className="hidden space-y-4 md:block">
                 {paginatedTasks.map((task: any) => (
                   <TaskSelectableCard key={task.id} task={task} />

@@ -18,19 +18,11 @@ export type {
   ZkCircuitId,
 } from "./types";
 
-// In-browser WASM proving and Soroban serialisation (Issue #1250)
+// In-browser WASM proving (Issue #1250)
 export {
-  BASE_PROVING_MEMORY_MB,
-  checkMemoryBudget,
-  DEFAULT_PROVE_TIMEOUT_MS,
-  estimateProvingMemoryMb,
-  MB_PER_MILLION_CONSTRAINTS,
-  ProverMemoryError,
-  ProverUnavailableError,
-  proveInBrowser,
-  type BrowserProveOptions,
-  type BrowserProveResult,
-  type MemoryBudget,
+  BrowserZkProver,
+  combineCircuitInputs,
+  getCircuitArtifacts,
 } from "./browser-prover";
 
 export {

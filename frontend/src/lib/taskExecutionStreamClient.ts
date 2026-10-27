@@ -1,21 +1,35 @@
 /**
  * Task Execution Stream Client
- * 
+ *
  * Manages WebSocket connections to the keeper's StreamHub for real-time
  * task execution updates. Handles reconnection, buffering, and error recovery.
  */
 
-import { io, Socket } from 'socket.io-client';
-import { EventEmitter } from 'eventemitter3';
+import { io, Socket } from "socket.io-client";
+import { EventEmitter } from "eventemitter3";
 import {
-  TaskExecutionEvent,
+  TaskExecutionEvent as StreamTaskExecutionEvent,
   TaskExecutionState,
   ExecutionStatus,
   ExecutionLogEntry,
   StreamConnectionState,
   SubscriptionOptions,
-} from '../types/taskExecution';
-import { createLogger } from '@/src/lib/logger';
+} from "../types/taskExecution";
+import { createLogger } from "@/src/lib/logger";
+
+/**
+ * Lightweight execution event delivered to direct subscribers.
+ *
+ * The keeper emits one of these for every completed (or in-flight) execution;
+ * it is intentionally flatter than the internal buffered stream event.
+ */
+export interface TaskExecutionEvent {
+  taskId: string;
+  txHash: string;
+  status: string;
+  timestamp: number;
+  gasSpentStroops: number;
+}
 
 // Toast notification import
 let toastFn: ((msg: string, type?: string) => void) | null = null;
@@ -24,26 +38,29 @@ export function setToastHandler(fn: (msg: string, type?: string) => void) {
 }
 
 function playNotificationSound() {
-  if (typeof window === 'undefined') return;
+  if (typeof window === "undefined") return;
   try {
-    const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1sbGtdaGBqfYSEh4GAdnN0b3h8hYSBfXl1c3N1eYSFhn+AgIB7e3t7e4ODg4KCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKC');
+    const audio = new Audio(
+      "data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1sbGtdaGBqfYSEh4GAdnN0b3h8hYSBfXl1c3N1eYSFhn+AgIB7e3t7e4ODg4KCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKC",
+    );
     audio.volume = 0.3;
     audio.play().catch(() => {});
   } catch {}
 }
 
 function showToast(msg: string) {
-  if (toastFn) toastFn(msg, 'success');
+  if (toastFn) toastFn(msg, "success");
   playNotificationSound();
 }
 
-const KEEPER_URL = process.env.NEXT_PUBLIC_KEEPER_URL ?? 'http://localhost:3000';
-const STREAM_NAMESPACE = '/stream';
+const KEEPER_URL =
+  process.env.NEXT_PUBLIC_KEEPER_URL ?? "http://localhost:3000";
+const STREAM_NAMESPACE = "/stream";
 
-const logger = createLogger('task-execution-stream');
+const logger = createLogger("task-execution-stream");
 
 interface InternalStreamState {
-  events: TaskExecutionEvent[];
+  events: StreamTaskExecutionEvent[];
   lastEventId?: string;
   maxBufferSize: number;
 }
@@ -53,7 +70,7 @@ interface InternalStreamState {
  */
 export class TaskExecutionStreamClient extends EventEmitter {
   private socket: Socket | null = null;
-  private connectionState: StreamConnectionState = 'disconnected';
+  private connectionState: StreamConnectionState = "disconnected";
   private taskStreams: Map<string, InternalStreamState> = new Map();
   private reconnectAttempts = 0;
   private readonly maxReconnectAttempts = 5;
@@ -73,11 +90,11 @@ export class TaskExecutionStreamClient extends EventEmitter {
         return;
       }
 
-      this.setConnectionState('connecting');
+      this.setConnectionState("connecting");
 
       try {
         this.socket = io(`${KEEPER_URL}${STREAM_NAMESPACE}`, {
-          transports: ['websocket'],
+          transports: ["websocket"],
           reconnection: true,
           reconnectionDelay: this.reconnectDelay,
           reconnectionDelayMax: 5000,
@@ -86,28 +103,28 @@ export class TaskExecutionStreamClient extends EventEmitter {
 
         this.setupSocketListeners();
 
-        this.socket?.on('connect', () => {
+        this.socket?.on("connect", () => {
           this.reconnectAttempts = 0;
-          this.setConnectionState('connected');
-          logger.info('Connected to task execution stream', {
+          this.setConnectionState("connected");
+          logger.info("Connected to task execution stream", {
             socketId: this.socket?.id,
           });
           resolve();
         });
 
-        this.socket.on('connect_error', (error) => {
-          logger.warn('Connection error', { error: error.message });
-          this.setConnectionState('error');
+        this.socket.on("connect_error", (error) => {
+          logger.warn("Connection error", { error: error.message });
+          this.setConnectionState("error");
           reject(error);
         });
 
-        this.socket.on('error', (error) => {
-          logger.error('Socket error', { error });
-          this.setConnectionState('error');
+        this.socket.on("error", (error) => {
+          logger.error("Socket error", { error });
+          this.setConnectionState("error");
         });
       } catch (error) {
-        logger.error('Failed to initialize socket', { error });
-        this.setConnectionState('error');
+        logger.error("Failed to initialize socket", { error });
+        this.setConnectionState("error");
         reject(error);
       }
     });
@@ -125,20 +142,35 @@ export class TaskExecutionStreamClient extends EventEmitter {
 
       this.socket.disconnect();
       this.taskStreams.clear();
-      this.setConnectionState('disconnected');
-      logger.info('Disconnected from task execution stream');
+      this.setConnectionState("disconnected");
+      logger.info("Disconnected from task execution stream");
       resolve();
     });
   }
 
   /**
-   * Subscribes to execution events for a specific task
+   * Subscribes to execution events for a specific task, or registers a direct
+   * event listener when called with a handler.
    */
-  subscribe(options: SubscriptionOptions): void {
+  subscribe(options: SubscriptionOptions): void;
+  subscribe(handler: (event: TaskExecutionEvent) => void): () => void;
+  subscribe(
+    optionsOrHandler:
+      SubscriptionOptions | ((event: TaskExecutionEvent) => void),
+  ): void | (() => void) {
+    if (typeof optionsOrHandler === "function") {
+      const handler = optionsOrHandler;
+      this.on("event", handler);
+      return () => {
+        this.off("event", handler);
+      };
+    }
+
+    const options = optionsOrHandler;
     const { taskId, maxLogBufferSize = 1000 } = options;
 
     if (!this.socket?.connected) {
-      throw new Error('Stream client is not connected');
+      throw new Error("Stream client is not connected");
     }
 
     // Initialize or update task stream state
@@ -150,12 +182,19 @@ export class TaskExecutionStreamClient extends EventEmitter {
     }
 
     // Emit subscription event to keeper
-    this.socket.emit('task:subscribe', {
+    this.socket.emit("task:subscribe", {
       taskId,
-      startFrom: options.startFrom || 'latest',
+      startFrom: options.startFrom || "latest",
     });
 
-    logger.info('Subscribed to task execution', { taskId });
+    logger.info("Subscribed to task execution", { taskId });
+  }
+
+  /**
+   * Delivers an execution event to direct subscribers.
+   */
+  emitEvent(event: TaskExecutionEvent): void {
+    this.emit("event", event);
   }
 
   /**
@@ -166,9 +205,9 @@ export class TaskExecutionStreamClient extends EventEmitter {
       return;
     }
 
-    this.socket.emit('task:unsubscribe', { taskId });
+    this.socket.emit("task:unsubscribe", { taskId });
     this.taskStreams.delete(taskId);
-    logger.info('Unsubscribed from task execution', { taskId });
+    logger.info("Unsubscribed from task execution", { taskId });
   }
 
   /**
@@ -181,24 +220,24 @@ export class TaskExecutionStreamClient extends EventEmitter {
     // Reconstruct state from events
     const state: TaskExecutionState = {
       taskId,
-      status: 'pending',
+      status: "pending",
       logs: [],
     };
 
     for (const event of stream.events) {
       switch (event.type) {
-        case 'status_change': {
+        case "status_change": {
           const payload = event.payload as any;
           state.status = payload.newStatus;
           state.currentPhase = payload.phase;
           break;
         }
-        case 'log_entry': {
+        case "log_entry": {
           const logEntry = event.payload as ExecutionLogEntry;
           state.logs.push(logEntry);
           break;
         }
-        case 'progress_update': {
+        case "progress_update": {
           const payload = event.payload as any;
           state.progress = {
             current: payload.current,
@@ -206,7 +245,7 @@ export class TaskExecutionStreamClient extends EventEmitter {
           };
           break;
         }
-        case 'error': {
+        case "error": {
           const payload = event.payload as any;
           state.error = {
             code: payload.code,
@@ -215,9 +254,9 @@ export class TaskExecutionStreamClient extends EventEmitter {
           };
           break;
         }
-        case 'completed': {
+        case "completed": {
           const payload = event.payload as any;
-          state.status = payload.status === 'success' ? 'completed' : 'failed';
+          state.status = payload.status === "success" ? "completed" : "failed";
           state.completedAt = event.timestamp;
           state.gasUsed = payload.gasUsed;
           state.transactionId = payload.transactionId;
@@ -240,7 +279,7 @@ export class TaskExecutionStreamClient extends EventEmitter {
     if (!stream) return [];
 
     const logs = stream.events
-      .filter((e) => e.type === 'log_entry')
+      .filter((e) => e.type === "log_entry")
       .map((e) => e.payload as ExecutionLogEntry);
 
     if (limit) {
@@ -263,23 +302,26 @@ export class TaskExecutionStreamClient extends EventEmitter {
   private setConnectionState(state: StreamConnectionState): void {
     if (this.connectionState !== state) {
       this.connectionState = state;
-      this.emit('connectionStateChange', state);
+      this.emit("connectionStateChange", state);
     }
   }
 
   // Subscribe by user address for multi-user notifications
   subscribeByAddress(address: string): void {
     if (!this.socket?.connected) {
-      throw new Error('Stream client is not connected');
+      throw new Error("Stream client is not connected");
     }
-    this.socket.emit('address:subscribe', { address });
-    logger.info('Subscribed to address events', { address });
+    this.socket.emit("address:subscribe", { address });
+    logger.info("Subscribed to address events", { address });
   }
 
   // Update TanStack Query cache (external hook can register callback)
-  private queryCacheUpdateFn: ((taskId: string, data: Partial<TaskExecutionState>) => void) | null = null;
-  
-  static setQueryCacheUpdater(fn: (taskId: string, data: Partial<TaskExecutionState>) => void) {
+  private queryCacheUpdateFn:
+    ((taskId: string, data: Partial<TaskExecutionState>) => void) | null = null;
+
+  static setQueryCacheUpdater(
+    fn: (taskId: string, data: Partial<TaskExecutionState>) => void,
+  ) {
     TaskExecutionStreamClient.prototype.queryCacheUpdateFn = fn;
   }
 
@@ -293,19 +335,22 @@ export class TaskExecutionStreamClient extends EventEmitter {
     if (!this.socket) return;
 
     // Listen for execution events
-    this.socket.on('task:execution:event', (event: TaskExecutionEvent) => {
-      this.handleExecutionEvent(event);
-    });
+    this.socket.on(
+      "task:execution:event",
+      (event: StreamTaskExecutionEvent) => {
+        this.handleExecutionEvent(event);
+      },
+    );
 
     // Listen for task-specific events
-    this.socket.on('task:execution:status', (data: any) => {
-      const event: TaskExecutionEvent = {
+    this.socket.on("task:execution:status", (data: any) => {
+      const event: StreamTaskExecutionEvent = {
         id: data.id || `status-${Date.now()}`,
-        type: 'status_change',
+        type: "status_change",
         taskId: data.taskId,
         timestamp: data.timestamp || new Date().toISOString(),
         payload: {
-          oldStatus: data.oldStatus || 'pending',
+          oldStatus: data.oldStatus || "pending",
           newStatus: data.newStatus,
           phase: data.phase,
         },
@@ -313,17 +358,17 @@ export class TaskExecutionStreamClient extends EventEmitter {
       this.handleExecutionEvent(event);
     });
 
-    this.socket.on('task:execution:log', (data: any) => {
-      const event: TaskExecutionEvent = {
+    this.socket.on("task:execution:log", (data: any) => {
+      const event: StreamTaskExecutionEvent = {
         id: data.id || `log-${Date.now()}`,
-        type: 'log_entry',
+        type: "log_entry",
         taskId: data.taskId,
         timestamp: data.timestamp || new Date().toISOString(),
         payload: {
           id: data.id || `log-${Date.now()}`,
           taskId: data.taskId,
           timestamp: data.timestamp || new Date().toISOString(),
-          level: data.level || 'info',
+          level: data.level || "info",
           message: data.message,
           context: data.context,
         },
@@ -331,27 +376,35 @@ export class TaskExecutionStreamClient extends EventEmitter {
       this.handleExecutionEvent(event);
     });
 
-    this.socket.on('disconnect', () => {
-      this.setConnectionState('disconnected');
-      logger.info('Stream disconnected');
+    this.socket.on("disconnect", () => {
+      this.setConnectionState("disconnected");
+      logger.info("Stream disconnected");
     });
 
     // Task completed notification
-    this.socket.on('task:execution:completed', (data: any) => {
+    this.socket.on("task:execution:completed", (data: any) => {
       const taskId = data.taskId;
       showToast(`Task ${taskId} executed successfully!`);
-      this.updateQueryCache(taskId, { status: 'completed', completedAt: new Date().toISOString() });
+      this.updateQueryCache(taskId, {
+        status: "completed",
+        completedAt: new Date().toISOString(),
+      });
     });
 
     // Task failed notification
-    this.socket.on('task:execution:failed', (data: any) => {
+    this.socket.on("task:execution:failed", (data: any) => {
       const taskId = data.taskId;
-      showToast(`Task ${taskId} execution failed: ${data.error || 'Unknown error'}`);
-      this.updateQueryCache(taskId, { status: 'failed', error: { code: 'EXECUTION_FAILED', message: data.error } });
+      showToast(
+        `Task ${taskId} execution failed: ${data.error || "Unknown error"}`,
+      );
+      this.updateQueryCache(taskId, {
+        status: "failed",
+        error: { code: "EXECUTION_FAILED", message: data.error },
+      });
     });
   }
 
-  private handleExecutionEvent(event: TaskExecutionEvent): void {
+  private handleExecutionEvent(event: StreamTaskExecutionEvent): void {
     // Auto-subscribe if not already tracking
     if (!this.taskStreams.has(event.taskId)) {
       this.taskStreams.set(event.taskId, { events: [], maxBufferSize: 1000 });
@@ -369,18 +422,18 @@ export class TaskExecutionStreamClient extends EventEmitter {
     }
 
     // Emit event to listeners
-    this.emit('event', event);
+    this.emit("event", event);
     this.emit(`task:${event.taskId}`, event);
 
     // Update query cache on status change
-    if (event.type === 'completed') {
-      this.updateQueryCache(event.taskId, { status: 'completed' });
-    } else if (event.type === 'status_change') {
+    if (event.type === "completed") {
+      this.updateQueryCache(event.taskId, { status: "completed" });
+    } else if (event.type === "status_change") {
       const payload = event.payload as any;
       this.updateQueryCache(event.taskId, { status: payload.newStatus });
     }
 
-    logger.debug('Processed execution event', {
+    logger.debug("Processed execution event", {
       taskId: event.taskId,
       type: event.type,
     });

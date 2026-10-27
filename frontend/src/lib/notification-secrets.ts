@@ -20,7 +20,13 @@ export function validateNotificationEndpointUrl(value: string): string | null {
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   const isIpAddress =
     /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) || hostname.includes(":");
-  const blockedSuffixes = [".localhost", ".local", ".internal", ".test", ".lan"];
+  const blockedSuffixes = [
+    ".localhost",
+    ".local",
+    ".internal",
+    ".test",
+    ".lan",
+  ];
 
   if (
     url.protocol !== "https:" ||
@@ -44,7 +50,7 @@ function base64Encode(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
 }
 
-function base64Decode(value: string): Uint8Array {
+function base64Decode(value: string): Uint8Array<ArrayBuffer> {
   if (typeof atob === "function") {
     const binary = atob(value);
     const bytes = new Uint8Array(binary.length);
@@ -60,8 +66,14 @@ async function deriveAesKey(
 ): Promise<CryptoKey> {
   // Bind the encryption key to the user's wallet public key: only holders of
   // that wallet identity (same public key material) can reproduce the key.
-  const digest = await cryptoImpl.digest("SHA-256", new TextEncoder().encode(walletPublicKey));
-  return cryptoImpl.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  const digest = await cryptoImpl.digest(
+    "SHA-256",
+    new TextEncoder().encode(walletPublicKey),
+  );
+  return cryptoImpl.importKey("raw", digest, { name: "AES-GCM" }, false, [
+    "encrypt",
+    "decrypt",
+  ]);
 }
 
 /**
@@ -78,7 +90,9 @@ export async function encryptChannelSecret(
 ): Promise<string> {
   if (!plainSecret) return "";
   if (!walletPublicKey) {
-    throw new Error("A wallet public key is required to encrypt channel secrets");
+    throw new Error(
+      "A wallet public key is required to encrypt channel secrets",
+    );
   }
 
   const key = await deriveAesKey(walletPublicKey, cryptoImpl.subtle);
@@ -112,7 +126,7 @@ export async function decryptChannelSecret(
   const plaintext = await cryptoImpl.subtle.decrypt(
     { name: "AES-GCM", iv: base64Decode(ivB64) },
     key,
-    base64Decode(ctB64).buffer as ArrayBuffer,
+    base64Decode(ctB64),
   );
   return new TextDecoder().decode(plaintext);
 }
@@ -136,7 +150,8 @@ export async function sendChannelTestPing(
     return { ok: false, error: validationError };
   }
 
-  const fetchFn = options.fetchFn ?? (typeof fetch === "function" ? fetch : undefined);
+  const fetchFn =
+    options.fetchFn ?? (typeof fetch === "function" ? fetch : undefined);
   if (!fetchFn) {
     return { ok: false, error: "fetch is not available" };
   }
@@ -151,23 +166,29 @@ export async function sendChannelTestPing(
     });
     return { ok: response.ok, status: response.status };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
-function buildTestPingPayload(channel: ExternalChannelId): Record<string, unknown> {
+function buildTestPingPayload(
+  channel: ExternalChannelId,
+): Record<string, unknown> {
   const base = {
     type: "test_ping",
     source: "sorotask-notification-preferences",
     timestamp: new Date().toISOString(),
-    message: "SoroTask test ping — if you can read this, the channel is verified.",
+    message:
+      "SoroTask test ping — if you can read this, the channel is verified.",
   };
 
   if (channel === "telegram") {
     return { ...base, text: base.message };
   }
   if (channel === "discord") {
-    return { ...base, content: base.message ?? base.text };
+    return { ...base, content: base.message };
   }
   return base;
 }

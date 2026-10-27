@@ -391,28 +391,6 @@ class HistoryManager {
     }
   }
 
-  /**
-   * Get recent history (for simple debugging/audit)
-   * @param {number} limit - Number of recent records to return
-   * @returns {Promise<Object[]>}
-   */
-  async getRecent(limit = 100) {
-    try {
-      await this.writeQueue;
-      if (!fs.existsSync(HISTORY_FILE)) return [];
-
-      const content = await fs.promises.readFile(HISTORY_FILE, 'utf-8');
-      const lines = content.trim().split('\n');
-      return lines
-        .slice(-limit)
-        .reverse()
-        .map(line => JSON.parse(line));
-    } catch (err) {
-      this.logger.error('Failed to read execution history', { error: err.message });
-      return [];
-    }
-  }
-
   // -------------------------------------------------------------------------
   // Issue #1451 — Blockchain Reorganization Detection & Recovery Tracking
   // -------------------------------------------------------------------------
@@ -1324,8 +1302,7 @@ class ParquetExporter {
   }
 }
 
-module.exports = {
-  HistoryManager,
-  PostgresPartitionManager,
-  ParquetExporter,
-};
+module.exports = HistoryManager;
+module.exports.HistoryManager = HistoryManager;
+module.exports.PostgresPartitionManager = PostgresPartitionManager;
+module.exports.ParquetExporter = ParquetExporter;

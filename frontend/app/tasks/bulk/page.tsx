@@ -99,11 +99,12 @@ export default function BatchTasksPage() {
 
   const handleExport = (type: "json" | "yaml" | "csv") => {
     const tasksToExport: TaskPreset[] = tasks.map((t) => ({
-      name: t.name || `Task ${t.id}`,
-      contractAddress: t.contractAddress || "CA3D5KRYMCMUG7OWCT7YGONR",
-      functionName: t.functionName || "execute",
-      gasLimit: t.gasLimit || 100000,
-      schedule: t.schedule || "0 * * * *",
+      id: t.id,
+      name: t.fn || `Task ${t.id}`,
+      contractAddress: t.contract,
+      functionName: t.fn,
+      gasLimit: t.gas > 0 ? t.gas : 100000,
+      schedule: `${t.intervalSec}s`,
     }));
 
     let output = "";

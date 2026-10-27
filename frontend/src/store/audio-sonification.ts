@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState } from "react";
 
 interface SoundProfile {
   volume: number;
@@ -9,7 +9,12 @@ interface SoundProfile {
 }
 
 interface AudioEvent {
-  type: 'success' | 'failure' | 'gas_exhausted' | 'keeper_execute' | 'task_complete';
+  type:
+    | "success"
+    | "failure"
+    | "gas_exhausted"
+    | "keeper_execute"
+    | "task_complete";
   gasUsed: number;
   keeperId: string;
   value: number;
@@ -20,11 +25,13 @@ const DEFAULT_PROFILE: SoundProfile = {
   volume: 0.5,
   successPitch: 440,
   failurePitch: 220,
-  keeperTone: 'pentatonic',
+  keeperTone: "pentatonic",
   enabled: true,
 };
 
-const PENTATONIC_SCALE = [261.63, 293.66, 329.63, 392, 440, 523.25, 587.33, 659.25];
+const PENTATONIC_SCALE = [
+  261.63, 293.66, 329.63, 392, 440, 523.25, 587.33, 659.25,
+];
 const DISSONANT_INTERVALS = [100, 150, 200, 300];
 
 export class AudioSonificationEngine {
@@ -33,7 +40,7 @@ export class AudioSonificationEngine {
   private profile: SoundProfile;
   private isPlaying = false;
   private muted = false;
-  private settingsKey = 'sorotask_audio_settings';
+  private settingsKey = "sorotask_audio_settings";
 
   constructor(profile?: Partial<SoundProfile>) {
     this.profile = { ...DEFAULT_PROFILE, ...profile };
@@ -48,7 +55,7 @@ export class AudioSonificationEngine {
       this.masterGain.connect(this.audioContext.destination);
     }
 
-    if (this.audioContext.state === 'suspended') {
+    if (this.audioContext.state === "suspended") {
       await this.audioContext.resume();
     }
   }
@@ -68,7 +75,7 @@ export class AudioSonificationEngine {
     try {
       localStorage.setItem(
         this.settingsKey,
-        JSON.stringify({ ...this.profile, muted: this.muted })
+        JSON.stringify({ ...this.profile, muted: this.muted }),
       );
     } catch {}
   }
@@ -80,19 +87,19 @@ export class AudioSonificationEngine {
     if (this.muted || !this.profile.enabled) return;
 
     switch (event.type) {
-      case 'success':
+      case "success":
         await this.playSuccess(event);
         break;
-      case 'failure':
+      case "failure":
         await this.playFailure(event);
         break;
-      case 'gas_exhausted':
+      case "gas_exhausted":
         await this.playGasExhausted(event);
         break;
-      case 'keeper_execute':
+      case "keeper_execute":
         await this.playKeeperExecute(event);
         break;
-      case 'task_complete':
+      case "task_complete":
         await this.playTaskComplete(event);
         break;
     }
@@ -104,13 +111,13 @@ export class AudioSonificationEngine {
     const osc2 = this.audioContext!.createOscillator();
     const gainNode = this.audioContext!.createGain();
 
-    osc1.type = 'sine';
+    osc1.type = "sine";
     osc1.frequency.value = baseFreq;
-    osc2.type = 'sine';
+    osc2.type = "sine";
     osc2.frequency.value = baseFreq * 1.5;
 
     gainNode.gain.value = this.profile.volume * 0.3;
-    gainNode.connect(this.masterGain);
+    gainNode.connect(this.masterGain!);
     osc1.connect(gainNode);
     osc2.connect(gainNode);
 
@@ -128,15 +135,15 @@ export class AudioSonificationEngine {
     const osc = this.audioContext!.createOscillator();
     const gainNode = this.audioContext!.createGain();
 
-    osc.type = 'sawtooth';
+    osc.type = "sawtooth";
     osc.frequency.value = baseFreq;
     osc.frequency.linearRampToValueAtTime(
       baseFreq * 0.5,
-      this.audioContext!.currentTime + 0.5
+      this.audioContext!.currentTime + 0.5,
     );
 
     gainNode.gain.value = this.profile.volume * 0.4;
-    gainNode.connect(this.masterGain);
+    gainNode.connect(this.masterGain!);
     osc.connect(gainNode);
 
     osc.start();
@@ -148,12 +155,15 @@ export class AudioSonificationEngine {
     const osc = this.audioContext!.createOscillator();
     const gainNode = this.audioContext!.createGain();
 
-    osc.type = 'square';
+    osc.type = "square";
     osc.frequency.value = 100;
-    osc.frequency.linearRampToValueAtTime(50, this.audioContext!.currentTime + 1);
+    osc.frequency.linearRampToValueAtTime(
+      50,
+      this.audioContext!.currentTime + 1,
+    );
 
     gainNode.gain.value = this.profile.volume * 0.3;
-    gainNode.connect(this.masterGain);
+    gainNode.connect(this.masterGain!);
     osc.connect(gainNode);
 
     osc.start();
@@ -169,11 +179,11 @@ export class AudioSonificationEngine {
       const osc = this.audioContext!.createOscillator();
       const gainNode = this.audioContext!.createGain();
 
-      osc.type = 'triangle';
+      osc.type = "triangle";
       osc.frequency.value = PENTATONIC_SCALE[i % PENTATONIC_SCALE.length];
 
       gainNode.gain.value = this.profile.volume * 0.15;
-      gainNode.connect(this.masterGain);
+      gainNode.connect(this.masterGain!);
       osc.connect(gainNode);
 
       osc.start(this.audioContext!.currentTime + i * 0.1);
@@ -188,11 +198,11 @@ export class AudioSonificationEngine {
       const osc = this.audioContext!.createOscillator();
       const gainNode = this.audioContext!.createGain();
 
-      osc.type = 'sine';
+      osc.type = "sine";
       osc.frequency.value = notes[i];
 
       gainNode.gain.value = this.profile.volume * 0.2;
-      gainNode.connect(this.masterGain);
+      gainNode.connect(this.masterGain!);
       osc.connect(gainNode);
 
       osc.start(this.audioContext!.currentTime + i * 0.2);
@@ -207,7 +217,9 @@ export class AudioSonificationEngine {
   }
 
   private calculateKeeperPitch(event: AudioEvent): number {
-    const keeperIndex = event.keeperId.charCodeAt(event.keeperId.length - 1) % PENTATONIC_SCALE.length;
+    const keeperIndex =
+      event.keeperId.charCodeAt(event.keeperId.length - 1) %
+      PENTATONIC_SCALE.length;
     return PENTATONIC_SCALE[keeperIndex];
   }
 

@@ -10,63 +10,61 @@ pub use events::*;
 pub mod admin;
 pub mod circuit_breaker;
 pub mod dag;
+pub mod dex_router;
 pub mod dynamic_nft;
+pub mod escrow_pool;
+pub mod governance;
 pub mod math;
 pub mod optimistic;
 pub mod private_tasks;
 pub mod state_channel;
 pub mod storage;
+pub mod synthetic_arbitrageur;
 pub mod task;
 pub mod upgrade;
-pub mod governance;
-pub mod escrow_pool;
-pub mod synthetic_arbitrageur;
 
+pub use escrow_pool::{
+    DepositResult, EscrowPoolError, PoolConfig, WithdrawalResult, SHARE_PRECISION, YIELD_PRECISION,
+};
 pub use gas::{get_gas_rates, update_gas_rates, EscrowManager, FeeBreakdown, GasMeter};
-pub use optimistic::{FraudProof, OptimisticClaim, CHALLENGE_WINDOW_LEDGERS};
-pub use state_channel::{ChannelCloseRequest, ChannelReceipt, ChannelState, ChannelStatus};
-pub use trailing_stop_loss::{
-    TrailingOrderConfig, TrailingOrderExecution, TrailingOrderStatus,
-    create_trailing_order, update_trailing_order, cancel_trailing_order,
-    get_trailing_order, get_trailing_order_execution, batch_update_trailing_orders,
-};
-pub use merkle_state_channel::{
-    MerkleChannelState, ChannelSubState, MerkleProof, MerkleExitClaim,
-    open_merkle_channel, submit_closing_state, initiate_unilateral_exit,
-    challenge_unilateral_exit, submit_merkle_exit_claim, withdraw_merkle_exit,
-    apply_timeout_penalty, get_merkle_channel_state, get_channel_substate,
-    get_merkle_exit_claim, MERKLE_CHALLENGE_WINDOW_SECONDS,
-};
-pub use protocol_insurance::{
-    ProtocolInsuranceClaim, UnderwriterStake, RiskTranche, InsurancePoolStats,
-    InsuranceClaimStatus, ClaimRiskLevel,
-    stake_as_underwriter, unstake_as_underwriter, submit_insurance_claim,
-    certify_insurance_claim, process_insurance_claim, reject_insurance_claim,
-    accrue_protocol_fees, claim_underwriter_rewards, get_insurance_pool_stats,
-    get_insurance_claim, get_underwriter_stake, get_risk_tranches,
-};
 pub use gas_refund::{
-    GasConsumptionRecord, YieldAccumulator, DustRecord, GasPriceConfig, GasUsageStats,
-    record_gas_consumption, sweep_task_dust, batch_sweep_dust,
-    harvest_yield_accumulator, get_accumulator_balance, get_gas_usage_stats,
-    get_task_dust, get_gas_consumption_record, update_gas_price_config, estimate_refund,
+    batch_sweep_dust, estimate_refund, get_accumulator_balance, get_gas_consumption_record,
+    get_gas_usage_stats, get_task_dust, harvest_yield_accumulator, record_gas_consumption,
+    sweep_task_dust, update_gas_price_config, DustRecord, GasConsumptionRecord, GasPriceConfig,
+    GasUsageStats, YieldAccumulator,
 };
-pub use storage::{ExecutionLog, TaskMeta, TaskPayload, TaskStats};
-pub use upgrade::{UpgradeProposal, UPGRADE_TIMELOCK_SECONDS};
 pub use governance::{
-    GovernanceConfig, GovernanceProposal, VoteChoice, VoteRecord, VoteSnapshot, VoteStatus,
+    GovernanceConfig, VoteChoice, VoteRecord, VoteSnapshot, VoteStatus,
     DEFAULT_APPROVAL_THRESHOLD_BPS, DEFAULT_QUORUM_BPS, DEFAULT_VOTING_PERIOD_LEDGERS,
     MIN_VOTING_PERIOD_LEDGERS,
 };
-pub use escrow_pool::{
-    DepositResult, EscrowPoolError, PoolConfig, SHARE_PRECISION, WithdrawalResult,
-    YIELD_PRECISION,
+pub use merkle_state_channel::{
+    apply_timeout_penalty, challenge_unilateral_exit, get_channel_substate,
+    get_merkle_channel_state, get_merkle_exit_claim, initiate_unilateral_exit, open_merkle_channel,
+    submit_closing_state, submit_merkle_exit_claim, withdraw_merkle_exit, ChannelSubState,
+    MerkleChannelState, MerkleExitClaim, MerkleProof, MERKLE_CHALLENGE_WINDOW_SECONDS,
 };
+pub use optimistic::{FraudProof, OptimisticClaim, CHALLENGE_WINDOW_LEDGERS};
+pub use protocol_insurance::{
+    accrue_protocol_fees, certify_insurance_claim, claim_underwriter_rewards, get_insurance_claim,
+    get_insurance_pool_stats, get_risk_tranches, get_underwriter_stake, process_insurance_claim,
+    reject_insurance_claim, stake_as_underwriter, submit_insurance_claim, unstake_as_underwriter,
+    ClaimRiskLevel, InsuranceClaimStatus, InsurancePoolStats, ProtocolInsuranceClaim, RiskTranche,
+    UnderwriterStake,
+};
+pub use state_channel::{ChannelCloseRequest, ChannelReceipt, ChannelState, ChannelStatus};
+pub use storage::{ExecutionLog, TaskMeta, TaskPayload, TaskStats};
 pub use synthetic_arbitrageur::{
     ArbitrageConfig, ArbitrageError, ArbitrageRecord, ArbitrageResult, ArbitrageStatus,
     DEFAULT_MAX_ARBITRAGE_PCT_BPS, DEFAULT_MAX_DEVIATION_BPS, DEFAULT_MIN_PROFIT_BPS,
     FLASH_LOAN_FEE_BPS,
 };
+pub use trailing_stop_loss::{
+    batch_update_trailing_orders, cancel_trailing_order, create_trailing_order, get_trailing_order,
+    get_trailing_order_execution, update_trailing_order, TrailingOrderConfig,
+    TrailingOrderExecution, TrailingOrderStatus,
+};
+pub use upgrade::{UpgradeProposal, UPGRADE_TIMELOCK_SECONDS};
 
 /// Pending execution commitment posted by a keeper in the commit phase.
 /// Stores the hash of (keeper_address, task_id, secret, block_target)
@@ -95,6 +93,13 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, xdr::ToXdr, Address,
     Bytes, BytesN, Env, IntoVal, Symbol, TryIntoVal, Val, Vec,
 };
+/// Canonical zero Stellar account used as an "unset" sentinel in config defaults.
+pub(crate) fn unset_address(env: &Env) -> Address {
+    Address::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    )
+}
 #[cfg(any(test, feature = "testutils"))]
 use vrf_rfc9381::{
     ec::edwards25519::{tai::EdVrfEdwards25519TaiPublicKey, EdVrfProof},
@@ -1535,13 +1540,13 @@ pub mod gas;
 
 pub mod carbon;
 pub mod ccip;
+pub mod gas_refund;
 pub mod mempool;
+pub mod merkle_state_channel;
+pub mod protocol_insurance;
 pub mod resolver;
 pub mod security;
 pub mod trailing_stop_loss;
-pub mod merkle_state_channel;
-pub mod protocol_insurance;
-pub mod gas_refund;
 
 #[cfg(test)]
 mod test_commit_reveal;

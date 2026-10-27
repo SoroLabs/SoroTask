@@ -183,12 +183,7 @@ fn u64_to_fr(env: &Env, value: u64) -> Fr {
 }
 
 /// Hash binding the invoked action, matching the circuit's `action_hash`.
-pub fn action_hash(
-    env: &Env,
-    target: &Address,
-    function: &Symbol,
-    args: &Vec<Val>,
-) -> BytesN<32> {
+pub fn action_hash(env: &Env, target: &Address, function: &Symbol, args: &Vec<Val>) -> BytesN<32> {
     let mut data = target.clone().to_xdr(env);
     data.append(&function.clone().to_xdr(env));
     data.append(&args.clone().to_xdr(env));

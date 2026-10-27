@@ -2,6 +2,8 @@
 
 import React from "react";
 import dynamic from "next/dynamic";
+import { useWalletOptional } from "@/app/context/WalletContext";
+import type { ZkTask } from "@/src/lib/zk-proof";
 
 const ZKProverPanel = dynamic(
   () => import("@/src/components/zk-proof").then((mod) => mod.ZKProverPanel),
@@ -35,7 +37,9 @@ export default function ZKProverPage() {
             onClick={openConnectModal}
             className="text-xs font-medium px-4 py-2 rounded-xl border border-neutral-800 bg-neutral-900 text-neutral-300 transition hover:bg-neutral-800"
           >
-            {session ? `Wallet ${session.address.slice(0, 5)}…${session.address.slice(-4)}` : "Connect Wallet"}
+            {session
+              ? `Wallet ${session.address.slice(0, 5)}…${session.address.slice(-4)}`
+              : "Connect Wallet"}
           </button>
         </div>
 

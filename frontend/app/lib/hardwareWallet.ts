@@ -563,7 +563,11 @@ export class LedgerStellarBridge {
 
     const readAll = (async () => {
       for (const packet of framePackets(apdu)) {
-        await transferOut.call(this.device, LEDGER_EP_OUT, packet);
+        await transferOut.call(
+          this.device,
+          LEDGER_EP_OUT,
+          new Uint8Array(packet),
+        );
       }
 
       // The response carries its own header packet, so its length is not known

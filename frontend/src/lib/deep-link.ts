@@ -1,5 +1,4 @@
-import { createHash } from 'crypto';
-import { z } from 'zod';
+import { z } from "zod";
 
 interface TaskDAGNode {
   id: string;
@@ -19,26 +18,47 @@ const TaskDAGSchema = z.object({
     z.object({
       id: z.string(),
       type: z.string(),
-      config: z.record(z.unknown()),
+      config: z.record(z.string(), z.unknown()),
       dependencies: z.array(z.string()),
-    })
+    }),
   ),
   version: z.string(),
   creatorSignature: z.string(),
 });
 
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function sha256Hex(data: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(data));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export class DeepLinkManager {
-  private static readonly VERSION = '1.0.0';
+  private static readonly VERSION = "1.0.0";
   private static readonly MAX_URL_LENGTH = 2048;
 
   static async encodeDAG(dag: TaskDAG): Promise<string> {
     const validated = TaskDAGSchema.parse(dag);
     const jsonString = JSON.stringify(validated);
-    const compressed = await this.lzCompress(jsonString);
-    const hash = createHash('sha256').update(jsonString).digest('hex');
-    const signature = await this.signPayload(hash);
+    const signature = await this.signPayload(await sha256Hex(jsonString));
+    const encoded = bytesToBase64(encoder.encode(jsonString));
 
-    const encoded = btoa(compressed);
     const urlFragment = `${encoded}:${signature}`;
 
     if (urlFragment.length > this.MAX_URL_LENGTH) {
@@ -51,17 +71,16 @@ export class DeepLinkManager {
 
   static async decodeURL(url: string): Promise<TaskDAG | null> {
     try {
-      const fragment = url.split('#')[1];
+      const fragment = url.split("#")[1];
       if (!fragment) return null;
 
-      const [encoded, signature] = fragment.split(':');
-      const compressed = atob(encoded);
-      const jsonString = await this.lzDecompress(compressed);
+      const [encoded, signature] = fragment.split(":");
+      const jsonString = decoder.decode(base64ToBytes(encoded));
       const dag = TaskDAGSchema.parse(JSON.parse(jsonString));
 
-      const hash = createHash('sha256').update(jsonString).digest('hex');
-      if (!this.verifySignature(hash, signature)) {
-        throw new Error('Invalid signature');
+      const hash = await sha256Hex(jsonString);
+      if (!(await this.verifySignature(hash, signature))) {
+        throw new Error("Invalid signature");
       }
 
       return dag;
@@ -70,82 +89,16 @@ export class DeepLinkManager {
     }
   }
 
-  private static async lzCompress(data: string): Promise<Uint8Array> {
-    const encoder = new TextEncoder();
-    const input = encoder.encode(data);
-    const output = new Uint8Array(Math.ceil(input.length * 0.6));
-
-    let outputIdx = 0;
-    const dict = new Map<string, number>();
-    let dictIdx = 256;
-
-    let current = '';
-    for (const char of input) {
-      const combo = current + char;
-      if (dict.has(combo)) {
-        current = combo;
-      } else {
-        if (current) {
-          if (dict.has(current)) {
-            output[outputIdx++] = dict.get(current)!;
-          } else {
-            output[outputIdx++] = current.charCodeAt(0);
-          }
-        }
-        if (dictIdx < 65535) {
-          dict.set(combo, dictIdx++);
-        }
-        current = char;
-      }
-    }
-
-    if (current) {
-      output[outputIdx++] = current.charCodeAt(0);
-    }
-
-    return output.slice(0, outputIdx);
-  }
-
-  private static async lzDecompress(data: Uint8Array): Promise<string> {
-    const dict = new Map<number, string>();
-    for (let i = 0; i < 256; i++) {
-      dict.set(i, String.fromCharCode(i));
-    }
-
-    let result = '';
-    let prev = String.fromCharCode(data[0]);
-    result = prev;
-    let dictIdx = 256;
-
-    for (let i = 1; i < data.length; i++) {
-      const curr = dict.get(data[i]) || String.fromCharCode(data[i]);
-      result += curr;
-      if (dictIdx < 65535) {
-        dict.set(dictIdx++, prev + curr);
-      }
-      prev = curr;
-    }
-
-    return result;
-  }
-
   private static async signPayload(hash: string): Promise<string> {
-    const encoder = new TextEncoder();
-    const keyData = encoder.encode(hash);
-    const signature = await crypto.subtle.sign(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign']),
-      keyData
-    );
-    return btoa(String.fromCharCode(...new Uint8Array(signature)));
+    return sha256Hex(`sorotask:${hash}`);
   }
 
-  private static verifySignature(hash: string, signature: string): boolean {
-    try {
-      return signature.length > 0;
-    } catch {
-      return false;
-    }
+  private static async verifySignature(
+    hash: string,
+    signature: string,
+  ): Promise<boolean> {
+    if (!signature) return false;
+    return signature === (await this.signPayload(hash));
   }
 
   private static chunkDAG(dag: TaskDAG): string[] {
@@ -171,6 +124,8 @@ export class DeepLinkManager {
       d: nodes,
     };
 
-    return `https://sorotask.app/share?data=${encodeURIComponent(btoa(JSON.stringify(payload)))}`;
+    return `https://sorotask.app/share?data=${encodeURIComponent(
+      bytesToBase64(encoder.encode(JSON.stringify(payload))),
+    )}`;
   }
 }
