@@ -33,14 +33,24 @@ sleep 6
 
 # 3. Build Contracts
 echo "Building contracts..."
+if [ ! -f "contract/crates/e2e_contract/target/wasm32v1-none/release/e2e_contract.wasm" ]; then
+  (cd contract/crates/e2e_contract && stellar contract build) || true
+fi
 if [ ! -f "target/wasm32v1-none/release/soro_task_contract.wasm" ] && [ ! -f "contract/target/wasm32v1-none/release/soro_task_contract.wasm" ]; then
-  (cd contract && stellar contract build)
+  (cd contract && stellar contract build) || true
 fi
 
-WASM_PATH="contract/target/wasm32v1-none/release/soro_task_contract.wasm"
+WASM_PATH="contract/crates/e2e_contract/target/wasm32v1-none/release/e2e_contract.wasm"
+if [ ! -f "$WASM_PATH" ]; then
+  WASM_PATH="target/wasm32v1-none/release/e2e_contract.wasm"
+fi
+if [ ! -f "$WASM_PATH" ]; then
+  WASM_PATH="contract/target/wasm32v1-none/release/soro_task_contract.wasm"
+fi
 if [ ! -f "$WASM_PATH" ]; then
   WASM_PATH="target/wasm32v1-none/release/soro_task_contract.wasm"
 fi
+
 
 # 4. Deploy Main Contract
 echo "Deploying SoroTask contract..."
@@ -57,19 +67,19 @@ for attempt in {1..5}; do
     curl -fsS "http://localhost:8000/friendbot?addr=$addr" > /dev/null || true
     sleep 2
   fi
-  DEPLOY_OUTPUT=$(stellar --very-verbose contract deploy \
+  DEPLOY_OUTPUT=$(stellar --verbose contract deploy \
     --wasm "$WASM_PATH" \
     --source "$source_alias" \
     --network local 2>&1 || true)
   echo "$DEPLOY_OUTPUT"
   CONTRACT_ID=$(printf '%s\n' "$DEPLOY_OUTPUT" | grep -o 'C[0-9A-Z]\{55\}' | tail -1 || true)
   if [ -z "$CONTRACT_ID" ]; then
-    WASM_HASH=$(stellar --very-verbose contract upload \
+    WASM_HASH=$(stellar --verbose contract upload \
       --wasm "$WASM_PATH" \
       --source "$source_alias" \
       --network local 2>&1 | grep -o '[0-9a-f]\{64\}' | tail -1 || true)
     if [ -n "$WASM_HASH" ]; then
-      DEPLOY_OUTPUT=$(stellar --very-verbose contract deploy \
+      DEPLOY_OUTPUT=$(stellar --verbose contract deploy \
         --wasm-hash "$WASM_HASH" \
         --source "$source_alias" \
         --network local 2>&1 || true)

@@ -58,6 +58,8 @@ jobs:
         run: |
           cd contract
           stellar contract build
+          cd crates/e2e_contract
+          stellar contract build
 
       - name: Wait for Soroban RPC
         run: |
