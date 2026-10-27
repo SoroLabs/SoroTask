@@ -88,6 +88,11 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
     const wallet = new MockWalletProvider(page);
     await page.goto("/");
 
+    const dismissBtn = page.getByTestId("tour-dismiss-btn");
+    if (await dismissBtn.isVisible()) {
+      await dismissBtn.click();
+    }
+
     await wallet.connect(DEFAULT_MOCK_ACCOUNT);
     await wallet.switchAccount(ALTERNATIVE_MOCK_ACCOUNT);
   });

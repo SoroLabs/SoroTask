@@ -22,7 +22,7 @@ export class MockWalletProvider {
   constructor(private page: Page) {}
 
   async connect(account: MockWalletAccount = DEFAULT_MOCK_ACCOUNT) {
-    const setupMock = (acc: MockWalletAccount) => {
+    await this.page.addInitScript((acc) => {
       (window as unknown as Record<string, unknown>).__MOCK_WALLET__ = {
         address: acc.address,
         publicKey: acc.publicKey,
@@ -40,20 +40,11 @@ export class MockWalletProvider {
         signTransaction: (xdr: string) => Promise.resolve(xdr),
         signAuthEntry: (entryXdr: string) => Promise.resolve(entryXdr),
       };
-    };
-
-    await this.page.addInitScript(setupMock, account);
-    await this.page.evaluate(setupMock, account).catch(() => {});
-
-    const tourDismiss = this.page.getByTestId("tour-dismiss-btn");
-    try {
-      await tourDismiss.waitFor({ state: "visible", timeout: 2000 });
-      await tourDismiss.click();
-    } catch {}
+    }, account);
 
     const connectBtn = this.page.getByTestId("connect-wallet-button");
     if (await connectBtn.isVisible()) {
-      await connectBtn.click({ force: true });
+      await connectBtn.click();
     }
   }
 
