@@ -89,12 +89,11 @@ return { allowed, remaining, reset_time, max_tokens }
 `;
 
 const CONSUME_SCRIPT = `
-local current = tonumber(redis.call('get', KEYS[1]) or '0')
-if current < tonumber(ARGV[1]) then
-  local updated = redis.call('incr', KEYS[1])
-  if updated == 1 then
-    redis.call('pexpire', KEYS[1], tonumber(ARGV[2]))
-  end
+local current = redis.call('incr', KEYS[1])
+if current == 1 then
+  redis.call('pexpire', KEYS[1], tonumber(ARGV[2]))
+end
+if current <= tonumber(ARGV[1]) then
   return 1
 else
   return 0
