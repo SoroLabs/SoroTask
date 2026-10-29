@@ -21,6 +21,7 @@ pub mod upgrade;
 pub mod governance;
 pub mod escrow_pool;
 pub mod synthetic_arbitrageur;
+pub mod r#yield;
 
 pub use gas::{get_gas_rates, update_gas_rates, EscrowManager, FeeBreakdown, GasMeter};
 pub use optimistic::{FraudProof, OptimisticClaim, CHALLENGE_WINDOW_LEDGERS};
@@ -66,6 +67,15 @@ pub use synthetic_arbitrageur::{
     ArbitrageConfig, ArbitrageError, ArbitrageRecord, ArbitrageResult, ArbitrageStatus,
     DEFAULT_MAX_ARBITRAGE_PCT_BPS, DEFAULT_MAX_DEVIATION_BPS, DEFAULT_MIN_PROFIT_BPS,
     FLASH_LOAN_FEE_BPS,
+};
+pub use r#yield::{
+    RebalanceDecision, RebalanceRecord, YieldAggregatorError, YieldAllocation, YieldMarketConfig,
+    YieldPosition, YieldVault, DEFAULT_LIQUIDITY_BUFFER_BPS, DEFAULT_MIN_SPREAD_BPS,
+    DEFAULT_PROJECTION_DAYS, MAX_MARKETS_PER_VAULT, SECONDS_PER_YEAR,
+};
+pub use task::{
+    VestingClaimRecord, VestingSchedule, DEFAULT_VESTING_KEEPER_REWARD_BPS,
+    MAX_VESTING_DURATION_SECONDS,
 };
 
 /// Pending execution commitment posted by a keeper in the commit phase.
@@ -255,6 +265,24 @@ pub enum Error {
     // Congestion surcharge errors (SC-PROD-29)
     InvalidSurchargeConfig = 960,
     InvalidInclusionFee = 961,
+    // Yield strategy aggregator errors (SC-PROD-28)
+    YieldAggregatorNotInitialized = 980,
+    YieldMarketNotFound = 981,
+    InvalidYieldMarket = 982,
+    InsufficientVaultLiquidity = 983,
+    RebalanceNotProfitable = 984,
+    PrincipalLossDetected = 985,
+    InvalidVaultConfig = 986,
+    YieldMarketLimitReached = 987,
+    InvalidYieldPosition = 988,
+    // Automated token vesting errors (SC-PROD-27)
+    VestingScheduleNotFound = 1000,
+    InvalidVestingSchedule = 1001,
+    VestingNotStarted = 1002,
+    VestingNothingToClaim = 1003,
+    VestingAlreadyRevoked = 1004,
+    VestingClawbackUnauthorized = 1005,
+    InvalidVotingDelegation = 1006,
 }
 
 #[contracttype]
@@ -1499,6 +1527,34 @@ pub enum DataKey {
     /// Simulated prices for testing
     SimulatedSyntheticPrice(Address),
     SimulatedUnderlyingPrice(Address),
+
+    // ========== SC-PROD-28: Yield Strategy Aggregator ==========
+    /// Yield vault configuration keyed by vault id
+    YieldVault(u64),
+    /// Monotonically increasing yield vault id counter
+    YieldVaultCounter,
+    /// Lending market configuration keyed by market address
+    YieldMarketConfig(Address),
+    /// Per-vault user position keyed by (vault id, owner)
+    YieldPosition(u64, Address),
+    /// Rebalance execution record keyed by record id
+    YieldRebalanceRecord(u64),
+    /// Monotonically increasing rebalance record counter
+    YieldRebalanceCounter,
+
+    // ========== SC-PROD-27: Automated Token Vesting ==========
+    /// Admin authorized to claw back unvested allocations
+    VestingAdmin,
+    /// Monotonically increasing vesting schedule id counter
+    VestingCounter,
+    /// Vesting schedule keyed by schedule id
+    VestingSchedule(u64),
+    /// Vesting claim record keyed by record id
+    VestingClaimRecord(u64),
+    /// Monotonically increasing vesting claim record counter
+    VestingClaimCounter,
+    /// Aggregate governance voting power delegated from vesting schedules
+    VestingVotingPower(Address),
 }
 
 /// Call frame representing a single entry in the call stack
