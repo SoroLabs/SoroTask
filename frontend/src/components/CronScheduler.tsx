@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { parseCron, getNextExecutions, describeCron, CronParseResult } from "../lib/cron";
 
 export type CronPreset = "hourly" | "daily" | "weekly" | "monthly" | "custom";
 
@@ -40,6 +41,76 @@ export const WORLD_ZONES: WorldTimezone[] = [
   },
 ];
 
+function parseNaturalLanguage(input: string): string | null {
+  const text = input.trim().toLowerCase();
+  if (!text) return null;
+
+  // Every N minutes
+  const everyNMin = text.match(/every\s+(\d+)\s+minutes?/);
+  if (everyNMin) {
+    const n = parseInt(everyNMin[1], 10);
+    if (n > 0 && n < 60) return `*/${n} * * * *`;
+  }
+
+  // Every N hours
+  const everyNHour = text.match(/every\s+(\d+)\s+hours?/);
+  if (everyNHour) {
+    const n = parseInt(everyNHour[1], 10);
+    if (n > 0 && n < 24) return `0 */${n} * * *`;
+  }
+
+  const dayMap: Record<string, number> = {
+    sunday: 0, sun: 0,
+    monday: 1, mon: 1,
+    tuesday: 2, tue: 2, tues: 2,
+    wednesday: 3, wed: 3,
+    thursday: 4, thu: 4, thur: 4, thurs: 4,
+    friday: 5, fri: 5,
+    saturday: 6, sat: 6,
+  };
+
+  // Parse time like "9:00 AM", "14:30", "9am", "9 pm"
+  const timeMatch = text.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+  let hour = 0;
+  let minute = 0;
+  if (timeMatch) {
+    hour = parseInt(timeMatch[1], 10);
+    minute = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+    const meridiem = timeMatch[3];
+    if (meridiem === "pm" && hour < 12) hour += 12;
+    if (meridiem === "am" && hour === 12) hour = 0;
+  }
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+  // Daily / every day
+  if (/\b(daily|every\s+day)\b/.test(text)) {
+    return `${minute} ${hour} * * *`;
+  }
+
+  // Hourly
+  if (/\b(hourly|every\s+hour)\b/.test(text)) {
+    return `${minute} * * * *`;
+  }
+
+  // Weekly on specific day(s)
+  const dayMatches = Object.keys(dayMap).filter((d) =>
+    new RegExp(`\\b${d}\\b`).test(text),
+  );
+  if (dayMatches.length > 0) {
+    const days = Array.from(new Set(dayMatches.map((d) => dayMap[d]))).sort();
+    return `${minute} ${hour} * * ${days.join(",")}`;
+  }
+
+  // Monthly on day N
+  const monthlyMatch = text.match(/(?:day|on)\s+(\d{1,2})(?:st|nd|rd|th)?/);
+  if (monthlyMatch && /\bmonth/.test(text)) {
+    const dom = parseInt(monthlyMatch[1], 10);
+    if (dom >= 1 && dom <= 31) return `${minute} ${hour} ${dom} * *`;
+  }
+
+  return null;
+}
+
 export type CronSchedulerProps = {
   initialCron?: string;
   onChange?: (cron: string, humanReadable: string) => void;
@@ -56,6 +127,9 @@ export function CronScheduler({
   const [selectedDays, setSelectedDays] = useState<number[]>([1]); // 1 = Monday
   const [selectedDayOfMonth, setSelectedDayOfMonth] = useState<number>(1);
   const [referenceZone, setReferenceZone] = useState<string>("UTC");
+  const [naturalInput, setNaturalInput] = useState<string>("");
+  const [naturalError, setNaturalError] = useState<string | null>(null);
+  const [cronError, setCronError] = useState<string | null>(null);
 
   const DAYS_OF_WEEK = [
     { label: "Sun", value: 0 },
@@ -67,58 +141,29 @@ export function CronScheduler({
     { label: "Sat", value: 6 },
   ];
 
-  // Helper to translate cron expression to human-readable string
+  // Parse cron expression into a structured result (with validation)
+  const parsed: CronParseResult = useMemo(
+    () => parseCron(cronExpression),
+    [cronExpression],
+  );
+
+  // Human-readable description derived from the parsed cron
   const humanReadable = useMemo(() => {
-    const parts = cronExpression.trim().split(/\s+/);
-    if (parts.length !== 5) {
+    if (!parsed.valid) {
       return "Invalid cron expression (must be 5 fields: minute hour dom month dow)";
     }
-    const [min, hour, dom, mon, dow] = parts;
-
-    const pad = (n: number | string) => String(n).padStart(2, "0");
-    const formatTime = (h: string, m: string) => {
-      const numH = parseInt(h, 10);
-      const numM = parseInt(m, 10);
-      if (isNaN(numH) || isNaN(numM)) return `${h}:${m}`;
-      const ampm = numH >= 12 ? "PM" : "AM";
-      const displayH = numH % 12 === 0 ? 12 : numH % 12;
-      return `${displayH}:${pad(numM)} ${ampm}`;
-    };
-
-    if (min === "*" && hour === "*") return "Every minute";
-    if (hour === "*" && min !== "*") return `Every hour at minute ${min}`;
-    if (dow === "*" && dom === "*" && mon === "*") {
-      return `Every day at ${formatTime(hour, min)}`;
-    }
-    if (dow !== "*" && dom === "*") {
-      const dayNames = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-      ];
-      const days = dow
-        .split(",")
-        .map((d) => dayNames[parseInt(d, 10)] || d)
-        .join(", ");
-      return `Every ${days} at ${formatTime(hour, min)}`;
-    }
-    if (dom !== "*" && dow === "*") {
-      return `On day ${dom} of every month at ${formatTime(hour, min)}`;
-    }
-    return `Custom schedule: ${cronExpression}`;
-  }, [cronExpression]);
+    return describeCron(parsed);
+  }, [parsed]);
 
   // Sync state to cron expression
   const updateCron = useCallback(
     (newCron: string) => {
       setCronExpression(newCron);
-      onChange?.(newCron, humanReadable);
+      const result = parseCron(newCron);
+      setCronError(result.valid ? null : result.error ?? "Invalid cron expression");
+      onChange?.(newCron, result.valid ? describeCron(result) : "");
     },
-    [onChange, humanReadable],
+    [onChange],
   );
 
   const handlePresetChange = (newPreset: CronPreset) => {
@@ -150,6 +195,45 @@ export function CronScheduler({
     }
   };
 
+  // Natural language -> cron translation
+  const handleNaturalLanguage = (value: string) => {
+    setNaturalInput(value);
+    if (!value.trim()) {
+      setNaturalError(null);
+      return;
+    }
+    const result = parseNaturalLanguage(value);
+    if (result) {
+      setNaturalError(null);
+      // Sync visual state to the parsed cron
+      syncStateFromCron(result);
+      updateCron(result);
+    } else {
+      setNaturalError(
+        "Could not understand that phrase. Try 'Every Monday at 9:00 AM' or 'Daily at 14:30'.",
+      );
+    }
+  };
+
+  // Reflect a cron expression back into the visual controls
+  const syncStateFromCron = (cron: string) => {
+    const p = parseCron(cron);
+    if (!p.valid) return;
+    if (p.minute !== null) setSelectedMinute(p.minute);
+    if (p.hour !== null) setSelectedHour(p.hour);
+    if (p.daysOfWeek.length > 0) setSelectedDays(p.daysOfWeek);
+    if (p.dayOfMonth !== null) setSelectedDayOfMonth(p.dayOfMonth);
+    if (p.daysOfWeek.length > 0) {
+      setPreset("weekly");
+    } else if (p.dayOfMonth !== null) {
+      setPreset("monthly");
+    } else if (p.hour !== null) {
+      setPreset("daily");
+    } else {
+      setPreset("hourly");
+    }
+  };
+
   const toggleDayOfWeek = (dayVal: number) => {
     let next: number[];
     if (selectedDays.includes(dayVal)) {
@@ -165,10 +249,10 @@ export function CronScheduler({
   };
 
   // DST Detection and Offset Helper
-  const checkDstActive = (
+  function checkDstActive(
     zone: string,
     date: Date = new Date(),
-  ): { isDst: boolean; offsetStr: string } => {
+  ): { isDst: boolean; offsetStr: string } {
     try {
       const jan = new Date(date.getFullYear(), 0, 1);
       const jul = new Date(date.getFullYear(), 6, 1);
@@ -194,21 +278,13 @@ export function CronScheduler({
     } catch {
       return { isDst: false, offsetStr: "UTC+00:00" };
     }
-  };
+  }
 
-  // Next 5 simulated execution dates
+  // Next 10 execution dates computed from the actual cron expression
   const nextExecutions = useMemo(() => {
-    const list: Date[] = [];
-    const now = new Date();
-    // Simulate next 5 days / executions
-    for (let i = 1; i <= 5; i++) {
-      const d = new Date(now);
-      d.setDate(now.getDate() + i);
-      d.setHours(selectedHour, selectedMinute, 0, 0);
-      list.push(d);
-    }
-    return list;
-  }, [selectedHour, selectedMinute]);
+    if (!parsed.valid) return [];
+    return getNextExecutions(parsed, new Date(), 10);
+  }, [parsed]);
 
   return (
     <div className="space-y-6 rounded-2xl border border-slate-800 bg-slate-900/70 p-6 text-slate-100 shadow-xl">
@@ -223,7 +299,7 @@ export function CronScheduler({
           </p>
         </div>
         <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs text-blue-300">
-          ✨ {humanReadable}
+          ✨ {parsed.valid ? humanReadable : "Invalid schedule"}
         </div>
       </div>
 
@@ -245,6 +321,37 @@ export function CronScheduler({
             {p}
           </button>
         ))}
+      </div>
+
+      {/* Natural Language Input */}
+      <div className="space-y-1.5">
+        <label
+          htmlFor="cron-natural-input"
+          className="text-xs font-semibold text-slate-300 block"
+        >
+          Describe your schedule in plain English
+        </label>
+        <input
+          id="cron-natural-input"
+          type="text"
+          value={naturalInput}
+          onChange={(e) => handleNaturalLanguage(e.target.value)}
+          aria-invalid={naturalError ? true : undefined}
+          aria-describedby={naturalError ? "cron-natural-error" : undefined}
+          className={`w-full rounded-lg border bg-slate-900 px-3.5 py-2 text-sm text-slate-100 placeholder:text-slate-500 ${
+            naturalError ? "border-rose-500" : "border-slate-700"
+          }`}
+          placeholder="e.g. Every Monday at 9:00 AM, Daily at 14:30, Every 15 minutes"
+        />
+        {naturalError && (
+          <p
+            id="cron-natural-error"
+            role="alert"
+            className="text-[11px] text-rose-400"
+          >
+            {naturalError}
+          </p>
+        )}
       </div>
 
       {/* Visual Configuration Grid */}
@@ -357,6 +464,14 @@ export function CronScheduler({
             className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3.5 py-2 text-sm font-mono text-emerald-400"
             placeholder="* * * * *"
           />
+          {cronError && (
+            <p
+              role="alert"
+              className="text-[11px] text-rose-400"
+            >
+              {cronError}
+            </p>
+          )}
         </div>
       </div>
 
@@ -422,7 +537,7 @@ export function CronScheduler({
             Upcoming Execution Windows (Auto-Calculated)
           </span>
           <span className="text-slate-500 text-[11px]">
-            Exact ledger time offset check
+            Next 10 runs · {referenceZone}
           </span>
         </div>
         <div className="divide-y divide-slate-800/60 font-mono">
@@ -444,6 +559,11 @@ export function CronScheduler({
               </span>
             </div>
           ))}
+          {nextExecutions.length === 0 && (
+            <div className="py-2 text-slate-500">
+              No upcoming executions — fix the cron expression above.
+            </div>
+          )}
         </div>
       </div>
     </div>
