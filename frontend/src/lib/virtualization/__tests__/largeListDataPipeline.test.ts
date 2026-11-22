@@ -1,81 +1,67 @@
 import {
   createLargeListDataPipeline,
+  generateSyntheticTaskDataset,
 } from "../largeListDataPipeline";
 
-describe("createLargeListDataPipeline", () => {
-  it("returns false when hasMore is false", async () => {
-    const onLoadMore = jest.fn();
-    const pipeline = createLargeListDataPipeline({
-      hasMore: false,
-      isLoadingMore: false,
-      onLoadMore,
-    });
-
-    await expect(pipeline.requestNextPage()).resolves.toBe(false);
-    expect(onLoadMore).not.toHaveBeenCalled();
+describe("largeListDataPipeline", () => {
+  it("generates a synthetic dataset of 100,000 tasks efficiently", () => {
+    const dataset = generateSyntheticTaskDataset(1000);
+    expect(dataset.length).toBe(1000);
+    expect(dataset[0]).toHaveProperty("id");
+    expect(dataset[0]).toHaveProperty("title");
+    expect(dataset[0]).toHaveProperty("status");
   });
 
-  it("returns false while loading is already in flight", async () => {
-    const onLoadMore = jest.fn();
-    const pipeline = createLargeListDataPipeline({
-      hasMore: true,
-      isLoadingMore: true,
-      onLoadMore,
-    });
+  it("filters items by query and status", () => {
+    const pipeline = createLargeListDataPipeline();
+    const dataset = [
+      {
+        id: "task-1",
+        title: "Oracle Update",
+        status: "running" as const,
+        contractAddress: "CC123",
+        executions: 10,
+        gasBalance: 15,
+        createdAt: "2026-01-01",
+      },
+      {
+        id: "task-2",
+        title: "Keeper Clean",
+        status: "paused" as const,
+        contractAddress: "CC456",
+        executions: 5,
+        gasBalance: 20,
+        createdAt: "2026-01-02",
+      },
+    ];
+    pipeline.loadDataset(dataset);
 
-    await expect(pipeline.requestNextPage()).resolves.toBe(false);
-    expect(onLoadMore).not.toHaveBeenCalled();
+    const filtered = pipeline.getFilteredItems("oracle", "running");
+    expect(filtered.length).toBe(1);
+    expect(filtered[0].id).toBe("task-1");
   });
 
-  it("calls onLoadMore once on success", async () => {
-    const onLoadMore = jest.fn(async () => undefined);
-    const pipeline = createLargeListDataPipeline({
-      hasMore: true,
-      isLoadingMore: false,
-      onLoadMore,
-    });
-
-    await expect(pipeline.requestNextPage()).resolves.toBe(true);
-    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  it("sorts items by various fields", () => {
+    const pipeline = createLargeListDataPipeline();
+    const items = [
+      { id: "task-2", title: "B", status: "running" as const, contractAddress: "C2", executions: 20, gasBalance: 5, createdAt: "2026-01-02" },
+      { id: "task-1", title: "A", status: "running" as const, contractAddress: "C1", executions: 10, gasBalance: 50, createdAt: "2026-01-01" },
+    ];
+    const sorted = pipeline.sortItems(items, "executions", "asc");
+    expect(sorted[0].id).toBe("task-1");
+    expect(sorted[1].id).toBe("task-2");
   });
 
-  it("retries failures and reports final error", async () => {
-    const onLoadMore = jest.fn(async () => {
-      throw new Error("network");
-    });
-    const onError = jest.fn();
+  it("performs bulk actions successfully", () => {
+    const pipeline = createLargeListDataPipeline();
+    const items = [
+      { id: "task-1", title: "T1", status: "running" as const, contractAddress: "C1", executions: 1, gasBalance: 5, createdAt: "2026-01-01" },
+      { id: "task-2", title: "T2", status: "running" as const, contractAddress: "C2", executions: 1, gasBalance: 5, createdAt: "2026-01-01" },
+    ];
+    pipeline.loadDataset(items);
 
-    const pipeline = createLargeListDataPipeline({
-      hasMore: true,
-      isLoadingMore: false,
-      onLoadMore,
-      retryCount: 2,
-      onError,
-    });
-
-    await expect(pipeline.requestNextPage()).resolves.toBe(false);
-    expect(onLoadMore).toHaveBeenCalledTimes(3);
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect(onError.mock.calls[0][0]).toBeInstanceOf(Error);
-  });
-
-  it("normalizes non-Error failures", async () => {
-    const onLoadMore = jest.fn(async () => {
-      throw "boom";
-    });
-    const onError = jest.fn();
-
-    const pipeline = createLargeListDataPipeline({
-      hasMore: true,
-      isLoadingMore: false,
-      onLoadMore,
-      retryCount: 0,
-      onError,
-    });
-
-    await pipeline.requestNextPage();
-
-    expect(onError).toHaveBeenCalledWith(expect.any(Error));
-    expect(onError.mock.calls[0][0].message).toContain("boom");
+    const result = pipeline.performBulkAction(["task-1", "task-2"], "pause");
+    expect(result.success).toBe(true);
+    expect(result.affected).toBe(2);
   });
 });

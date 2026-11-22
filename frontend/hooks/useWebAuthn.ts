@@ -1,15 +1,21 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useCallback } from 'react';
-import { WebAuthnService } from '@/src/lib/auth/webauthn';
-import { captureSentryException } from '@/src/lib/errors';
+import { useState, useEffect, useCallback } from "react";
+import { WebAuthnService } from "@/src/lib/auth/webauthn";
+import {
+  PasskeyProvider,
+  type EncryptedPasskeyCredential,
+  type AuthorizationResult,
+} from "@/src/lib/auth/PasskeyProvider";
+import { captureSentryException } from "@/src/lib/errors";
 
-const STORAGE_KEY = 'sorotask_webauthn_credentials';
+const STORAGE_KEY = "sorotask_webauthn_credentials";
 
 export interface EnrolledCredential {
   id: string;
   address: string;
   name: string;
+  encrypted?: boolean;
 }
 
 export function useWebAuthn() {
@@ -37,7 +43,7 @@ export function useWebAuthn() {
           setEnrolledCredentials(JSON.parse(stored));
         }
       } catch (err) {
-        console.error('Failed to load WebAuthn credentials:', err);
+        console.error("Failed to load WebAuthn credentials:", err);
       }
     };
 
@@ -45,78 +51,79 @@ export function useWebAuthn() {
   }, []);
 
   const translateError = (err: unknown): string => {
-    if (typeof err === 'string') {
+    if (typeof err === "string") {
       return err;
     }
     if (err instanceof DOMException) {
       switch (err.name) {
-        case 'NotAllowedError':
-          return 'Authentication cancelled or biometric verification rejected.';
-        case 'SecurityError':
-          return 'Origin or security verification failed. Please try again on a secure connection.';
-        case 'NotSupportedError':
-          return 'Biometric or platform authenticator is not supported on this device.';
-        case 'InvalidStateError':
-          return 'This device biometric key is already enrolled.';
-        case 'TimeoutError':
-          return 'Biometric verification timed out. Please try again.';
+        case "NotAllowedError":
+          return "Authentication cancelled or biometric verification rejected.";
+        case "SecurityError":
+          return "Origin or security verification failed. Please try again on a secure connection.";
+        case "NotSupportedError":
+          return "Biometric or platform authenticator is not supported on this device.";
+        case "InvalidStateError":
+          return "This device biometric key is already enrolled.";
+        case "TimeoutError":
+          return "Biometric verification timed out. Please try again.";
         default:
-          return err.message || 'An unexpected biometric error occurred.';
+          return err.message || "An unexpected biometric error occurred.";
       }
     }
-    return err instanceof Error ? err.message : 'WebAuthn enrollment/authentication failed.';
+    return err instanceof Error ? err.message : "WebAuthn enrollment/authentication failed.";
   };
 
-  const enrollDevice = useCallback(async (userAddress: string, userName: string) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const options = WebAuthnService.generateRegistrationOptions(userAddress, userName);
-      const credential = await WebAuthnService.registerCredential(options);
+  const enrollDevice = useCallback(
+    async (userAddress: string, userName: string) => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        // Use PasskeyProvider for local encryption
+        const encrypted = await PasskeyProvider.enrollBiometricPasskey(userAddress, userName);
 
-      // Save credential mapping
-      const newCred: EnrolledCredential = {
-        id: credential.id,
-        address: userAddress,
-        name: userName,
-      };
-      const updated = [...enrolledCredentials.filter(c => c.id !== credential.id), newCred];
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      setEnrolledCredentials(updated);
+        const newCred: EnrolledCredential = {
+          id: encrypted.id,
+          address: userAddress,
+          name: userName,
+          encrypted: true,
+        };
+        const updated = [...enrolledCredentials.filter((c) => c.id !== encrypted.id), newCred];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        setEnrolledCredentials(updated);
 
-      setIsLoading(false);
-      return credential;
-    } catch (err) {
-      const friendlyError = translateError(err);
-      setError(friendlyError);
-      setIsLoading(false);
+        setIsLoading(false);
+        return encrypted;
+      } catch (err) {
+        const friendlyError = translateError(err);
+        setError(friendlyError);
+        setIsLoading(false);
 
-      // Track to Sentry error tracking
-      const finalError = err instanceof Error ? err : new Error(String(err));
-      captureSentryException(finalError, {
-        tags: { type: 'webauthn_error', action: 'enroll' },
-        extra: { friendlyMessage: friendlyError, userAddress }
-      });
-      throw finalError;
-    }
-  }, [enrolledCredentials]);
+        const finalError = err instanceof Error ? err : new Error(String(err));
+        captureSentryException(finalError, {
+          tags: { type: "webauthn_error", action: "enroll" },
+          extra: { friendlyMessage: friendlyError, userAddress },
+        });
+        throw finalError;
+      }
+    },
+    [enrolledCredentials]
+  );
 
   const authenticateDevice = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
       if (enrolledCredentials.length === 0) {
-        throw new Error('No biometric key registered on this device yet.');
+        throw new Error("No biometric key registered on this device yet.");
       }
 
-      const credentialIds = enrolledCredentials.map(c => c.id);
+      const credentialIds = enrolledCredentials.map((c) => c.id);
       const options = WebAuthnService.generateAuthenticationOptions(credentialIds);
       const credential = await WebAuthnService.authenticateCredential(options);
 
-      // Find the associated user address
-      const matched = enrolledCredentials.find(c => c.id === credential.id);
+      const matched = enrolledCredentials.find((c) => c.id === credential.id);
       if (!matched) {
-        throw new Error('Authenticated credential was not recognized on this device.');
+        throw new Error("Authenticated credential was not recognized on this device.");
       }
 
       setIsLoading(false);
@@ -126,27 +133,51 @@ export function useWebAuthn() {
       setError(friendlyError);
       setIsLoading(false);
 
-      // Track to Sentry error tracking
       const finalError = err instanceof Error ? err : new Error(String(err));
       captureSentryException(finalError, {
-        tags: { type: 'webauthn_error', action: 'authenticate' },
-        extra: { friendlyMessage: friendlyError }
+        tags: { type: "webauthn_error", action: "authenticate" },
+        extra: { friendlyMessage: friendlyError },
       });
       throw finalError;
     }
   }, [enrolledCredentials]);
 
+  const authorizeWithFallback = useCallback(
+    async (
+      operation: "create_task" | "emergency_pause" | "refill_gas",
+      userAddress: string,
+      payloadHash: string
+    ): Promise<AuthorizationResult> => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const result = await PasskeyProvider.authorizeOperation(operation, userAddress, payloadHash);
+        setIsLoading(false);
+        return result;
+      } catch (err) {
+        const friendlyError = translateError(err);
+        setError(friendlyError);
+        setIsLoading(false);
+        throw err;
+      }
+    },
+    []
+  );
+
   return {
     isSupported,
     isPlatformAvailable,
+    isFreighterAvailable: PasskeyProvider.isFreighterAvailable(),
     isEnrolled: enrolledCredentials.length > 0,
     enrolledCredentials,
     isLoading,
     error,
     enrollDevice,
     authenticateDevice,
+    authorizeWithFallback,
     clearEnrolledCredentials: useCallback(() => {
       localStorage.removeItem(STORAGE_KEY);
+      PasskeyProvider.clearCredentials();
       setEnrolledCredentials([]);
     }, []),
   };

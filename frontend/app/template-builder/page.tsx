@@ -1,10 +1,16 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { TemplateBuilder } from './components/TemplateBuilder';
 
 export const metadata: Metadata = {
   title: 'Task Template Builder | SoroTask',
   description:
     'Compose complex task execution flows using pre-defined actions or import a Soroban contract ABI to generate a validated form.',
+};
+
+export const viewport: Viewport = {
+  themeColor: '#0f172a',
+  width: 'device-width',
+  initialScale: 1,
 };
 
 export default function TemplateBuilderPage() {
