@@ -1,5 +1,7 @@
 # Existing patterns
 node_modules/
+.keeper-identities/
+**/.keeper-identities/
 .env
 .env.local
 
