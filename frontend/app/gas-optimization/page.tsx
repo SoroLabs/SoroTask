@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { FiArrowLeft, FiCpu, FiTrendingUp } from "react-icons/fi";
 import GasOptimizationEngine from "@/src/components/gas/GasOptimizationEngine";
+import { EscrowRefillCalculator } from "@/components/gas/EscrowRefillCalculator";
 
 export default function GasOptimizationPage() {
   return (
     <main className="min-h-screen bg-[#07100f] text-slate-50">
       <div className="absolute inset-0 -z-10 bg-[linear-gradient(135deg,rgba(16,185,129,0.1),transparent_40%),linear-gradient(180deg,#07100f_0%,#091311_100%)]" />
-      <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.05)_1px,transparent_0)] bg-[length:32px_32px] opacity-40" />
+      <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.05)_1px,transparent_0)] [background-size:32px_32px] opacity-40" />
 
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         {/* Navigation Header */}
@@ -44,6 +45,11 @@ export default function GasOptimizationPage() {
         {/* Forecast Component Panel */}
         <div className="space-y-6">
           <GasOptimizationEngine />
+        </div>
+
+        {/* Escrow Refill Calculator */}
+        <div className="mt-8 space-y-6">
+          <EscrowRefillCalculator />
         </div>
       </div>
     </main>

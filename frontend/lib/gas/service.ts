@@ -18,7 +18,18 @@ import {
   GasFeeEngineConfig,
   GasFeeEngineState,
   GasFeeError,
+  GasRunwayProjection,
+  GasRunwayScenario,
+  BatchDepositPlan,
+  GasRunwayAlert,
 } from '@/types/gas';
+
+export type {
+  GasRunwayProjection,
+  GasRunwayScenario,
+  BatchDepositPlan,
+  GasRunwayAlert,
+};
 import {
   createGasFeeError,
   calculateRetryAfter,
@@ -44,6 +55,11 @@ interface FetchOptions extends RequestInit {
  */
 const dataCache = new Map<string, { data: unknown; timestamp: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Runway alert threshold (10% remaining runway triggers notification)
+ */
+const RUNWAY_ALERT_THRESHOLD = 0.1;
 
 /**
  * Base URL for API (can be configured per environment)
@@ -72,6 +88,10 @@ const DEFAULT_CONFIG: GasFeeEngineConfig = {
   maxHistoricalSamples: 100,
   optimizationHorizonHours: 24,
   minSavingsThreshold: 100, // 100 stroops minimum savings
+  runwayHistoryWindowDays: 30,
+  runwayAlertThreshold: RUNWAY_ALERT_THRESHOLD,
+  defaultIntervalSeconds: 3600,
+  defaultComplexityMultiplier: 1,
 };
 
 /**
@@ -612,6 +632,210 @@ export class GasFeeEngine {
 
     this.state.totalHistoricalSamples++;
     this.state.trackedTasks = this.historicalData.size;
+  }
+
+  /**
+   * Estimate gas cost per execution based on historical fees and complexity.
+   *
+   * Uses the 30-day historical window (configurable) to derive a per-execution
+   * cost estimate. Contract complexity scales the base cost via a multiplier.
+   */
+  estimatePerExecutionCost(
+    taskId: string,
+    complexityMultiplier: number = this.config.defaultComplexityMultiplier
+  ): { perExecutionCost: number; confidence: 'high' | 'low'; samples: number } {
+    const history = this.historicalData.get(taskId) || [];
+    const windowDays = this.config.runwayHistoryWindowDays ?? DEFAULT_CONFIG.runwayHistoryWindowDays;
+    const cutoff = Date.now() - windowDays * 24 * 60 * 60 * 1000;
+    const windowed = history.filter((d) => d.timestamp >= cutoff);
+    const stats = this.calculateStatistics(windowed);
+
+    if (!stats) {
+      return { perExecutionCost: 0, confidence: 'low', samples: 0 };
+    }
+
+    const base = stats.p95;
+    const perExecutionCost = Math.round(base * complexityMultiplier);
+    const confidence = stats.count >= this.config.highConfidenceThreshold ? 'high' : 'low';
+
+    return { perExecutionCost, confidence, samples: stats.count };
+  }
+
+  /**
+   * Project gas runway for a single task given a balance, interval, and complexity.
+   *
+   * Returns the number of executions the balance can sustain, the runway in
+   * seconds/days, and whether the task is below the alert threshold.
+   */
+  projectRunway(
+    taskId: string,
+    gasBalance: number,
+    intervalSeconds: number = this.config.defaultIntervalSeconds,
+    complexityMultiplier: number = this.config.defaultComplexityMultiplier
+  ): GasRunwayProjection {
+    const { perExecutionCost, confidence, samples } = this.estimatePerExecutionCost(
+      taskId,
+      complexityMultiplier
+    );
+
+    if (perExecutionCost <= 0) {
+      return {
+        taskId,
+        gasBalance,
+        intervalSeconds,
+        complexityMultiplier,
+        perExecutionCost: 0,
+        remainingExecutions: 0,
+        runwaySeconds: 0,
+        runwayDays: 0,
+        isBelowAlertThreshold: true,
+        confidence: 'low',
+        historicalSamples: samples,
+      };
+    }
+
+    const remainingExecutions = Math.max(0, Math.floor(gasBalance / perExecutionCost));
+    const runwaySeconds = remainingExecutions * intervalSeconds;
+    const runwayDays = runwaySeconds / (24 * 60 * 60);
+    const isBelowAlertThreshold = runwayDays < this.config.runwayHistoryWindowDays * this.config.runwayAlertThreshold;
+
+    return {
+      taskId,
+      gasBalance,
+      intervalSeconds,
+      complexityMultiplier,
+      perExecutionCost,
+      remainingExecutions,
+      runwaySeconds,
+      runwayDays: Math.round(runwayDays * 100) / 100,
+      isBelowAlertThreshold,
+      confidence,
+      historicalSamples: samples,
+    };
+  }
+
+  /**
+   * Project runway across multiple scenarios (e.g. 30/90/365 day targets).
+   *
+   * Each scenario specifies a target runway in days; the projection reports
+   * the shortfall (in stroops) required to reach that runway.
+   */
+  projectRunwayScenarios(
+    taskId: string,
+    gasBalance: number,
+    intervalSeconds: number = this.config.defaultIntervalSeconds,
+    complexityMultiplier: number = this.config.defaultComplexityMultiplier,
+    targetDays: number[] = [30, 90, 365]
+  ): GasRunwayScenario[] {
+    const { perExecutionCost } = this.estimatePerExecutionCost(taskId, complexityMultiplier);
+
+    return targetDays.map((days) => {
+      const executionsNeeded = Math.ceil((days * 24 * 60 * 60) / intervalSeconds);
+      const requiredBalance = executionsNeeded * perExecutionCost;
+      const shortfall = Math.max(0, requiredBalance - gasBalance);
+      const covered = gasBalance >= requiredBalance;
+
+      return {
+        targetDays: days,
+        intervalSeconds,
+        complexityMultiplier,
+        requiredBalance,
+        currentBalance: gasBalance,
+        shortfall,
+        covered,
+      };
+    });
+  }
+
+  /**
+   * Build a 1-click batch deposit plan that tops off multiple tasks.
+   *
+   * Each task is topped up to its recommended balance (or a target runway if
+   * provided). Returns the total deposit amount and per-task breakdown.
+   */
+  async buildBatchDepositPlan(
+    tasks: Array<{ taskId: string; gasBalance: number }>,
+    targetDays?: number,
+    intervalSeconds: number = this.config.defaultIntervalSeconds,
+    complexityMultiplier: number = this.config.defaultComplexityMultiplier
+  ): Promise<BatchDepositPlan> {
+    const items = await Promise.all(
+      tasks.map(async (task) => {
+        let targetBalance: number;
+
+        if (typeof targetDays === 'number' && targetDays > 0) {
+          const { perExecutionCost } = this.estimatePerExecutionCost(
+            task.taskId,
+            complexityMultiplier
+          );
+          const executionsNeeded = Math.ceil((targetDays * 24 * 60 * 60) / intervalSeconds);
+          targetBalance = executionsNeeded * perExecutionCost;
+        } else {
+          const forecast = await this.forecastTaskGas(task.taskId, task.gasBalance);
+          targetBalance = forecast.recommendedBalance ?? task.gasBalance;
+        }
+
+        const depositAmount = Math.max(0, targetBalance - task.gasBalance);
+
+        return {
+          taskId: task.taskId,
+          currentBalance: task.gasBalance,
+          targetBalance,
+          depositAmount,
+        };
+      })
+    );
+
+    const totalDeposit = items.reduce((sum, item) => sum + item.depositAmount, 0);
+    const tasksNeedingDeposit = items.filter((item) => item.depositAmount > 0).length;
+
+    return {
+      items,
+      totalDeposit,
+      tasksNeedingDeposit,
+      generatedAt: Date.now(),
+    };
+  }
+
+  /**
+   * Evaluate runway alerts for a set of tasks.
+   *
+   * Returns alerts for tasks whose runway has dropped below the configured
+   * threshold (default 10%). These alerts are intended to drive email/push
+   * notifications.
+   */
+  evaluateRunwayAlerts(
+    tasks: Array<{
+      taskId: string;
+      gasBalance: number;
+      intervalSeconds?: number;
+      complexityMultiplier?: number;
+    }>
+  ): GasRunwayAlert[] {
+    const alerts: GasRunwayAlert[] = [];
+
+    for (const task of tasks) {
+      const projection = this.projectRunway(
+        task.taskId,
+        task.gasBalance,
+        task.intervalSeconds ?? this.config.defaultIntervalSeconds,
+        task.complexityMultiplier ?? this.config.defaultComplexityMultiplier
+      );
+
+      if (projection.isBelowAlertThreshold) {
+        alerts.push({
+          taskId: task.taskId,
+          runwayDays: projection.runwayDays,
+          thresholdDays: this.config.runwayHistoryWindowDays * this.config.runwayAlertThreshold,
+          remainingExecutions: projection.remainingExecutions,
+          perExecutionCost: projection.perExecutionCost,
+          severity: projection.runwayDays <= 0 ? 'critical' : 'warning',
+          triggeredAt: Date.now(),
+        });
+      }
+    }
+
+    return alerts;
   }
 
   /**

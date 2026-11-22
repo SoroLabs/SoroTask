@@ -12,6 +12,26 @@
  * observation and is unbiased, which is what makes the forecast hold up.
  */
 
+// The historical window the calculator fits over. Thirty days of fees is the
+// contract called out in the issue, and it is also long enough that a single
+// expensive batch does not dominate the fit.
+//
+// This is a constant rather than a magic number in the caller because the
+// calculator UI labels the window ("estimated from the last 30 days") and the
+// label must not drift from the actual fit.
+export const HISTORICAL_WINDOW_DAYS = 30;
+
+// Hours in the historical window, exported so the calculator can filter samples
+export const HISTORICAL_WINDOW_HOURS = HISTORICAL_WINDOW_DAYS * 24;
+
+// The runway horizons the calculator offers. Kept here so the slider marks and
+// notification thresholds are derived from the same source.
+export const RUNWAY_PRESET_HOURS = [24 * 30, 24 * 90, 24 * 365] as const;
+
+// The acceptance criterion is a notification at 10% gas runway. The alert
+// system also needs a softer warning threshold, so the two are distinct constants.
+export const CRITICAL_RUNWAY_RATIO = 0.1;
+
 /** One observation of the vault balance. */
 export interface VaultSample {
   /** Epoch ms. */
@@ -37,9 +57,9 @@ export interface BurnRateEstimate {
 }
 
 /** Hours of runway below which the vault is considered low. */
-export const DEFAULT_ALERT_THRESHOLD_HOURS = 48;
+export const DEFAULT_ALRT_THRESHOLD_HOURS = 48;
 
-const MS_PER_HOUR = 3_600_000;
+const MS_PER_HOUR = 3.600_000;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -130,6 +150,24 @@ export function estimateBurnRate(samples: unknown[]): BurnRateEstimate {
   };
 }
 
+/**
+ * Restrict samples to the historical window ending at `now`.
+ *
+ * Samples from the future are discarded outright rather than clamped: a clock
+ * skew on the client would otherwise pull a future sample into the fit and
+ * distort the slope.
+ */
+export function filterSamplesToWindow(
+  samples: VaultSample[],
+  now: number,
+  windowHours: number = HISTORICAL_WINDOW_HOURS,
+): VaultSample[] {
+  if (!isFiniteNumber(now)) return [];
+  const span = isFiniteNumber(windowHours) && windowHours > 0 ? windowHours : HISTORICAL_WINDOW_HOURS;
+  const cutoff = now - span * MS_PER_HOUR;
+  return samples.filter((s) => s.timestamp >= cutoff && s.timestamp <= now);
+}
+
 export interface DepletionForecast {
   /** Hours of runway left at the estimated burn rate. */
   hoursRemaining: number | null;
@@ -200,10 +238,29 @@ export function projectBalance(
 export function topUpRequired(
   balanceXlm: number,
   estimate: BurnRateEstimate,
-  targetHours: number = DEFAULT_ALERT_THRESHOLD_HOURS,
+  targetHours: number = DEFAULT_ALRT_THRESHOLD_HOURS,
 ): number {
   if (estimate.burnRatePerHour <= 0) return 0;
-  return Math.max(0, estimate.burnRatePerHour * targetHours - Math.max(0, balanceXlm));
+  const target = isFiniteNumber(targetHours) && targetHours > 0 ? targetHours : 0;
+  return Math.max(0, estimate.burnRatePerHour * target - Math.max(0, balanceXlm));
+}
+
+/**
+ * Amount needed to fund a single task for `targetHours` at the estimated rate.
+ *
+ * This is the per-task building block of the 1-click batch deposit: the calculator
+ * multiplies it by the number of tasks and subtracts whatever is already funded.
+ */
+export function estimateTaskFundingNeed(
+  estimate: BurnRateEstimate,
+  targetHours: number,
+  alreadyFundedXlm: number = 0,
+): number {
+  if (estimate.burnRatePerHour <= 0 || !isFiniteNumber(targetHours) || targetHours <= 0) {
+    return 0;
+  }
+  const funded = isFiniteNumber(alreadyFundedXlm) && alreadyFundedXlm > 0 ? alreadyFundedXlm : 0;
+  return Math.max(0, estimate.burnRatePerHour * targetHours - funded);
 }
 
 export type VaultSeverity = 'healthy' | 'warning' | 'critical' | 'exhausted';
@@ -218,11 +275,11 @@ export type VaultSeverity = 'healthy' | 'warning' | 'critical' | 'exhausted';
  */
 export function classifyVault(
   forecast: DepletionForecast,
-  thresholdHours: number = DEFAULT_ALERT_THRESHOLD_HOURS,
+  thresholdHours: number = DEFAULT_ALRT_THRESHOLD_HOURS,
 ): VaultSeverity {
   if (forecast.hoursRemaining === null) return 'healthy';
   if (forecast.hoursRemaining <= 0) return 'exhausted';
-  if (forecast.hoursRemaining < thresholdHours * 0.25) return 'critical';
+  if (forecast.hoursRemaining < thresholdHours * CRITICAL_RUNWAY_RATIO) return 'critical';
   if (forecast.hoursRemaining < thresholdHours) return 'warning';
   return 'healthy';
 }
@@ -249,7 +306,7 @@ export function formatRunway(hoursRemaining: number | null): string {
  * `alreadyAlertedAtHours` suppresses the repeat notification once it has fired,
  * but a materially worse runway is allowed through again — a keeper should not
  * be told "low on gas" six times in an hour and then stay silent when it turns
- * critical.
+* critical.
  */
 export function shouldAlert(
   forecast: DepletionForecast,

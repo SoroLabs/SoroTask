@@ -1,7 +1,5 @@
 # Existing patterns
 node_modules/
-.env
-.env.local
 
 # Coverage reports
 
@@ -18,7 +16,6 @@ Cargo.lock
 out/
 dist/
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -77,7 +74,6 @@ $RECYCLE.BIN/
 docker-compose.override.yml
 docker-compose.*.override.yml
 # Environments
-.env.*
 !.env.example
 
 # Test snapshots
@@ -97,3 +93,4 @@ test-rpc.js
 terraform/terraform.tfvars
 crash.log
 
+config.bat
