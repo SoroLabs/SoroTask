@@ -15,24 +15,63 @@ export interface WorkerPoolConfig {
   schedule?: (fn: () => void, ms: number) => void;
 }
 
+export interface WorkerTaskPayload {
+  taskCondition: string;
+  secretData: string;
+}
+
+export interface WorkerResult {
+  proof: ZkProofPayload;
+  verified?: boolean;
+}
+
+export type ProofProgressHandler = (stage: string, message: string) => void;
+
+export interface ProverWorkerLike {
+  postMessage: (message: unknown) => void;
+  terminate: () => void;
+  onmessage: ((event: MessageEvent) => void) | null;
+  onerror: ((event: ErrorEvent) => void) | null;
+  addEventListener?: (type: string, listener: (event: any) => void) => void;
+  removeEventListener?: (type: string, listener: (event: any) => void) => void;
+}
+
+export type WorkerFactory = () => ProverWorkerLike;
+
 interface WorkerTask {
   resolve: (proof: ZkProofPayload) => void;
   reject: (error: Error) => void;
-  payload: {
-    taskCondition: string;
-    secretData: string;
-  };
+  payload: WorkerTaskPayload;
   retries: number;
+  onStage?: ProofProgressHandler;
 }
+
+interface WorkerSlot {
+  id: number;
+  instance: ProverWorkerLike | null;
+  current: {
+    task: WorkerTask;
+    taskId: string;
+    settled: boolean;
+  } | null;
+  cleanup?: () => void;
+}
+
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 export class WorkerPool {
   private workers: PoolWorker[] = [];
+  private slots: WorkerSlot[] = [];
   private queue: WorkerTask[] = [];
   private config: WorkerPoolConfig;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => void;
+  private readonly workerFactory: WorkerFactory | null;
+  private readonly timeoutMs: number;
+  private taskCounter = 0;
+  private shutdownFlag = false;
 
-  constructor(config: WorkerPoolConfig) {
+  constructor(config: WorkerPoolConfig, factory?: WorkerFactory, timeoutMs: number = DEFAULT_TIMEOUT_MS) {
     this.config = config;
     this.now = config.now ?? (() => Date.now());
     this.schedule =
@@ -41,13 +80,17 @@ export class WorkerPool {
         if (typeof window !== "undefined") window.setTimeout(fn, ms);
         else setTimeout(fn, ms);
       });
+    this.workerFactory = factory ?? null;
+    this.timeoutMs = timeoutMs;
     this.initialize();
   }
 
   initialize(): void {
     this.workers = [];
+    this.slots = [];
     for (let i = 0; i < this.config.workerCount; i++) {
       this.workers.push({ id: i, status: "idle", taskId: null });
+      this.slots.push({ id: i, instance: null, current: null });
     }
   }
 
@@ -67,136 +110,202 @@ export class WorkerPool {
     return this.workers.length;
   }
 
+  getQueueLength(): number {
+    return this.queue.length;
+  }
+
   async execute(
     taskCondition: string,
     secretData: string,
     simulateFailure: boolean,
     simulateCongestion: boolean,
-    onStage?: (stage: string, message: string) => void,
+    onStage?: ProofProgressHandler,
   ): Promise<ZkProofPayload> {
+    if (this.shutdownFlag) {
+      throw new Error("WorkerPool has been shut down");
+    }
+
     const worker = this.getAvailableWorker();
     if (!worker) {
-      return new Promise((resolve, reject) => {
+      return new Promise<ZkProofPayload>((resolve, reject) => {
         this.queue.push({
           resolve,
           reject,
           payload: { taskCondition, secretData },
           retries: 0,
+          onStage,
         });
       });
     }
 
-    worker.status = "busy";
-    worker.taskId = `task-${this.now()}`;
-
-    try {
-      const result = await this.runProofComputation(
-        worker,
-        taskCondition,
-        secretData,
-        simulateFailure,
-        simulateCongestion,
-        onStage,
-      );
-      worker.status = "idle";
-      worker.taskId = null;
-      this.processQueue();
-      return result;
-    } catch (error) {
-      worker.status = "idle";
-      worker.taskId = null;
-      this.processQueue();
-      throw error;
-    }
-  }
-
-  private async runProofComputation(
-    worker: PoolWorker,
-    taskCondition: string,
-    secretData: string,
-    simulateFailure: boolean,
-    simulateCongestion: boolean,
-    onStage?: (stage: string, message: string) => void,
-  ): Promise<ZkProofPayload> {
-    const delay = simulateCongestion
-      ? this.config.baseDelayMs * this.config.congestionMultiplier
-      : this.config.baseDelayMs;
-
-    return new Promise((resolve, reject) => {
-      let cancelled = false;
-
-      const stage1 = () => {
-        if (cancelled) return;
-        onStage?.("ingesting_data", "Ingesting private task conditions and secret client credentials...");
-        this.schedule(stage2, delay / 3);
-      };
-
-      const stage2 = () => {
-        if (cancelled) return;
-        onStage?.("building_constraints", "Building R1CS arithmetic constraint gates...");
-        if (simulateFailure) {
-          cancelled = true;
-          reject(new Error("Constraint validation mismatch: Coefficient multiplier check failed at wire #12"));
-          return;
-        }
-        this.schedule(stage3, delay / 3);
-      };
-
-      const stage3 = () => {
-        if (cancelled) return;
-        onStage?.("computing_coefficients", "Computing cryptographical coefficients (pi_a, pi_b, pi_c)...");
-        onStage?.("synthesizing_signals", "Synthesizing public signal mapping...");
-        const proof: ZkProofPayload = {
-          proofId: this.generateProofId(),
-          status: "success",
-          pi_a: ["0x1A2B3C4D5E6F", "0x7F8E9D0C1B2A"],
-          pi_b: [
-            ["0x3E4D5C6B7A89", "0x9A8B7C6D5E4F"],
-            ["0x2A3B4C5D6E7F", "0x8F7E6D5C4B3A"],
-          ],
-          pi_c: ["0x7E6D5C4B3A29", "0x1A9B2C8D3E7F"],
-          publicSignals: ["0x1"],
-        };
-        resolve(proof);
-      };
-
-      onStage?.("allocating_worker", `Allocating idle computing worker #${worker.id} from pool [ZKProofService]`);
-      this.schedule(stage1, delay / 3);
+    return this.dispatch(worker, {
+      resolve: () => undefined,
+      reject: () => undefined,
+      payload: { taskCondition, secretData },
+      retries: 0,
+      onStage,
     });
   }
 
+  private dispatch(worker: PoolWorker, task: WorkerTask): Promise<ZkProofPayload> {
+    const taskId = `task-${this.taskCounter++}-${this.now()}`;
+    worker.status = "busy";
+    worker.taskId = taskId;
+
+    const slot = this.slots.find((s) => s.id === worker.id);
+    if (!slot) {
+      worker.status = "idle";
+      worker.taskId = null;
+      return Promise.reject(new Error(`Internal error: worker slot ${worker.id} not found`));
+    }
+
+    return new Promise<ZkProofPayload>((resolve, reject) => {
+      const settledRef = { value: false };
+      slot.current = { task, taskId, settled: false };
+
+      const cleanup = () => {
+        this.clearTimeoutHandle(timeoutHandle);
+        const instance = slot.instance;
+        if (instance) {
+          instance.onmessage = null;
+          instance.onerror = null;
+        }
+        slot.cleanup = undefined;
+      };
+
+      const finalize = () => {
+        if (settledRef.value) return;
+        settledRef.value = true;
+        cleanup();
+        slot.current = null;
+        worker.status = "idle";
+        worker.taskId = null;
+        this.processQueue();
+      };
+
+      const safeResolve = (proof: ZkProofPayload) => {
+        finalize();
+        resolve(proof);
+      };
+      const safeReject = (error: Error) => {
+        finalize();
+        reject(error);
+      };
+
+      const boundMessage = (event: MessageEvent) => {
+        const data = event.data as {
+          type?: string;
+          taskId?: string;
+          stage?: string;
+          message?: string;
+          proof?: ZkProofPayload;
+          error?: string;
+        };
+        if (data.taskId && data.taskId !== taskId) return;
+        if (data.type === "progress") {
+          task.onStage?.(data.stage ?? "working", data.message ?? "");
+          return;
+        }
+        if (data.type === "result" && data.proof) {
+          safeResolve(data.proof);
+          return;
+        }
+        if (data.type === "error") {
+          safeReject(new Error(data.error ?? "Unknown prover worker error"));
+        }
+      };
+
+      const boundError = (event: ErrorEvent) => {
+        safeReject(new Error(event.message || "Prover worker crashed"));
+      };
+
+      const timeoutHandle = this.scheduleTimeout(() => {
+        safeReject(new Error(`Proof generation timed out after ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+
+      slot.cleanup = cleanup;
+
+      try {
+        const instance = this.getOrCreateWorker(slot);
+        instance.onmessage = boundMessage;
+        instance.onerror = boundError;
+        instance.postMessage({
+          type: "prove",
+          taskId,
+          taskCondition: task.payload.taskCondition,
+          secretData: task.payload.secretData,
+          simulateFailure: false,
+          simulateCongestion: false,
+        });
+      } catch (err) {
+        safeReject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
+  private getOrCreateWorker(slot: WorkerSlot): ProverWorkerLike {
+    if (slot.instance) return slot.instance;
+    if (!this.workerFactory) {
+      throw new Error(
+        "WorkerPool requires a workerFactory to generate proofs. Pass a factory that returns a Worker running zkProverWorker.ts.",
+      );
+    }
+    const instance = this.workerFactory();
+    slot.instance = instance;
+    return instance;
+  }
+
+  private scheduleTimeout(fn: () => void, ms: number): unknown {
+    if (typeof window !== "undefined") return window.setTimeout(fn, ms);
+    return setTimeout(fn, ms);
+  }
+
+  private clearTimeoutHandle(handle: unknown): void {
+    if (typeof window !== "undefined") window.clearTimeout(handle as number);
+    else clearTimeout(handle as any);
+  }
+
   private processQueue(): void {
+    if (this.shutdownFlag) return;
     const available = this.getAvailableWorker();
     if (!available || this.queue.length === 0) return;
 
     const task = this.queue.shift()!;
-    this.execute(
-      task.payload.taskCondition,
-      task.payload.secretData,
-      false,
-      false,
-    )
+    this.dispatch(available, task)
       .then((proof) => task.resolve(proof))
       .catch((error) => {
         if (task.retries < this.config.maxRetries) {
           task.retries++;
           this.queue.unshift(task);
-          this.schedule(() => this.processQueue(), this.config.baseDelayMs * Math.pow(2, task.retries));
+          this.schedule(
+            () => this.processQueue(),
+            this.config.baseDelayMs * Math.pow(2, task.retries),
+          );
         } else {
-          task.reject(error);
+          task.reject(error instanceof Error ? error : new Error(String(error)));
         }
       });
   }
 
-  private generateProofId(): string {
-    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-      return crypto.randomUUID();
-    }
-    return `zk-${Math.random().toString(36).substring(2, 10)}-${Date.now().toString(36)}`;
-  }
-
   shutdown(): void {
+    this.shutdownFlag = true;
+    for (const slot of this.slots) {
+      slot.cleanup?.();
+      if (slot.instance) {
+        try {
+          slot.instance.terminate();
+        } catch {
+          /* ignore termination errors */
+        }
+        slot.instance = null;
+      }
+      slot.current = null;
+    }
+    for (const task of this.queue) {
+      task.reject(new Error("WorkerPool shut down before task could run"));
+    }
     this.workers = [];
+    this.slots = [];
     this.queue = [];
   }
 }

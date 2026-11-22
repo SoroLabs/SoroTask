@@ -58,6 +58,8 @@ const REQUIRED_INPUTS: Record<ZkCircuitId, { public: string[]; private: string[]
 const BN254_SCALAR_FIELD =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
+export const PROOF_GENERATION_TIMEOUT_MS = 120_000;
+
 export class BrowserZkProver {
   private workerFactory: ZkProverWorkerFactory;
   private worker: ZkProverWorkerLike | null = null;
@@ -89,15 +91,22 @@ export class BrowserZkProver {
 
     try {
       return await new Promise<ZkProofPayload>((resolve, reject) => {
-        this.rejectActive = (error) => {
+        const cleanTimeout = () => {
           if (this.workerTimeout !== null) {
             window.clearTimeout(this.workerTimeout);
             this.workerTimeout = null;
           }
+        };
+        this.rejectActive = (error) => {
+          cleanTimeout();
           reject(error);
         };
         this.workerTimeout = window.setTimeout(() => {
-          this.rejectActive?.(new Error("Proof generation exceeded the 120-second worker limit."));
+          this.rejectActive?.(
+            new Error(
+              `Proof generation exceeded the ${Math.round(PROOF_GENERATION_TIMEOUT_MS / 1000)}-second worker limit.`,
+            ),
+          );
         }, 120_000);
         worker.onmessage = (event) => {
           const response = event.data;
@@ -105,18 +114,15 @@ export class BrowserZkProver {
           if (response.type === "progress") {
             onProgress?.(response.stage, response.progress);
           } else if (response.type === "result") {
-            if (this.workerTimeout !== null) window.clearTimeout(this.workerTimeout);
-            this.workerTimeout = null;
+            cleanTimeout();
             resolve(response.proof);
           } else {
-            if (this.workerTimeout !== null) window.clearTimeout(this.workerTimeout);
-            this.workerTimeout = null;
+            cleanTimeout();
             reject(new Error(response.error));
           }
         };
         worker.onerror = (event) => {
-          if (this.workerTimeout !== null) window.clearTimeout(this.workerTimeout);
-          this.workerTimeout = null;
+          cleanTimeout();
           reject(new Error(event.message || "The browser proof worker failed."));
         };
         worker.postMessage({ id, circuitId, inputs, artifacts });
@@ -133,7 +139,7 @@ export class BrowserZkProver {
   }
 
   terminate(): void {
-    this.worker?.terminate();
+    this.worker.terminate();
     this.worker = null;
     this.rejectActive?.(new Error("Proof generation was cancelled."));
     this.rejectActive = null;
@@ -147,7 +153,7 @@ export function combineCircuitInputs(
 ): Record<string, unknown> {
   const publicInputs = parseInputObject(publicInputsJson, "Public inputs");
   const privateInputs = parseInputObject(privateInputsJson, "Private inputs");
-  const overlap = Object.keys(publicInputs).filter((key) => key in privateInputs);
+  const overlap = Object.keys(publicInputs).filter((k) => k in privateInputs);
   if (overlap.length > 0) {
     throw new Error(`Input fields must not be both public and private: ${overlap.join(", ")}.`);
   }
@@ -199,7 +205,7 @@ export function combineCircuitInputs(
       ["root", publicInputs.root],
       ["leaf", privateInputs.leaf],
       ...privateInputs.pathElements.map((value, index) => [`pathElements[${index}]`, value]),
-    ]) {
+    ] as Array<[string, unknown]>) {
       if (typeof value !== "string" || !/^\d+$/.test(value)) {
         throw new Error(`Membership input "${label}" must be a decimal field-element string.`);
       }
@@ -216,7 +222,7 @@ export function combineCircuitInputs(
 }
 
 export function getCircuitArtifacts(circuitId: ZkCircuitId): ZkArtifactSet {
-  const base = process.env.NEXT_PUBLIC_ZK_ARTIFACT_BASE_URL || "/zk-proofs";
+  const base = process.env.NEXT_PUBLIC_ZK_ARTIFACT_BASE_URL || "/zkProofs";
   const files = CIRCUIT_FILES[circuitId];
   const origin = window.location.origin;
 
