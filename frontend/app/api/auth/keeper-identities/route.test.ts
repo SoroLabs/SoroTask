@@ -76,4 +76,11 @@ describe("keeper identity API boundary", () => {
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toEqual({ error: { code: "identity_not_configured" } });
   });
+
+  test.each(["ftp://localhost:3000", "https://user:password@keeper.example", "http://keeper.example"])("unsafe canonical origin %s cannot configure linking", async (origin) => {
+    process.env.AUTH_URL = origin;
+    const result = await GET(new Request(`${ORIGIN}/api/auth/keeper-identities`));
+    expect(result.status).toBe(503);
+    expect(await result.json()).toEqual({ error: { code: "identity_not_configured" } });
+  });
 });

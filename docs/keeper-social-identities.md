@@ -136,6 +136,7 @@ npm test -- --runInBand --runTestsByPath \
   src/lib/auth/__tests__/identity-wallet.test.ts \
   src/components/__tests__/keeper-identities.test.tsx \
   app/api/auth/keeper-identities/route.test.ts \
+  'app/api/auth/[...nextauth]/route.test.ts' \
   app/keepers/page.test.tsx \
   src/lib/auth/__tests__/IdentityManager.test.ts \
   src/lib/auth/__tests__/AuthPipeline.test.ts

@@ -14,7 +14,7 @@ function service(): KeeperIdentityService {
   if (!raw) throw new IdentityError("identity_not_configured", 503);
   let url;
   try { url = new URL(raw); } catch { throw new IdentityError("identity_not_configured", 503); }
-  if ((url.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && url.hostname === "localhost")) || url.username || url.password) {
+  if ((url.protocol !== "https:" && !(url.protocol === "http:" && process.env.NODE_ENV !== "production" && url.hostname === "localhost")) || url.username || url.password) {
     throw new IdentityError("identity_not_configured", 503);
   }
   return new KeeperIdentityService({

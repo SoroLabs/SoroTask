@@ -65,7 +65,10 @@ const config: NextAuthConfig = {
         const github = profile as { login?: unknown; id?: unknown } | undefined;
         token.keeperGithub = account.provider === "github"
           && typeof github?.login === "string"
+          && /^[a-zA-Z0-9_.-]{1,100}$/.test(github.login)
           && /^\d{1,20}$/.test(account.providerAccountId)
+          && (typeof github.id === "number" || typeof github.id === "string")
+          && String(github.id) === account.providerAccountId
           ? { id: account.providerAccountId, username: github.login }
           : undefined;
       }
