@@ -59,7 +59,7 @@ describe('Consensus Messages', () => {
 
     test('should reject tampered signature', () => {
       const msg = createMessage(MESSAGE_TYPES.PROPOSE, { taskId: 'task-1', epoch: 1 }, keeperId, secret);
-      msg.signature = msg.signature.slice(0, -1) + 'a'; // Tamper signature
+      msg.signature = msg.signature.slice(0, -1) + (msg.signature.endsWith('a') ? 'b' : 'a'); // Tamper signature
       const valid = verifySignature(msg, secret);
       expect(valid).toBe(false);
     });

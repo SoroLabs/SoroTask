@@ -1,19 +1,12 @@
 "use client";
 
-import { AuthProvider } from "@/context/AuthContext";
-import { RbacSettingsPanel } from "@/src/components/RbacSettingsPanel";
-import { RbacUiEngineProvider } from "@/src/lib/rbac/RbacUiEngineProvider";
+import { RbacDashboard } from "@/components/admin/RbacDashboard";
+import { withRouteGuard } from "@/lib/routeGuards";
 
-export default function RbacSettingsPage() {
-  return (
-    <AuthProvider>
-      <div className="min-h-screen bg-neutral-900 text-neutral-100 px-6 py-10">
-        <div className="mx-auto max-w-5xl">
-          <RbacUiEngineProvider>
-            <RbacSettingsPanel />
-          </RbacUiEngineProvider>
-        </div>
-      </div>
-    </AuthProvider>
-  );
+function RbacPage() {
+  return <RbacDashboard />;
 }
+
+export default withRouteGuard(RbacPage, ["admin:users"], {
+  redirectTo: "/unauthorized",
+});

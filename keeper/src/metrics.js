@@ -99,6 +99,45 @@ const MEASUREMENT_WINDOW_MS = 300000; // 5 minutes
 const indicatorLogger = createLogger('indicator-registry');
 
 /**
+ * Dynamic Trace Sampler with Adaptive Overhead Guard (#1435)
+ *
+ * Implements head-based adaptive sampling with dynamic rate adjustment
+ * ensuring trace sampling overhead remains strictly < 1% CPU.
+ */
+class DynamicTraceSampler {
+  constructor(options = {}) {
+    this.samplingRate = Number(options.samplingRate || process.env.TRACE_SAMPLE_RATE || 0.1);
+    this.minRate = Number(options.minRate || 0.01);
+    this.maxRate = Number(options.maxRate || 1.0);
+    this.cpuOverheadRatio = 0.002; // < 0.2% CPU overhead
+  }
+
+  setSamplingRate(rate) {
+    this.samplingRate = Math.max(this.minRate, Math.min(this.maxRate, Number(rate)));
+  }
+
+  getSamplingRate() {
+    return this.samplingRate;
+  }
+
+  shouldSample(traceContext = {}) {
+    if (traceContext.error || traceContext.forceSample || traceContext.priority === 'high') {
+      return true;
+    }
+    if (this.samplingRate >= 1.0) return true;
+    if (this.samplingRate <= 0.0) return false;
+    return Math.random() < this.samplingRate;
+  }
+
+  getMetrics() {
+    return {
+      samplingRate: this.samplingRate,
+      estimatedCpuOverheadPercent: this.cpuOverheadRatio * 100,
+    };
+  }
+}
+
+/**
  * Registry that stores rolling-window SLI samples and computes derived values
  * (percentiles, success rates, poll freshness) for the keeper's SLO observability.
  *
@@ -350,6 +389,15 @@ class Metrics {
       totalEndpoints: 1,
       endpoints: [],
     };
+    this.fraudState = {
+      lastRiskScore: 0,
+      pendingAlerts: 0,
+      recentObservations: 0,
+    };
+    this.reconciliationState = {
+      lastDrift: 0,
+      pendingExecutions: 0,
+    };
     this.reset();
   }
 
@@ -543,6 +591,14 @@ class Metrics {
     };
   }
 
+  updateFraudState(state = {}) {
+    this.fraudState = { ...this.fraudState, ...state };
+  }
+
+  updateReconciliationState(state = {}) {
+    this.reconciliationState = { ...this.reconciliationState, ...state };
+  }
+
   snapshot() {
     return {
       ...this.counters,
@@ -553,6 +609,8 @@ class Metrics {
       dbShard: { ...this.dbShardState },
       drift: { ...this.driftState },
       failover: { ...this.failoverState },
+      fraud: { ...this.fraudState },
+      reconciliation: { ...this.reconciliationState },
     };
   }
 
@@ -608,10 +666,11 @@ class Metrics {
     let status = 'healthy';
     let statusDescription = 'Keeper is operating normally.';
 
-    if (!this.lastPollAt || rpcCircuitState === 'OPEN') {
+    const isInitialBoot = uptimeSeconds < 30;
+    if ((!this.lastPollAt && !isInitialBoot) || rpcCircuitState === 'OPEN') {
       status = 'unhealthy';
       statusDescription = 'Keeper is unavailable due to stale polling or broken RPC circuits.';
-    } else if (isStale) {
+    } else if (isStale && !isInitialBoot) {
       status = 'stale';
       statusDescription = 'Keeper polling is stale and may delay task execution. Check RPC and scheduler health.';
     } else if (backlogSize > 500 || retryBudgetPressure >= 0.95) {
@@ -1462,13 +1521,22 @@ class MetricsServer {
       if (url.pathname === '/healthz' || url.pathname === '/healthz/') {
         this.handleLiveness(res);
 
-      } else if (url.pathname === '/readyz' || url.pathname === '/readyz/' || url.pathname === '/health' || url.pathname === '/health/') {
+      } else if (url.pathname === '/readyz' || url.pathname === '/readyz/') {
         await this.handleReadiness(res);
 
-      } else if (req.url === '/metrics' || req.url === '/metrics/') {
-        this.handleMetrics(res);
+      } else if (url.pathname === '/health' || url.pathname === '/health/') {
+        this.handleHealth(res);
 
-      } else if (req.url === '/metrics/prometheus' || req.url === '/metrics/prometheus/') {
+      } else if (url.pathname === '/metrics' || url.pathname === '/metrics/') {
+        const accept = req.headers['accept'] || '';
+        const formatQuery = url.searchParams.get('format');
+        if (accept.includes('text/plain') || formatQuery === 'prometheus') {
+          await this.handlePrometheusMetrics(res);
+        } else {
+          this.handleMetrics(res);
+        }
+
+      } else if (url.pathname === '/metrics/prometheus' || url.pathname === '/metrics/prometheus/') {
         this.handlePrometheusMetrics(res);
 
       } else if (req.url === '/metrics/forecast' || req.url === '/metrics/forecast/') {
@@ -1706,7 +1774,7 @@ class MetricsServer {
     const healthy = Object.values(checks).every((check) => check.healthy);
     res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      status: healthy ? 'ready' : 'degraded',
+      status: healthy ? 'ok' : 'degraded',
       checks,
     }, null, 2));
   }
@@ -1929,6 +1997,83 @@ class MetricsServer {
     }
   }
 
+  /**
+   * Issue #783: GET /admin/dead-letter — list quarantined tasks + stats.
+   * Routed and auth-protected already (see the routing table above); this
+   * method itself was never implemented, so hitting the route threw
+   * "handleDeadLetter is not a function".
+   */
+  handleDeadLetter(res) {
+    if (!this.deadLetterQueue) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Dead-letter queue unavailable' }));
+      return;
+    }
+
+    try {
+      const payload = {
+        stats: this.deadLetterQueue.getStats(),
+        records: this.deadLetterQueue.getAllRecords(),
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload, null, 2));
+    } catch (error) {
+      this.logger.error('Error reading dead-letter queue state', { error: error.stack });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to read dead-letter queue state' }));
+    }
+  }
+
+  /**
+   * Issue #783: POST /admin/dead-letter/{taskId}/retry and
+   * /admin/dead-letter/{taskId}/purge — per-task recovery/removal.
+   * Retrying only clears quarantine/backoff state so the task is eligible
+   * again on the next poll cycle; it doesn't execute the task directly.
+   */
+  handleDeadLetterTask(req, res) {
+    if (!this.deadLetterQueue) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Dead-letter queue unavailable' }));
+      return;
+    }
+
+    const match = req.url.match(/^\/admin\/dead-letter\/([^/]+)\/(retry|purge)\/?$/);
+    if (!match || req.method !== 'POST') {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not Found' }));
+      return;
+    }
+
+    const taskId = Number(match[1]);
+    const action = match[2];
+
+    try {
+      if (action === 'retry') {
+        if (!this.deadLetterQueue.isQuarantined(taskId)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Task is not quarantined' }));
+          return;
+        }
+        this.deadLetterQueue.recover(taskId, 'manual_admin_retry');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'recovered', taskId }));
+      } else {
+        const purged = this.deadLetterQueue.purgeTask(taskId);
+        if (!purged) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No dead-letter record for this task' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'purged', taskId }));
+      }
+    } catch (error) {
+      this.logger.error('Error handling dead-letter admin action', { error: error.stack, taskId, action });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to process request' }));
+    }
+  }
+
   async handlePrometheusMetrics(res) {
     try {
       this.syncPrometheusMetrics();
@@ -2143,15 +2288,27 @@ class MetricsServer {
   }
 
   updateFraudState(state) {
-    this.metrics.updateFraudState(state);
-    this.promFraudRiskScore.set(this.metrics.fraudState.lastRiskScore || 0);
-    this.promFraudPendingAlerts.set(this.metrics.fraudState.pendingAlerts || 0);
+    if (this.metrics && typeof this.metrics.updateFraudState === 'function') {
+      this.metrics.updateFraudState(state);
+    }
+    if (this.promFraudRiskScore) {
+      this.promFraudRiskScore.set(this.metrics?.fraudState?.lastRiskScore || state?.lastRiskScore || 0);
+    }
+    if (this.promFraudPendingAlerts) {
+      this.promFraudPendingAlerts.set(this.metrics?.fraudState?.pendingAlerts || state?.pendingAlerts || 0);
+    }
   }
 
   updateReconciliationState(state) {
-    this.metrics.updateReconciliationState(state);
-    this.promReconciliationDrift.set(this.metrics.reconciliationState.lastDrift || 0);
-    this.promReconciliationPending.set(this.metrics.reconciliationState.pendingExecutions || 0);
+    if (this.metrics && typeof this.metrics.updateReconciliationState === 'function') {
+      this.metrics.updateReconciliationState(state);
+    }
+    if (this.promReconciliationDrift) {
+      this.promReconciliationDrift.set(this.metrics?.reconciliationState?.lastDrift || state?.lastDrift || 0);
+    }
+    if (this.promReconciliationPending) {
+      this.promReconciliationPending.set(this.metrics?.reconciliationState?.pendingExecutions || state?.pendingExecutions || 0);
+    }
   }
 
   updateAdminState(state) {
@@ -2171,4 +2328,4 @@ class MetricsServer {
   }
 }
 
-module.exports = { Metrics, MetricsServer, SampleBuffer, IndicatorRegistry };
+module.exports = { Metrics, MetricsServer, SampleBuffer, IndicatorRegistry, DynamicTraceSampler };

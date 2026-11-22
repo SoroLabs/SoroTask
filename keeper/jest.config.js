@@ -3,7 +3,7 @@ module.exports = {
   transform: {
     "^.+\\.(js|jsx)$": "babel-jest",
   },
-  transformIgnorePatterns: ["/node_modules/(?!(p-limit|events|@stellar/stellar-sdk|@noble/.*|@scure|uint8array-extras)/)"],
+  transformIgnorePatterns: ["/node_modules/(?!(p-limit|events|@stellar/stellar-sdk|@noble/.*|@scure|uint8array-extras|@exodus)/)"],
   collectCoverage: true,
   coverageDirectory: "coverage",
   coverageReporters: ["text", "lcov", "json-summary"],

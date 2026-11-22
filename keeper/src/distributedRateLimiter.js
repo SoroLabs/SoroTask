@@ -40,6 +40,54 @@
 // ARGV[1] = limit (max requests allowed in the window)
 // ARGV[2] = ttl in milliseconds (window length + small slack)
 // Returns: 1 if the request is allowed (counter incremented), 0 if over budget.
+const RATE_TIERS = {
+  FREE: { capacity: 60, refillPerSecond: 1, burst: 10 },
+  PRO: { capacity: 600, refillPerSecond: 10, burst: 50 },
+  ENTERPRISE: { capacity: 6000, refillPerSecond: 100, burst: 500 },
+};
+
+const MULTI_TENANT_BUCKET_SCRIPT = `
+local key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local refill_rate = tonumber(ARGV[2])
+local burst = tonumber(ARGV[3])
+local requested = tonumber(ARGV[4])
+local now = tonumber(ARGV[5])
+
+local max_tokens = capacity + burst
+
+local data = redis.call('HMGET', key, 'tokens', 'last_refill')
+local tokens = tonumber(data[1])
+local last_refill = tonumber(data[2])
+
+if not tokens then
+  tokens = max_tokens
+  last_refill = now
+else
+  local delta = math.max(0, (now - last_refill) / 1000)
+  tokens = math.min(max_tokens, tokens + (delta * refill_rate))
+  last_refill = now
+end
+
+local allowed = 0
+local remaining = tokens
+local reset_time = math.ceil((max_tokens - tokens) / refill_rate)
+
+if tokens >= requested then
+  allowed = 1
+  tokens = tokens - requested
+  remaining = tokens
+  reset_time = math.ceil((max_tokens - tokens) / refill_rate)
+  redis.call('HMSET', key, 'tokens', tokens, 'last_refill', last_refill)
+  redis.call('EXPIRE', key, math.max(60, reset_time * 2))
+else
+  allowed = 0
+  redis.call('HMSET', key, 'tokens', tokens, 'last_refill', last_refill)
+end
+
+return { allowed, remaining, reset_time, max_tokens }
+`;
+
 const CONSUME_SCRIPT = `
 local current = tonumber(redis.call('get', KEYS[1]) or '0')
 if current < tonumber(ARGV[1]) then
@@ -115,11 +163,20 @@ class DistributedRateLimiter {
       }
     }
 
+    this.localTenantBuckets = new Map();
+
     if (this.enabled && typeof this.redis.consumeRateToken !== 'function') {
       // Register the atomic Lua command on the client.
       this.redis.defineCommand('consumeRateToken', {
         numberOfKeys: 1,
         lua: CONSUME_SCRIPT,
+      });
+    }
+
+    if (this.enabled && typeof this.redis.consumeTenantToken !== 'function' && typeof this.redis.defineCommand === 'function') {
+      this.redis.defineCommand('consumeTenantToken', {
+        numberOfKeys: 1,
+        lua: MULTI_TENANT_BUCKET_SCRIPT,
       });
     }
   }
@@ -217,6 +274,80 @@ class DistributedRateLimiter {
   /**
    * Close the Redis connection if this limiter created it.
    */
+  /**
+   * Check multi-tenant rate limit and quota (#1444).
+   * @param {string} apiKey
+   * @param {string} [tierName='FREE']
+   * @param {number} [requested=1]
+   * @returns {Promise<{ allowed: boolean, statusCode: number, headers: object }>}
+   */
+  async checkTenantLimit(apiKey, tierName = 'FREE', requested = 1) {
+    const tier = RATE_TIERS[String(tierName).toUpperCase()] || RATE_TIERS.FREE;
+    const now = Date.now();
+    const key = `${this.keyPrefix}:tenant:${apiKey}`;
+
+    if (this.enabled && this.redis && typeof this.redis.consumeTenantToken === 'function') {
+      try {
+        const res = await this.redis.consumeTenantToken(
+          key,
+          tier.capacity,
+          tier.refillPerSecond,
+          tier.burst,
+          requested,
+          now
+        );
+        const allowed = Number(res[0]) === 1;
+        const remaining = Math.max(0, Math.floor(Number(res[1])));
+        const resetTime = Number(res[2]);
+        const limit = Number(res[3]);
+
+        return {
+          allowed,
+          statusCode: allowed ? 200 : 429,
+          headers: {
+            'X-RateLimit-Limit': String(limit),
+            'X-RateLimit-Remaining': String(remaining),
+            'X-RateLimit-Reset': String(resetTime),
+            ...(allowed ? {} : { 'Retry-After': String(Math.max(1, resetTime)) }),
+          },
+        };
+      } catch (err) {
+        if (this.logger) {
+          this.logger.warn('Tenant rate limiter Redis error — failing open', { error: err.message });
+        }
+      }
+    }
+
+    const maxTokens = tier.capacity + tier.burst;
+    let bucket = this.localTenantBuckets.get(key);
+    if (!bucket) {
+      bucket = { tokens: maxTokens, lastRefill: now };
+      this.localTenantBuckets.set(key, bucket);
+    } else {
+      const delta = Math.max(0, (now - bucket.lastRefill) / 1000);
+      bucket.tokens = Math.min(maxTokens, bucket.tokens + delta * tier.refillPerSecond);
+      bucket.lastRefill = now;
+    }
+
+    const allowed = bucket.tokens >= requested;
+    if (allowed) {
+      bucket.tokens -= requested;
+    }
+
+    const resetSeconds = Math.ceil((maxTokens - bucket.tokens) / tier.refillPerSecond);
+
+    return {
+      allowed,
+      statusCode: allowed ? 200 : 429,
+      headers: {
+        'X-RateLimit-Limit': String(maxTokens),
+        'X-RateLimit-Remaining': String(Math.max(0, Math.floor(bucket.tokens))),
+        'X-RateLimit-Reset': String(resetSeconds),
+        ...(allowed ? {} : { 'Retry-After': String(Math.max(1, resetSeconds)) }),
+      },
+    };
+  }
+
   async close() {
     if (this.ownsClient && this.redis) {
       try {
@@ -237,4 +368,4 @@ function createDistributedRateLimiter(options = {}) {
   return new DistributedRateLimiter(options);
 }
 
-module.exports = { DistributedRateLimiter, createDistributedRateLimiter };
+module.exports = { DistributedRateLimiter, createDistributedRateLimiter, RATE_TIERS };

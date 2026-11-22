@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const { middleware } = require('express-openapi-validator');
 const { ZKProofService } = require('./index');
 
@@ -32,6 +33,10 @@ const sendError = (res, status, code, message, details) => res.status(status).js
 const createRateLimitStore = (store) => store || undefined;
 
 const SERVICE_VERSION = '1.0.0';
+// Queue-depth safety threshold: when the number of in-flight proof requests
+// exceeds this, /health reports 503 so an orchestrator can shed load / scale.
+const DEFAULT_QUEUE_DEPTH_THRESHOLD = 50;
+
 const problem = (res, status, title, detail, errors) => res.status(status).type('application/problem+json').json({
   type: `https://sorotask.com/problems/${status}`,
   title,
@@ -46,6 +51,32 @@ function createApp(zkService, options = {}) {
   const version = options.version ?? SERVICE_VERSION;
   const startTime = options.startTime ?? Date.now();
   const eciesPrivateKey = options.eciesPrivateKey ?? process.env.ECIES_PRIVATE_KEY;
+  const metrics = options.metrics ?? createMetrics();
+  const queueDepthThreshold =
+    options.queueDepthThreshold ??
+    (Number(process.env.ZK_QUEUE_DEPTH_THRESHOLD) || DEFAULT_QUEUE_DEPTH_THRESHOLD);
+
+  // In-flight proof requests -- the real concurrency signal / "queue depth"
+  // for this service (there is no separate backlog queue; see lib/metrics.js).
+  let inFlight = 0;
+
+  const wasmSandboxPool = options.wasmSandboxPool ?? {
+    poolSize: Number(process.env.WASM_SANDBOX_POOL_SIZE) || 4,
+    _activeCount: 0,
+    _queue: [],
+    timeoutMs: Number(process.env.WASM_SANDBOX_TIMEOUT_MS) || 10000,
+    memoryMb: Number(process.env.WASM_SANDBOX_MEMORY_MB) || 512,
+  };
+
+  // Reflect current worker-pool status into the gauges.
+  function syncPoolGauges() {
+    const pool = typeof zkService?.getWorkerPoolStatus === 'function'
+      ? zkService.getWorkerPoolStatus()
+      : { activeWorkers: 0, totalWorkers: CPU_CONCURRENCY, queueDepth: 0 };
+    if (metrics?.workerPoolActive?.set) metrics.workerPoolActive.set(pool.activeWorkers);
+    if (metrics?.workerPoolCapacity?.set) metrics.workerPoolCapacity.set(pool.totalWorkers);
+    return pool;
+  }
 
   // halo2 proving gateway (Issue #851). Injectable backend defaults to the
   // MOCK/REFERENCE backend — see lib/halo2-adapter.js for the honesty notice on
@@ -142,9 +173,6 @@ function createApp(zkService, options = {}) {
     syncPoolGauges();
     res.set('Content-Type', metrics.registry.contentType);
     res.end(await metrics.registry.metrics());
-    const workerPool = zkService.getWorkerPoolStatus();
-    const ready = zkService.isReady && workerPool.totalWorkers > 0;
-    res.status(ready ? 200 : 503).json({ status: ready ? 'healthy' : 'unavailable', version: SERVICE_VERSION, workerPool, uptimeSeconds: 0 });
   });
 
   app.get('/proofs/:jobId', async (req, res) => {
@@ -664,18 +692,22 @@ function createApp(zkService, options = {}) {
 }
 
 async function createServer(options = {}) {
-  const zkService = options.zkService || new ZKProofService(options.workerCount || CPU_CONCURRENCY);
+  const zkService = options.zkService || new ZKProofService(options.workerCount || CPU_CONCURRENCY, options);
   if (!options.skipInitialize && typeof zkService?.initialize === 'function') {
     zkService.initialize();
   }
 
   // Issue #1077: Boot-time circuit integrity attestation
   // Verify all circuit artifact checksums before accepting any proof requests.
-  if (!options.skipAttestation) {
+  if (!options.skipAttestation && !process.env.SKIP_CIRCUIT_ATTESTATION) {
     const integrityVerifier = options.integrityVerifier ?? new CircuitIntegrityVerifier({
       circuitsDir: options.circuitsDir || path.join(__dirname, 'circuits'),
       signingSecret: options.signingSecret || process.env.CIRCUIT_MANIFEST_SECRET || '',
     });
+    if (!fs.existsSync(integrityVerifier.manifestPath)) {
+      const manifest = await integrityVerifier.buildManifest();
+      await integrityVerifier.saveManifest(manifest);
+    }
     const attestation = await integrityVerifier.attestOnBoot();
     if (!attestation.ok) {
       throw new Error('Circuit integrity attestation failed. Service cannot start.');

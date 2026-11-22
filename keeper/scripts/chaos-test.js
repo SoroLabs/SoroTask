@@ -86,6 +86,36 @@ const availableScenarios = [
       durationMs: 10000,
     },
   },
+  {
+    id: 'db_failover',
+    name: 'Database Failover & Primary DB Kill',
+    description: 'Inject primary database crash and test automated replica failover',
+    config: {
+      killPrimaryDb: true,
+      dbFailoverDurationMs: 5000,
+      durationMs: 10000,
+    },
+  },
+  {
+    id: 'websocket_drop',
+    name: 'Dropped WebSocket Frames',
+    description: 'Simulate packet loss and dropped WebSocket subscription frames',
+    config: {
+      wsFrameDropRate: 0.4,
+      reconnectDelayMs: 2000,
+      durationMs: 10000,
+    },
+  },
+  {
+    id: 'split_brain',
+    name: 'Split-Brain Network Partition',
+    description: 'Simulate 2-node cluster network partition and split-brain isolation',
+    config: {
+      partitionNodes: ['node-1', 'node-2'],
+      isolatePrimary: true,
+      durationMs: 10000,
+    },
+  },
 ];
 
 // Help function

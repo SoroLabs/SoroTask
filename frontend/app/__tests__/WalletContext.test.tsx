@@ -20,7 +20,9 @@ jest.mock("@/app/lib/wallet", () => ({
   connectWallet: jest.fn(),
   restoreSession: jest.fn(),
   watchWalletChanges: jest.fn(() => jest.fn()), // returns a stop() fn
-  truncateAddress: jest.fn((addr: string) => addr.slice(0, 5) + "..." + addr.slice(-4)),
+  truncateAddress: jest.fn(
+    (addr: string) => addr.slice(0, 5) + "..." + addr.slice(-4),
+  ),
   WalletConnectionError: class WalletConnectionError extends Error {
     code: string;
     constructor(code: string, message: string) {
@@ -57,8 +59,15 @@ const MOCK_SESSION = {
 // ---------------------------------------------------------------------------
 
 function TestConsumer() {
-  const { status, session, errorCode, errorMessage, connect, disconnect, clearError } =
-    useWallet();
+  const {
+    status,
+    session,
+    errorCode,
+    errorMessage,
+    connect,
+    disconnect,
+    clearError,
+  } = useWallet();
   return (
     <div>
       <p data-testid="status">{status}</p>
@@ -111,7 +120,9 @@ describe("session restore on mount", () => {
     await waitFor(() => {
       expect(screen.getByTestId("status").textContent).toBe("connected");
     });
-    expect(screen.getByTestId("address").textContent).toBe(MOCK_SESSION.address);
+    expect(screen.getByTestId("address").textContent).toBe(
+      MOCK_SESSION.address,
+    );
     expect(screen.getByTestId("network").textContent).toBe("FUTURENET");
   });
 
@@ -146,7 +157,9 @@ describe("connect action", () => {
     });
 
     expect(screen.getByTestId("status").textContent).toBe("connected");
-    expect(screen.getByTestId("address").textContent).toBe(MOCK_SESSION.address);
+    expect(screen.getByTestId("address").textContent).toBe(
+      MOCK_SESSION.address,
+    );
   });
 
   it("sets error state when connection fails with NOT_INSTALLED", async () => {
@@ -203,7 +216,9 @@ describe("connect action", () => {
     });
 
     expect(screen.getByTestId("error-code").textContent).toBe("WRONG_NETWORK");
-    expect(screen.getByTestId("error-message").textContent).toBe("Switch to Futurenet.");
+    expect(screen.getByTestId("error-message").textContent).toBe(
+      "Switch to Futurenet.",
+    );
   });
 });
 
@@ -273,5 +288,106 @@ describe("useWallet outside provider", () => {
     );
 
     spy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RBF & Transaction Speed-Up
+// ---------------------------------------------------------------------------
+
+describe("RBF & Transaction Speed-Up actions", () => {
+  function RbfTestConsumer() {
+    const {
+      pendingTransactions,
+      trackTransaction,
+      speedUpTransaction,
+      dismissTransaction,
+    } = useWallet();
+
+    return (
+      <div>
+        <p data-testid="tx-count">{pendingTransactions.length}</p>
+        {pendingTransactions.map((tx) => (
+          <div key={tx.id} data-testid={`tx-${tx.id}`}>
+            <span data-testid={`status-${tx.id}`}>{tx.status}</span>
+            <span data-testid={`fee-${tx.id}`}>{tx.baseFee}</span>
+            <span data-testid={`seq-${tx.id}`}>{tx.sequenceNumber}</span>
+          </div>
+        ))}
+        <button
+          onClick={() =>
+            trackTransaction({
+              txHash: "0xinitialhash123",
+              description: "Transfer XLM",
+              sequenceNumber: 501,
+              baseFee: 100,
+            })
+          }
+        >
+          track-tx
+        </button>
+        <button
+          onClick={() => {
+            const first = pendingTransactions[0];
+            if (first) {
+              speedUpTransaction(first.id, 150); // Bump 100 -> 150 (+50%)
+            }
+          }}
+        >
+          speed-up-valid
+        </button>
+        <button
+          onClick={() => {
+            const first = pendingTransactions[0];
+            if (first) {
+              speedUpTransaction(first.id, 110); // Attempt invalid bump < +20%
+            }
+          }}
+        >
+          speed-up-invalid
+        </button>
+        <button
+          onClick={() => {
+            const first = pendingTransactions[0];
+            if (first) {
+              dismissTransaction(first.id);
+            }
+          }}
+        >
+          dismiss-tx
+        </button>
+      </div>
+    );
+  }
+
+  it("tracks new transactions and replaces stuck transaction with >= +20% fee bump", async () => {
+    mockRestore.mockResolvedValue(null);
+    render(
+      <WalletProvider>
+        <RbfTestConsumer />
+      </WalletProvider>,
+    );
+
+    // Track a new transaction
+    await act(async () => {
+      await userEvent.click(screen.getByText("track-tx"));
+    });
+
+    expect(screen.getByTestId("tx-count").textContent).toBe("1");
+
+    // Speed up with valid +50% bump (100 -> 150)
+    await act(async () => {
+      await userEvent.click(screen.getByText("speed-up-valid"));
+    });
+
+    // Old tx should be marked 'replaced' and new replacement tx added (total 2)
+    expect(screen.getByTestId("tx-count").textContent).toBe("2");
+
+    // Dismiss first transaction
+    await act(async () => {
+      await userEvent.click(screen.getByText("dismiss-tx"));
+    });
+
+    expect(screen.getByTestId("tx-count").textContent).toBe("1");
   });
 });

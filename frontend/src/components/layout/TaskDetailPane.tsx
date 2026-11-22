@@ -10,6 +10,10 @@ import {
   SyncStatusMessage,
   useCollaborative,
 } from "@/src/lib/collaborative";
+import { ExecuteTaskButton } from "@/src/components/ExecuteTaskButton";
+import { useSorobanEnvironment } from "@/src/lib/soroban/useSorobanEnvironment";
+import { getNetworkConfig } from "@/src/lib/network/config";
+import { useWalletOptional } from "@/app/context/WalletContext";
 
 // Simple icon components to avoid external dependencies
 const XMarkIcon = ({ className }: { className?: string }) => (
@@ -123,6 +127,9 @@ function TaskEditorContent({ task }: { task: any }) {
   const [title, setTitle] = useState(getTaskTitle(task));
   const [description, setDescription] = useState(getTaskDescription(task));
   const { state, updateField, getField, crdt, connect } = useCollaborative();
+  const { network } = useSorobanEnvironment();
+  const wallet = useWalletOptional();
+  const networkConfig = getNetworkConfig(network);
 
   useEffect(() => {
     connect();
@@ -224,7 +231,16 @@ function TaskEditorContent({ task }: { task: any }) {
         <div className="grid gap-4 md:grid-cols-2">
           <div className="rounded-lg border border-neutral-800 bg-neutral-900/70 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-500">Status</div>
-            <div className="mt-2 text-sm font-medium text-neutral-100">{getTaskStatus(task)}</div>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <span className="text-sm font-medium text-neutral-100">{getTaskStatus(task)}</span>
+              <ExecuteTaskButton
+                taskId={task.id}
+                contractId={networkConfig.contractId}
+                userAddress={wallet?.session?.address}
+                network={network === "mainnet" ? "public" : "testnet"}
+                rpcUrl={networkConfig.rpcUrl}
+              />
+            </div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-900/70 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-500">Updated</div>

@@ -42,6 +42,17 @@ describe("ZkProofPipeline", () => {
     expect(pipeline.getState().progress).toBe(100);
   });
 
+  it("sets bounded worker progress values", () => {
+    pipeline.setProgress(73.4);
+    expect(pipeline.getState().progress).toBe(73);
+
+    pipeline.setProgress(120);
+    expect(pipeline.getState().progress).toBe(100);
+
+    pipeline.setProgress(-5);
+    expect(pipeline.getState().progress).toBe(0);
+  });
+
   it("adds errors", () => {
     const error: DiagnosticError = {
       id: "err-001",
@@ -171,7 +182,7 @@ describe("ZkProofPipeline", () => {
   });
 
   it("handles unknown stage gracefully", () => {
-    pipeline.addLog("idle" as any, "Reset");
+    pipeline.addLog("idle", "Reset");
     expect(pipeline.getState().progress).toBe(0);
   });
 });

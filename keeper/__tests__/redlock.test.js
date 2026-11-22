@@ -15,8 +15,9 @@ describe('RedlockManager (3-node in-memory quorum)', () => {
 
   test('acquire returns a token when quorum succeeds', async () => {
     const token = await manager.acquire('task-10', 60000);
-    expect(typeof token).toBe('string');
-    expect(token.length).toBeGreaterThan(0);
+    expect(token).toBeTruthy();
+    expect(typeof token.token).toBe('string');
+    expect(token.token.length).toBeGreaterThan(0);
   });
 
   test('second acquire on same task returns null (quorum denied)', async () => {

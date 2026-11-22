@@ -127,6 +127,16 @@ describe("addSafeLinkAttributes", () => {
     expect(relCount).toBe(1);
   });
 
+  it("overrides unsafe target and rel values", () => {
+    const input = '<a href="https://example.com" target="_self" rel="opener">link</a>';
+    const result = addSafeLinkAttributes(input);
+
+    expect(result).toBe(
+      '<a href="https://example.com" target="_blank" rel="noopener noreferrer">link</a>',
+    );
+    expect(result).not.toContain("opener");
+  });
+
   it("handles multiple links", () => {
     const input =
       '<a href="https://a.com">A</a> and <a href="https://b.com">B</a>';

@@ -35,6 +35,8 @@ export interface ScheduleBlock {
   isHistorical: boolean;
   /** Outcome for historical blocks; projections have none yet. */
   outcome?: 'success' | 'failed' | 'pending';
+  /** Id of the execution record, for historical blocks. Drives the drilldown. */
+  executionId?: string;
 }
 
 export interface TaskRow {
@@ -126,6 +128,7 @@ export function buildTimelineRows(
       start: e.executedAt.getTime(),
       isHistorical: true,
       outcome: e.status,
+      executionId: e.id,
     }));
 
     // Project only forward of now; the past is covered by real records, and
@@ -160,3 +163,172 @@ export function buildTicks(windowStart: number, windowEnd: number, count = 6): n
   const step = span / (count - 1);
   return Array.from({ length: count }, (_, i) => windowStart + i * step);
 }
+
+// ---------------------------------------------------------------------------
+// Collision detection, density and rescheduling (issue #1246)
+// ---------------------------------------------------------------------------
+
+/**
+ * Two runs closer together than this are treated as concurrent.
+ *
+ * Not zero: blocks are rendered as 1.5px markers, so runs a few seconds apart
+ * already overlap visually. One second keeps the highlight meaningful without
+ * flagging every pair of back-to-back runs.
+ */
+export const COLLISION_WINDOW_MS = 1000;
+
+/** Stable key for a block, used to look up its collision state. */
+export function blockKey(block: ScheduleBlock): string {
+  return `${block.taskId}@${block.start}`;
+}
+
+/**
+ * Find runs from *different* tasks that land within `windowMs` of each other.
+ *
+ * Only cross-task pairs are reported: a single task firing twice in quick
+ * succession is its own cadence, not a scheduling conflict.
+ *
+ * O(B log B + C) where C is the number of reported collisions.
+ */
+export function detectCollisions(
+  rows: TaskRow[],
+  windowMs: number = COLLISION_WINDOW_MS,
+): Map<string, string[]> {
+  const all = rows
+    .flatMap((row) => row.blocks)
+    .slice()
+    .sort((a, b) => a.start - b.start);
+
+  const collisions = new Map<string, string[]>();
+
+  for (let i = 0; i < all.length; i += 1) {
+    for (let j = i + 1; j < all.length; j += 1) {
+      // Sorted by start, so once the gap exceeds the window no later block can
+      // collide with this one either.
+      if (all[j].start - all[i].start > windowMs) break;
+      if (all[j].taskId === all[i].taskId) continue;
+
+      push(collisions, blockKey(all[i]), all[j].taskId);
+      push(collisions, blockKey(all[j]), all[i].taskId);
+    }
+  }
+
+  return collisions;
+}
+
+function push(map: Map<string, string[]>, key: string, value: string): void {
+  const existing = map.get(key);
+  if (existing) {
+    if (!existing.includes(value)) existing.push(value);
+  } else {
+    map.set(key, [value]);
+  }
+}
+
+export interface DensityBucket {
+  /** Bucket start, milliseconds since epoch. */
+  start: number;
+  /** Number of runs starting in this bucket. */
+  count: number;
+  /** 0–1, relative to the busiest bucket. 0 when nothing ran. */
+  intensity: number;
+}
+
+/**
+ * Bucket every run in the window by hour, so the view can show when the
+ * schedule is busiest rather than only how much of it there is.
+ *
+ * Returns one bucket per hour across the window, including empty ones, so the
+ * x-axis stays evenly spaced.
+ */
+export function computeHourlyDensity(
+  rows: TaskRow[],
+  windowStart: number,
+  windowEnd: number,
+): DensityBucket[] {
+  const hourMs = 60 * 60 * 1000;
+  const span = windowEnd - windowStart;
+  if (span <= 0) return [];
+
+  const bucketCount = Math.ceil(span / hourMs);
+  const counts = new Array<number>(bucketCount).fill(0);
+
+  for (const row of rows) {
+    for (const block of row.blocks) {
+      if (block.start < windowStart || block.start > windowEnd) continue;
+      const index = Math.floor((block.start - windowStart) / hourMs);
+      if (index >= 0 && index < bucketCount) counts[index] += 1;
+    }
+  }
+
+  const peak = counts.reduce((max, count) => (count > max ? count : max), 0);
+
+  return counts.map((count, index) => ({
+    start: windowStart + index * hourMs,
+    count,
+    // Guard the division so an empty schedule yields 0, not NaN.
+    intensity: peak > 0 ? count / peak : 0,
+  }));
+}
+
+/**
+ * Snap a dragged timestamp onto the task's own run grid.
+ *
+ * Rescheduling to an arbitrary instant would break the interval the keeper
+ * relies on, so a drop is rounded to the nearest slot anchored on the task's
+ * existing schedule.
+ */
+export function snapToSchedule(
+  at: number,
+  anchor: number,
+  intervalMs: number,
+): number {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return at;
+  const steps = Math.round((at - anchor) / intervalMs);
+  return anchor + steps * intervalMs;
+}
+
+export type RescheduleResult = {
+  /** The task with its next run moved; unchanged input when nothing moved. */
+  task: Task;
+  /** New next-run time, or null when the drop was a no-op. */
+  nextExecutionTime: Date | null;
+};
+
+/**
+ * Apply a drag-and-drop move to a task.
+ *
+ * The anchor is the task's current next run when it has one, otherwise its
+ * creation time, so a task that has never run still lands on a valid slot
+ * rather than an arbitrary time.
+ */
+export function rescheduleTask(task: Task, droppedAt: number): RescheduleResult {
+  const anchor = task.nextExecutionTime?.getTime() ?? task.createdAt.getTime();
+  const intervalMs = task.interval * 1000;
+  const snapped = snapToSchedule(droppedAt, anchor, intervalMs);
+
+  if (!Number.isFinite(snapped) || snapped === anchor) {
+    return { task, nextExecutionTime: null };
+  }
+
+  return {
+    task: { ...task, nextExecutionTime: new Date(snapped) },
+    nextExecutionTime: new Date(snapped),
+  };
+}
+
+/**
+ * Execution records behind a block, for the drilldown view.
+ * Projected blocks have no record and return an empty list.
+ */
+export function executionsForBlock(
+  block: ScheduleBlock,
+  executions: TaskExecution[],
+): TaskExecution[] {
+  if (block.executionId) {
+    const match = executions.find((e) => e.id === block.executionId);
+    return match ? [match] : [];
+  }
+  return executions.filter((e) => e.taskId === block.taskId && e.executedAt.getTime() === block.start);
+}
+

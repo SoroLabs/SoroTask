@@ -66,6 +66,8 @@ export interface CollaborativeOptions {
   taskId: string;
   userId: string;
   userName: string;
+  /** Shown on this user's presence avatar to peers (Issue #1255). */
+  avatarUrl?: string;
   serverUrl: string;
   autoConnect?: boolean;
   conflictResolutionStrategy?: 'last-write-wins' | 'crdt' | 'manual';

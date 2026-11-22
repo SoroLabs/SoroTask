@@ -17,6 +17,7 @@ import {
   getNetworkDetails,
   WatchWalletChanges,
 } from "@stellar/freighter-api";
+import { FreighterWalletProvider, AlbedoWalletProvider, XBullWalletProvider, LobstrWalletProvider } from "./wallet-providers";
 
 export type NetworkDetails = {
   network: string;
@@ -269,4 +270,142 @@ export function watchWalletChanges(
 export function truncateAddress(address: string, chars = 4): string {
   if (address.length <= chars * 2 + 3) return address;
   return `${address.slice(0, chars + 1)}...${address.slice(-chars)}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-wallet unified adapter
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type SupportedWallet = "freighter" | "albedo" | "xbull" | "lobstr";
+
+const STORAGE_KEY = "sorotask_wallet_session";
+const DISCONNECT_KEY = "sorotask_wallet_disconnected";
+
+interface StoredSession {
+  providerId: SupportedWallet;
+  address: string;
+  networkPassphrase: string;
+  network: string;
+  networkUrl: string;
+  sorobanRpcUrl?: string;
+  timestamp: number;
+}
+
+function saveSession(session: StoredSession): void {
+  if (typeof window !== "undefined") {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+  }
+}
+
+function loadSession(): StoredSession | null {
+  if (typeof window === "undefined") return null;
+  const data = localStorage.getItem(STORAGE_KEY);
+  if (!data) return null;
+  try {
+    return JSON.parse(data) as StoredSession;
+  } catch {
+    return null;
+  }
+}
+
+function clearSession(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(STORAGE_KEY);
+  }
+}
+
+const walletProviders = {
+  freighter: new FreighterWalletProvider(),
+  albedo: new AlbedoWalletProvider(),
+  xbull: new XBullWalletProvider(),
+  lobstr: new LobstrWalletProvider(),
+};
+
+export async function checkWalletAvailability(walletId: SupportedWallet): Promise<boolean> {
+  const provider = walletProviders[walletId];
+  return provider?.isAvailable() ?? false;
+}
+
+export async function getAvailableWallets(): Promise<SupportedWallet[]> {
+  const available: SupportedWallet[] = [];
+  for (const [id, provider] of Object.entries(walletProviders)) {
+    if (await provider.isAvailable()) {
+      available.push(id as SupportedWallet);
+    }
+  }
+  return available;
+}
+
+export async function connectWalletWith(walletId: SupportedWallet): Promise<WalletSession> {
+  const provider = walletProviders[walletId];
+  if (!provider) {
+    throw new WalletConnectionError("UNKNOWN", `Wallet ${walletId} not supported`);
+  }
+
+  const result = await provider.connect();
+  const session: WalletSession = {
+    address: result.address,
+    network: {
+      network: result.network,
+      networkUrl: result.networkUrl,
+      networkPassphrase: result.networkPassphrase,
+      sorobanRpcUrl: result.sorobanRpcUrl,
+    },
+  };
+
+  const stored: StoredSession = {
+    providerId: walletId,
+    ...session,
+    timestamp: Date.now(),
+  };
+  saveSession(stored);
+  localStorage.removeItem(DISCONNECT_KEY);
+
+  return session;
+}
+
+export async function restoreWalletSession(): Promise<WalletSession | null> {
+  if (typeof window !== "undefined" && localStorage.getItem(DISCONNECT_KEY) === "true") {
+    return null;
+  }
+
+  const stored = loadSession();
+  if (!stored) return null;
+
+  const provider = walletProviders[stored.providerId];
+  if (!provider || !(await provider.isAvailable())) return null;
+
+  if (stored.networkPassphrase !== EXPECTED_NETWORK_PASSPHRASE) return null;
+
+  return {
+    address: stored.address,
+    network: {
+      network: stored.network,
+      networkUrl: stored.networkUrl,
+      networkPassphrase: stored.networkPassphrase,
+      sorobanRpcUrl: stored.sorobanRpcUrl,
+    },
+  };
+}
+
+export function disconnectWallet(): void {
+  clearSession();
+  if (typeof window !== "undefined") {
+    localStorage.setItem(DISCONNECT_KEY, "true");
+  }
+}
+
+export function onWalletDisconnect(cb: () => void): () => void {
+  const handler = () => cb();
+  window.addEventListener("wallet:disconnect", handler);
+  return () => window.removeEventListener("wallet:disconnect", handler);
+}
+
+// Dispatch disconnect event for other tabs
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === DISCONNECT_KEY && e.newValue === "true") {
+      window.dispatchEvent(new Event("wallet:disconnect"));
+    }
+  });
 }

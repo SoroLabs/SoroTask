@@ -102,3 +102,26 @@ test("ws: subscriber receives a matching event; non-matching subscriber does not
   nonMatching.close();
   await server.close();
 });
+
+test("eventTopics: derives creator channels for creator-carrying events", () => {
+  const topics = eventTopics({
+    event_name: "TaskRegistered",
+    task_id: 7,
+    data: { creator: "GCREATOR" },
+  });
+  assert.ok(topics.includes("creator:GCREATOR"));
+  assert.ok(topics.includes("creator:GCREATOR:TaskRegistered"));
+
+  const topLevel = eventTopics({
+    event_name: "TaskRegistered",
+    task_id: 8,
+    creator: "GCREATOR",
+  });
+  assert.ok(topLevel.includes("creator:GCREATOR"));
+
+  const noCreator = eventTopics({
+    event_name: "KeeperPaid",
+    data: { keeper: "GKEEPER" },
+  });
+  assert.ok(!noCreator.some((topic) => topic.startsWith("creator:")));
+});

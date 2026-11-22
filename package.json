@@ -2,16 +2,33 @@
   "name": "sorotask",
   "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "frontend",
+    "keeper",
+    "indexer",
+    "zk-proof-service",
+    "backend-abi-registry"
+  ],
   "scripts": {
     "prepare": "husky || true",
     "check:conflict-markers": "./scripts/check-conflict-markers.sh",
-    "bundle:audit": "tsx scripts/bundle-audit.ts"
+    "bundle:audit": "tsx scripts/bundle-audit.ts",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
   },
   "devDependencies": {
-    "eslint": "^10.8.0",
+    "eslint": "^10.11.0",
     "husky": "^9.1.7",
-    "lint-staged": "^17.2.0",
-    "prettier": "^3.9.6",
+    "lint-staged": "^17.5.1",
+    "prettier": "^3.9.10",
     "tsx": "npm:tsx@latest"
-  }
+  },
+  "workspaces": [
+    "frontend",
+    "keeper",
+    "indexer",
+    "zk-proof-service",
+    "backend-abi-registry"
+  ]
 }

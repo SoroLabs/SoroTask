@@ -11,18 +11,13 @@ jobs:
     name: End-to-End Multi-Service Integration
     runs-on: ubuntu-latest
 
-    services:
-      soroban-rpc:
-        image: stellar/quickstart:testing
-        ports:
-          - 8000:8000
-        args:
-          - --local
-          - --enable-soroban-rpc
-
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Start Soroban RPC (stellar/quickstart)
+        run: |
+          docker run -d --name soroban-rpc -p 8000:8000 stellar/quickstart:latest --local --enable-soroban-rpc --limits unlimited --logs
 
       - name: Check for Conflict Markers
         run: |
@@ -30,7 +25,7 @@ jobs:
           ./scripts/check-conflict-markers.sh
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: 'npm'
@@ -42,30 +37,26 @@ jobs:
 
       - name: Install Stellar CLI
         run: |
-          cargo install --locked stellar-cli --features opt || cargo install --locked stellar-cli || true
+          mkdir -p ~/.cargo/bin
+          ARCH=$(uname -m)
+          curl -fsSL "https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-${ARCH}-unknown-linux-gnu.tar.gz" | tar -xzf - -C ~/.cargo/bin || {
+            sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+            cargo install --locked stellar-cli
+          }
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          ~/.cargo/bin/stellar --version
 
-      - name: Install root dependencies
-        run: npm ci || npm install
-
-      - name: Install keeper dependencies
-        run: cd keeper && npm ci || npm install
-
-      - name: Install indexer dependencies
-        run: cd indexer && npm ci || npm install
-
-      - name: Install zk-proof-service dependencies
-        run: cd zk-proof-service && npm ci || npm install
-
-      - name: Install frontend dependencies & Playwright
-        run: |
-          cd frontend
-          npm ci || npm install
-          npx playwright install --with-deps chromium
+      - name: Install Root Dependencies (npm workspaces)
+        # #1218: the repository is an npm workspace root — one install covers
+        # keeper, indexer, zk-proof-service, frontend, and backend-abi-registry.
+        # npm install (not npm ci) is required so the lockfile gains its
+        # workspace entries on first run.
+        run: npm install
 
       - name: Build Smart Contracts
         run: |
           cd contract
-          cargo build --target wasm32v1-none --release || cargo build --target wasm32-unknown-unknown --release || true
+          stellar contract build
 
       - name: Wait for Soroban RPC
         run: |
@@ -80,11 +71,33 @@ jobs:
             echo "Waiting... ($i/30)"
             sleep 3
           done
+          echo "Network details:"
+          curl -s -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":"1","method":"getNetwork"}' http://localhost:8000/soroban/rpc || true
+          echo ""
+          curl -s -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":"1","method":"getLatestLedger"}' http://localhost:8000/soroban/rpc || true
+          echo ""
 
       - name: Deploy Contracts & Initialize Environment
+        # No suppression (#1213): contract setup failure must fail the job.
+        # The script prints `CONTRACT_ID: <id>`; the last one is the deployed
+        # SoroTask contract, exported for the e2e suite and keeper env.
         run: |
           chmod +x scripts/setup-contracts.sh
-          ./scripts/setup-contracts.sh || echo "Contract setup initialized."
+          ./scripts/setup-contracts.sh 2>&1 | tee /tmp/setup-contracts.log
+          CONTRACT_ID="$(sed -n 's/^CONTRACT_ID: //p' /tmp/setup-contracts.log | tail -1)"
+          if [ -z "$CONTRACT_ID" ]; then
+            echo "::error::setup-contracts.sh did not report CONTRACT_ID"
+            docker logs soroban-rpc --tail 100 || true
+            exit 1
+          fi
+          echo "CONTRACT_ID=$CONTRACT_ID" >> "$GITHUB_ENV"
+
+      - name: Generate & Fund Keeper Identity
+        run: |
+          SECRET="$(node -e "console.log(require('@stellar/stellar-sdk').Keypair.random().secret())")"
+          ADDRESS="$(node -e "console.log(require('@stellar/stellar-sdk').Keypair.fromSecret('$SECRET').publicKey())")"
+          curl -fsS "http://localhost:8000/friendbot?addr=$ADDRESS" > /dev/null
+          echo "KEEPER_SECRET=$SECRET" >> "$GITHUB_ENV"
 
       - name: Run Keeper Unit & E2E Tests
         run: |
@@ -99,13 +112,91 @@ jobs:
       - name: Run ZK Proof Service Tests
         run: |
           cd zk-proof-service
-          npm test || node server.test.js || true
+          npm test
+
+      - name: Start Keeper Service (background)
+        run: |
+          cd keeper
+          SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc \
+          NETWORK_PASSPHRASE='Standalone Network ; February 2017' \
+          NETWORK_PASSTHRAPE='Standalone Network ; February 2017' \
+          CONTRACT_ID="$CONTRACT_ID" \
+          METRICS_PORT=3000 \
+          POLLING_INTERVAL_MS=5000 \
+          npm start > /tmp/keeper.log 2>&1 &
+
+      - name: Start Indexer Service (background)
+        run: |
+          cd indexer
+          SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc \
+          NETWORK_PASSPHRASE='Standalone Network ; February 2017' \
+          CONTRACT_ID="$CONTRACT_ID" \
+          DATABASE_URL=./indexer.db \
+          PORT=4000 \
+          node src/index.js > /tmp/indexer.log 2>&1 &
+
+      - name: Start ZK Proof Service (background)
+        run: |
+          cd zk-proof-service
+          PORT=3100 \
+          node server.js > /tmp/zk.log 2>&1 &
+
+      - name: Wait for Services
+        run: |
+          for url in \
+            http://localhost:3000/health \
+            http://localhost:4000/api/health \
+            http://localhost:3100/health; do
+            echo "Waiting for $url ..."
+            for i in {1..30}; do
+              if curl -fsS "$url" > /dev/null 2>&1; then
+                echo "Service ready: $url"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "::error::Service did not become healthy: $url"
+                exit 1
+              fi
+              sleep 3
+            done
+          done
 
       - name: Run E2E Integration Suite Verification
+        # Strict (#1213): the suite exits non-zero when any service, the RPC,
+        # or the end-to-end pipeline verification fails.
         run: |
+          SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc \
           node scripts/run-e2e-integration.js
 
       - name: Run Frontend Playwright E2E Integration Tests
         run: |
           cd frontend
-          npm run test:e2e || npx playwright test || true
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+      - name: Collect Service Logs
+        if: failure()
+        run: |
+          echo "--- soroban-rpc.log ---"; docker logs soroban-rpc --tail 100 || true
+          echo "--- keeper.log ---"; tail -50 /tmp/keeper.log || true
+          echo "--- indexer.log ---"; tail -50 /tmp/indexer.log || true
+          echo "--- zk.log ---"; tail -50 /tmp/zk.log || true
+
+  disaster-recovery-drill:
+    name: Automated Point-In-Time Restore Drill (#1217)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Run PITR Backup Script (self-test)
+        run: |
+          chmod +x scripts/backup/*.sh
+          bash scripts/backup/db_pitr_backup.sh --test
+
+      - name: Run Disaster Recovery Restore Drill
+        # Recovers the database from the base snapshot, replays archived WAL
+        # segments to a target recovery point, verifies every artifact against
+        # the SHA-256 manifest (zero data loss), and asserts the RTO SLA.
+        run: bash scripts/backup/dr_restore_drill.sh

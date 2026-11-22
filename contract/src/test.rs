@@ -15,12 +15,14 @@ fn create_sample_task_config(env: &Env, creator: &Address, target: &Address) -> 
         resolver: None,
         interval: 3600,
         last_run: 0,
-        gas_balance: 10_000_000,
+        gas_balance: 0, // Set to 0 to avoid requiring token transfer at registration
         whitelist: vec![env],
         is_active: true,
         blocked_by: vec![env],
         yield_strategy: None,
         permissions: 0,
+        expiration_timestamp: 0,
+        max_runs: 0,
     }
 }
 
@@ -44,7 +46,7 @@ fn test_register_and_get_task() {
     assert_eq!(retrieved_config.creator, creator);
     assert_eq!(retrieved_config.target, target);
     assert_eq!(retrieved_config.interval, 3600);
-    assert_eq!(retrieved_config.gas_balance, 10_000_000);
+    assert_eq!(retrieved_config.gas_balance, 0);
 }
 
 #[test]
@@ -92,7 +94,8 @@ fn test_bounty_inflation_protection() {
 
     let creator = Address::generate(&env);
     let target = Address::generate(&env);
-    let task_config = create_sample_task_config(&env, &creator, &target);
+    let mut task_config = create_sample_task_config(&env, &creator, &target);
+    task_config.gas_balance = 10_000_000;
 
     let task_id = client.register(&task_config);
 
@@ -147,12 +150,14 @@ fn test_flash_swap_slippage_bounds() {
         resolver: None,
         interval: 3600,
         last_run: 0,
-        gas_balance: 1000,
+        gas_balance: 0, // Set to 0 to avoid requiring token transfer at registration
         whitelist: Vec::new(&env),
         is_active: true,
         blocked_by: Vec::new(&env),
         yield_strategy: None,
         permissions: 15,
+        expiration_timestamp: 0,
+        max_runs: 0,
     };
 
     let task_id = client.register(&config);
@@ -175,14 +180,14 @@ fn test_flash_swap_slippage_bounds() {
 
 #[test]
 fn test_normalized_error_discriminants() {
-    assert_eq!(Error::Unauthorized as u32, 100);
-    assert_eq!(Error::InvalidInterval as u32, 200);
-    assert_eq!(Error::ReentrantCall as u32, 300);
-    assert_eq!(Error::OracleNotSet as u32, 400);
-    assert_eq!(Error::InsufficientBalance as u32, 500);
-    assert_eq!(Error::VolatilityExceeded as u32, 600);
-    assert_eq!(Error::VolatilityCircuitBreakerTripped as u32, 601);
-    assert_eq!(Error::VolatilityTimelockActive as u32, 602);
+    assert_eq!(Error::InvalidInterval as u32, 1);
+    assert_eq!(Error::Unauthorized as u32, 2);
+    assert_eq!(Error::InsufficientBalance as u32, 3);
+    assert_eq!(Error::NotInitialized as u32, 4);
+    assert_eq!(Error::TaskPaused as u32, 5);
+    assert_eq!(Error::TaskAlreadyPaused as u32, 6);
+    assert_eq!(Error::TaskAlreadyActive as u32, 7);
+    assert_eq!(Error::SelfDependency as u32, 8);
 }
 
 #[test]

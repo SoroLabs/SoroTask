@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { useZKProverEngine } from "@/src/hooks/useZKProverEngine";
 import { ZKProofStatusBadge } from "./ZKProofStatusBadge";
 import { ZKProofLogStream } from "./ZKProofLogStream";
@@ -11,67 +11,45 @@ interface ZKProverPanelProps {
   tasks: ZkTask[];
   walletConnected: boolean;
   walletAddress: string | null;
-  onZkVerified: (taskId: number, conditionHash: string) => void;
-  onAddLog?: (log: {
-    taskId: string;
-    target: string;
-    keeper: string;
-    status: "success" | "failed" | "pending";
-    timestamp: string;
-  }) => void;
 }
 
 export function ZKProverPanel({
   tasks,
   walletConnected,
   walletAddress,
-  onZkVerified,
-  onAddLog,
 }: ZKProverPanelProps) {
   const {
     state,
     isGenerating,
-    isVerifying,
     isBusy,
     generateProof,
-    verifyProof,
     reset,
-    setTasks,
   } = useZKProverEngine();
 
   const [selectedTaskId, setSelectedTaskId] = useState<number | "">("");
   const [taskCondition, setTaskCondition] = useState<string>(
-    '{"minLiquidity": 10000}',
+    '{"minValue": "10000", "maxValue": "100000"}',
   );
   const [secretData, setSecretData] = useState<string>(
-    '{"actualLiquidity": 25000, "salt": "0xfe3a"}',
+    '{"secretValue": "25000"}',
   );
-  const [verifierAddress, setVerifierAddress] = useState<string>(
-    "CDVERIFY456789ABCDEF1234567890ABCDEF1234",
-  );
-  const [simulateCongestion, setSimulateCongestion] = useState(false);
-  const [simulateFailure, setSimulateFailure] = useState(false);
+  const [circuitId, setCircuitId] = useState<"range" | "membership">("range");
   const [activeTab, setActiveTab] = useState<"workspace" | "diagnostics">(
     "workspace",
   );
-
-  useEffect(() => {
-    setTasks(tasks);
-  }, [tasks, setTasks]);
 
   const selectedTask = tasks.find((t) => t.id === Number(selectedTaskId));
 
   const handleGenerateProof = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!selectedTaskId) return;
-
       const options: ZkProofGenerationOptions = {
         taskCondition,
         secretData,
-        verifierAddress,
-        simulateCongestion,
-        simulateFailure,
+        verifierAddress: "",
+        simulateCongestion: false,
+        simulateFailure: false,
+        circuitId,
       };
 
       try {
@@ -81,54 +59,12 @@ export function ZKProverPanel({
       }
     },
     [
-      selectedTaskId,
       taskCondition,
       secretData,
-      verifierAddress,
-      simulateCongestion,
-      simulateFailure,
+      circuitId,
       generateProof,
     ],
   );
-
-  const handleVerifyOnChain = useCallback(async () => {
-    if (!selectedTaskId || !state.proof) return;
-
-    try {
-      const result = await verifyProof(
-        state.proof,
-        selectedTask?.contractAddress ?? "",
-        verifierAddress,
-        walletAddress,
-        walletConnected,
-      );
-
-      if (result.success) {
-        onZkVerified(Number(selectedTaskId), result.conditionHash);
-        if (onAddLog) {
-          onAddLog({
-            taskId: `#${selectedTaskId}`,
-            target: selectedTask?.contractAddress || "CD123...XYZ",
-            keeper: "Freighter Client",
-            status: "success",
-            timestamp: "Just now",
-          });
-        }
-      }
-    } catch {
-      // Error is captured in pipeline state
-    }
-  }, [
-    selectedTaskId,
-    state.proof,
-    selectedTask,
-    verifierAddress,
-    walletAddress,
-    walletConnected,
-    verifyProof,
-    onZkVerified,
-    onAddLog,
-  ]);
 
   const handleCopyReport = useCallback((): string => {
     const report = {
@@ -148,9 +84,10 @@ export function ZKProverPanel({
           }
         : "None selected",
       zkParameters: {
+        circuitId,
         condition: taskCondition,
-        verifier: verifierAddress,
       },
+      privateInputsIncluded: false,
       recordedErrors: state.errors,
     };
     return JSON.stringify(report, null, 2);
@@ -158,16 +95,17 @@ export function ZKProverPanel({
     walletConnected,
     walletAddress,
     selectedTask,
+    circuitId,
     taskCondition,
-    verifierAddress,
     state.errors,
   ]);
 
   const handleReset = useCallback(() => {
     reset();
     setSelectedTaskId("");
-    setTaskCondition('{"minLiquidity": 10000}');
-    setSecretData('{"actualLiquidity": 25000, "salt": "0xfe3a"}');
+    setCircuitId("range");
+    setTaskCondition('{"minValue": "10000", "maxValue": "100000"}');
+    setSecretData('{"secretValue": "25000"}');
   }, [reset]);
 
   return (
@@ -178,10 +116,10 @@ export function ZKProverPanel({
       <div className="flex flex-wrap items-center justify-between gap-4 mb-6 border-b border-neutral-800 pb-4 relative z-10">
         <div>
           <h2 className="text-xl font-bold bg-gradient-to-r from-violet-400 to-indigo-400 bg-clip-text text-transparent flex items-center gap-2">
-            Zero-Knowledge (ZK) Proof Verification
+            Client-Side Zero-Knowledge Proof Generator
           </h2>
           <p className="text-xs text-neutral-500 mt-1">
-            Build privacy-preserving task evaluations using the browser prover engine.
+            Generate and locally verify Groth16 proofs in a Web Worker. Private inputs stay in this browser.
           </p>
         </div>
 
@@ -232,7 +170,7 @@ export function ZKProverPanel({
             <form onSubmit={handleGenerateProof} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-neutral-400 mb-1">
-                  Target Automation Task <span className="text-red-400">*</span>
+                  Target Automation Task <span className="text-neutral-600">(optional)</span>
                 </label>
                 <select
                   value={selectedTaskId}
@@ -241,10 +179,9 @@ export function ZKProverPanel({
                       e.target.value ? Number(e.target.value) : "",
                     )
                   }
-                  required
                   className="w-full bg-neutral-950 border border-neutral-800 hover:border-neutral-700 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 rounded-xl px-4 py-2.5 outline-none transition text-sm text-neutral-200"
                 >
-                  <option value="">-- Choose registered task --</option>
+                  <option value="">No task selected — generate a standalone proof</option>
                   {tasks.map((task) => (
                     <option key={task.id} value={task.id}>
                       Task #{task.id} - {task.functionName} (
@@ -254,14 +191,44 @@ export function ZKProverPanel({
                 </select>
                 {tasks.length === 0 && (
                   <p className="text-xs text-amber-400/80 mt-1.5 flex items-center gap-1">
-                    No registered tasks available. Create a task first.
+                    No registered task selected. Standalone proof generation is available.
                   </p>
                 )}
               </div>
 
               <div>
+                <label htmlFor="zk-circuit" className="block text-xs font-medium text-neutral-400 mb-1">
+                  Proof Circuit
+                </label>
+                <select
+                  id="zk-circuit"
+                  value={circuitId}
+                  onChange={(event) => {
+                    const selected = event.target.value;
+                    if (selected === "range" || selected === "membership") {
+                      setCircuitId(selected);
+                      setTaskCondition(
+                        selected === "range"
+                          ? '{"minValue": "10000", "maxValue": "100000"}'
+                          : '{"root": "0"}',
+                      );
+                      setSecretData(
+                        selected === "range"
+                          ? '{"secretValue": "25000"}'
+                          : '{"leaf": "0", "pathElements": [], "pathIndices": []}',
+                      );
+                    }
+                  }}
+                  className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm text-neutral-200"
+                >
+                  <option value="range">Private range proof</option>
+                  <option value="membership">Private Merkle membership proof</option>
+                </select>
+              </div>
+
+              <div>
                 <label className="block text-xs font-medium text-neutral-400 mb-1">
-                  Private Task Condition (JSON)
+                  Public Inputs (JSON)
                 </label>
                 <textarea
                   value={taskCondition}
@@ -269,11 +236,16 @@ export function ZKProverPanel({
                   rows={2}
                   className="w-full bg-neutral-950 border border-neutral-800 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 rounded-xl px-4 py-2.5 outline-none transition text-xs font-mono text-neutral-300"
                 />
+                <p className="mt-1 text-[11px] text-neutral-500">
+                  {circuitId === "range"
+                    ? "Range: minValue, maxValue (decimal integer strings)."
+                    : "Membership: root (decimal field-element string)."}
+                </p>
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-neutral-400 mb-1">
-                  Secret Client Data (Isolated)
+                  Private Inputs (JSON — sent only to this browser worker)
                 </label>
                 <textarea
                   value={secretData}
@@ -281,69 +253,26 @@ export function ZKProverPanel({
                   rows={2}
                   className="w-full bg-neutral-950 border border-neutral-800 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 rounded-xl px-4 py-2.5 outline-none transition text-xs font-mono text-neutral-300"
                 />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-neutral-400 mb-1">
-                  ZK Verifier Address
-                </label>
-                <input
-                  type="text"
-                  value={verifierAddress}
-                  onChange={(e) => setVerifierAddress(e.target.value)}
-                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 rounded-xl px-4 py-2.5 outline-none transition text-xs font-mono text-neutral-300"
-                />
-              </div>
-
-              <div className="bg-neutral-950 p-4 rounded-2xl border border-neutral-800/80 space-y-3">
-                <div className="text-xs font-semibold text-neutral-400 mb-1">
-                  QA Simulation Panel
-                </div>
-                <div className="flex items-center justify-between">
-                  <label
-                    htmlFor="congestion-toggle"
-                    className="text-xs text-neutral-400"
-                  >
-                    Simulate Worker Pool Congestion (Latency)
-                  </label>
-                  <input
-                    id="congestion-toggle"
-                    type="checkbox"
-                    checked={simulateCongestion}
-                    onChange={(e) => setSimulateCongestion(e.target.checked)}
-                    className="h-4 w-4 rounded bg-neutral-900 border-neutral-700 text-violet-500 focus:ring-violet-500"
-                  />
-                </div>
-                <div className="flex items-center justify-between">
-                  <label
-                    htmlFor="failure-toggle"
-                    className="text-xs text-neutral-400 text-red-300/80"
-                  >
-                    Simulate Computational Proof Failure
-                  </label>
-                  <input
-                    id="failure-toggle"
-                    type="checkbox"
-                    checked={simulateFailure}
-                    onChange={(e) => setSimulateFailure(e.target.checked)}
-                    className="h-4 w-4 rounded bg-neutral-900 border-neutral-700 text-red-500 focus:ring-red-500"
-                  />
-                </div>
+                <p className="mt-1 text-[11px] text-neutral-500">
+                  {circuitId === "range"
+                    ? "Range: secretValue (decimal integer string)."
+                    : "Membership: leaf, pathElements, pathIndices (20 entries each)."}
+                </p>
               </div>
 
               <div className="flex gap-2">
                 <button
                   type="submit"
-                  disabled={isBusy || !selectedTaskId}
+                  disabled={isBusy}
                   className="flex-1 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-medium py-3 px-4 rounded-xl shadow-lg hover:shadow-violet-600/20 active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                 >
                   {isGenerating ? (
                     <span className="flex items-center justify-center gap-2">
                       <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
-                      Generating Proof on Worker Pool...
+                      Generating and Verifying Locally...
                     </span>
                   ) : (
-                    "Generate Zero-Knowledge Proof"
+                    "Generate Local Groth16 Proof"
                   )}
                 </button>
                 {state.status !== "idle" && (
@@ -361,7 +290,7 @@ export function ZKProverPanel({
 
           <div className="space-y-5 flex flex-col">
             <h3 className="text-sm font-semibold text-neutral-300 tracking-wide uppercase">
-              2. Worker Pipeline Logs & On-Chain verification
+              2. Local Proof Pipeline
             </h3>
 
             <ZKProofLogStream logs={state.logs} />
@@ -371,7 +300,7 @@ export function ZKProverPanel({
                 <div className="flex items-center justify-between text-xs font-semibold text-neutral-300">
                   <span className="flex items-center gap-1.5">
                     <span className="w-2.5 h-2.5 bg-green-400 rounded-full shadow-sm animate-pulse" />
-                    ZK Proof Generated Successfully
+                    Groth16 Proof Generated and Verified Locally
                   </span>
                   <button
                     onClick={() =>
@@ -384,32 +313,16 @@ export function ZKProverPanel({
                     Copy Proof JSON
                   </button>
                 </div>
+                <p className="text-[11px] text-neutral-500">
+                  {state.proof.durationMs} ms in a Web Worker. Private inputs are not included in this proof or sent to a server.
+                </p>
                 <div className="max-h-[120px] overflow-y-auto font-mono text-[10px] text-neutral-400 p-2.5 bg-neutral-900/60 rounded-xl border border-neutral-800">
                   <pre>{JSON.stringify(state.proof, null, 2)}</pre>
                 </div>
 
-                <div className="pt-2">
-                  <button
-                    onClick={handleVerifyOnChain}
-                    disabled={isVerifying || state.status === "success"}
-                    className={`w-full font-medium py-3 px-4 rounded-xl shadow-lg transition-all text-sm flex items-center justify-center gap-2 ${
-                      state.status === "success"
-                        ? "bg-green-600 text-white cursor-default"
-                        : "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white hover:shadow-emerald-600/20 active:scale-[0.99]"
-                    }`}
-                  >
-                    {isVerifying ? (
-                      <>
-                        <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
-                        Invoking verify_zk_condition...
-                      </>
-                    ) : state.status === "success" ? (
-                        "Verified & Secured On-Chain"
-                    ) : (
-                      "Submit & Verify Proof On-Chain"
-                    )}
-                  </button>
-                </div>
+                <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200">
+                  On-chain submission is not configured here. This page only generates and verifies proofs locally.
+                </p>
               </div>
             )}
           </div>

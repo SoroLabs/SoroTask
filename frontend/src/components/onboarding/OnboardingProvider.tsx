@@ -51,7 +51,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const isActive =
-    ready && (forcedActive || shouldShowOnboarding(state));
+    ready &&
+    process.env.NEXT_PUBLIC_E2E_MOCK_WALLET !== "true" &&
+    (forcedActive || shouldShowOnboarding(state));
 
   const navigateForStep = useCallback(
     (index: number) => {

@@ -19,6 +19,16 @@ const typeDefs = gql`
   }
 
   """
+  Page navigation metadata for cursor-based pagination.
+  """
+  type PageInfo {
+    hasNextPage: Boolean!
+    hasPreviousPage: Boolean!
+    startCursor: String
+    endCursor: String
+  }
+
+  """
   Represents a scheduled Keeper Task.
   """
   type Task {
@@ -32,12 +42,28 @@ const typeDefs = gql`
     last_run: Int!
     gas_balance: String!
     is_active: Boolean!
+
+    # Nested relations (depth-limited and bounded)
+    events(first: Int, limit: Int): [Event!]!
+    executions(first: Int, limit: Int): [ExecutionHistory!]!
     
     # Restricted fields (Admin or Owner only)
     whitelist_json: String
     blocked_by_json: String
     updated_at: String
     last_reconciled_at: String
+  }
+
+  type TaskEdge {
+    cursor: String!
+    node: Task!
+  }
+
+  type TaskConnection {
+    edges: [TaskEdge!]!
+    nodes: [Task!]!
+    pageInfo: PageInfo!
+    totalCount: Int!
   }
 
   """
@@ -51,6 +77,19 @@ const typeDefs = gql`
     task_id: Int
     data_json: String!
     processed_at: String!
+    task: Task
+  }
+
+  type EventEdge {
+    cursor: String!
+    node: Event!
+  }
+
+  type EventConnection {
+    edges: [EventEdge!]!
+    nodes: [Event!]!
+    pageInfo: PageInfo!
+    totalCount: Int!
   }
 
   """
@@ -83,6 +122,7 @@ const typeDefs = gql`
     fee: String!
     ledger_sequence: Int!
     processed_at: String!
+    task: Task
   }
 
   type Query {
@@ -92,9 +132,14 @@ const typeDefs = gql`
     me: User
 
     """
-    Retrieve all tasks. Accessible by anyone.
+    Retrieve all tasks (bounded list, max 50 items). Accessible by anyone.
     """
-    tasks(limit: Int, offset: Int): [Task!]!
+    tasks(first: Int, after: String, limit: Int, offset: Int): [Task!]!
+
+    """
+    Retrieve tasks using cursor-based relay connection (max 50 items).
+    """
+    tasksConnection(first: Int, after: String): TaskConnection!
 
     """
     Retrieve a specific task by ID. Accessible by anyone.
@@ -102,24 +147,29 @@ const typeDefs = gql`
     task(id: ID!): Task
 
     """
-    Retrieve events. Optionally filter by task_id.
+    Retrieve events (bounded list, max 50 items). Optionally filter by task_id.
     """
-    events(task_id: Int, limit: Int, offset: Int): [Event!]!
+    events(task_id: Int, first: Int, after: String, limit: Int, offset: Int): [Event!]!
 
     """
-    Keeper leaderboard, ranked by tasks executed. Accessible by anyone.
+    Retrieve events using cursor-based relay connection (max 50 items).
     """
-    keeperStats(limit: Int): [KeeperStat!]!
+    eventsConnection(task_id: Int, first: Int, after: String): EventConnection!
 
     """
-    Retrieve reconciliation logs. Restricted to OPERATOR.
+    Keeper leaderboard, ranked by tasks executed (bounded list, max 50 items). Accessible by anyone.
     """
-    reconciliationLogs(task_id: Int, limit: Int, offset: Int): [ReconciliationLog!]!
+    keeperStats(first: Int, limit: Int): [KeeperStat!]!
 
     """
-    Retrieve keeper execution history. Optionally filter by task_id.
+    Retrieve reconciliation logs (bounded list, max 50 items). Restricted to OPERATOR.
     """
-    executionHistory(task_id: Int, limit: Int, offset: Int): [ExecutionHistory!]!
+    reconciliationLogs(task_id: Int, first: Int, after: String, limit: Int, offset: Int): [ReconciliationLog!]!
+
+    """
+    Retrieve keeper execution history (bounded list, max 50 items). Optionally filter by task_id.
+    """
+    executionHistory(task_id: Int, first: Int, after: String, limit: Int, offset: Int): [ExecutionHistory!]!
   }
 
   type Subscription {

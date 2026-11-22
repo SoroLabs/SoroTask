@@ -35,10 +35,12 @@
  */
 
 const dns = require('dns').promises;
+const https = require('https');
 const net = require('net');
+const Response = globalThis.Response || require('node-fetch').Response;
 
 /** Schemes we are willing to make an outbound request with. */
-const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
+const ALLOWED_PROTOCOLS = new Set(['https:']);
 
 /**
  * Blocked IPv4 ranges as [network, prefixLength].
@@ -215,16 +217,20 @@ async function assertUrlAllowed(rawUrl, options = {}) {
  * otherwise sail straight through the check.
  */
 async function safeFetch(rawUrl, init = {}, options = {}) {
-  const { maxRedirects = 3, fetchImpl = globalThis.fetch, ...guardOptions } = options;
+  const { maxRedirects = 3, fetchImpl, ...guardOptions } = options;
 
   let currentUrl = rawUrl;
 
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
     // eslint-disable-next-line no-await-in-loop
-    const { url } = await assertUrlAllowed(currentUrl, guardOptions);
+    const { url, addresses } = await assertUrlAllowed(currentUrl, guardOptions);
 
+    // Keep the checked DNS answer attached to the socket. TLS still uses the
+    // URL hostname for SNI and certificate validation.
     // eslint-disable-next-line no-await-in-loop
-    const response = await fetchImpl(url.href, { ...init, redirect: 'manual' });
+    const response = fetchImpl
+      ? await fetchImpl(url.href, { ...init, redirect: 'manual' })
+      : await fetchPinned(url, addresses[0], init);
 
     const isRedirect = response.status >= 300 && response.status < 400;
     if (!isRedirect) return response;
@@ -236,6 +242,29 @@ async function safeFetch(rawUrl, init = {}, options = {}) {
   }
 
   throw new SsrfBlockedError(`Too many redirects (>${maxRedirects})`, { url: String(rawUrl) });
+}
+
+function fetchPinned(url, address, init) {
+  return new Promise((resolve, reject) => {
+    const request = https.request(url, {
+      method: init.method || 'GET',
+      headers: init.headers,
+      signal: init.signal,
+      lookup: (_hostname, _options, callback) => callback(null, address, net.isIP(address)),
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('error', reject);
+      response.on('end', () => resolve(new Response(Buffer.concat(chunks), {
+        status: response.statusCode,
+        statusText: response.statusMessage,
+        headers: response.headers,
+      })));
+    });
+    request.on('error', reject);
+    if (init.body !== undefined && init.body !== null) request.write(init.body);
+    request.end();
+  });
 }
 
 module.exports = {

@@ -14,7 +14,11 @@ export interface ZkProofPayload {
   pi_b: string[][];
   pi_c: string[];
   publicSignals: string[];
+  proof?: Record<string, unknown>;
+  durationMs?: number;
 }
+
+export type ZkCircuitId = "range" | "membership";
 
 export interface ZkProofGenerationOptions {
   taskCondition: string;
@@ -22,6 +26,7 @@ export interface ZkProofGenerationOptions {
   verifierAddress: string;
   simulateCongestion: boolean;
   simulateFailure: boolean;
+  circuitId?: ZkCircuitId;
 }
 
 export type ZkProofPhase = "generation" | "verification" | "network";
@@ -40,8 +45,10 @@ export type PipelineStage =
   | "allocating_worker"
   | "ingesting_data"
   | "building_constraints"
+  | "computing_witness"
   | "computing_coefficients"
   | "synthesizing_signals"
+  | "locally_verifying"
   | "proof_complete"
   | "preparing_credentials"
   | "computing_hash"

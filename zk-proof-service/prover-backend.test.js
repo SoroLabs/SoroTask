@@ -77,4 +77,59 @@ describe('prover backend selection (Issue #850)', () => {
     expect(timed.backend).toBe('cpu');
     expect(timed.label).toBe('unit-test');
   });
+
+describe('rapidsnark fallback and auto selection (#1210)', () => {
+  test('rapidsnark is a known backend value', () => {
+    expect(KNOWN_BACKENDS).toContain('rapidsnark');
+    expect(KNOWN_BACKENDS).toContain('auto');
+  });
+
+  test('rapidsnark falls back to CPU with fellBackToCpu when the binary is absent', () => {
+    const selection = selectProverBackend({ env: { PROVER_BACKEND: 'rapidsnark' } });
+    expect(selection.backend).toBe('cpu');
+    expect(selection.accelerated).toBe(false);
+    expect(selection.fellBackToCpu).toBe(true);
+    expect(selection.fallbackReason).toMatch(/rapidsnark binary not found/i);
+  });
+
+  test('rapidsnark is selected when PROVER_RAPIDSNARK_PATH is configured', () => {
+    const selection = selectProverBackend({
+      env: {
+        PROVER_BACKEND: 'rapidsnark',
+        PROVER_RAPIDSNARK_PATH: '/usr/local/bin/rapidsnark',
+      },
+    });
+    expect(selection.backend).toBe('rapidsnark');
+    expect(selection.accelerated).toBe(true);
+    expect(selection.impl).toEqual({
+      kind: 'rapidsnark',
+      binaryPath: '/usr/local/bin/rapidsnark',
+    });
+  });
+
+  test('auto never throws and prefers an injected GPU backend over rapidsnark', () => {
+    const fakeCuda = { kind: 'cuda-mock' };
+    const gpuSelection = selectProverBackend({
+      env: { PROVER_BACKEND: 'auto' },
+      gpuBackends: { cuda: fakeCuda },
+    });
+    expect(gpuSelection.backend).toBe('cuda');
+    expect(gpuSelection.accelerated).toBe(true);
+
+    const cpuSelection = selectProverBackend({ env: { PROVER_BACKEND: 'auto' } });
+    expect(cpuSelection.backend).toBe('cpu');
+    expect(cpuSelection.fellBackToCpu).toBe(true);
+  });
+
+  test('detectAvailableBackends reports the rapidsnark signal', () => {
+    const withPath = detectAvailableBackends({
+      env: { PROVER_RAPIDSNARK_PATH: '/opt/rapidsnark' },
+    });
+    expect(withPath.signals.rapidsnark).toBe(true);
+
+    const without = detectAvailableBackends({ env: {} });
+    expect(withPath.signals).toHaveProperty('rapidsnark');
+    expect(without.accelerationAvailable).toBe(false);
+  });
+});
 });

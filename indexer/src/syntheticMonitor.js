@@ -1,22 +1,14 @@
 /**
- * SyntheticMonitor — end-to-end ingestion health monitoring.
+ * SyntheticMonitor — end-to-end task lifecycle monitoring.
  *
- * Submits a lightweight synthetic transaction at a configurable interval,
- * polls the indexer's event store until the corresponding event appears,
- * measures ingestion latency, and fires alerts (log + optional webhook)
- * when latency exceeds the configured threshold or ingestion never arrives.
- *
- * Usage (standalone):
- *   node syntheticMonitor.js
- *
- * Usage (embedded):
- *   const { SyntheticMonitor } = require('./syntheticMonitor');
- *   const monitor = new SyntheticMonitor({ db, rpc, contractId });
- *   monitor.start();
+ * The lifecycle adapter must registerTask, pollTask, executeTask, verifyIndexed,
+ * and cleanupTask. Deployments provide it with SYNTHETIC_CANARY_ADAPTER_MODULE.
  */
 
+const path = require('path');
 const https = require('https');
 const http = require('http');
+const { recordSyntheticCanary } = require('./metrics');
 
 // ---------------------------------------------------------------------------
 // Alert helpers
@@ -62,6 +54,53 @@ function fireWebhook(webhookUrl, payload) {
   req.end();
 }
 
+function fireAlertmanager(alertmanagerUrl, probeId, error, resolved = false) {
+  if (!alertmanagerUrl) return;
+
+  let target;
+  try {
+    target = new URL(alertmanagerUrl);
+  } catch (err) {
+    console.error('[SyntheticMonitor] Invalid Alertmanager URL:', err.message);
+    return;
+  }
+  if (!target.pathname || target.pathname === '/') target.pathname = '/api/v2/alerts';
+
+  const now = new Date();
+  const alert = {
+    labels: {
+      alertname: 'SyntheticCanaryFailure',
+      service: 'sorotask-indexer',
+      severity: 'critical',
+    },
+    annotations: {
+      summary: resolved ? 'Synthetic canary recovered' : 'Synthetic canary failed',
+      description: resolved ? 'The end-to-end synthetic task lifecycle recovered.' : String(error),
+      probe_id: probeId,
+    },
+    startsAt: now.toISOString(),
+    ...(resolved ? { endsAt: now.toISOString() } : {}),
+  };
+  const body = JSON.stringify([alert]);
+  const protocol = target.protocol === 'https:' ? https : http;
+  const req = protocol.request({
+    hostname: target.hostname,
+    port: target.port || (target.protocol === 'https:' ? 443 : 80),
+    path: `${target.pathname}${target.search}`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  }, (res) => {
+    res.resume();
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      console.error(`[SyntheticMonitor] Alertmanager returned HTTP ${res.statusCode}`);
+    }
+  });
+  req.setTimeout(5000, () => req.destroy(new Error('Alertmanager request timed out')));
+  req.on('error', (err) => console.error('[SyntheticMonitor] Alertmanager request failed:', err.message));
+  req.write(body);
+  req.end();
+}
+
 /**
  * Emit a structured alert to stdout and optionally to a webhook.
  *
@@ -89,26 +128,31 @@ function alert(type, details, webhookUrl) {
 class SyntheticMonitor {
   /**
    * @param {object} options
-   * @param {object} options.db                  - sqlite3 Database instance
-   * @param {object} options.rpc                 - SorobanRpc.Server instance
-   * @param {string} options.contractId          - Contract ID being indexed
-   * @param {number} [options.intervalMs=60000]  - How often to run a probe (ms)
-   * @param {number} [options.latencyThresholdMs=30000] - Alert if ingestion takes longer
-   * @param {number} [options.timeoutMs=120000]  - Abort probe after this duration
-   * @param {string} [options.webhookUrl]        - Optional HTTP(S) webhook for alerts
+  * @param {object} options.lifecycle Adapter implementing registerTask, pollTask,
+  * executeTask, verifyIndexed, and cleanupTask.
    */
   constructor(options = {}) {
-    this.db = options.db || null;
-    this.rpc = options.rpc || null;
-    this.contractId = options.contractId || process.env.CONTRACT_ID || '';
-    this.intervalMs = options.intervalMs ?? 60_000;
+    const adapterPath = process.env.SYNTHETIC_CANARY_ADAPTER_MODULE;
+    this.lifecycleLoadError = null;
+    this.lifecycle = options.lifecycle || null;
+    if (!this.lifecycle && adapterPath) {
+      try {
+        this.lifecycle = require(path.resolve(adapterPath));
+      } catch (err) {
+        this.lifecycleLoadError = err;
+      }
+    }
+    this.intervalMs = options.intervalMs ?? 10 * 60_000;
     this.latencyThresholdMs = options.latencyThresholdMs ?? 30_000;
     this.timeoutMs = options.timeoutMs ?? 120_000;
     this.webhookUrl = options.webhookUrl || process.env.SYNTHETIC_MONITOR_WEBHOOK_URL || null;
+    this.alertmanagerUrl = options.alertmanagerUrl || process.env.ALERTMANAGER_URL || null;
 
     this._timer = null;
+    this._running = false;
     this._probeCount = 0;
     this._alertCount = 0;
+    this._failed = false;
   }
 
   // -------------------------------------------------------------------------
@@ -140,149 +184,68 @@ class SyntheticMonitor {
   // -------------------------------------------------------------------------
 
   async _runProbe() {
+    if (this._running) return;
+    this._running = true;
     this._probeCount += 1;
     const probeId = `synthetic-probe-${Date.now()}-${this._probeCount}`;
     console.log(`[SyntheticMonitor] Probe #${this._probeCount} started (id=${probeId})`);
 
     const startTime = Date.now();
-
+    const abortController = new AbortController();
+    let timeoutHandle;
     try {
-      // Step 1: Submit a synthetic event marker to the ledger
-      const ledgerSequence = await this._submitSyntheticMarker(probeId);
-      if (ledgerSequence === null) {
-        alert('error', { probeId, reason: 'Failed to submit synthetic marker' }, this.webhookUrl);
-        this._alertCount += 1;
-        return;
-      }
+      const requiredMethods = ['registerTask', 'pollTask', 'executeTask', 'verifyIndexed', 'cleanupTask'];
+      const missing = requiredMethods.filter((method) => typeof this.lifecycle?.[method] !== 'function');
+      if (this.lifecycleLoadError) throw new Error(`Failed to load canary adapter: ${this.lifecycleLoadError.message}`);
+      if (missing.length) throw new Error(`Canary lifecycle adapter is missing: ${missing.join(', ')}`);
 
-      console.log(`[SyntheticMonitor] Marker submitted at ledger ${ledgerSequence}. Polling for ingestion...`);
+      await Promise.race([
+        (async () => {
+          const options = { probeId, timeoutMs: this.timeoutMs, signal: abortController.signal };
+          let taskId;
+          try {
+            const registration = await this.lifecycle.registerTask(options);
+            taskId = registration?.taskId ?? registration;
+            if (taskId == null) throw new Error('Canary registration did not return a task ID');
+            const polled = await this.lifecycle.pollTask({ ...options, taskId });
+            if (polled === false || polled?.success === false) throw new Error(`Keeper did not poll canary task ${taskId}`);
+            const executed = await this.lifecycle.executeTask({ ...options, taskId });
+            if (executed === false || executed?.success === false) throw new Error(`Canary task ${taskId} failed to execute`);
+            const verified = await this.lifecycle.verifyIndexed({ ...options, taskId });
+            if (verified === false || verified?.success === false || verified?.verified === false) {
+              throw new Error(`Indexer did not verify canary task ${taskId}`);
+            }
+          } finally {
+            if (taskId != null) await this.lifecycle.cleanupTask({ ...options, taskId });
+          }
+        })(),
+        new Promise((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            abortController.abort();
+            reject(new Error(`Canary lifecycle exceeded ${this.timeoutMs}ms`));
+          }, this.timeoutMs);
+        }),
+      ]);
 
-      // Step 2: Poll the local DB until the event appears or we time out
-      const ingested = await this._pollUntilIngested(probeId, ledgerSequence, startTime);
       const latencyMs = Date.now() - startTime;
-
-      if (!ingested) {
-        alert(
-          'timeout',
-          { probeId, ledgerSequence, timeoutMs: this.timeoutMs, latencyMs },
-          this.webhookUrl
-        );
-        this._alertCount += 1;
-        return;
-      }
-
-      console.log(`[SyntheticMonitor] Probe #${this._probeCount} ingested in ${latencyMs}ms`);
-
       if (latencyMs > this.latencyThresholdMs) {
-        alert(
-          'latency',
-          {
-            probeId,
-            ledgerSequence,
-            latencyMs,
-            thresholdMs: this.latencyThresholdMs,
-          },
-          this.webhookUrl
-        );
-        this._alertCount += 1;
+        throw new Error(`Canary latency ${latencyMs}ms exceeded ${this.latencyThresholdMs}ms`);
       }
+      recordSyntheticCanary({ success: true, durationMs: latencyMs });
+      if (this._failed) fireAlertmanager(this.alertmanagerUrl, probeId, null, true);
+      this._failed = false;
+      console.log(`[SyntheticMonitor] Probe #${this._probeCount} verified in ${latencyMs}ms`);
     } catch (err) {
       console.error(`[SyntheticMonitor] Probe #${this._probeCount} failed:`, err.message);
       alert('error', { probeId, reason: err.message }, this.webhookUrl);
+      recordSyntheticCanary({ success: false, durationMs: Date.now() - startTime });
+      fireAlertmanager(this.alertmanagerUrl, probeId, err.message);
+      this._failed = true;
       this._alertCount += 1;
+    } finally {
+      clearTimeout(timeoutHandle);
+      this._running = false;
     }
-  }
-
-  /**
-   * Simulate submitting a synthetic transaction.
-   * In production this would build and submit a real Soroban transaction.
-   * Here we write a sentinel row to the events table so the polling step
-   * can verify end-to-end indexer reachability without needing real keys.
-   *
-   * @param {string} probeId
-   * @returns {Promise<number|null>} - ledger sequence or null on failure
-   */
-  async _submitSyntheticMarker(probeId) {
-    if (!this.db) {
-      // No DB wired — simulate by returning a fake sequence
-      return Math.floor(Date.now() / 1000);
-    }
-
-    // Fetch the latest ledger sequence from the network (or fall back to a sentinel)
-    let ledgerSequence = 0;
-    if (this.rpc) {
-      try {
-        const latest = await this.rpc.getLatestLedger();
-        ledgerSequence = latest.sequence;
-      } catch (_) {
-        ledgerSequence = 0;
-      }
-    }
-
-    return new Promise((resolve, reject) => {
-      this.db.run(
-        `INSERT OR IGNORE INTO events
-           (ledger_sequence, contract_id, event_name, task_id, data_json)
-         VALUES (?, ?, 'SyntheticProbe', -1, ?)`,
-        [
-          ledgerSequence,
-          this.contractId || 'SYNTHETIC',
-          JSON.stringify({ probeId, submittedAt: Date.now() }),
-        ],
-        (err) => {
-          if (err) {
-            console.error('[SyntheticMonitor] Failed to insert synthetic marker:', err.message);
-            resolve(null);
-          } else {
-            resolve(ledgerSequence);
-          }
-        }
-      );
-    });
-  }
-
-  /**
-   * Poll the events table until the synthetic probe event is found.
-   *
-   * @param {string} probeId
-   * @param {number} ledgerSequence
-   * @param {number} startTime - Date.now() at probe start
-   * @returns {Promise<boolean>}
-   */
-  _pollUntilIngested(probeId, ledgerSequence, startTime) {
-    return new Promise((resolve) => {
-      const pollInterval = 2000; // check every 2 s
-
-      const check = () => {
-        if (Date.now() - startTime > this.timeoutMs) {
-          return resolve(false);
-        }
-
-        if (!this.db) {
-          // No DB — assume success immediately (test/stub mode)
-          return resolve(true);
-        }
-
-        this.db.get(
-          `SELECT id FROM events
-            WHERE event_name = 'SyntheticProbe'
-              AND task_id = -1
-              AND data_json LIKE ?
-            LIMIT 1`,
-          [`%${probeId}%`],
-          (err, row) => {
-            if (err) {
-              console.error('[SyntheticMonitor] Poll query error:', err.message);
-              return resolve(false);
-            }
-            if (row) return resolve(true);
-            setTimeout(check, pollInterval);
-          }
-        );
-      };
-
-      check();
-    });
   }
 
   // -------------------------------------------------------------------------
@@ -300,7 +263,7 @@ class SyntheticMonitor {
 
 if (require.main === module) {
   const monitor = new SyntheticMonitor({
-    intervalMs: Number(process.env.SYNTHETIC_INTERVAL_MS || 60_000),
+    intervalMs: Number(process.env.SYNTHETIC_INTERVAL_MS || 10 * 60_000),
     latencyThresholdMs: Number(process.env.SYNTHETIC_LATENCY_THRESHOLD_MS || 30_000),
     timeoutMs: Number(process.env.SYNTHETIC_TIMEOUT_MS || 120_000),
     webhookUrl: process.env.SYNTHETIC_MONITOR_WEBHOOK_URL || null,

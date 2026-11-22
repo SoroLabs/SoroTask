@@ -145,6 +145,8 @@ describe('MultiRegionRPCClient', () => {
     expect(heatmap[0].rollingOneMinuteLatencyMs).toBe(200);
     expect(heatmap[0].rollingSamplesCount).toBe(2);
     expect(heatmap[0].status).toBe('HEALTHY');
+  });
+
   test('routes transaction submissions to fastest healthy endpoint after scoring', async () => {
     const submissions = [];
     const client = new MultiRegionRPCClient(['https://slow.example', 'https://fast.example'], {

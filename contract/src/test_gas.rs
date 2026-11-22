@@ -36,11 +36,13 @@ fn base_config(env: &Env, target: Address) -> TaskConfig {
         resolver: None,
         interval: 3_600,
         last_run: 0,
-        gas_balance: 1_000,
+        gas_balance: 0, // Set to 0 to avoid requiring token transfer at registration
         whitelist: Vec::new(env),
         is_active: true,
         blocked_by: Vec::new(env),
         permissions: 15,
+        expiration_timestamp: 0,
+        max_runs: 0,
     }
 }
 
@@ -218,7 +220,7 @@ fn test_task_config_storage_footprint() {
     std::eprintln!("[storage] TaskConfig XDR size: {size} bytes");
 
     assert_eq!(
-        size, 436,
+        size, 504,
         "TaskConfig's serialized size changed - update this benchmark if the change is intentional"
     );
 }

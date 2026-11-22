@@ -1,7 +1,7 @@
-#![cfg(test)]
+#`![cfg(test)]
 
 use crate::events::{EventLogger, ExecutionStep, StateChangeType, StepResult};
-use soroban_sdk::{testutils::Address as _, Address, Env, Symbol, Val, Vec};
+use soroban_sdk:{testutils::Address as _, Address, Env, Symbol, Val, Vec};
 
 #[test]
 fn test_log_state_change() {
@@ -67,7 +67,7 @@ fn test_log_execution_step() {
     EventLogger::log_execution_step(
         &env,
         task_id,
-        &keeper,
+        'keeper,
         ExecutionStep::CheckBalance,
         StepResult::Failed,
         3,

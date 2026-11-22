@@ -7,6 +7,9 @@ import { useOnboarding } from "@/src/components/onboarding/OnboardingProvider";
 import { HardwareWalletPanel } from "@/src/components/wallet/HardwareWalletPanel";
 import { TxBatchRegistration } from "@/src/components/wallet/TxBatchRegistration";
 import { OptimizedMedia } from "@/src/components/optimized-media";
+import { ApiKeyManager } from "@/src/components/ApiKeyManager";
+import { AllowanceManager } from "@/src/components/AllowanceManager";
+import { NotificationPreferenceCenter } from "@/src/components/notification-preference-center";
 
 interface ProviderConfig {
   name: string;
@@ -21,128 +24,58 @@ export default function SettingsPage() {
   const { start: startOnboarding } = useOnboarding();
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [hardwareSession, setHardwareSession] = useState<any>(null);
-  const [notificationPrefs, setNotificationPrefs] = useState({
-    categories: { tasks: true, mentions: true, system: true },
-    channels: { inApp: true, browser: true },
-  });
-  const [browserPermission, setBrowserPermission] = useState<'granted' | 'denied' | 'default'>('default');
-  const [saveMessage, setSaveMessage] = useState('');
   const [didConnected, setDidConnected] = useState(false);
-  const [didProfile, setDidProfile] = useState('');
-  const [didStatusMessage, setDidStatusMessage] = useState('');
-  const [didError, setDidError] = useState('');
+  const [didProfile, setDidProfile] = useState("");
+  const [didStatusMessage, setDidStatusMessage] = useState("");
+  const [didError, setDidError] = useState("");
 
-  const notificationCategories = [
-    {
-      key: 'tasks',
-      label: 'Task updates',
-      description: 'Receive alerts for task assignments, completion, and status changes.',
-    },
-    {
-      key: 'mentions',
-      label: 'Mentions & comments',
-      description: 'Get notified when someone mentions you or comments on your work.',
-    },
-    {
-      key: 'system',
-      label: 'System alerts',
-      description: 'Important platform notices such as maintenance, outages, and policy updates.',
-    },
-  ];
-
-  const notificationChannels = [
-    {
-      key: 'inApp',
-      label: 'In-app alerts',
-      description: 'See notifications inside the SoroTask interface while you are signed in.',
-    },
-    {
-      key: 'browser',
-      label: 'Browser push',
-      description: 'Receive browser popups when your workspace is inactive.',
-    },
-  ];
-
-  const loadPreferences = () => {
-    if (typeof window === 'undefined') return;
+  const loadDidProfile = () => {
+    if (typeof window === "undefined") return;
     try {
-      const storedPrefs = window.localStorage.getItem('soroNotificationPreferences');
-      if (storedPrefs && storedPrefs !== 'undefined') {
-        setNotificationPrefs(JSON.parse(storedPrefs));
-      }
-      const storedDid = window.localStorage.getItem('soroDIDProfile');
+      const storedDid = window.localStorage.getItem("soroDIDProfile");
       if (storedDid) {
         setDidConnected(true);
         setDidProfile(storedDid);
       }
-      if ('Notification' in window) {
-        setBrowserPermission(Notification.permission);
-      }
     } catch (error) {
-      console.warn('Failed to load persisted settings', error);
-    }
-  };
-
-  const savePreferences = () => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem('soroNotificationPreferences', JSON.stringify(notificationPrefs));
-    setSaveMessage('Preferences saved locally. Reload to verify behavior.');
-    window.setTimeout(() => setSaveMessage(''), 2500);
-  };
-
-  const requestBrowserPermission = async () => {
-    if (typeof window === 'undefined' || !('Notification' in window)) return;
-    try {
-      const permission = await Notification.requestPermission();
-      setBrowserPermission(permission);
-      if (permission === 'granted') {
-        setSaveMessage('Browser notifications enabled.');
-      } else if (permission === 'denied') {
-        setSaveMessage('Browser notifications denied. Toggle browser channel off or recover from browser settings.');
-      }
-      window.setTimeout(() => setSaveMessage(''), 2500);
-    } catch (error) {
-      console.error(error);
+      console.warn("Failed to load persisted settings", error);
     }
   };
 
   const connectDID = async () => {
     try {
-      setDidStatusMessage('Connecting to decentralized identity provider...');
-      setDidError('');
+      setDidStatusMessage("Connecting to decentralized identity provider...");
+      setDidError("");
       await new Promise((resolve) => setTimeout(resolve, 300));
-      const did = 'did:soro:0x' + Math.random().toString(16).slice(2, 10);
+      const did = "did:soro:0x" + Math.random().toString(16).slice(2, 10);
       setDidConnected(true);
       setDidProfile(did);
-      window.localStorage.setItem('soroDIDProfile', did);
-      setDidStatusMessage('Decentralized identity profile linked successfully.');
-      window.setTimeout(() => setDidStatusMessage(''), 3200);
+      window.localStorage.setItem("soroDIDProfile", did);
+      setDidStatusMessage(
+        "Decentralized identity profile linked successfully.",
+      );
+      window.setTimeout(() => setDidStatusMessage(""), 3200);
     } catch (error) {
       setDidConnected(false);
-      setDidError('Failed to connect DID. Please try again.');
-      setDidStatusMessage('');
+      setDidError("Failed to connect DID. Please try again.");
+      setDidStatusMessage("");
     }
   };
 
   const disconnectDID = () => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.removeItem('soroDIDProfile');
+    if (typeof window === "undefined") return;
+    window.localStorage.removeItem("soroDIDProfile");
     setDidConnected(false);
-    setDidProfile('');
-    setDidStatusMessage('Decentralized identity disconnected. Legacy wallet login remains active.');
-    window.setTimeout(() => setDidStatusMessage(''), 3200);
+    setDidProfile("");
+    setDidStatusMessage(
+      "Decentralized identity disconnected. Legacy wallet login remains active.",
+    );
+    window.setTimeout(() => setDidStatusMessage(""), 3200);
   };
 
   useEffect(() => {
-    loadPreferences();
+    loadDidProfile();
   }, []);
-
-  const activeChannels = [
-    notificationPrefs.channels.inApp ? 'In-app alerts' : null,
-    notificationPrefs.channels.browser ? 'Browser popups' : null,
-  ].filter(Boolean).join(', ') || 'None';
-
-  const previewEnabled = Object.values(notificationPrefs.categories).some(Boolean) && Object.values(notificationPrefs.channels).some(Boolean);
 
   if (status === "loading") {
     return (
@@ -158,7 +91,7 @@ export default function SettingsPage() {
     image: "",
     provider: "email",
     id: "guest-123",
-    providerAccountId: "guest-123"
+    providerAccountId: "guest-123",
   };
 
   const providerInfo: Record<string, ProviderConfig> = {
@@ -170,7 +103,7 @@ export default function SettingsPage() {
         </svg>
       ),
       color: "bg-neutral-800",
-      description: "Sign in with your GitHub account"
+      description: "Sign in with your GitHub account",
     },
     google: {
       name: "Google",
@@ -195,17 +128,27 @@ export default function SettingsPage() {
         </svg>
       ),
       color: "bg-white",
-      description: "Sign in with your Google account"
+      description: "Sign in with your Google account",
     },
     email: {
       name: "Email",
       icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+        <svg
+          className="w-5 h-5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+          />
         </svg>
       ),
       color: "bg-blue-500",
-      description: "Sign in with email and password"
+      description: "Sign in with email and password",
     },
   };
 
@@ -224,15 +167,15 @@ export default function SettingsPage() {
   const getProviderStatus = (provider: string) => {
     if (provider === currentProvider) {
       return {
-        status: 'connected',
-        label: 'Active',
-        color: 'bg-green-500/10 text-green-400 border-green-500/20'
+        status: "connected",
+        label: "Active",
+        color: "bg-green-500/10 text-green-400 border-green-500/20",
       };
     }
     return {
-      status: 'disconnected',
-      label: 'Not Connected',
-      color: 'bg-neutral-500/10 text-neutral-400 border-neutral-500/20'
+      status: "disconnected",
+      label: "Not Connected",
+      color: "bg-neutral-500/10 text-neutral-400 border-neutral-500/20",
     };
   };
 
@@ -242,7 +185,9 @@ export default function SettingsPage() {
       <header className="border-b border-neutral-800 bg-neutral-950/50 backdrop-blur-md sticky top-0 z-10">
         <div className="container mx-auto px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shadow-lg shadow-blue-500/20">S</div>
+            <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shadow-lg shadow-blue-500/20">
+              S
+            </div>
             <h1 className="text-xl font-bold tracking-tight">SoroTask</h1>
           </div>
           <button
@@ -277,7 +222,9 @@ export default function SettingsPage() {
               </div>
             )}
             <div>
-              <p className="text-lg font-medium">{currentUser.name || "User"}</p>
+              <p className="text-lg font-medium">
+                {currentUser.name || "User"}
+              </p>
               <p className="text-neutral-400">{currentUser.email}</p>
             </div>
           </div>
@@ -288,7 +235,9 @@ export default function SettingsPage() {
             </div>
             <div>
               <p className="text-neutral-400 mb-1">Provider Account ID</p>
-              <p className="font-mono">{currentUser.providerAccountId || "N/A"}</p>
+              <p className="font-mono">
+                {currentUser.providerAccountId || "N/A"}
+              </p>
             </div>
           </div>
         </div>
@@ -296,7 +245,8 @@ export default function SettingsPage() {
         <div className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 shadow-xl mb-6">
           <h2 className="text-xl font-semibold mb-2">Product tour</h2>
           <p className="text-sm text-neutral-400 mb-4">
-            Replay the guided onboarding to revisit the board, dashboards, and wallet flows.
+            Replay the guided onboarding to revisit the board, dashboards, and
+            wallet flows.
           </p>
           <button
             type="button"
@@ -319,25 +269,31 @@ export default function SettingsPage() {
             {Object.entries(providerInfo).map(([providerId, provider]) => {
               const status = getProviderStatus(providerId);
               return (
-                <div 
+                <div
                   key={providerId}
                   className={`flex items-center justify-between p-4 rounded-lg border transition-all ${
-                    status.status === 'connected' 
-                      ? 'bg-neutral-900/50 border-neutral-700/50' 
-                      : 'bg-neutral-900/30 border-neutral-700/30 opacity-60'
+                    status.status === "connected"
+                      ? "bg-neutral-900/50 border-neutral-700/50"
+                      : "bg-neutral-900/30 border-neutral-700/30 opacity-60"
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${provider.color}`}>
+                    <div
+                      className={`w-10 h-10 rounded-lg flex items-center justify-center ${provider.color}`}
+                    >
                       {provider.icon}
                     </div>
                     <div>
                       <p className="font-medium">{provider.name}</p>
-                      <p className="text-sm text-neutral-400">{provider.description}</p>
+                      <p className="text-sm text-neutral-400">
+                        {provider.description}
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}>
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}
+                    >
                       {status.label}
                     </span>
                   </div>
@@ -347,162 +303,46 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Notification Preferences */}
-        <div className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 shadow-xl mb-6">
-          <div className="flex items-center justify-between gap-4 mb-4">
-            <div>
-              <h2 className="text-xl font-semibold">Notification Preferences</h2>
-              <p className="text-neutral-400 text-sm mt-1">
-                Control notification categories, delivery channels, and browser permission behavior from one panel.
-              </p>
-            </div>
-            <span className="text-xs uppercase tracking-[0.2em] text-neutral-500">Unified center</span>
-          </div>
-
-          <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
-            <div className="space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2">
-                {notificationCategories.map((category) => (
-                  <label key={category.key} className="group flex items-start gap-3 p-4 rounded-2xl border border-neutral-700/50 bg-neutral-900/50 hover:border-blue-500/40 transition-colors">
-                    <input
-                      type="checkbox"
-                      checked={notificationPrefs.categories[category.key as 'tasks' | 'mentions' | 'system']}
-                      onChange={() => setNotificationPrefs((prev) => ({
-                        ...prev,
-                        categories: {
-                          ...prev.categories,
-                          [category.key]: !prev.categories[category.key as keyof typeof prev.categories],
-                        },
-                      }))}
-                      className="w-5 h-5 rounded text-blue-500 focus:ring-blue-400"
-                    />
-                    <div>
-                      <p className="font-medium">{category.label}</p>
-                      <p className="text-neutral-400 text-sm">{category.description}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                {notificationChannels.map((channel) => (
-                  <label key={channel.key} className="group flex items-start gap-3 p-4 rounded-2xl border border-neutral-700/50 bg-neutral-900/50 hover:border-blue-500/40 transition-colors">
-                    <input
-                      type="checkbox"
-                      checked={notificationPrefs.channels[channel.key as 'inApp' | 'browser']}
-                      onChange={() => setNotificationPrefs((prev) => ({
-                        ...prev,
-                        channels: {
-                          ...prev.channels,
-                          [channel.key]: !prev.channels[channel.key as keyof typeof prev.channels],
-                        },
-                      }))}
-                      className="w-5 h-5 rounded text-blue-500 focus:ring-blue-400"
-                    />
-                    <div>
-                      <p className="font-medium">{channel.label}</p>
-                      <p className="text-neutral-400 text-sm">{channel.description}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-
-              <div className="rounded-2xl border border-neutral-700/50 bg-neutral-950/60 p-4">
-                <div className="flex items-center justify-between gap-3 mb-3">
-                  <div>
-                    <p className="font-medium">Browser permission</p>
-                    <p className="text-sm text-neutral-400">Current browser state for push notifications.</p>
-                  </div>
-                  <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
-                    browserPermission === 'granted'
-                      ? 'bg-green-500/10 text-green-300'
-                      : browserPermission === 'denied'
-                      ? 'bg-red-500/10 text-red-300'
-                      : 'bg-yellow-500/10 text-yellow-300'
-                  }`}> 
-                    {browserPermission}
-                  </span>
-                </div>
-                <p className="text-neutral-400 text-sm mb-3">
-                  {browserPermission === 'denied'
-                    ? 'Your browser is blocking push notifications. Recover this from browser site settings if you want browser alerts.'
-                    : browserPermission === 'granted'
-                    ? 'Browser notifications are allowed. You can use browser alerts when the channel is enabled.'
-                    : 'Browser notifications are not yet granted. Request permission to enable browser popups.'}
-                </p>
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={requestBrowserPermission}
-                    className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all"
-                  >
-                    Request Permission
-                  </button>
-                  <button
-                    type="button"
-                    onClick={savePreferences}
-                    className="bg-neutral-700 hover:bg-neutral-600 text-neutral-100 px-4 py-2 rounded-lg text-sm font-medium transition-all"
-                  >
-                    Save Preferences
-                  </button>
-                </div>
-                {saveMessage && <p className="mt-3 text-sm text-blue-300">{saveMessage}</p>}
-              </div>
-            </div>
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-neutral-700/50 bg-neutral-900/50 p-5">
-                <p className="text-sm uppercase tracking-[0.2em] text-neutral-500 mb-3">Live preview</p>
-                <p className="font-medium mb-1">Effective channels</p>
-                <p className="text-neutral-400 text-sm mb-4">{activeChannels}</p>
-                <div className={`rounded-2xl p-4 ${previewEnabled ? 'bg-green-500/10 border border-green-500/10' : 'bg-neutral-800 border border-neutral-700'}`}>
-                  <p className="font-medium">{previewEnabled ? 'Notifications are configured to run' : 'Notification delivery is currently disabled'}</p>
-                  <p className="text-neutral-400 text-sm mt-2">
-                    {previewEnabled
-                      ? 'When enabled, task activity and mentions are surfaced in your selected channels.'
-                      : 'Enable at least one category and one channel to receive notifications.'}
-                  </p>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-neutral-700/50 bg-neutral-900/50 p-5">
-                <p className="text-sm uppercase tracking-[0.2em] text-neutral-500 mb-3">Behavior summary</p>
-                <ul className="space-y-2 text-sm text-neutral-400">
-                  <li>• In-app alerts are always persisted while you are signed in.</li>
-                  <li>• Browser popups require browser permission and are disabled if denied.</li>
-                  <li>• Task updates and system alerts are grouped for quick control.</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>
+        <NotificationPreferenceCenter />
 
         {/* DID Integration */}
         <div className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 shadow-xl mb-6">
           <div className="flex items-center justify-between gap-4 mb-4">
             <div>
-              <h2 className="text-xl font-semibold">Decentralized Identity (DID)</h2>
+              <h2 className="text-xl font-semibold">
+                Decentralized Identity (DID)
+              </h2>
               <p className="text-neutral-400 text-sm mt-1">
-                Connect an identity profile for authentication and reputation tracking beyond wallet-only login.
+                Connect an identity profile for authentication and reputation
+                tracking beyond wallet-only login.
               </p>
             </div>
-            <span className="text-xs uppercase tracking-[0.2em] text-neutral-500">MVP</span>
+            <span className="text-xs uppercase tracking-[0.2em] text-neutral-500">
+              MVP
+            </span>
           </div>
 
           <div className="grid gap-6 lg:grid-cols-[1fr_220px]">
             <div className="space-y-4">
               <div className="rounded-2xl border border-neutral-700/50 bg-neutral-900/50 p-4">
                 <p className="font-medium">Current DID Profile</p>
-                <p className="text-neutral-400 text-sm mt-2">{didConnected ? didProfile : 'No DID linked yet.'}</p>
+                <p className="text-neutral-400 text-sm mt-2">
+                  {didConnected ? didProfile : "No DID linked yet."}
+                </p>
               </div>
 
               <div className="rounded-2xl border border-neutral-700/50 bg-neutral-900/50 p-4">
                 <p className="font-medium">Integration details</p>
                 <p className="text-neutral-400 text-sm mt-2">
-                  DID integration is fault-tolerant and preserves fallback to wallet-based authentication if the DID provider is unavailable.
+                  DID integration is fault-tolerant and preserves fallback to
+                  wallet-based authentication if the DID provider is
+                  unavailable.
                 </p>
               </div>
 
-              {didStatusMessage && <p className="text-sm text-blue-300">{didStatusMessage}</p>}
+              {didStatusMessage && (
+                <p className="text-sm text-blue-300">{didStatusMessage}</p>
+              )}
               {didError && <p className="text-sm text-red-300">{didError}</p>}
             </div>
 
@@ -512,7 +352,7 @@ export default function SettingsPage() {
                 onClick={connectDID}
                 className="w-full bg-blue-600 hover:bg-blue-500 text-white px-4 py-3 rounded-lg text-sm font-medium transition-all"
               >
-                {didConnected ? 'Refresh DID Profile' : 'Connect DID'}
+                {didConnected ? "Refresh DID Profile" : "Connect DID"}
               </button>
               {didConnected && (
                 <button
@@ -525,20 +365,33 @@ export default function SettingsPage() {
               )}
               <div className="rounded-2xl border border-neutral-700/50 bg-neutral-950/50 p-4">
                 <p className="text-sm text-neutral-500">Status</p>
-                <p className={`mt-2 font-medium ${didConnected ? 'text-green-300' : 'text-neutral-300'}`}>
-                  {didConnected ? 'Linked and ready' : 'Fallback to wallet login active'}
+                <p
+                  className={`mt-2 font-medium ${didConnected ? "text-green-300" : "text-neutral-300"}`}
+                >
+                  {didConnected
+                    ? "Linked and ready"
+                    : "Fallback to wallet login active"}
                 </p>
               </div>
             </div>
           </div>
         </div>
 
+        {/* Developer API Keys */}
+        <ApiKeyManager />
+        {/* Token Allowances & Approval Manager */}
+        <div className="bg-neutral-800/40 border border-neutral-700/60 rounded-xl p-6 shadow-xl">
+          <AllowanceManager />
+        </div>
+
         {/* Danger Zone */}
         <div className="bg-red-500/5 border border-red-500/20 rounded-xl p-6 shadow-xl">
-          <h2 className="text-xl font-semibold mb-4 text-red-400">Danger Zone</h2>
+          <h2 className="text-xl font-semibold mb-4 text-red-400">
+            Danger Zone
+          </h2>
           <p className="text-neutral-400 mb-4">
-            Once you sign out, you'll need to authenticate again to access your account.
-            Your session will be terminated across all devices.
+            Once you sign out, you'll need to authenticate again to access your
+            account. Your session will be terminated across all devices.
           </p>
           <button
             onClick={handleSignOut}

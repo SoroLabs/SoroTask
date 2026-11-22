@@ -1,29 +1,29 @@
 {
   "common": {
     "app_name": "SoroTask",
-    "connect_wallet": "Geldbörse Verbinden",
-    "close": "Schließen",
+    "connect_wallet": "Geldb\u00f6rse Verbinden",
+    "close": "Schlie\u00dfen",
     "cancel": "Abbrechen",
     "save": "Speichern",
     "edit": "Bearbeiten",
-    "delete": "Löschen",
-    "loading": "Lädt...",
+    "delete": "L\u00f6schen",
+    "loading": "L\u00e4dt...",
     "error": "Fehler",
     "success": "Erfolg",
     "warning": "Warnung",
-    "no_data": "Keine Daten verfügbar"
+    "no_data": "Keine Daten verf\u00fcgbar"
   },
   "calendar": {
     "title": "Aufgabenplanungskalender",
     "today": "Heute",
     "previous_month": "Vorheriger Monat",
-    "next_month": "Nächster Monat",
+    "next_month": "N\u00e4chster Monat",
     "timezone": "Zeitzone",
     "legend": {
       "today": "Heute",
       "task_with_deadline": "Aufgabe mit Deadline",
       "multiple_tasks": "Mehrere Aufgaben am selben Tag",
-      "past_deadline": "Deadline überschritten"
+      "past_deadline": "Deadline \u00fcberschritten"
     },
     "selected_date_title": "Aufgaben am {date}",
     "no_tasks_scheduled": "Keine Aufgaben geplant",
@@ -43,14 +43,14 @@
     "contract_address": "Vertrag Adresse",
     "description": "Beschreibung",
     "schedule_settings": "Planungseinstellungen",
-    "execution_interval": "Ausführungsintervall",
+    "execution_interval": "Ausf\u00fchrungsintervall",
     "gas_balance": "Gasguthaben",
-    "next_execution": "Nächste Ausführung",
+    "next_execution": "N\u00e4chste Ausf\u00fchrung",
     "deadline": "Deadline",
-    "due_date": "Fälligkeitsdatum",
+    "due_date": "F\u00e4lligkeitsdatum",
     "time_until_deadline": "Verbleibende Zeit bis Deadline",
-    "due_today": "Heute fällig!",
-    "overdue_by": "{days} Tag{plural} überfällig",
+    "due_today": "Heute f\u00e4llig!",
+    "overdue_by": "{days} Tag{plural} \u00fcberf\u00e4llig",
     "days_remaining": "{days} Tag{plural} verbleibend",
     "created": "Erstellt",
     "timezone_label": "Zeitzone",
@@ -78,7 +78,7 @@
     "no_tasks_registered_yet": "Noch keine Aufgaben registriert."
   },
   "execution_logs": {
-    "title": "Ausführungsprotokolle",
+    "title": "Ausf\u00fchrungsprotokolle",
     "task_id": "Aufgaben-ID",
     "target": "Ziel",
     "keeper": "Verwalter",
@@ -92,5 +92,33 @@
     "seconds_short": "s",
     "interval_display": "{hours}Std ({seconds} Sekunden)",
     "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "Verbindungsstatus",
+    "online": "Online",
+    "offline": "Offline",
+    "resyncing": "Synchronisierung",
+    "sync_failed": "Synchronisierung fehlgeschlagen",
+    "queued_actions": "{count, plural, =0 {Keine Aktionen in der Warteschlange} one {# Aktion in der Warteschlange} other {# Aktionen in der Warteschlange}}",
+    "replaying": "{count, plural, one {# Aktion wird wiederholt} other {# Aktionen werden wiederholt}}",
+    "still_queued": "{count, plural, one {# Aktion noch in der Warteschlange} other {# Aktionen noch in der Warteschlange}}",
+    "browse_cached": "Du kannst zwischengespeicherte Inhalte weiter ansehen. \u00c4nderungen werden eingereiht.",
+    "will_run_when_back": "werden ausgef\u00fchrt, sobald du wieder online bist.",
+    "retry": "Erneut versuchen",
+    "read_only_notice": "Du bist im Nur-Lesen-Modus. Eingaben werden gesendet, sobald du wieder online bist."
+  },
+  "theme": {
+    "label": "Design",
+    "light": "Hell",
+    "dark": "Dunkel",
+    "oled": "OLED mit hohem Kontrast",
+    "system": "System",
+    "change": "Design: {mode}. Zum \u00c4ndern klicken.",
+    "resolving_to": "Wird derzeit zu {resolved} aufgel\u00f6st."
+  },
+  "language": {
+    "label": "Sprache ausw\u00e4hlen",
+    "loading": "Sprache wird geladen...",
+    "available": "{count, plural, =0 {Keine Sprachen} one {# Sprache} other {# Sprachen}}"
   }
 }

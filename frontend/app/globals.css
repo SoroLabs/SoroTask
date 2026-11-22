@@ -1,51 +1,113 @@
 @import "tailwindcss";
 
 :root {
-  --background: var(--theme-background, var(--fallback-bg, #ffffff));
-  --foreground: var(--theme-foreground, var(--fallback-fg, #171717));
-  /* Focus ring tokens – single source of truth */
-  --focus-ring-color: #3b82f6;
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #171717;
+  --bg-base: #ffffff;
+  --bg-surface: #f7f7f8;
+  --bg-elevated: #eeeeef;
+  --bg-overlay: rgba(255, 255, 255, 0.96);
+  --border: #767676;
+  --border-subtle: #a3a3a3;
+  --text-primary: #171717;
+  --text-secondary: #404040;
+  --text-muted: #525252;
+  --accent: #0047ab;
+  --accent-hover: #003780;
+  --accent-shadow: rgba(0, 71, 171, 0.18);
+  --input-bg: #ffffff;
+  --input-border: #767676;
+  --focus-ring-color: #0047ab;
   --focus-ring-offset: 3px;
   --focus-ring-width: 3px;
 }
 
 [data-theme="dark"] {
-  --background: var(--theme-background, var(--fallback-bg, #0a0a0a));
-  --foreground: var(--theme-foreground, var(--fallback-fg, #ededed));
+  color-scheme: dark;
+  --background: #09090b;
+  --foreground: #f4f4f5;
   --bg-base: #09090b;
   --bg-surface: #18181b;
   --bg-elevated: #27272a;
-  --bg-overlay: rgba(9, 9, 11, 0.6);
-
-  --border: #3f3f46;
-  --border-subtle: #27272a;
-
+  --bg-overlay: rgba(9, 9, 11, 0.96);
+  --border: #a1a1aa;
+  --border-subtle: #71717a;
   --text-primary: #fafafa;
-  --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
-
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-shadow: rgba(59, 130, 246, 0.25);
-
+  --text-secondary: #d4d4d8;
+  --text-muted: #c4c4c8;
+  --accent: #9fc5ff;
+  --accent-hover: #c3dcff;
+  --accent-shadow: rgba(159, 197, 255, 0.2);
   --input-bg: #09090b;
-  --input-border: #3f3f46;
+  --input-border: #a1a1aa;
+  --focus-ring-color: #9fc5ff;
+}
+
+[data-theme="high-contrast"] {
+  color-scheme: dark;
+  --background: #000000;
+  --foreground: #ffff00;
+  --bg-base: #000000;
+  --bg-surface: #000000;
+  --bg-elevated: #000000;
+  --bg-overlay: #000000;
+  --border: #ffff00;
+  --border-subtle: #ffffff;
+  --text-primary: #ffff00;
+  --text-secondary: #ffffff;
+  --text-muted: #ffffff;
+  --accent: #00ffff;
+  --accent-hover: #ffffff;
+  --accent-shadow: transparent;
+  --input-bg: #000000;
+  --input-border: #ffff00;
+  --focus-ring-color: #00ffff;
+  --focus-ring-width: 4px;
+}
+
+/* Keep text on a single opaque background in high-contrast mode. */
+[data-theme="high-contrast"] body,
+[data-theme="high-contrast"] body *,
+[data-theme="high-contrast"] body *::before,
+[data-theme="high-contrast"] body *::after {
+  color: var(--text-primary) !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  text-shadow: none !important;
+  opacity: 1 !important;
+}
+
+[data-theme="high-contrast"] body {
+  background-color: var(--background) !important;
+}
+
+[data-theme="high-contrast"] body *:not(iframe) {
+  border-color: var(--border) !important;
+  box-shadow: none !important;
+}
+
+[data-theme="high-contrast"] a {
+  color: var(--accent) !important;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+[data-theme="high-contrast"] svg {
+  fill: currentColor !important;
+  stroke: currentColor !important;
 }
 
 /* ── Tailwind theme bridge ────────────────────────────────── */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--background);
+  --color-surface: var(--bg-surface);
+  --color-border: var(--border);
   --font-sans: "Segoe UI", "Inter", system-ui, sans-serif;
   --font-mono: "Consolas", "SFMono-Regular", monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-    --focus-ring-color: #60a5fa;
-  }
 }
 
 body {
@@ -53,6 +115,72 @@ body {
   color: var(--foreground);
   font-family: "Segoe UI", "Inter", system-ui, sans-serif;
   min-height: 100vh;
+  transition:
+    background-color 180ms ease,
+    color 180ms ease;
+}
+
+.theme-ambient {
+  background-color: var(--background);
+  background-image: radial-gradient(
+    ellipse at 18% 10%,
+    color-mix(in srgb, var(--accent) 14%, transparent),
+    transparent 58%
+  );
+}
+
+.theme-glass {
+  border: 1px solid color-mix(in srgb, var(--foreground) 22%, transparent);
+  background-color: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--foreground) 10%, transparent);
+  backdrop-filter: blur(20px);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  body,
+  body * {
+    transition:
+      color 180ms ease,
+      background-color 180ms ease,
+      border-color 180ms ease;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+html[dir="rtl"] body {
+  text-align: start;
+}
+
+html[dir="rtl"] .ml-auto {
+  margin-left: 0;
+  margin-right: auto;
+}
+
+html[dir="rtl"] .mr-auto {
+  margin-right: 0;
+  margin-left: auto;
+}
+
+html[dir="rtl"] .text-left {
+  text-align: right;
+}
+
+html[dir="rtl"] .text-right {
+  text-align: left;
+}
+
+html[dir="rtl"] :is(.rtl-flip, [data-rtl-flip]) {
+  transform: scaleX(-1);
 }
 
 img {
@@ -69,13 +197,13 @@ img {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
   border-radius: inherit;
 }
 
 ::selection {
-  background: rgba(45, 212, 191, 0.3);
-  color: white;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--foreground);
 }
 
 button,
@@ -88,7 +216,7 @@ button {
 }
 
 input[type="checkbox"] {
-  accent-color: #5eead4;
+  accent-color: var(--accent);
 }
 
 /* ─── Skip-to-content link ────────────────────────────────────────────── */
@@ -110,11 +238,11 @@ input[type="checkbox"] {
   height: auto;
   padding: 0.5rem 1.25rem;
   border-radius: 0.5rem;
-  background: var(--focus-ring-color);
-  color: #fff;
+  background: var(--background);
+  color: var(--foreground);
   font-weight: 600;
   font-size: 0.9rem;
-  outline: var(--focus-ring-width) solid #fff;
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
   outline-offset: 2px;
 }
 
@@ -156,4 +284,83 @@ input[type="checkbox"] {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border-width: 0;
+}
+
+/* ─── Right-to-left layout (#1242) ──────────────────────────────────────
+   `dir="rtl"` is set on <html> by LocaleContext when an RTL locale is
+   selected. Everything below is expressed with logical properties so the
+   existing LTR markup mirrors without needing a parallel set of rules.
+   `dir` also flips most flex/grid and text alignment automatically, so only
+   the genuinely direction-dependent utilities are listed here. */
+[dir="rtl"] {
+  text-align: right;
+}
+
+/* `border-inline-start` mirrors for the one place a physical side is hardcoded
+   in a component: the skip-to-content link. */
+[dir="rtl"] .skip-nav {
+  left: auto;
+  right: -9999px;
+}
+
+[dir="rtl"] .skip-nav:focus-visible {
+  left: auto;
+  right: 1rem;
+}
+
+/* Monospace contract addresses and hashes are LTR even in an RTL paragraph,
+   or the trailing characters visually reorder. */
+[dir="rtl"] .font-mono {
+  direction: ltr;
+  unicode-bidi: embed;
+  text-align: inherit;
+}
+
+/* Collapse the language picker chevron to the leading edge under RTL; it is
+   positioned with `right` in the component. */
+[dir="rtl"] #language-selector {
+  padding-left: 2rem;
+  padding-right: 0.75rem;
+}
+
+/* ---------------------------------------------------------------------------
+ * Adaptive visual quality (Issue #1253)
+ *
+ * The quality guard writes `data-quality-tier` onto <html> when sustained
+ * frame rate drops. Switching effects off here rather than in each component
+ * means an animated element added later is covered without touching it, and
+ * one style recalculation replaces a re-render of every subscriber.
+ *
+ * `reduced` removes motion and blur, which are the expensive parts. `minimal`
+ * additionally drops shadows and gradients, which cost on paint rather than
+ * on composite and only matter on the slowest devices.
+ * ------------------------------------------------------------------------- */
+
+:root[data-quality-tier="reduced"] *,
+:root[data-quality-tier="minimal"] * {
+  /* Not `animation: none` — that would collapse elements whose layout depends
+     on an animation's fill mode. A negligible duration ends them immediately
+     in their final state instead. */
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+:root[data-quality-tier="reduced"] *,
+:root[data-quality-tier="minimal"] * {
+  backdrop-filter: none !important;
+}
+
+:root[data-quality-tier="minimal"] * {
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+/* The gradient and dot-grid backdrops used across the app are decorative;
+   at the minimal tier they are the cheapest thing to drop. */
+:root[data-quality-tier="minimal"] [class*="bg-[linear-gradient"],
+:root[data-quality-tier="minimal"] [class*="bg-[radial-gradient"] {
+  background-image: none !important;
 }

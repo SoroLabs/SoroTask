@@ -17,6 +17,26 @@ import {
 } from '../types/taskExecution';
 import { createLogger } from '@/src/lib/logger';
 
+// Toast notification import
+let toastFn: ((msg: string, type?: string) => void) | null = null;
+export function setToastHandler(fn: (msg: string, type?: string) => void) {
+  toastFn = fn;
+}
+
+function playNotificationSound() {
+  if (typeof window === 'undefined') return;
+  try {
+    const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1sbGtdaGBqfYSEh4GAdnN0b3h8hYSBfXl1c3N1eYSFhn+AgIB7e3t7e4ODg4KCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKC');
+    audio.volume = 0.3;
+    audio.play().catch(() => {});
+  } catch {}
+}
+
+function showToast(msg: string) {
+  if (toastFn) toastFn(msg, 'success');
+  playNotificationSound();
+}
+
 const KEEPER_URL = process.env.NEXT_PUBLIC_KEEPER_URL ?? 'http://localhost:3000';
 const STREAM_NAMESPACE = '/stream';
 
@@ -247,6 +267,28 @@ export class TaskExecutionStreamClient extends EventEmitter {
     }
   }
 
+  // Subscribe by user address for multi-user notifications
+  subscribeByAddress(address: string): void {
+    if (!this.socket?.connected) {
+      throw new Error('Stream client is not connected');
+    }
+    this.socket.emit('address:subscribe', { address });
+    logger.info('Subscribed to address events', { address });
+  }
+
+  // Update TanStack Query cache (external hook can register callback)
+  private queryCacheUpdateFn: ((taskId: string, data: Partial<TaskExecutionState>) => void) | null = null;
+  
+  static setQueryCacheUpdater(fn: (taskId: string, data: Partial<TaskExecutionState>) => void) {
+    TaskExecutionStreamClient.prototype.queryCacheUpdateFn = fn;
+  }
+
+  private updateQueryCache(taskId: string, data: Partial<TaskExecutionState>) {
+    if (this.queryCacheUpdateFn) {
+      this.queryCacheUpdateFn(taskId, data);
+    }
+  }
+
   private setupSocketListeners(): void {
     if (!this.socket) return;
 
@@ -293,16 +335,30 @@ export class TaskExecutionStreamClient extends EventEmitter {
       this.setConnectionState('disconnected');
       logger.info('Stream disconnected');
     });
+
+    // Task completed notification
+    this.socket.on('task:execution:completed', (data: any) => {
+      const taskId = data.taskId;
+      showToast(`Task ${taskId} executed successfully!`);
+      this.updateQueryCache(taskId, { status: 'completed', completedAt: new Date().toISOString() });
+    });
+
+    // Task failed notification
+    this.socket.on('task:execution:failed', (data: any) => {
+      const taskId = data.taskId;
+      showToast(`Task ${taskId} execution failed: ${data.error || 'Unknown error'}`);
+      this.updateQueryCache(taskId, { status: 'failed', error: { code: 'EXECUTION_FAILED', message: data.error } });
+    });
   }
 
   private handleExecutionEvent(event: TaskExecutionEvent): void {
-    const stream = this.taskStreams.get(event.taskId);
-    if (!stream) {
-      logger.debug('Received event for untracked task', {
-        taskId: event.taskId,
-      });
-      return;
+    // Auto-subscribe if not already tracking
+    if (!this.taskStreams.has(event.taskId)) {
+      this.taskStreams.set(event.taskId, { events: [], maxBufferSize: 1000 });
     }
+
+    const stream = this.taskStreams.get(event.taskId);
+    if (!stream) return;
 
     // Buffer the event
     stream.events.push(event);
@@ -315,6 +371,14 @@ export class TaskExecutionStreamClient extends EventEmitter {
     // Emit event to listeners
     this.emit('event', event);
     this.emit(`task:${event.taskId}`, event);
+
+    // Update query cache on status change
+    if (event.type === 'completed') {
+      this.updateQueryCache(event.taskId, { status: 'completed' });
+    } else if (event.type === 'status_change') {
+      const payload = event.payload as any;
+      this.updateQueryCache(event.taskId, { status: payload.newStatus });
+    }
 
     logger.debug('Processed execution event', {
       taskId: event.taskId,

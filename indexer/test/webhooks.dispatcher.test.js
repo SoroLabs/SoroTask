@@ -26,7 +26,9 @@ test("computeBackoffDelayMs grows exponentially and applies jitter", () => {
   const d3 = computeBackoffDelayMs(3);
   assert.ok(d3 >= d1);
   const another = computeBackoffDelayMs(3);
-  assert.ok(Math.abs(another - d3) <= d3 * 0.2 + 1);
+  assert.ok(d3 >= 3200 && d3 <= 4800);
+  assert.ok(another >= 3200 && another <= 4800);
+  assert.ok(Math.abs(another - d3) <= 4000 * 0.4 + 1);
 });
 
 test("attempt schedule includes five attempts", () => {

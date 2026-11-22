@@ -11,6 +11,10 @@ interface CalendarDayProps {
   isToday: boolean;
   isSelected: boolean;
   compact?: boolean;
+  /** Runs recorded on this day. */
+  executionCount?: number;
+  /** Run count relative to the busiest day in view, 0–1. */
+  executionIntensity?: number;
   onSelect?: (date: Date) => void;
   onTaskClick?: (task: Task) => void;
   onExpandClick?: () => void;
@@ -23,6 +27,8 @@ export default function CalendarDay({
   isToday,
   isSelected,
   compact = false,
+  executionCount = 0,
+  executionIntensity = 0,
   onSelect,
   onTaskClick,
   onExpandClick,
@@ -100,6 +106,21 @@ export default function CalendarDay({
           </button>
         )}
       </div>
+
+      {/* Run density for the day, scaled against the busiest day in view so
+          the busiest cell is the reference rather than a fixed threshold. */}
+      {executionCount > 0 ? (
+        <div
+          className="absolute bottom-0 left-0 right-0 h-1 bg-neutral-800/60"
+          title={`${executionCount} execution${executionCount === 1 ? '' : 's'} on this day`}
+          data-testid="calendar-density"
+        >
+          <div
+            className="h-full bg-sky-500/80"
+            style={{ width: `${Math.max(10, Math.round(executionIntensity * 100))}%` }}
+          />
+        </div>
+      ) : null}
 
       {/* Dense date indicator (visual hint) */}
       {hasMultipleTasks && (

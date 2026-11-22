@@ -13,30 +13,29 @@ COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 – final runtime
-#   Minimal hardened runtime image with non-root user isolation.
+# Stage 2 – final runtime (Distroless)
+#   Google's distroless base: no shell, no package manager, minimal attack surface.
+#   Runs as non-root UID 10001 (nonroot user in distroless).
 # ─────────────────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM gcr.io/distroless/nodejs20-debian12:nonroot AS runner
 
 WORKDIR /app
-ENV NODE_ENV=production
 
-# Create dedicated non-root system user and group
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Copy prod dependencies from the deps stage
+COPY --from=deps /app/node_modules ./node_modules
 
-# Copy prod dependencies from the deps stage with proper ownership
-COPY --from=deps --chown=appuser:appgroup /app/node_modules ./node_modules
+# Copy application files
+COPY . .
 
-# Copy application files with proper ownership
-COPY --chown=appuser:appgroup . .
-
-# Set up ephemeral volume and data directory permissions
-RUN mkdir -p /app/data /tmp && chown -R appuser:appgroup /app /tmp
+# Expose metrics and health ports
+EXPOSE 3000 3001
 
 VOLUME ["/tmp"]
-EXPOSE 3000
 
-# SECURITY: Run container with non-root UID/GID
-USER appuser
+STOPSIGNAL SIGTERM
 
-CMD ["node", "index.js"]
+# SECURITY: Run as non-root UID 10001 (distroless nonroot user)
+USER nonroot:nonroot
+
+# Use explicit entrypoint for distroless
+ENTRYPOINT ["node", "index.js"]

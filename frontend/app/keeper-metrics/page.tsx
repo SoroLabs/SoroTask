@@ -3,17 +3,20 @@
 import { useMemo, useState } from "react";
 import { useKeeperMetrics } from "@/app/hooks/useKeeperMetrics";
 import { KeeperMetricsChart } from "@/src/components/keeper/KeeperMetricsChart";
+import { RewardClaimModal } from "@/src/components/RewardClaimModal";
 
 type TimeRange = 30 | 60 | 120;
 
 export default function KeeperMetricsPage() {
   const [range, setRange] = useState<TimeRange>(60);
-  const { snapshot, history, loading, error, refresh } = useKeeperMetrics({ range });
+  const [isRewardModalOpen, setIsRewardModalOpen] = useState<boolean>(false);
+  const { snapshot, history, loading, error, refresh } = useKeeperMetrics({
+    range,
+  });
 
   const successRate = useMemo(() => {
     if (!snapshot) return null;
-    const total =
-      snapshot.tasksExecutedTotal + snapshot.tasksFailedTotal;
+    const total = snapshot.tasksExecutedTotal + snapshot.tasksFailedTotal;
     if (total === 0) return 100;
     return (snapshot.tasksExecutedTotal / total) * 100;
   }, [snapshot]);
@@ -25,12 +28,22 @@ export default function KeeperMetricsPage() {
     >
       <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold text-slate-100">Keeper Metrics</h1>
+          <h1 className="text-3xl font-semibold text-slate-100">
+            Keeper Metrics & Rewards
+          </h1>
           <p className="mt-1 text-sm text-slate-400">
-            Performance, success rates, and fee spend from the live keeper.
+            Performance telemetry, fee spend, and batch gas refund / reward
+            claim execution.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setIsRewardModalOpen(true)}
+            className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-sm font-semibold text-white hover:bg-emerald-500 shadow-md flex items-center gap-1.5"
+          >
+            <span>💰</span> Claim Rewards & Refunds
+          </button>
           <label className="flex items-center gap-2 text-sm text-slate-300">
             Range
             <select
@@ -55,7 +68,8 @@ export default function KeeperMetricsPage() {
 
       {error ? (
         <div className="mb-6 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-          {error}. Ensure the keeper is running at {process.env.NEXT_PUBLIC_KEEPER_URL ?? "http://localhost:3000"}.
+          {error}. Ensure the keeper is running at{" "}
+          {process.env.NEXT_PUBLIC_KEEPER_URL ?? "http://localhost:3000"}.
         </div>
       ) : null}
 
@@ -106,6 +120,11 @@ export default function KeeperMetricsPage() {
           </section>
         </>
       ) : null}
+
+      <RewardClaimModal
+        isOpen={isRewardModalOpen}
+        onClose={() => setIsRewardModalOpen(false)}
+      />
     </main>
   );
 }

@@ -183,7 +183,6 @@ class MultiRegionRPCClient {
   getLatencyHeatmap() {
     const now = Date.now();
     return this.endpoints.map((ep) => {
-      // Filter rolling 1-minute window
       const validSamples = (ep.latencySamples || []).filter(
         (s) => typeof s === 'object' ? (now - s.timestamp <= 60000) : true
       );
@@ -195,6 +194,8 @@ class MultiRegionRPCClient {
       let status = 'HEALTHY';
       if (ep.unavailable || ep.consecutiveFailures >= this.failureThreshold) {
         status = 'DEGRADED';
+      } else if (ep.ledgerLag > this.maxHealthyLedgerLag) {
+        status = 'STALE';
       } else if (avgOneMin > 500) {
         status = 'HIGH_LATENCY';
       }
@@ -210,28 +211,11 @@ class MultiRegionRPCClient {
         errorRatePercent: Math.round((ep.errorRate || 0) * 100) / 100,
         consecutiveFailures: ep.consecutiveFailures,
         score: ep.score,
+        latestLedger: ep.latestLedger,
+        ledgerLag: ep.ledgerLag,
         status,
       };
     });
-    return this.endpoints.map((ep) => ({
-      index: ep.index,
-      region: ep.region,
-      url: ep.url,
-      avgLatencyMs: ep.avgLatencyMs,
-      latestLatencyMs: ep.latencyMs,
-      errorRatePercent: Math.round((ep.errorRate || 0) * 100) / 100,
-      latestLedger: ep.latestLedger,
-      ledgerLag: ep.ledgerLag,
-      consecutiveFailures: ep.consecutiveFailures,
-      score: ep.score,
-      status: ep.unavailable
-        ? 'DEGRADED'
-        : ep.ledgerLag > this.maxHealthyLedgerLag
-          ? 'STALE'
-          : ep.avgLatencyMs > 500
-            ? 'HIGH_LATENCY'
-            : 'HEALTHY',
-    }));
   }
 
   recalculateLedgerLag() {

@@ -197,7 +197,8 @@ class StartupValidator {
    */
   async checkContractInitialization() {
     try {
-      const { TransactionBuilder, Operation, Networks } = require("@stellar/stellar-sdk");
+      const { TransactionBuilder, Contract, Networks } = require("@stellar/stellar-sdk");
+      const contract = new Contract(this.contractId);
       
       const source = await this.server.getAccount(this.contractId).catch(() => ({
         sequenceNumber: () => "1", // Dummy sequence number for simulation
@@ -208,13 +209,7 @@ class StartupValidator {
         fee: "100",
         networkPassphrase: this.networkPassphrase || Networks.TESTNET,
       })
-        .addOperation(
-          Operation.invokeContract({
-            contractId: this.contractId,
-            functionName: "get_token",
-            args: [],
-          })
-        )
+        .addOperation(contract.call("get_token"))
         .setTimeout(30)
         .build();
 
@@ -241,7 +236,8 @@ class StartupValidator {
 
   async checkContractInterface() {
     try {
-      const { TransactionBuilder, Operation, Networks } = require("@stellar/stellar-sdk");
+      const { TransactionBuilder, Contract, Networks } = require("@stellar/stellar-sdk");
+      const contract = new Contract(this.contractId);
       
       const source = await this.server.getAccount(this.contractId).catch(() => ({
         sequenceNumber: () => "1", // Dummy sequence number for simulation
@@ -253,14 +249,11 @@ class StartupValidator {
         networkPassphrase: this.networkPassphrase || Networks.TESTNET,
       })
         .addOperation(
-          Operation.invokeContract({
-            contractId: this.contractId,
-            functionName: "monitor_paginated",
-            args: [
-              nativeToScVal(0, { type: "u64" }),
-              nativeToScVal(0, { type: "u64" })
-            ],
-          })
+          contract.call(
+            "monitor_paginated",
+            nativeToScVal(0, { type: "u64" }),
+            nativeToScVal(0, { type: "u64" })
+          )
         )
         .setTimeout(30)
         .build();

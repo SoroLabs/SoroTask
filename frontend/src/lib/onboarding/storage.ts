@@ -42,6 +42,9 @@ export function saveOnboardingState(state: OnboardingState): void {
 }
 
 export function shouldShowOnboarding(state: OnboardingState): boolean {
+  if (process.env.NEXT_PUBLIC_E2E_MOCK_WALLET === "true") {
+    return false;
+  }
   return !state.completed && !state.skipped;
 }
 

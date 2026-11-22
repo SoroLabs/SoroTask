@@ -6,6 +6,9 @@ const {
   Networks,
   rpc: SorobanRpc,
 } = require('@stellar/stellar-sdk');
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
 const { createLogger } = require('./logger');
 
 const DEFAULTS = {
@@ -17,6 +20,55 @@ const DEFAULTS = {
   maxRecentHistory: 200,
 };
 
+function sendAlertmanagerAlert(alertmanagerUrl, violation, startsAt, resolved = false) {
+  if (!alertmanagerUrl) return;
+
+  let target;
+  try {
+    target = new URL(alertmanagerUrl);
+  } catch (err) {
+    return Promise.reject(new Error(`Invalid Alertmanager URL: ${err.message}`));
+  }
+  if (!target.pathname || target.pathname === '/') target.pathname = '/api/v2/alerts';
+
+  const now = new Date().toISOString();
+  const payload = JSON.stringify([{
+    labels: {
+      alertname: 'KeeperSLAViolation',
+      service: 'sorotask-keeper',
+      severity: 'critical',
+      keeper: String(violation.keeper),
+    },
+    annotations: {
+      summary: resolved ? 'Keeper SLA recovered' : 'Keeper SLA violation detected',
+      description: resolved
+        ? 'Keeper execution failures are below the configured threshold.'
+        : `${violation.failures}/${violation.total} recent executions failed`,
+    },
+    startsAt: startsAt || now,
+    ...(resolved ? { endsAt: now } : {}),
+  }]);
+
+  return new Promise((resolve, reject) => {
+    const protocol = target.protocol === 'https:' ? https : http;
+    const req = protocol.request({
+      hostname: target.hostname,
+      port: target.port || (target.protocol === 'https:' ? 443 : 80),
+      path: `${target.pathname}${target.search}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, (res) => {
+      res.resume();
+      if (res.statusCode >= 200 && res.statusCode < 300) resolve();
+      else reject(new Error(`Alertmanager responded with status ${res.statusCode}`));
+    });
+    req.setTimeout(5000, () => req.destroy(new Error('Alertmanager request timed out')));
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 class SLAMonitor {
   constructor(server, contractId, config = {}, options = {}) {
     this.server = server;
@@ -25,6 +77,7 @@ class SLAMonitor {
     this.historyManager = options.historyManager || null;
     this.metrics = options.metricsServer || null;
     this.logger = options.logger || createLogger('sla-monitor');
+    this.alertmanagerUrl = options.alertmanagerUrl || process.env.ALERTMANAGER_URL || null;
     this.keypair = options.operatorKeypair || null;
     this.enabled = Boolean(this.config.slaMonitorEnabled);
     this.intervalMs = this.config.slaCheckIntervalMs || DEFAULTS.checkIntervalMs;
@@ -34,6 +87,7 @@ class SLAMonitor {
     this.maxRecentHistory = this.config.slaMaxRecentHistory || DEFAULTS.maxRecentHistory;
     this.enforcementCooldownMs = this.config.slaEnforcementCooldownMs || DEFAULTS.enforcementCooldownMs;
     this.violationCache = new Map();
+    this.alertedKeepers = new Map();
     this.timer = null;
   }
 
@@ -92,6 +146,17 @@ class SLAMonitor {
 
     this.metrics?.record('slaLastCheckDurationMs', Date.now() - start);
 
+    const activeKeepers = new Set(violations.map((violation) => String(violation.keeper)));
+    for (const [keeper, startsAt] of this.alertedKeepers) {
+      if (activeKeepers.has(keeper)) continue;
+      try {
+        await sendAlertmanagerAlert(this.alertmanagerUrl, { keeper }, startsAt, true);
+      } catch (err) {
+        this.logger.error('Failed to resolve SLA alert in Alertmanager', { error: err.message });
+      }
+      this.alertedKeepers.delete(keeper);
+    }
+
     if (violations.length === 0) {
       this.logger.debug('No SLA violations found in current evaluation window', {
         keepersEvaluated: keeperStats.size,
@@ -100,6 +165,14 @@ class SLAMonitor {
     }
 
     for (const violation of violations) {
+      const keeper = String(violation.keeper);
+      const startsAt = this.alertedKeepers.get(keeper) || new Date().toISOString();
+      try {
+        await sendAlertmanagerAlert(this.alertmanagerUrl, violation, startsAt);
+        this.alertedKeepers.set(keeper, startsAt);
+      } catch (err) {
+        this.logger.error('Failed to send SLA alert to Alertmanager', { error: err.message });
+      }
       await this.enforceViolation(violation);
     }
   }

@@ -14,10 +14,11 @@ describe('CSP Generator', () => {
     expect(csp).toContain("'nonce-test-nonce-123'");
   });
 
-  it('adds unsafe-eval and unsafe-inline in development mode', () => {
+  it('allows development eval without enabling inline scripts', () => {
     const csp = generateCsp({ isDev: true });
     expect(csp).toContain("'unsafe-eval'");
-    expect(csp).toContain("'unsafe-inline'");
+    expect(csp).toContain("style-src-attr 'unsafe-inline'");
+    expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/);
   });
 
   it('merges extra directives correctly', () => {
@@ -28,7 +29,7 @@ describe('CSP Generator', () => {
         'worker-src': ["'self'"]
       }
     });
-    
+
     expect(csp).toContain("connect-src 'self' https://api.sorotask.com");
     expect(csp).toContain("worker-src 'self'");
   });

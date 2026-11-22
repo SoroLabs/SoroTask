@@ -1,32 +1,27 @@
 import * as Sentry from "@sentry/nextjs";
 
+import { scrubEvent } from "@/src/lib/observability/scrubber";
+
 const SENTRY_DSN = process.env.NEXT_PUBLIC_SENTRY_DSN;
 
 if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
     tracesSampleRate: 0.1,
-    beforeSend(event, hint) {
-      return filterSensitiveData(event as any) as any;
+    sendDefaultPii: false,
+
+    // Same value-level scrubber as the client (Issue #1258). The server sees
+    // request bodies the browser never does, so the key-name-only filter this
+    // replaced was an even weaker guarantee here.
+    beforeSend(event) {
+      return scrubEvent(event as never) as never;
+    },
+
+    beforeBreadcrumb(breadcrumb) {
+      const scrubbed = scrubEvent({ breadcrumbs: [breadcrumb as never] } as never) as
+        | { breadcrumbs?: unknown[] }
+        | null;
+      return (scrubbed?.breadcrumbs?.[0] ?? null) as never;
     },
   });
-}
-
-function filterSensitiveData(event: any): any {
-  const sensitiveKeys = ["password", "token", "secret", "authorization", "cookie"];
-
-  if (event.request?.headers_fields) {
-    Object.keys(event.request.headers_fields).forEach((key) => {
-      if (sensitiveKeys.some((sensitive) => key.toLowerCase().includes(sensitive))) {
-        event.request.headers_fields[key] = "[Filtered]";
-      }
-    });
-  }
-
-  if (event.user) {
-    const { ip, ...safeUser } = event.user;
-    event.user = safeUser;
-  }
-
-  return event;
 }

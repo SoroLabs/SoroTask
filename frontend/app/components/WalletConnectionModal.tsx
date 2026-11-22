@@ -3,15 +3,14 @@
 /**
  * WalletConnectionModal.tsx
  *
- * Modal flow for connecting a Freighter wallet. Surfaces connection states
- * (connecting, error, connected) and degrades gracefully when Freighter is
- * not installed.
+ * Modal flow for connecting Stellar wallets. Supports Freighter, Albedo, xBull, and LOBSTR.
  */
 
 import { useEffect, useState } from "react";
 import { useWallet } from "@/app/context/WalletContext";
 import { isFreighterInstalled, truncateAddress } from "@/app/lib/wallet";
 import { Modal, ModalFooter } from "@/components/Modal";
+import { FreighterWalletProvider, AlbedoWalletProvider, XBullWalletProvider, LobstrWalletProvider, MockWalletProvider } from "@/app/lib/wallet-providers";
 
 const FREIGHTER_INSTALL_URL = "https://www.freighter.app/";
 
@@ -45,16 +44,36 @@ function Spinner({ className = "w-5 h-5" }: { className?: string }) {
   );
 }
 
-function FreighterLogo() {
+function WalletLogo({ name }: { name: string }) {
+  const logos: Record<string, string> = {
+    Freighter: "🦊",
+    Albedo: "🔵",
+    xBull: "🐂",
+    LOBSTR: "🌟",
+  };
   return (
     <div
       className="flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-600/20 text-2xl ring-1 ring-violet-500/30"
       aria-hidden="true"
     >
-      🦊
+      {logos[name] || "💳"}
     </div>
   );
 }
+
+interface WalletOption {
+  id: string;
+  name: string;
+  provider: { isAvailable(): Promise<boolean> };
+  connect(): Promise<{ address: string; networkPassphrase: string; network: string; networkUrl: string; sorobanRpcUrl?: string }>;
+}
+
+const WALLET_OPTIONS: WalletOption[] = [
+  { id: "freighter", name: "Freighter", provider: new FreighterWalletProvider(), connect: () => (new FreighterWalletProvider() as any).connect() },
+  { id: "albedo", name: "Albedo", provider: new AlbedoWalletProvider(), connect: () => (new AlbedoWalletProvider() as any).connect() },
+  { id: "xbull", name: "xBull", provider: new XBullWalletProvider(), connect: () => (new XBullWalletProvider() as any).connect() },
+  { id: "lobstr", name: "LOBSTR", provider: new LobstrWalletProvider(), connect: () => (new LobstrWalletProvider() as any).connect() },
+];
 
 function secondaryButtonClassName() {
   return "px-4 py-2 text-sm font-medium text-neutral-300 bg-neutral-800 rounded-lg hover:bg-neutral-700 transition-colors focus:outline-none focus:ring-2 focus:ring-neutral-500 disabled:opacity-50 disabled:cursor-not-allowed";
@@ -77,17 +96,33 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
   } = useWallet();
 
   const [freighterInstalled, setFreighterInstalled] = useState<boolean | null>(null);
+  const [availableWallets, setAvailableWallets] = useState<Set<string>>(new Set());
+  const [selectedWallet, setSelectedWallet] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) {
       setFreighterInstalled(null);
+      setAvailableWallets(new Set());
+      setSelectedWallet(null);
       return;
     }
 
     let cancelled = false;
 
-    isFreighterInstalled().then((installed) => {
-      if (!cancelled) setFreighterInstalled(installed);
+    Promise.all([
+      isFreighterInstalled(),
+      new AlbedoWalletProvider().isAvailable(),
+      new XBullWalletProvider().isAvailable(),
+      new LobstrWalletProvider().isAvailable(),
+    ]).then(([freighter, albedo, xbull, lobstr]) => {
+      if (cancelled) return;
+      const available = new Set<string>();
+      if (freighter) available.add("freighter");
+      if (albedo) available.add("albedo");
+      if (xbull) available.add("xbull");
+      if (lobstr) available.add("lobstr");
+      setAvailableWallets(available);
+      setFreighterInstalled(freighter);
     });
 
     return () => {
@@ -95,9 +130,28 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
     };
   }, [open]);
 
+  const handleWalletSelect = (walletId: string) => setSelectedWallet(walletId);
+
+  const handleConnectWithWallet = async (wallet: WalletOption) => {
+    try {
+      await wallet.connect();
+    } catch (err) {
+      console.error(`Failed to connect ${wallet.name}:`, err);
+    }
+  };
+
   const isConnecting = status === "connecting";
   const isConnected = status === "connected" && session !== null;
   const isError = status === "error";
+
+  useEffect(() => {
+    if (open && isConnected) {
+      const timer = setTimeout(() => {
+        onClose();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [open, isConnected, onClose]);
   const showNotInstalled =
     freighterInstalled === false || (isError && errorCode === "NOT_INSTALLED");
 
@@ -141,7 +195,7 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
       size="sm"
       isLoading={isConnecting}
     >
-      <div className="space-y-5" data-testid="wallet-connection-modal">
+      <div className="space-y-5" data-testid="wallet-modal">
         {/* Connecting */}
         {isConnecting && (
           <div
@@ -270,22 +324,32 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
           !isConnected &&
           !isError &&
           freighterInstalled !== false && (
-            <div
-              className="space-y-4"
-              data-testid="wallet-state-disconnected"
-            >
-              <div className="flex items-start gap-4">
-                <FreighterLogo />
-                <div>
-                  <p className="text-sm font-medium text-neutral-200">
-                    Freighter wallet
-                  </p>
-                  <p className="mt-1 text-sm text-neutral-400">
-                    {freighterInstalled === null
-                      ? "Checking for Freighter…"
-                      : "Non-custodial Stellar wallet for signing Soroban transactions."}
-                  </p>
-                </div>
+            <div className="space-y-4" data-testid="wallet-state-disconnected">
+              <div className="space-y-3">
+                {WALLET_OPTIONS.map((wallet) => {
+                  const isAvailable = availableWallets.has(wallet.id);
+                  return (
+                    <button
+                      key={wallet.id}
+                      type="button"
+                      onClick={() => handleWalletSelect(wallet.id)}
+                      disabled={!isAvailable}
+                      className={`w-full flex items-center gap-4 p-4 rounded-xl border transition-all ${
+                        selectedWallet === wallet.id
+                          ? "border-blue-500 bg-blue-500/10"
+                          : "border-neutral-700 hover:border-neutral-600 bg-neutral-800/50"
+                      } ${!isAvailable ? "opacity-50 cursor-not-allowed" : ""}`}
+                    >
+                      <WalletLogo name={wallet.name} />
+                      <div className="text-left">
+                        <p className="text-sm font-medium text-neutral-200">{wallet.name}</p>
+                        <p className="text-xs text-neutral-400">
+                          {isAvailable ? "Click to connect" : "Not installed"}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
               {freighterInstalled === null && (
                 <div className="flex justify-center py-2">
@@ -393,7 +457,9 @@ export function WalletConnectionModal({ open, onClose }: WalletConnectionModalPr
               >
                 {freighterInstalled === null
                   ? "Checking…"
-                  : "Connect with Freighter"}
+                  : selectedWallet
+                    ? `Connect with ${WALLET_OPTIONS.find(w => w.id === selectedWallet)?.name || "Wallet"}`
+                    : "Connect Wallet"}
               </button>
             </>
           )}

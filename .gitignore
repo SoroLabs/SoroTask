@@ -89,3 +89,11 @@ conflicts_*.txt
 merge_output_*.txt
 test-rpc.js
 
+# Terraform local state / secrets
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform/terraform.tfvars
+crash.log
+

@@ -110,6 +110,15 @@ function eventTopics(event) {
     topics.push(`contract:${event.contract_id}:${name}`);
   }
 
+  // Creator channels (issue #1212): any event carrying a creator address
+  // (in data or at the top level) fans out to creator:{address} so clients
+  // can subscribe to all executions of their own tasks.
+  const creator = event.creator || (event.data && event.data.creator);
+  if (creator && typeof creator === "string") {
+    topics.push(`creator:${creator}`);
+    topics.push(`creator:${creator}:${name}`);
+  }
+
   return [...new Set(topics)];
 }
 

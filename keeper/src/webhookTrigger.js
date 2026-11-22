@@ -44,8 +44,9 @@ class WebhookTriggerHandler {
   _resolvePath(req) {
     const { URL } = require('url');
     try {
-      const url = new URL(req.url, 'http://127.0.0.1');
-      return url.pathname;
+      const url = req.url ? new URL(req.url, 'http://127.0.0.1') : null;
+      if (url) return url.pathname;
+      return this.path;
     } catch {
       return this.path;
     }

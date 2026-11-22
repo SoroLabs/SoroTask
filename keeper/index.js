@@ -16,7 +16,9 @@ const { GasMonitor } = require("./src/gasMonitor");
 const HistoryManager = require("./src/history");
 const { StreamHub } = require("./src/streamHub");
 const { ApiGateway } = require("./src/apiGateway");
-const { FailurePredictor, KeeperReputationScorer } = require("./src/insights");
+const { DeadLetterQueue } = require("./src/deadLetter");
+const { FailurePredictor, KeeperReputationScorer, ProfitabilityEstimator } = require("./src/insights");
+const { GasForecaster } = require("./src/gasForecaster");
 const { normalizeShardConfig, ConsistentHashRing, filterTasksByHashRing } = require("./src/sharding");
 const { PostgresShardManager } = require("./src/postgresShardManager");
 const { StartupValidator } = require("./src/validator");
@@ -27,6 +29,14 @@ const { GracefulShutdownManager } = require("./src/gracefulShutdown");
 const { TaskReconciler } = require("./src/reconciler");
 const { createDefaultFilterChain } = require("./src/taskFilter");
 const { getRedisClient } = require("./src/lock");
+const { computeAdaptivePollingInterval } = require("./src/adaptiveScheduler");
+const { withSpan } = require("./src/otel");
+const { FraudDetectionService } = require("./src/fraudDetection");
+const { TaskMetadataCache } = require("./src/taskMetadataCache");
+const { KeeperAlertManager } = require("./src/keeperAlerts");
+const { WebhookAuthProtocol, InMemoryReplayStore } = require("./src/webhookAuth");
+const { WebhookTriggerHandler } = require("./src/webhookTrigger");
+const { KeeperP2PNetwork } = require("./src/p2pNetwork");
 
 // Create root logger for the main module
 const logger = createLogger("keeper");
@@ -54,6 +64,11 @@ async function main() {
     logger.error("Configuration error", { error: err.message });
     process.exit(1);
   }
+
+  const server = new Server(config.rpcUrl, {
+    allowHttp: Boolean(config.rpcUrl && config.rpcUrl.startsWith("http://")),
+  });
+  const alertManager = new KeeperAlertManager();
 
   let keeperData;
   try {
@@ -86,6 +101,24 @@ async function main() {
     historyManager,
     logger: createLogger("reputation-scorer"),
   });
+  // Issue #783 — dead-letter queue. Already existed (quarantine after N
+  // consecutive failures, exponential backoff, webhook alerting) but had
+  // zero callers anywhere. Wired into executeTask below (record failures,
+  // auto-recover on success) and into the poll loop (skip quarantined
+  // tasks that aren't yet ready for their backoff retry).
+  const deadLetterQueue = new DeadLetterQueue({
+    logger: createLogger("dead-letter-queue"),
+  });
+  // Issue #781 — profitability gate. gasForecaster accumulates per-task fee
+  // history (fed by executeTask below) so profitabilityEstimator can compare
+  // a task's bounty against its forecasted cost before spending a real fee
+  // submitting it. Recording history is always-on and side-effect-free;
+  // actually gating on it is opt-in via config.profitabilityGate.enabled.
+  const gasForecaster = new GasForecaster(createLogger("gas-forecaster"));
+  const profitabilityEstimator = new ProfitabilityEstimator({
+    logger: createLogger("profitability"),
+    threshold: config.profitabilityGate?.minNetProfitStroops || 0,
+  });
   const shardConfig = normalizeShardConfig({
     shardIndex: config.shardIndex,
     shardCount: config.shardCount,
@@ -103,7 +136,7 @@ async function main() {
   };
 
   const gasMonitor = new GasMonitor(createLogger("gasMonitor"));
-  const metricsServer = new MetricsServer(gasMonitor, createLogger("metrics"), null, {
+  const metricsServer = new MetricsServer(gasMonitor, createLogger("metrics"), deadLetterQueue, {
     port: config.metricsPort,
     healthStaleThreshold: config.healthStaleThresholdMs,
     historyManager,
@@ -159,6 +192,11 @@ async function main() {
     logger.fatal("Startup Validation Failed", { error: err.message });
     process.exit(1);
   }
+
+  metricsServer.updateHealth({
+    rpcConnected: true,
+    lastPollAt: new Date(),
+  });
 
    const idempotencyGuard = new ExecutionIdempotencyGuard({
      logger: createLogger("idempotency"),
@@ -225,10 +263,6 @@ async function main() {
   });
   logger.info("Poller initialized", { contractId: config.contractId });
 
-  // Initialize execution queue
-  const queue = new ExecutionQueue(undefined, metricsServer, { idempotencyGuard });
-  const queueLogger = createLogger("queue");
-  await queue.initialize();
   metricsServer.setReadinessProviders({
     redisClient: getRedisClient(),
     workerPool: queue,
@@ -396,7 +430,47 @@ async function main() {
       return;
     }
 
+    // Issue #781 — profitability gate. Only skips when the forecaster has
+    // 'high' confidence (enough historical samples) for this task; with no
+    // or thin history it defers to normal execution rather than guessing.
+    if (config.profitabilityGate?.enabled) {
+      const task = registry.tasks.get(taskId) || registry.tasks.get(String(taskId));
+      const forecast = gasForecaster.forecastTaskGas(taskId, Number(task?.gas_balance) || 0);
+      if (forecast.confidence === 'high') {
+        const { shouldSkip, netProfit } = profitabilityEstimator.estimate(
+          Number(task?.bounty) || 0,
+          forecast.estimatedCost,
+          1,
+        );
+        if (shouldSkip) {
+          taskLogger.warn("Task execution skipped: forecast unprofitable", {
+            taskId,
+            bounty: task?.bounty ?? 0,
+            forecastedCost: forecast.estimatedCost,
+            netProfit,
+          });
+          historyManager.record({
+            taskId,
+            keeper: keypair.publicKey(),
+            status: "SKIPPED",
+            txHash: null,
+            feePaid: 0,
+            error: null,
+            classification: "unprofitable",
+            attemptId: context.attemptId || null,
+            correlationId,
+          });
+          metricsServer.publishTaskEvent("skipped", taskId, {
+            reason: "unprofitable",
+            attemptId: context.attemptId || null,
+            correlationId,
+          });
+          return;
+        }
+      }
+    }
 
+    const executionStartedAt = Date.now();
     try {
       const dynamicFeeMultiplier = gasMonitor && typeof gasMonitor.getDynamicFeeMultiplier === 'function'
         ? gasMonitor.getDynamicFeeMultiplier()
@@ -404,16 +478,25 @@ async function main() {
       deps.dynamicFeeMultiplier = dynamicFeeMultiplier;
       deps.gasMonitor = gasMonitor;
 
-      const retryResult = await executeTaskWithRetry(taskId, deps, {
-        attemptId: context.attemptId,
-        correlationId,
-        logger: taskLogger,
-        onRetry: (_error, _attempt, _delay, retryContext) => {
-          idempotencyGuard.touchRetry(taskId, {
-            lastError: retryContext?.message || null,
-          });
-        },
-      });
+      const retryResult = await withSpan(
+        'task_execute',
+        (span) => executeTaskWithRetry(taskId, deps, {
+          attemptId: context.attemptId,
+          correlationId,
+          logger: taskLogger,
+          onRetry: (_error, _attempt, _delay, retryContext) => {
+            span.addEvent('retry', { message: retryContext?.message || '' });
+            idempotencyGuard.touchRetry(taskId, {
+              lastError: retryContext?.message || null,
+            });
+          },
+        }).then((result) => {
+          span.setAttribute('txHash', result.result?.txHash || '');
+          span.setAttribute('retries', result.retries || 0);
+          return result;
+        }),
+        { taskId: String(taskId), correlationId: correlationId || '' },
+      );
 
       context.executionResult = retryResult;
       taskLogger.info("Task execution completed", {
@@ -431,16 +514,24 @@ async function main() {
         status: retryResult.result?.status || "SUCCESS",
         txHash: retryResult.result?.txHash || null,
         feePaid: retryResult.result?.feePaid || 0,
+        bounty: Number(registry.tasks.get(taskId)?.bounty) || 0,
+        durationMs: Date.now() - executionStartedAt,
         error: null,
         classification: retryResult.duplicate ? "duplicate" : "success",
         attemptId: context.attemptId || null,
         correlationId,
       });
+      if (retryResult.result?.feePaid) {
+        gasForecaster.recordExecution(taskId, retryResult.result.feePaid);
+      }
       metricsServer.publishTaskEvent("completed", taskId, {
         attemptId: context.attemptId || null,
         correlationId,
         txHash: retryResult.result?.txHash || null,
       });
+      if (deadLetterQueue.isQuarantined(taskId)) {
+        deadLetterQueue.recover(taskId, "execution_succeeded");
+      }
     } catch (error) {
       taskLogger.error("Failed to execute task", {
         taskId,
@@ -456,6 +547,8 @@ async function main() {
         status: "FAILED",
         txHash: error.result?.txHash || null,
         feePaid: error.result?.feePaid || 0,
+        bounty: Number(registry.tasks.get(taskId)?.bounty) || 0,
+        durationMs: Date.now() - executionStartedAt,
         error: error.error?.message || error.message || String(error),
         classification: error.classification || null,
         attemptId: context.attemptId || null,
@@ -466,12 +559,18 @@ async function main() {
         correlationId,
         classification: error.classification || null,
       });
+      deadLetterQueue.recordFailure(taskId, {
+        error: error.error || error,
+        errorClassification: error.classification || undefined,
+        txHash: error.result?.txHash || null,
+        phase: "execution",
+      });
       throw error;
     }
   };
 
   // Initialize webhook authentication and handler if enabled
-  if (config.inboundWebhooks.enabled) {
+  if (config.inboundWebhooks?.enabled) {
     logger.info("Initializing inbound webhook handler");
     
     const webhookAuthProtocol = new WebhookAuthProtocol({
@@ -507,8 +606,11 @@ async function main() {
 
   // Initialize event-driven task registry
   const registry = new TaskRegistry(server, config.contractId, {
-    startLedger: parseInt(process.env.START_LEDGER || "0", 10),
+    startLedger: parseInt(process.env.START_LEDGER || "1", 10) || 1,
     logger: createLogger("registry"),
+    resolverCacheEnabled: config.resolverCacheEnabled,
+    resolverCacheTtlSeconds: config.resolverCacheTtlSeconds,
+    resolverCacheMaxSize: config.resolverCacheMaxSize,
   });
   await registry.init();
 
@@ -647,12 +749,6 @@ async function main() {
     alertManager.stopRpcMonitor();
   });
 
-  // Register SLA monitor cleanup
-  shutdownManager.registerResource("sla-monitor", async () => {
-    logger.info("Stopping SLA monitor");
-    await slaMonitor.stop();
-  });
-
   // Register registry cleanup
   shutdownManager.registerResource("task-registry", async () => {
     logger.info("Closing task registry");
@@ -670,11 +766,6 @@ async function main() {
   shutdownManager.registerResource("rpc-server", async () => {
     logger.info("Closing RPC server connection");
     // Server doesn't have explicit close, but we log it
-  });
-
-  shutdownManager.registerResource("rpc-failover", async () => {
-    logger.info("Stopping RPC failover manager");
-    failoverClient.stop();
   });
 
   // Register idempotency guard persistence
@@ -713,7 +804,7 @@ async function main() {
   shutdownManager.on("shutdown:stop-accepting", () => {
     logger.info("Stopped accepting new work");
     // Stop the polling loops explicitly
-    clearInterval(pollingInterval);
+    clearTimeout(pollingTimer);
     clearInterval(reconcileInterval);
   });
 
@@ -739,14 +830,31 @@ async function main() {
 
   // Polling loop
   const pollingIntervalMs = config.pollIntervalMs;
-  logger.info("Starting polling loop", { 
+  logger.info("Starting polling loop", {
     intervalMs: pollingIntervalMs,
     shardId: config.shardId,
-    totalShards: config.totalShards
+    totalShards: config.totalShards,
+    adaptivePollingEnabled: config.adaptivePollingEnabled,
   });
 
+  // Issue #782: adaptive polling. computeAdaptivePollingInterval already
+  // existed (backlog/latency/error-aware, with anti-oscillation smoothing)
+  // but had no caller anywhere — the loop below was always a fixed-interval
+  // setInterval. Converted to a self-rescheduling setTimeout so the delay
+  // before the next cycle can actually vary; consecutivePollErrors and
+  // lastAdaptiveIntervalMs are the running state computeAdaptivePollingInterval
+  // needs across cycles (error backoff, smoothing against the previous interval).
+  let pollingTimer = null;
+  let consecutivePollErrors = 0;
+  let lastAdaptiveIntervalMs = pollingIntervalMs;
 
-  const pollingInterval = setInterval(async () => {
+
+  const runPollCycle = async () => {
+    const cycleStartedAt = Date.now();
+    let dueCountThisCycle = 0;
+    let backlogSizeThisCycle = 0;
+    let cycleErrored = false;
+
     // Don't accept new work during shutdown
     if (shutdownManager.state !== "running") {
       logger.debug("Skipping poll cycle during shutdown", {
@@ -771,6 +879,7 @@ async function main() {
 
       // Get list of all registered task IDs
       const taskIds = registry.getTaskIds();
+      backlogSizeThisCycle = taskIds.length;
       const dbShardState = dbShardManager.refresh({
         activeUsers: queue.getInFlightStatus().inFlight,
         pendingTasks: taskIds.length,
@@ -799,28 +908,54 @@ async function main() {
 
       // Poll for due tasks
       // Pass registry so cached gas/timing filters can read previously fetched values
-      const dueTaskIds = await poller.pollDueTasks(shardSelection.ownedTaskIds, {
-        registry,
-        idempotencyGuard,
-        includeContext: true,
-      });
+      const dueTaskIds = await withSpan(
+        'poll_cycle',
+        () => poller.pollDueTasks(shardSelection.ownedTaskIds, {
+          registry,
+          idempotencyGuard,
+          includeContext: true,
+        }),
+        { ownedTaskCount: shardSelection.ownedTaskIds.length },
+      );
+      dueCountThisCycle = dueTaskIds.length;
 
-      if (dueTaskIds.length > 0) {
+      // Issue #783: skip tasks the dead-letter queue has quarantined
+      // (repeatedly failing) unless they've become due for their next
+      // exponential-backoff retry attempt — this is what actually stops
+      // a broken task from consuming a poll slot every single cycle.
+      const quarantinedSkipped = [];
+      const executableTaskIds = dueTaskIds.filter((task) => {
+        const taskId = typeof task === "object" ? task.taskId : task;
+        if (!deadLetterQueue.isQuarantined(taskId)) return true;
+        if (deadLetterQueue.isReadyForRetry(taskId)) {
+          deadLetterQueue.recordRetryAttempt(taskId);
+          return true;
+        }
+        quarantinedSkipped.push(taskId);
+        return false;
+      });
+      if (quarantinedSkipped.length > 0) {
+        logger.info("Skipped quarantined tasks not yet ready for retry", {
+          taskIds: quarantinedSkipped,
+        });
+      }
+
+      if (executableTaskIds.length > 0) {
         const lockSnapshot = idempotencyGuard.getSnapshot();
         logger.info("Found due tasks, enqueueing for execution", {
-          dueCount: dueTaskIds.length,
+          dueCount: executableTaskIds.length,
         });
         logger.info("Execution idempotency state", {
           stateFile: lockSnapshot.stateFile,
           activeLocks: lockSnapshot.lockCount,
         });
 
-        dueTaskIds.forEach((task) =>
+        executableTaskIds.forEach((task) =>
           shutdownManager.trackTask(typeof task === "object" ? task.taskId : task)
         );
 
         // Transform the dueTask results to pass correlation IDs to the queue
-        const tasksToEnqueue = dueTaskIds.map(d => ({
+        const tasksToEnqueue = executableTaskIds.map(d => ({
           taskId: d.taskId,
           context: { pollCorrelationId: d.correlationId }
         }));
@@ -835,10 +970,63 @@ async function main() {
         logger.info("No tasks due for execution");
       }
 
+      metricsServer.updateHealth({
+        lastPollAt: new Date(),
+        rpcConnected: true,
+      });
+
       } catch (error) {
+        cycleErrored = true;
         logger.error("Error in polling cycle", { error: error.message });
+      } finally {
+        consecutivePollErrors = cycleErrored
+          ? consecutivePollErrors + 1
+          : 0;
+
+        if (config.adaptivePollingEnabled) {
+          const cycleDurationMs = Date.now() - cycleStartedAt;
+          const { intervalMs, reasons } = computeAdaptivePollingInterval(
+            {
+              baseIntervalMs: pollingIntervalMs,
+              minIntervalMs: config.adaptivePollMinIntervalMs,
+              maxIntervalMs: config.adaptivePollMaxIntervalMs,
+              backlogSize: backlogSizeThisCycle,
+              dueCount: dueCountThisCycle,
+              // Not yet tracked: how many tasks are due soon (vs. right
+              // now) and the average RPC round-trip time. Neutral values
+              // below make computeAdaptivePollingInterval skip those
+              // adjustments entirely rather than fabricating signal.
+              dueSoonCount: 0,
+              minSecondsUntilDue: Infinity,
+              avgRpcLatencyMs: 0,
+              cycleDurationMs,
+              errors: consecutivePollErrors,
+            },
+            lastAdaptiveIntervalMs,
+          );
+          lastAdaptiveIntervalMs = intervalMs;
+          logger.debug("Adaptive polling interval computed", {
+            intervalMs,
+            reasons,
+            backlogSize: backlogSizeThisCycle,
+            dueCount: dueCountThisCycle,
+            cycleDurationMs,
+            consecutivePollErrors,
+          });
+        }
+
+        scheduleNextPoll();
       }
-    }, pollingIntervalMs);
+  };
+
+  function scheduleNextPoll() {
+    const nextDelayMs = config.adaptivePollingEnabled
+      ? lastAdaptiveIntervalMs
+      : pollingIntervalMs;
+    pollingTimer = setTimeout(runPollCycle, nextDelayMs);
+  }
+
+  scheduleNextPoll();
 
   // Run first poll immediately
   logger.info('Running initial poll');

@@ -288,3 +288,211 @@ export class PhishingMitigator {
 }
 
 export const defaultMitigator = new PhishingMitigator();
+
+// ---------------------------------------------------------------------------
+// Malicious target contract screening (issue #1247)
+//
+// The URL mitigator above protects navigation. This part protects the thing a
+// task actually automates: the contract the user's XLM is sent to. A user can
+// be tricked into pointing a recurring transfer at an attacker's address, so
+// the target is screened before any signature is requested.
+// ---------------------------------------------------------------------------
+
+export type TargetRiskLevel = 'safe' | 'caution' | 'high';
+
+export type TargetFindingCode =
+  | 'malformed_address'
+  | 'reported_scam'
+  | 'fresh_contract'
+  | 'unverified_bytecode'
+  | 'proxy_contract'
+  | 'suspicious_origin'
+  | 'origin_mismatch'
+  | 'missing_source';
+
+export type TargetFinding = {
+  code: TargetFindingCode;
+  severity: 'info' | 'warning' | 'critical';
+  message: string;
+};
+
+export type TargetScanResult = {
+  address: string;
+  riskLevel: TargetRiskLevel;
+  /** True when the user must explicitly acknowledge before signing. */
+  requiresConfirmation: boolean;
+  findings: TargetFinding[];
+};
+
+export type ContractReputation = {
+  address: string;
+  /** Community report count; 1+ is enough to warn. */
+  reports: number;
+  label?: string;
+};
+
+/** What is known about a contract before the user signs. */
+export type TargetScanInput = {
+  address: string;
+  /** Contracts confirmed by the team. Absent = unverified. */
+  verifiedContracts?: readonly string[];
+  /** Community scam reports keyed by address. */
+  reportedContracts?: readonly ContractReputation[];
+  /** WebAssembly hash, hex. */
+  wasmHash?: string;
+  /** Hash of the bytecode the UI believes it is about to sign against. */
+  expectedWasmHash?: string;
+  /** True when the contract is an upgradeable/proxy deployment. */
+  isProxy?: boolean;
+  /** Contracts younger than this are flagged as unproven. */
+  maxAgeDays?: number;
+  /** Age of the contract in days. */
+  ageDays?: number;
+  /** Page origin the task was configured from. */
+  origin?: string;
+  /** Origin the app is actually served from. */
+  appOrigin?: string;
+  /** Contract source repository; absent = unaudited. */
+  hasVerifiedSource?: boolean;
+};
+
+/** Known malicious deployments. Extend per deployment, not per user. */
+export const DEFAULT_SCAM_LIST: readonly ContractReputation[] = [
+  {
+    address: 'GB2XDSWHTYCWQL3F36HYJ4XWWDKJRVLSGY5RRCQMAJTCXJPBMPHSHDWQ',
+    reports: 47,
+    label: 'Drainer impersonating a Soroban DEX router',
+  },
+  {
+    address: 'GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ',
+    reports: 12,
+    label: 'Fake airdrop claim contract',
+  },
+];
+
+const STELLAR_ADDRESS_PATTERN = /^G[A-Z2-7]{55}$/;
+
+/** Strip separators a user may paste along with the address. */
+function normaliseAddress(raw: string): string {
+  return raw.trim().replace(/[\s:]/g, '').toUpperCase();
+}
+
+
+/**
+ * Screen a target contract before a signature is requested.
+ *
+ * Findings accumulate rather than short-circuiting, so the warning modal can
+ * show every reason at once. Reporting only the first problem would invite the
+ * user to fix it, re-scan, and then meet the next.
+ *
+ * O(R + S) per call for R reports and S verified contracts.
+ */
+export function scanTargetContract(input: TargetScanInput): TargetScanResult {
+  const findings: TargetFinding[] = [];
+  const address = normaliseAddress(input.address ?? '');
+
+  // --- 1. Address shape -------------------------------------------------
+  if (!STELLAR_ADDRESS_PATTERN.test(address)) {
+    findings.push({
+      code: 'malformed_address',
+      severity: 'critical',
+      message:
+        'This does not look like a Stellar contract address. A valid address starts with G and is 56 characters long.',
+    });
+    // Nothing else can be checked reliably against a malformed address.
+    return { address, riskLevel: 'high', requiresConfirmation: true, findings };
+  }
+
+  // --- 2. Community reports -------------------------------------------
+  const report = (input.reportedContracts ?? DEFAULT_SCAM_LIST).find(
+    (entry) => normaliseAddress(entry.address) === address,
+  );
+  if (report) {
+    findings.push({
+      code: 'reported_scam',
+      severity: 'critical',
+      message: `This address has been reported ${report.reports} time${
+        report.reports === 1 ? '' : 's'
+      }${report.label ? ` as ${report.label}` : ''}. Do not send funds to it.`,
+    });
+  }
+
+  // --- 3. Verification status -----------------------------------------
+  const verified = (input.verifiedContracts ?? []).some(
+    (entry) => normaliseAddress(entry) === address,
+  );
+  if (!verified) {
+    findings.push({
+      code: 'unverified_bytecode',
+      severity: 'warning',
+      message:
+        'This contract is not on the verified list, so its code has not been checked by the SoroLabs team.',
+    });
+  }
+
+  // Bytecode that no longer matches what the UI rendered means the code changed
+  // between display and signing — the classic upgradeable-contract trap.
+  if (
+    input.expectedWasmHash !== undefined &&
+    input.wasmHash !== undefined &&
+    input.expectedWasmHash !== input.wasmHash
+  ) {
+    findings.push({
+      code: 'unverified_bytecode',
+      severity: 'critical',
+      message:
+        'The contract bytecode changed since it was displayed. It may have been upgraded to redirect your funds.',
+    });
+  }
+
+  // --- 4. Proxy / upgradeability --------------------------------------
+  if (input.isProxy) {
+    findings.push({
+      code: 'proxy_contract',
+      severity: 'warning',
+      message:
+        'This is an upgradeable proxy. Its behaviour can change at any time without warning, including where your funds go.',
+    });
+  }
+
+  // --- 5. Contract age --------------------------------------------------
+  if (input.ageDays !== undefined && input.maxAgeDays !== undefined && input.ageDays < input.maxAgeDays) {
+    findings.push({
+      code: 'fresh_contract',
+      severity: 'warning',
+      message: `This contract is only ${input.ageDays} day${
+        input.ageDays === 1 ? '' : 's'
+      } old, so it has no track record.`,
+    });
+  }
+
+  // --- 6. Source verification ------------------------------------------
+  if (input.hasVerifiedSource === false) {
+    findings.push({
+      code: 'missing_source',
+      severity: 'info',
+      message: 'No verified source code is published for this contract.',
+    });
+  }
+
+  // --- 7. Origin verification ------------------------------------------
+  if (input.origin && input.appOrigin && input.origin !== input.appOrigin) {
+    findings.push({
+      code: 'origin_mismatch',
+      severity: 'critical',
+      message: `This task was created on ${input.origin} but you are on ${input.appOrigin}. You may be on a look-alike site.`,
+    });
+  }
+
+  const hasCritical = findings.some((f) => f.severity === 'critical');
+  const hasWarning = findings.some((f) => f.severity === 'warning');
+  const riskLevel: TargetRiskLevel = hasCritical ? 'high' : hasWarning ? 'caution' : 'safe';
+
+  return {
+    address,
+    riskLevel,
+    // A critical finding must always be acknowledged; warnings stay advisory.
+    requiresConfirmation: hasCritical,
+    findings,
+  };
+}

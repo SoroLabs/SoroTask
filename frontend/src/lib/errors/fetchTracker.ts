@@ -9,6 +9,7 @@
  */
 
 import { trackApiRequest, trackApiError } from "./tracking";
+import { telemetry } from "@/src/lib/telemetry";
 
 // Keep reference to original fetch
 const originalFetch = typeof window !== "undefined" ? window.fetch : undefined;
@@ -41,6 +42,7 @@ export async function trackedFetch(
     // Track response status
     if (response.status >= 400) {
       trackApiRequest(url, method, response.status);
+      telemetry.recordNetworkError(url, response.status, `HTTP ${response.status}`);
     }
 
     return response;
@@ -48,6 +50,7 @@ export async function trackedFetch(
     // Network errors - track them
     const err = error instanceof Error ? error : new Error(String(error));
     trackApiError(url, method, err);
+    telemetry.recordNetworkError(url, 0, err.message);
 
     throw error;
   }

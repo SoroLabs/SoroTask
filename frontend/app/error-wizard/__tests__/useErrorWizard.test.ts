@@ -31,7 +31,7 @@ describe('generateSteps', () => {
   it('INSUFFICIENT_GAS step has increase_gas action with patch using gasBudget × 1.5', () => {
     const steps = generateSteps([makeLog('INSUFFICIENT_GAS', 'oog', { gasBudget: 50000 })]);
     expect(steps[0].actions[0].type).toBe('increase_gas');
-    expect(steps[0].actions[0].patch?.field).toBe('gasBalance');
+    expect(steps[0].actions[0].patch?.field).toBe('gasBudget');
     expect(steps[0].actions[0].patch?.value).toBe(75000);
   });
 
@@ -44,6 +44,21 @@ describe('generateSteps', () => {
     const steps = generateSteps([makeLog('TX_INSUFFICIENT_BALANCE', 'insufficient balance')]);
     expect(steps[0].actions[0].type).toBe('top_up_balance');
     expect(steps[0].actions[0].patch).toBeUndefined();
+  });
+
+  it('token allowance failures produce a wallet-review approval action', () => {
+    const steps = generateSteps([
+      makeLog(
+        'INSUFFICIENT_ALLOWANCE',
+        'allowance too low',
+        { tokenAddress: 'CTOKEN', spenderAddress: 'CTASK' },
+      ),
+    ]);
+
+    expect(steps[0].category).toBe('TOKEN_APPROVAL_REQUIRED');
+    expect(steps[0].actions[0].type).toBe('approve_token');
+    expect(steps[0].actions[0].description).toContain('CTOKEN');
+    expect(steps[0].actions[0].description).toContain('CTASK');
   });
 
   it('BAD_AUTH produces reconnect_wallet action', () => {

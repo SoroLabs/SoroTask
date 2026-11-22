@@ -1,80 +1,67 @@
-import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import "@testing-library/jest-dom";
-import { useGasOptimizationStore } from "../../../store/gasOptimizationStore";
+import { fireEvent, render, screen } from "@testing-library/react";
 import GasOptimizationEngine from "../GasOptimizationEngine";
 
-describe("Gas Optimization Store", () => {
-  it("initializes with mock tiers and active tx counters", () => {
-    const state = useGasOptimizationStore.getState();
-    expect(state.congestionLevel).toBe("medium");
-    expect(state.feeTiers).toHaveLength(3);
-    expect(state.batchOpportunities).toHaveLength(2);
+const refresh = jest.fn();
+const useFinancialAnalytics = jest.fn();
+
+jest.mock("@/src/hooks/useFinancialAnalytics", () => ({
+  useFinancialAnalytics: (...args: unknown[]) => useFinancialAnalytics(...args),
+}));
+
+jest.mock("@/src/lib/financial-analytics/csv", () => ({
+  downloadCsv: jest.fn(),
+}));
+
+describe("GasOptimizationEngine", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    useFinancialAnalytics.mockReturnValue({
+      records: [
+        {
+          timestamp: "2026-10-17T00:00:00.000Z",
+          open: 0.08,
+          high: 0.12,
+          low: 0.06,
+          close: 0.1,
+          batchSavingsXlm: 0.02,
+          depth: [
+            { priceXlm: 0.08, cumulativeVolumeXlm: 12 },
+            { priceXlm: 0.1, cumulativeVolumeXlm: 20 },
+          ],
+        },
+      ],
+      status: "connected",
+      error: null,
+      lastUpdatedAt: "2026-10-17T00:00:00.000Z",
+      refresh,
+    });
   });
 
-  it("updates congestion and fees on refreshMetrics", () => {
-    const previousFee = useGasOptimizationStore.getState().baseFee;
-    useGasOptimizationStore.getState().refreshMetrics();
-    // Verify values updated (may be different or equal, verify types are correct)
-    const nextState = useGasOptimizationStore.getState();
-    expect(typeof nextState.congestionLevel).toBe("string");
-    expect(nextState.activeTxCount).toBeGreaterThanOrEqual(50);
-  });
-
-  it("runs simulation and outputs dry run parameters", async () => {
-    await useGasOptimizationStore.getState().runSimulation("C123", "execute");
-    const result = useGasOptimizationStore.getState().simulationResult;
-    expect(result).not.toBeNull();
-    expect(result?.status).toBe("success");
-    expect(result?.gasConsumed).toBeGreaterThan(0);
-  });
-
-  it("outputs execution error when contract ID contains 'fail'", async () => {
-    await useGasOptimizationStore.getState().runSimulation("fail_contract", "execute");
-    const result = useGasOptimizationStore.getState().simulationResult;
-    expect(result).not.toBeNull();
-    expect(result?.status).toBe("failure");
-    expect(result?.errorMessage).toContain("ContractExecutionError");
-  });
-
-  it("applies multi-call batching and filters out applied items", () => {
-    useGasOptimizationStore.getState().applyBatching("batch-1");
-    const remaining = useGasOptimizationStore.getState().batchOpportunities;
-    expect(remaining.find((o) => o.id === "batch-1")).toBeUndefined();
-  });
-});
-
-describe("GasOptimizationEngine Component", () => {
-  it("renders headers, metrics, and simulator forms", () => {
+  it("renders fee candles, liquidity depth, batching savings and live connection state", () => {
     render(<GasOptimizationEngine />);
-    expect(screen.getByTestId("gas-optimization-engine-container")).toBeInTheDocument();
-    expect(screen.getByText("Soroban Mainnet")).toBeInTheDocument();
-    expect(screen.getByTestId("congestion-badge")).toBeInTheDocument();
-    expect(screen.getByText("Transaction Gas Simulator")).toBeInTheDocument();
+
+    expect(useFinancialAnalytics).toHaveBeenCalledWith("gas");
+    expect(screen.getByTestId("gas-candlestick-chart")).toBeInTheDocument();
+    expect(screen.getByTestId("gas-depth-chart")).toBeInTheDocument();
+    expect(screen.getByTestId("gas-savings-chart")).toBeInTheDocument();
+    expect(screen.getByTestId("gas-feed-status")).toHaveTextContent("Live WebSocket updates connected.");
+    expect(screen.getAllByText("0.1 XLM").length).toBeGreaterThan(0);
   });
 
-  it("triggers transaction simulation on form submission", async () => {
-    render(<GasOptimizationEngine />);
-    
-    const contractInput = screen.getByLabelText("Contract ID");
-    const methodInput = screen.getByLabelText("Method Name");
-    const submitBtn = screen.getByRole("button", { name: "Simulate Dry Run" });
+  it("refreshes the feed and disables exporting when there is no data", () => {
+    const { rerender } = render(<GasOptimizationEngine />);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(refresh).toHaveBeenCalledTimes(1);
 
-    fireEvent.change(contractInput, { target: { value: "CSIMULATE" } });
-    fireEvent.change(methodInput, { target: { value: "mint" } });
-    fireEvent.click(submitBtn);
-
-    // Wait for the mock simulation latency
-    await waitFor(() => {
-      expect(screen.getByTestId("simulation-readout")).toBeInTheDocument();
-    }, { timeout: 2000 });
-  });
-
-  it("handles batch clicking interaction", () => {
-    render(<GasOptimizationEngine />);
-    const batchButtons = screen.getAllByRole("button", { name: "Batch" });
-    fireEvent.click(batchButtons[0]);
-    // The clicked batch option should be removed from view
-    expect(screen.queryByText(/batch-1/)).toBeNull();
+    useFinancialAnalytics.mockReturnValue({
+      records: [],
+      status: "error",
+      error: "History endpoint unavailable.",
+      lastUpdatedAt: null,
+      refresh,
+    });
+    rerender(<GasOptimizationEngine />);
+    expect(screen.getByRole("button", { name: /Export CSV/ })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("History endpoint unavailable.");
   });
 });

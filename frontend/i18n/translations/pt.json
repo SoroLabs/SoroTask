@@ -92,5 +92,33 @@
     "seconds_short": "s",
     "interval_display": "{hours}h ({seconds} segundos)",
     "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "Estado da ligação",
+    "online": "Ligado",
+    "offline": "Desligado",
+    "resyncing": "A sincronizar",
+    "sync_failed": "Falha na sincronização",
+    "queued_actions": "{count, plural, =0 {Nenhuma ação em fila} one {# ação em fila} other {# ações em fila}}",
+    "replaying": "{count, plural, one {A reproduzir uma ação em fila} other {A reproduzir # ações em fila}}",
+    "still_queued": "{count, plural, one {# ação ainda em fila} other {# ações ainda em fila}}",
+    "browse_cached": "Ainda pode navegar no conteúdo em cache. As alterações serão colocadas em fila.",
+    "will_run_when_back": "serão executadas quando voltar a estar online.",
+    "retry": "Tentar novamente",
+    "read_only_notice": "Está em modo apenas de leitura. O que escrever é enviado quando voltar a estar online."
+  },
+  "theme": {
+    "label": "Tema",
+    "light": "Claro",
+    "dark": "Escuro",
+    "oled": "OLED de alto contraste",
+    "system": "Sistema",
+    "change": "Tema: {mode}. Clique para alterar.",
+    "resolving_to": "A resolver atualmente para {resolved}."
+  },
+  "language": {
+    "label": "Selecionar idioma",
+    "loading": "A carregar idioma...",
+    "available": "{count, plural, =0 {Nenhum idioma} one {# idioma} other {# idiomas}}"
   }
 }

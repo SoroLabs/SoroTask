@@ -144,29 +144,30 @@ describe('strict OpenAPI request validation', () => {
       error: null,
       createdAt: new Date().toISOString(),
     };
-    zkService.getAsyncJob = async () => job;
+    zkService.getAsyncJob = async () => {
+      setTimeout(() => {
+        job.status = 'processing';
+        job.progress = 55;
+        zkService.emit('jobProgress', { jobId: 'job-sse', status: 'processing', progress: 55 });
+      }, 20);
+      setTimeout(() => {
+        job.status = 'completed';
+        job.progress = 100;
+        job.result = {
+          proofId: 'proof-sse',
+          status: 'success',
+          conditionHash: '0xabc123',
+          proof: { pi_a: [], pi_b: [], pi_c: [], publicSignals: [] },
+        };
+        zkService.emit('jobComplete', job);
+      }, 70);
+      return { ...job };
+    };
     zkService.enqueueAsyncJob = () => ({ jobId: 'job-sse', status: 'queued', createdAt: job.createdAt });
     zkService.proofCache = { get: async () => null, set: async () => {}, close: async () => {} };
     zkService.proverQueue = { close: async () => {} };
 
     const { app } = await createServer({ zkService, skipAttestation: true, skipInitialize: true });
-
-    setTimeout(() => {
-      job.status = 'processing';
-      job.progress = 55;
-      zkService.emit('jobProgress', { jobId: 'job-sse', status: 'processing', progress: 55 });
-    }, 20);
-    setTimeout(() => {
-      job.status = 'completed';
-      job.progress = 100;
-      job.result = {
-        proofId: 'proof-sse',
-        status: 'success',
-        conditionHash: '0xabc123',
-        proof: { pi_a: [], pi_b: [], pi_c: [], publicSignals: [] },
-      };
-      zkService.emit('jobComplete', job);
-    }, 70);
 
     const res = await request(app).get('/proofs/job-sse/stream');
     expect(res.status).toBe(200);

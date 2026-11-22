@@ -1,5 +1,4 @@
 const { rpc: SorobanRpc, xdr, scValToNative, nativeToScVal, Address, Contract } = require("@stellar/stellar-sdk");
-const sqlite3 = require("sqlite3").verbose();
 const {
   buildRepairPlan,
   compareTaskState,
@@ -10,85 +9,67 @@ const { startApiServer } = require("./api");
 const { broadcastEvent } = require("./wsServer");
 const { computeAndStoreLedgerMerkle } = require("./merkleStore");
 const { LedgerAuditor, ensureAuditSchema } = require("./ledgerAuditor");
-const { scheduleArchival } = require("./archival");
+const { scheduleArchival, scheduleExecutionsArchival } = require("./archival");
 const { pubsub, EVENT_ADDED } = require("./graphql/pubsub");
 const { LedgerHashValidator } = require("./ledgerHashValidator");
 const { EventSchemaRegistry } = require("./eventSchemaRegistry");
+const {
+  db,
+  router,
+  queryAll,
+  queryGet,
+  queryRun,
+  getWritePool,
+  getReadPools,
+} = require("./graphql/db");
 const { WebhookDispatcher } = require("./webhooks/dispatcher");
 const { ParallelLedgerParser } = require("./parallelParser");
+const { CacheInvalidationEngine } = require("./cacheInvalidator");
+const { LedgerGapDetector } = require("./ledgerGapDetector");
+const { HighAvailabilityManager } = require("./ha");
+const { SyntheticMonitor } = require("./syntheticMonitor");
+const { updateLedgerMetrics, recordEventIndexed } = require("./metrics");
 
 // Configuration
-const RPC_URL = "https://soroban-testnet.stellar.org"; // Change as needed
+const RPC_URL = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org"; // Change as needed
 const CONTRACT_ID = process.env.CONTRACT_ID || "CCKANVNJJIKGYU4TYTZBGL5JQVLPW33KQUW6JFHPLKXDLQEZETHOUAMJ"; // Replace with actual contract ID
-const DB_FILE = process.env.DB_FILE || "./indexer.db";
 const POLL_INTERVAL_MS = 6000; // 6 seconds
 const RECONCILE_INTERVAL_MS = 300000; // 5 minutes
 const STALE_CLEANUP_INTERVAL_MS = 86400000; // 24 hours
 
 // Initialize RPC server
-const rpc = new SorobanRpc.Server(RPC_URL);
+const rpc = new SorobanRpc.Server(RPC_URL, { allowHttp: RPC_URL.startsWith("http://") });
 const contract = new Contract(CONTRACT_ID);
 
-// Initialize database
-const db = new sqlite3.Database(DB_FILE, (err) => {
-  if (err) {
-    console.error("Error opening database:", err.message);
-  } else {
-    console.log("Connected to SQLite database.");
-    db.run(`
-      CREATE TABLE IF NOT EXISTS events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ledger_sequence INTEGER NOT NULL,
-        contract_id TEXT NOT NULL,
-        event_name TEXT NOT NULL,
-        task_id INTEGER NOT NULL,
-        data_json TEXT NOT NULL,
-        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(ledger_sequence, contract_id, event_name, task_id)
-      )
-    `);
-    db.run(`
-      CREATE TABLE IF NOT EXISTS tasks (
-        task_id INTEGER PRIMARY KEY,
-        creator TEXT NOT NULL,
-        target TEXT NOT NULL,
-        function TEXT NOT NULL,
-        args_json TEXT,
-        resolver TEXT,
-        interval INTEGER NOT NULL,
-        last_run INTEGER NOT NULL,
-        gas_balance TEXT NOT NULL,
-        whitelist_json TEXT,
-        is_active INTEGER NOT NULL,
-        blocked_by_json TEXT,
-        webhook_url TEXT,
-        webhook_secret_key TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_reconciled_at TIMESTAMP
-      )
-    `);
-    db.run(`
-      CREATE TABLE IF NOT EXISTS reconciliation_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id INTEGER,
-        status TEXT NOT NULL,
-        details_json TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-  }
-});
-
-// Initialize ledger hash validator for reorg detection (Issue #1065)
+// Database connection is handled by the PostgreSQL pool in ./graphql/db.js (Issue #1064)
+// Initialize ledger hash validator for reorg detection (Issue #1065, #1451)
 const ledgerHashValidator = new LedgerHashValidator({
   rpc,
   db,
   windowSize: parseInt(process.env.LEDGER_HASH_WINDOW_SIZE, 10) || 64,
+  maxRollbackDepth: parseInt(process.env.LEDGER_MAX_ROLLBACK_DEPTH, 10) || 16,
   onRollback: async (details) => {
-    console.error(`[ReorgRollback] Rolled back to ledger ${details.rollback.rollbackToSequence}`, {
-      deletedEvents: details.rollback.deletedEvents,
-      deletedTasks: details.rollback.deletedTasks,
+    console.error(`[ReorgRollback] Rolled back to ledger ${details.rollback?.rollbackToSequence ?? details.rollback?.rollbackToSequence}`, {
+      deletedEvents: details.rollback?.deletedEvents,
+      deletedTasks: details.rollback?.deletedTasks,
+      requeuedTasks: details.rollback?.requeuedTasks,
+      affectedTaskIds: details.rollback?.affectedTaskIds,
     });
+  },
+  requeueTasks: async (taskIds, rollbackToSequence) => {
+    console.log(`[ReorgRecovery] Re-queuing ${taskIds.length} tasks after rollback to ledger ${rollbackToSequence}`);
+    // Re-fetch on-chain state for each affected task and re-reconcile
+    let requeued = 0;
+    for (const taskId of taskIds) {
+      try {
+        // Trigger reconciliation for this task to get latest on-chain state
+        await reconcileTask(taskId);
+        requeued++;
+      } catch (err) {
+        console.error(`[ReorgRecovery] Failed to re-queue task ${taskId}:`, err.message);
+      }
+    }
+    return requeued;
   },
 });
 
@@ -279,7 +260,14 @@ async function handleEvent(event) {
   // After storing event, reconcile this task to ensure state is correct
   if (taskId) {
     await reconcileTask(taskId);
-    cacheInvalidator.invalidateForEvent(name, taskId, JSON.parse(dataJson || '{}'));
+    const parsedData = JSON.parse(dataJson || '{}');
+    cacheInvalidator.invalidateForEvent(name, taskId, parsedData);
+    await cacheInvalidator.handleDatabaseMutation({
+      table: 'events',
+      operation: name,
+      taskId,
+      record: parsedData,
+    });
   }
 }
 
@@ -358,8 +346,17 @@ function upsertTask(task) {
       task.is_active ? 1 : 0,
       task.blocked_by_json || JSON.stringify([]),
       (err) => {
-        if (err) reject(err);
-        else resolve();
+        if (err) {
+          reject(err);
+        } else {
+          void cacheInvalidator.handleDatabaseMutation({
+            table: 'tasks',
+            operation: 'UPSERT',
+            taskId: task.task_id,
+            record: task,
+          });
+          resolve();
+        }
       }
     );
     stmt.finalize();
@@ -703,7 +700,7 @@ if (!handleCLI()) {
     db,
     rpc,
     contractId: CONTRACT_ID,
-    intervalMs: Number(process.env.SYNTHETIC_INTERVAL_MS || 60_000),
+    intervalMs: Number(process.env.SYNTHETIC_INTERVAL_MS || 10 * 60_000),
     latencyThresholdMs: Number(process.env.SYNTHETIC_LATENCY_THRESHOLD_MS || 30_000),
     timeoutMs: Number(process.env.SYNTHETIC_TIMEOUT_MS || 120_000),
     webhookUrl: process.env.SYNTHETIC_MONITOR_WEBHOOK_URL || null,
@@ -723,6 +720,10 @@ if (!handleCLI()) {
   // to S3 Parquet and prune them from the primary table, checked daily.
   console.log("Starting event archival scheduler (cold storage, checked daily)...");
   scheduleArchival(dbDeps);
+
+  // Issue #1206: tier historical task executions to S3 cold storage, checked daily.
+  console.log("Starting execution archival scheduler (cold storage, checked daily)...");
+  scheduleExecutionsArchival(dbDeps);
 }
 
 // Graceful shutdown
@@ -736,12 +737,66 @@ process.on("SIGINT", () => {
   });
 });
 
+const DEBEZIUM_CONNECTOR_CONFIG = {
+  name: 'postgres-cdc-keeper-connector',
+  config: {
+    'connector.class': 'io.debezium.connector.postgresql.PostgresConnector',
+    'plugin.name': 'pgoutput',
+    'database.hostname': process.env.PG_HOST || 'localhost',
+    'database.port': process.env.PG_PORT || '5432',
+    'database.user': process.env.PG_USER || 'postgres',
+    'database.password': process.env.PG_PASSWORD || 'postgres',
+    'database.dbname': process.env.PG_DATABASE || 'sorotask',
+    'database.server.name': 'sorotask_cdc',
+    'table.include.list': 'public.tasks,public.task_configs',
+    'tombstones.on.delete': 'false',
+    'decimal.handling.mode': 'double',
+  },
+};
+
+async function publishCDCMutation(producer, topic, mutationEvent) {
+  const afterRecord = mutationEvent?.payload?.after || null;
+  const beforeRecord = mutationEvent?.payload?.before || null;
+  const key = afterRecord?.id ?? afterRecord?.task_id ?? beforeRecord?.id ?? beforeRecord?.task_id ?? null;
+
+  await cacheInvalidator.handleDatabaseMutation({
+    table: mutationEvent?.payload?.source?.table || 'tasks',
+    operation: mutationEvent?.payload?.op || 'UPDATE',
+    taskId: key,
+    record: afterRecord || beforeRecord || {},
+  });
+
+  if (!producer || typeof producer.send !== 'function') return;
+  await producer.send({
+    topic: topic || process.env.KEEPER_CDC_TOPIC || 'sorotask.cdc.keeper.mutations',
+    messages: [
+      {
+        key: key !== null ? String(key) : null,
+        value: JSON.stringify(mutationEvent),
+      },
+    ],
+  });
+}
+
+function configureEdgeCdnRules(surrogateKeys = ['tasks:all'], options = {}) {
+  return cacheInvalidator.buildCdnCacheHeaders(surrogateKeys, options);
+}
+
+async function triggerEdgeCachePurge(surrogateKeys = []) {
+  return cacheInvalidator.purgeEdgeCache(surrogateKeys);
+}
+
 module.exports = {
   handleEvent,
   reconcileTask,
   reconcileAll,
   HighAvailabilityManager,
   CacheInvalidationEngine,
+  cacheInvalidator,
+  configureEdgeCdnRules,
+  triggerEdgeCachePurge,
   ParallelLedgerParser,
+  DEBEZIUM_CONNECTOR_CONFIG,
+  publishCDCMutation,
 };
 

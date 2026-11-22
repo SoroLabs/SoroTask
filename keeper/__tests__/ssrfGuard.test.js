@@ -117,9 +117,9 @@ describe('assertUrlAllowed', () => {
     ).rejects.toThrow(/DNS resolution failed/);
   });
 
-  it('honours allowPrivate for operator-configured internal endpoints', async () => {
-    const result = await assertUrlAllowed('http://127.0.0.1:9000/internal', { allowPrivate: true });
-    expect(result.url.port).toBe('9000');
+  it('requires HTTPS even for operator-configured endpoints', async () => {
+    await expect(assertUrlAllowed('http://127.0.0.1:9000/internal', { allowPrivate: true }))
+      .rejects.toThrow(/Protocol not allowed/);
   });
 });
 

@@ -9,63 +9,63 @@
     "delete": "Supprimer",
     "loading": "Chargement...",
     "error": "Erreur",
-    "success": "Succès",
+    "success": "Succ\u00e8s",
     "warning": "Avertissement",
-    "no_data": "Aucune donnée disponible"
+    "no_data": "Aucune donn\u00e9e disponible"
   },
   "calendar": {
-    "title": "Calendrier de Planification des Tâches",
+    "title": "Calendrier de Planification des T\u00e2ches",
     "today": "Aujourd'hui",
-    "previous_month": "Mois précédent",
+    "previous_month": "Mois pr\u00e9c\u00e9dent",
     "next_month": "Mois suivant",
     "timezone": "Fuseau horaire",
     "legend": {
       "today": "Aujourd'hui",
-      "task_with_deadline": "Tâche avec échéance",
-      "multiple_tasks": "Plusieurs tâches à la même date",
-      "past_deadline": "Échéance dépassée"
+      "task_with_deadline": "T\u00e2che avec \u00e9ch\u00e9ance",
+      "multiple_tasks": "Plusieurs t\u00e2ches \u00e0 la m\u00eame date",
+      "past_deadline": "\u00c9ch\u00e9ance d\u00e9pass\u00e9e"
     },
-    "selected_date_title": "Tâches le {date}",
-    "no_tasks_scheduled": "Aucune tâche programmée",
+    "selected_date_title": "T\u00e2ches le {date}",
+    "no_tasks_scheduled": "Aucune t\u00e2che programm\u00e9e",
     "schedule_calendar": "Calendrier de Programmation"
   },
   "calendar_day": {
     "more_button": "+{count} plus",
-    "tasks_label": "{count} tâche{plural}"
+    "tasks_label": "{count} t\u00e2che{plural}"
   },
   "dense_popover": {
-    "tasks_scheduled": "{count} tâche{plural} programmée{plural}",
-    "click_task_to_view": "Cliquez sur la tâche pour voir les détails"
+    "tasks_scheduled": "{count} t\u00e2che{plural} programm\u00e9e{plural}",
+    "click_task_to_view": "Cliquez sur la t\u00e2che pour voir les d\u00e9tails"
   },
   "task_detail": {
-    "title": "Détails de la Tâche",
+    "title": "D\u00e9tails de la T\u00e2che",
     "status": "Statut",
     "contract_address": "Adresse du Contrat",
     "description": "Description",
-    "schedule_settings": "Paramètres de Planification",
-    "execution_interval": "Intervalle d'Exécution",
+    "schedule_settings": "Param\u00e8tres de Planification",
+    "execution_interval": "Intervalle d'Ex\u00e9cution",
     "gas_balance": "Solde de Gaz",
-    "next_execution": "Prochaine Exécution",
+    "next_execution": "Prochaine Ex\u00e9cution",
     "deadline": "Date Limite",
-    "due_date": "Date d'Échéance",
-    "time_until_deadline": "Temps jusqu'à l'Échéance",
-    "due_today": "Dû Aujourd'hui!",
+    "due_date": "Date d'\u00c9ch\u00e9ance",
+    "time_until_deadline": "Temps jusqu'\u00e0 l'\u00c9ch\u00e9ance",
+    "due_today": "D\u00fb Aujourd'hui!",
     "overdue_by": "En retard de {days} jour{plural}",
     "days_remaining": "{days} jour{plural} restant{plural}",
-    "created": "Créé",
+    "created": "Cr\u00e9\u00e9",
     "timezone_label": "Fuseau Horaire",
-    "tags": "Étiquettes",
-    "edit_task": "Modifier la Tâche",
+    "tags": "\u00c9tiquettes",
+    "edit_task": "Modifier la T\u00e2che",
     "view_logs": "Afficher les Journaux",
     "status_pending": "En Attente",
     "status_active": "Actif",
-    "status_completed": "Terminé",
-    "status_failed": "Échoué",
-    "status_paused": "Pausé"
+    "status_completed": "Termin\u00e9",
+    "status_failed": "\u00c9chou\u00e9",
+    "status_paused": "Paus\u00e9"
   },
   "forms": {
-    "create_automation_task": "Créer une Tâche d'Automatisation",
-    "your_tasks": "Mes Tâches",
+    "create_automation_task": "Cr\u00e9er une T\u00e2che d'Automatisation",
+    "your_tasks": "Mes T\u00e2ches",
     "target_contract_address": "Adresse du Contrat Cible",
     "contract_placeholder": "C...",
     "function_name": "Nom de la Fonction",
@@ -74,17 +74,17 @@
     "interval_placeholder": "3600",
     "gas_balance_xlm": "Solde de Gaz (XLM)",
     "gas_balance_placeholder": "10",
-    "register_task": "Enregistrer la Tâche",
-    "no_tasks_registered_yet": "Aucune tâche enregistrée pour l'instant."
+    "register_task": "Enregistrer la T\u00e2che",
+    "no_tasks_registered_yet": "Aucune t\u00e2che enregistr\u00e9e pour l'instant."
   },
   "execution_logs": {
-    "title": "Journaux d'Exécution",
-    "task_id": "ID de Tâche",
+    "title": "Journaux d'Ex\u00e9cution",
+    "task_id": "ID de T\u00e2che",
     "target": "Cible",
     "keeper": "Gardien",
     "status": "Statut",
     "timestamp": "Horodatage",
-    "status_success": "Succès",
+    "status_success": "Succ\u00e8s",
     "mins_ago": "il y a {mins} minutes"
   },
   "formatting": {
@@ -92,5 +92,33 @@
     "seconds_short": "s",
     "interval_display": "{hours}h ({seconds} secondes)",
     "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "\u00c9tat de la connexion",
+    "online": "En ligne",
+    "offline": "Hors ligne",
+    "resyncing": "Synchronisation",
+    "sync_failed": "\u00c9chec de la synchronisation",
+    "queued_actions": "{count, plural, =0 {Aucune action en attente} one {# action en attente} other {# actions en attente}}",
+    "replaying": "{count, plural, one {Relecture d'une action en attente} other {Relecture de # actions en attente}}",
+    "still_queued": "{count, plural, one {# action encore en attente} other {# actions encore en attente}}",
+    "browse_cached": "Vous pouvez continuer \u00e0 consulter le contenu en cache. Les modifications seront mises en attente.",
+    "will_run_when_back": "s'ex\u00e9cuteront \u00e0 votre retour en ligne.",
+    "retry": "R\u00e9essayer",
+    "read_only_notice": "Vous \u00eates en lecture seule. Ce que vous \u00e9crivez est envoy\u00e9 \u00e0 votre retour en ligne."
+  },
+  "theme": {
+    "label": "Th\u00e8me",
+    "light": "Clair",
+    "dark": "Sombre",
+    "oled": "OLED \u00e0 contraste \u00e9lev\u00e9",
+    "system": "Syst\u00e8me",
+    "change": "Th\u00e8me : {mode}. Cliquez pour changer.",
+    "resolving_to": "R\u00e9sout actuellement en {resolved}."
+  },
+  "language": {
+    "label": "Choisir la langue",
+    "loading": "Chargement de la langue...",
+    "available": "{count, plural, =0 {Aucune langue} one {# langue} other {# langues}}"
   }
 }

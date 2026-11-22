@@ -1,5 +1,10 @@
 import { create } from "zustand";
 import { calculateYieldForecast, YieldConfig, YieldProjectionPoint } from "../lib/yield/calculator";
+import {
+  breakEvenFeePerExecution,
+  findOptimalInterval,
+  type OptimizationResult,
+} from "../lib/yield/optimizer";
 
 interface YieldStoreState {
   // Inputs
@@ -20,9 +25,17 @@ interface YieldStoreState {
   depleted: boolean;
   warnings: string[];
 
+  // Optimization (Issue #1249)
+  /** Every candidate interval evaluated, best net outcome first. */
+  optimization: OptimizationResult | null;
+  /** Fee per execution at which the current schedule stops being worth it. */
+  breakEvenFee: number;
+
   // Actions
   setInputs: (inputs: Partial<YieldConfig>) => void;
   runForecast: () => void;
+  /** Adopt the interval the optimizer identified as best. */
+  applyOptimalInterval: () => void;
   reset: () => void;
 }
 
@@ -45,6 +58,8 @@ export const useYieldStore = create<YieldStoreState>((set, get) => ({
   totalFeesPaid: 0,
   depleted: false,
   warnings: [],
+  optimization: null,
+  breakEvenFee: 0,
 
   setInputs: (newInputs) => {
     set((state) => ({ ...state, ...newInputs }));
@@ -62,7 +77,7 @@ export const useYieldStore = create<YieldStoreState>((set, get) => ({
       multiplier,
     } = get();
 
-    const result = calculateYieldForecast({
+    const config = {
       principal,
       apr,
       frequency,
@@ -70,7 +85,14 @@ export const useYieldStore = create<YieldStoreState>((set, get) => ({
       gasFeePerTx,
       keeperFeePerTx,
       multiplier,
-    });
+    };
+
+    const result = calculateYieldForecast(config);
+
+    // Run in the same pass as the forecast: the optimizer evaluates the same
+    // four candidates the user could pick, so computing it separately would
+    // let the two disagree after an input change.
+    const optimization = findOptimalInterval(config);
 
     set({
       projections: result.projections,
@@ -80,7 +102,15 @@ export const useYieldStore = create<YieldStoreState>((set, get) => ({
       totalFeesPaid: result.totalFeesPaid,
       depleted: result.depleted,
       warnings: result.warnings,
+      optimization,
+      breakEvenFee: breakEvenFeePerExecution(config, frequency),
     });
+  },
+
+  applyOptimalInterval: () => {
+    const optimal = get().optimization?.optimal;
+    if (!optimal) return;
+    get().setInputs({ frequency: optimal.frequency });
   },
 
   reset: () => {
@@ -93,6 +123,8 @@ export const useYieldStore = create<YieldStoreState>((set, get) => ({
       totalFeesPaid: 0,
       depleted: false,
       warnings: [],
+      optimization: null,
+      breakEvenFee: 0,
     });
     get().runForecast();
   },

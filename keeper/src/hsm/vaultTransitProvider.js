@@ -5,21 +5,25 @@ class VaultTransitProvider extends HSMProvider {
     super(opts);
     this.vaultAddr = (opts.vaultAddr || process.env.VAULT_ADDR || '').replace(/\/$/, '');
     this.vaultToken = opts.vaultToken || process.env.VAULT_TOKEN || '';
+    this.leaseManager = opts.leaseManager || null;
     this.transitPath = (opts.transitPath || process.env.VAULT_TRANSIT_PATH || 'v1/transit').replace(/^\//, '');
 
-    if (!this.vaultAddr) {
+    if (!this.vaultAddr && !this.leaseManager) {
       throw new Error('VaultTransitProvider: VAULT_ADDR is required');
     }
-    if (!this.vaultToken) {
+    if (!this.vaultToken && !this.leaseManager) {
       throw new Error('VaultTransitProvider: VAULT_TOKEN is required');
     }
   }
 
   async _fetch(method, path, body = null) {
     const fetchFn = globalThis.fetch || require('node-fetch');
-    const url = `${this.vaultAddr}/${path}`;
+    if (this.leaseManager && !this.leaseManager.getToken()) await this.leaseManager.authenticate();
+    const addr = this.leaseManager?.getAddress() || this.vaultAddr;
+    const token = this.leaseManager?.getToken() || this.vaultToken;
+    const url = `${addr}/${path}`;
     const headers = {
-      'X-Vault-Token': this.vaultToken,
+      'X-Vault-Token': token,
       'Content-Type': 'application/json',
     };
     const opts = { method, headers };

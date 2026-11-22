@@ -26,9 +26,10 @@ const ALLOWED_TAGS = [
   "hr",
   "span",
   "div",
+  "img",
 ];
 
-const ALLOWED_ATTR = ["href", "target", "rel", "class", "data-lang"];
+const ALLOWED_ATTR = ["href", "target", "rel", "class", "data-lang", "src", "alt", "title"];
 
 /**
  * Sanitizes an HTML string to prevent XSS.
@@ -38,17 +39,13 @@ const ALLOWED_ATTR = ["href", "target", "rel", "class", "data-lang"];
  */
 export function sanitizeHtml(dirty: string): string {
   if (typeof window === "undefined") {
-    // Basic regex fallback for SSR environment when window/DOM is not present
-    return dirty
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-      .replace(/on\w+="[^"]*"/gi, "")
-      .replace(/on\w+='[^']*'/gi, "")
-      .replace(/javascript:[^\s"']*/gi, "");
+    return "";
   }
 
   return DOMPurify.sanitize(dirty, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
     ADD_ATTR: ["target"],
     FORCE_BODY: false,
     RETURN_DOM: false,
@@ -71,11 +68,16 @@ export function sanitizeResolverOutput(output: unknown): string {
       : String(output);
 
   if (typeof window === "undefined") {
-    return rawString
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-      .replace(/on\w+="[^"]*"/gi, "")
-      .replace(/on\w+='[^']*'/gi, "")
-      .replace(/javascript:[^\s"']*/gi, "");
+    return rawString.replace(/[&<>"']/g, (character) => {
+      const entities: Record<string, string> = {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      };
+      return entities[character]!;
+    });
   }
 
   return DOMPurify.sanitize(rawString, {
@@ -90,14 +92,14 @@ export function sanitizeResolverOutput(output: unknown): string {
  */
 export function addSafeLinkAttributes(html: string): string {
   return html.replace(
-    /<a\s([^>]*href="[^"]*"[^>]*)>/gi,
+    /<a\s([^>]*)>/gi,
     (match, attrs: string) => {
-      const hasRel = /rel=/i.test(attrs);
-      const hasTarget = /target=/i.test(attrs);
-      let result = attrs;
-      if (!hasTarget) result += ' target="_blank"';
-      if (!hasRel) result += ' rel="noopener noreferrer"';
-      return `<a ${result}>`;
+      if (!/\bhref\s*=/i.test(attrs)) return match;
+      const safeAttrs = attrs.replace(
+        /\s(?:target|rel)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+        "",
+      );
+      return `<a${safeAttrs} target="_blank" rel="noopener noreferrer">`;
     },
   );
 }

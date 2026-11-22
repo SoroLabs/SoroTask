@@ -82,12 +82,15 @@ describe("SorobanService", () => {
     });
     (rpc.Api.isSimulationSuccess as jest.Mock).mockReturnValueOnce(false);
 
-    await expect(
-      service.executeContractCall({
-        publicKey: MOCK_ADDRESS,
-        contractId: "C1234",
-        method: "test",
-      })
-    ).rejects.toThrow(/Simulation failed/);
+    const failure = service.executeContractCall({
+      publicKey: MOCK_ADDRESS,
+      contractId: "C1234",
+      method: "test",
+    });
+    await expect(failure).rejects.toMatchObject({
+      name: "SorobanContractError",
+      message: expect.stringMatching(/Simulation failed/),
+      diagnosticPayload: "someerror",
+    });
   });
 });

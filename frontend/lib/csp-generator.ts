@@ -9,7 +9,7 @@ export interface CspOptions {
  * Generates a dynamic Content Security Policy (CSP) string.
  * Time Complexity: O(D + E) where D is the number of base directives and E is the number of extra directives.
  * Space Complexity: O(D + E) to store the policy strings.
- * 
+ *
  * @param options - Configuration for the CSP generation.
  * @returns Formatted CSP string.
  */
@@ -19,11 +19,13 @@ export function generateCsp(options: CspOptions = {}): string {
   const baseDirectives: Record<string, string[]> = {
     'default-src': ["'self'"],
     'script-src': ["'self'", "'strict-dynamic'"],
-    'style-src': ["'self'", "'unsafe-inline'"],
+    'style-src': ["'self'"],
+    'style-src-attr': ["'unsafe-inline'"],
     'img-src': ["'self'", 'data:', 'blob:'],
     'font-src': ["'self'", 'data:'],
     'connect-src': ["'self'"],
-    'frame-src': ["'self'"],
+    'worker-src': ["'self'", 'blob:'],
+    'frame-src': ["'none'"],
     'object-src': ["'none'"],
     'base-uri': ["'self'"],
     'form-action': ["'self'"],
@@ -33,12 +35,12 @@ export function generateCsp(options: CspOptions = {}): string {
 
   if (nonce) {
     baseDirectives['script-src'].push(`'nonce-${nonce}'`);
+    baseDirectives['style-src'].push(`'nonce-${nonce}'`);
   }
 
   if (isDev) {
-    // In development, allow eval for hot module reloading and inline scripts
+    // Next.js development tooling uses eval for hot module replacement.
     baseDirectives['script-src'].push("'unsafe-eval'");
-    baseDirectives['script-src'].push("'unsafe-inline'");
   }
 
   if (reportUri) {

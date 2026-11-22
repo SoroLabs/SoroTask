@@ -1,4 +1,5 @@
 import nextConfig from "../next.config";
+import { generateCsp } from "../lib/csp-generator";
 
 describe("Frontend Security Headers & Content Security Policy Configuration", () => {
   it("should export an async headers function", () => {
@@ -13,19 +14,16 @@ describe("Frontend Security Headers & Content Security Policy Configuration", ()
   });
 
   it("should configure strict Content-Security-Policy (CSP)", async () => {
-    if (!nextConfig.headers) return;
-    const headerConfigs = await nextConfig.headers();
-    const headers = headerConfigs[0].headers;
-    const csp = headers.find(
-      (h: { key: string }) => h.key === "Content-Security-Policy",
+    const csp = generateCsp({ nonce: "test-nonce", isDev: false });
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain(
+      "script-src 'self' 'strict-dynamic' 'nonce-test-nonce'",
     );
-
-    expect(csp).toBeDefined();
-    expect(csp?.value).toContain("default-src 'self'");
-    expect(csp?.value).toContain("script-src 'self'");
-    expect(csp?.value).toContain("connect-src 'self'");
-    expect(csp?.value).toContain("frame-ancestors 'none'");
-    expect(csp?.value).toContain("object-src 'none'");
+    expect(csp).toContain("connect-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).toContain("frame-src 'none'");
+    expect(csp).not.toContain("script-src 'self' 'unsafe-inline'");
   });
 
   it("should configure X-Frame-Options DENY", async () => {

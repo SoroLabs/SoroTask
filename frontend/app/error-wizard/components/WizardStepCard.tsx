@@ -7,7 +7,7 @@ interface WizardStepCardProps {
   step: WizardStep;
   stepNumber: number;
   totalSteps: number;
-  onApply: (patch?: ResolutionAction['patch']) => void;
+  onRecover: (action: ResolutionAction) => void;
   onSkip: () => void;
 }
 
@@ -15,6 +15,7 @@ const CATEGORY_ICON: Record<string, string> = {
   INSUFFICIENT_GAS: '⛽',
   INSUFFICIENT_BALANCE: '💰',
   INSUFFICIENT_FEE: '💸',
+  TOKEN_APPROVAL_REQUIRED: '✅',
   BAD_AUTH: '🔐',
   WALLET_LOCKED: '🔒',
   WALLET_REJECTED: '🚫',
@@ -35,12 +36,23 @@ export function WizardStepCard({
   step,
   stepNumber,
   totalSteps,
-  onApply,
+  onRecover,
   onSkip,
 }: WizardStepCardProps) {
   const icon = CATEGORY_ICON[step.category] ?? '🔧';
   // Use the first action's patch for the primary Apply button
   const primaryAction = step.actions[0];
+  const primaryLabel =
+    primaryAction?.type === 'reconnect_wallet' ||
+    primaryAction?.type === 'top_up_balance' ||
+    primaryAction?.type === 'switch_network' ||
+    primaryAction?.type === 'approve_token'
+      ? 'Open wallet'
+      : primaryAction?.type === 'wait_and_retry'
+        ? 'Show retry guidance'
+        : primaryAction?.type === 'contact_support'
+          ? 'Show support details'
+          : 'Accept suggestion';
 
   return (
     <div
@@ -58,6 +70,17 @@ export function WizardStepCard({
           </p>
           <h2 className="text-base font-semibold text-neutral-100">{step.title}</h2>
           <p className="text-sm text-neutral-400 mt-1 leading-relaxed">{step.explanation}</p>
+          {step.diagnostic && (
+            <details className="mt-3 rounded-lg border border-neutral-700 bg-neutral-950 p-3">
+              <summary className="cursor-pointer text-xs font-medium text-neutral-200">
+                Decoded {step.diagnostic.format} diagnostic
+                {step.diagnostic.code ? ` · ${step.diagnostic.code}` : ''}
+              </summary>
+              <p className="mt-2 break-all font-mono text-xs text-neutral-300">
+                {step.diagnostic.decodedText || 'No printable diagnostic text was found.'}
+              </p>
+            </details>
+          )}
         </div>
       </div>
 
@@ -76,6 +99,14 @@ export function WizardStepCard({
                   {action.patch.field} → {action.patch.value}
                 </p>
               )}
+              {(action.type === 'reconnect_wallet' ||
+                action.type === 'top_up_balance' ||
+                action.type === 'switch_network' ||
+                action.type === 'approve_token') && (
+                <p className="mt-1 text-xs text-neutral-400">
+                  Opens the wallet panel; verify all transaction details before signing. No approval is submitted automatically.
+                </p>
+              )}
             </div>
           </div>
         ))}
@@ -85,11 +116,11 @@ export function WizardStepCard({
       <div className="flex gap-3 pt-1">
         <button
           type="button"
-          onClick={() => onApply(primaryAction?.patch)}
-          aria-label={`Apply fix: ${primaryAction?.label ?? step.title}`}
+          onClick={() => primaryAction && onRecover(primaryAction)}
+          aria-label={`${primaryLabel}: ${primaryAction?.label ?? step.title}`}
           className="flex-1 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors"
         >
-          Apply Fix
+          {primaryLabel}
         </button>
         <button
           type="button"

@@ -113,6 +113,18 @@ class FraudDetectionService extends EventEmitter {
     this.lastAlertBySignature = new Map();
     this.dispatchPromise = null;
 
+    // #1464 — Real-Time Anomaly Detection Engine (Isolation Forest + State Variance + Auto-Pause)
+    this.isolationThreshold = Number(options.isolationThreshold ?? 0.65);
+    this.stateVarianceZThreshold = Number(options.stateVarianceZThreshold ?? 3.5);
+    this.isolationForest = options.isolationForest || new IsolationForestDetector({
+      numTrees: options.numTrees || 25,
+      sampleSize: options.sampleSize || 32,
+    });
+    this.taskParameterBaselines = new Map();
+    this.contractStateBaselines = new Map();
+    this.quarantinedTasks = new Map();
+    this.exploitReports = [];
+
     this.stats = {
       observations: 0,
       alertsQueued: 0,
@@ -123,6 +135,8 @@ class FraudDetectionService extends EventEmitter {
       lastRiskScore: 0,
       lastAlertAt: null,
       lastAlertReason: null,
+      anomaliesDetected: 0,
+      tasksAutoPaused: 0,
     };
   }
 
@@ -677,6 +691,351 @@ class FraudDetectionService extends EventEmitter {
       this.metricsServer.record('fraudRiskScore', this.stats.lastRiskScore);
     }
   }
+
+  /**
+   * #1464 — Monitor task gas consumption and execution parameters against rolling baselines.
+   *
+   * @param {string|number} taskId
+   * @param {object} params - { gasUsed, callDepth, argCount, payloadBytes }
+   * @returns {object}
+   */
+  monitorExecutionParameters(taskId, params = {}) {
+    const id = String(taskId);
+    const gasUsed = clampNonNegative(Number(params.gasUsed ?? params.feePaid ?? 100), 100);
+    const callDepth = clampNonNegative(Number(params.callDepth ?? 1), 1);
+    const argCount = clampNonNegative(Number(params.argCount ?? (Array.isArray(params.args) ? params.args.length : 1)), 0);
+    const payloadBytes = clampNonNegative(Number(params.payloadBytes ?? 64), 0);
+
+    let history = this.taskParameterBaselines.get(id);
+    if (!history) {
+      history = [];
+      this.taskParameterBaselines.set(id, history);
+    }
+
+    const baselineGasValues = history.map((h) => h.gasUsed);
+    const baselineGasMedian = baselineGasValues.length > 0 ? median(baselineGasValues) : gasUsed;
+    const gasRatio = baselineGasMedian > 0 ? gasUsed / baselineGasMedian : 1;
+
+    history.push({ gasUsed, callDepth, argCount, payloadBytes, timestamp: this.now() });
+    if (history.length > 50) {
+      history.shift();
+    }
+
+    const isGasAnomaly = history.length >= 2 && gasRatio >= this.feeSpikeMultiplier;
+    const isCallDepthAnomaly = callDepth > 6;
+
+    return {
+      taskId: id,
+      gasUsed,
+      baselineGasMedian,
+      gasRatio: Number(gasRatio.toFixed(3)),
+      callDepth,
+      argCount,
+      payloadBytes,
+      isGasAnomaly,
+      isCallDepthAnomaly,
+    };
+  }
+
+  /**
+   * #1464 — Detect sudden variance spikes in contract state variables.
+   *
+   * @param {string|number} taskId
+   * @param {object} stateVars - Map of numeric contract state variables (e.g. { escrowBalance, poolReserve })
+   * @returns {object}
+   */
+  detectStateVarianceSpike(taskId, stateVars = {}) {
+    const id = String(taskId);
+    let varHistory = this.contractStateBaselines.get(id);
+    if (!varHistory) {
+      varHistory = new Map();
+      this.contractStateBaselines.set(id, varHistory);
+    }
+
+    let maxZScore = 0;
+    let maxRelativeDelta = 0;
+    const spikedVariables = [];
+
+    for (const [varName, rawVal] of Object.entries(stateVars || {})) {
+      const val = Number(rawVal);
+      if (!Number.isFinite(val)) continue;
+
+      let series = varHistory.get(varName);
+      if (!series) {
+        series = [];
+        varHistory.set(varName, series);
+      }
+
+      if (series.length >= 2) {
+        const mean = series.reduce((s, v) => s + v, 0) / series.length;
+        const variance = series.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / series.length;
+        const stdDev = Math.sqrt(variance);
+        const diff = Math.abs(val - mean);
+        const relDelta = Math.abs(mean) > 1e-9 ? diff / Math.abs(mean) : diff;
+        const effectiveSigma = stdDev > 1e-6 ? stdDev : Math.max(1, Math.abs(mean) * 0.05);
+        const zScore = diff / effectiveSigma;
+
+        if (zScore > maxZScore) maxZScore = zScore;
+        if (relDelta > maxRelativeDelta) maxRelativeDelta = relDelta;
+
+        if (zScore >= this.stateVarianceZThreshold && relDelta >= 0.35) {
+          spikedVariables.push({
+            variable: varName,
+            value: val,
+            baselineMean: Number(mean.toFixed(4)),
+            zScore: Number(zScore.toFixed(3)),
+            relativeDelta: Number(relDelta.toFixed(4)),
+          });
+        }
+      }
+
+      series.push(val);
+      if (series.length > 50) {
+        series.shift();
+      }
+    }
+
+    return {
+      taskId: id,
+      hasVarianceSpike: spikedVariables.length > 0,
+      maxZScore: Number(maxZScore.toFixed(3)),
+      maxRelativeDelta: Number(maxRelativeDelta.toFixed(4)),
+      spikedVariables,
+    };
+  }
+
+  /**
+   * #1464 — Real-Time Isolation Forest Anomaly Detection Pipeline.
+   * Evaluates incoming execution payloads in < 10ms, avoids false positives on
+   * standard volatile market events, auto-pauses suspect tasks before ledger
+   * finalization, and generates detailed exploit reports.
+   *
+   * @param {object} payload
+   * @returns {object}
+   */
+  evaluateFlashLoanAnomaly(payload = {}) {
+    const startNs = process.hrtime.bigint();
+    const taskId = payload.taskId !== undefined && payload.taskId !== null ? String(payload.taskId) : 'unknown';
+
+    const paramMetrics = this.monitorExecutionParameters(taskId, payload);
+    const stateMetrics = this.detectStateVarianceSpike(taskId, payload.stateVariables || payload.contractState || {});
+
+    const flashLoanBorrowed = clampNonNegative(Number(payload.flashLoanBorrowed ?? 0), 0);
+    const escrowDrainRatio = clampNonNegative(Number(payload.escrowDrainRatio ?? 0), 0);
+    const reentrancyDepth = clampNonNegative(Number(payload.reentrancyDepth ?? 0), 0);
+
+    // Market volatility context — standard volatile market events exhibit correlated
+    // price movement across reference feeds without flash-loan borrow/drain or reentrancy.
+    const isStandardVolatileMarket = Boolean(
+      payload.marketContext?.isStandardVolatility ||
+      (payload.marketContext?.correlatedAssetMove && flashLoanBorrowed === 0 && escrowDrainRatio < 0.25 && reentrancyDepth === 0),
+    );
+
+    const featureVector = [
+      paramMetrics.gasRatio,
+      paramMetrics.callDepth,
+      Math.min(20, stateMetrics.maxZScore),
+      flashLoanBorrowed > 0 ? Math.log10(flashLoanBorrowed + 1) : 0,
+      escrowDrainRatio * 10,
+      reentrancyDepth * 3,
+    ];
+
+    const rawAnomalyScore = this.isolationForest.score(featureVector);
+    const adjustedAnomalyScore = isStandardVolatileMarket
+      ? Math.min(rawAnomalyScore * 0.45, this.isolationThreshold - 0.15)
+      : rawAnomalyScore;
+
+    const reasons = [];
+    if (flashLoanBorrowed > 0 && (escrowDrainRatio >= 0.4 || stateMetrics.hasVarianceSpike || paramMetrics.gasRatio >= 3)) {
+      reasons.push('flash_loan_exploit_signature');
+    }
+    if (!isStandardVolatileMarket && stateMetrics.hasVarianceSpike) {
+      reasons.push('contract_state_variance_spike');
+    }
+    if (!isStandardVolatileMarket && paramMetrics.isGasAnomaly) {
+      reasons.push('abnormal_gas_consumption');
+    }
+    if (!isStandardVolatileMarket && paramMetrics.isCallDepthAnomaly) {
+      reasons.push('suspicious_call_depth');
+    }
+    if (reentrancyDepth > 1) {
+      reasons.push('reentrancy_loop_detected');
+    }
+
+    const isAnomalous = !isStandardVolatileMarket && (
+      adjustedAnomalyScore >= this.isolationThreshold ||
+      reasons.includes('flash_loan_exploit_signature') ||
+      (stateMetrics.hasVarianceSpike && paramMetrics.isGasAnomaly)
+    );
+
+    let exploitReport = null;
+    let autoPaused = false;
+
+    if (isAnomalous) {
+      this.stats.anomaliesDetected += 1;
+      autoPaused = true;
+      this.stats.tasksAutoPaused += 1;
+
+      const detectionLatencyMs = Number((Number(process.hrtime.bigint() - startNs) / 1e6).toFixed(4));
+      exploitReport = {
+        reportId: `exploit-${taskId}-${this.now()}`,
+        taskId,
+        timestamp: new Date(this.now()).toISOString(),
+        anomalyScore: Number(adjustedAnomalyScore.toFixed(4)),
+        threshold: this.isolationThreshold,
+        detectionLatencyMs,
+        autoPaused: true,
+        quarantineStatus: 'QUARANTINED_BEFORE_FINALIZATION',
+        reasons: reasons.length > 0 ? reasons : ['isolation_forest_outlier'],
+        parameterTelemetry: paramMetrics,
+        stateVarianceTelemetry: stateMetrics,
+        flashLoanIndicators: {
+          flashLoanBorrowed,
+          escrowDrainRatio,
+          reentrancyDepth,
+        },
+        recommendedAction: 'Keep task paused, inspect target contract state transitions, and verify escrow invariants.',
+      };
+
+      this.quarantinedTasks.set(taskId, exploitReport);
+      this.exploitReports.push(exploitReport);
+      while (this.exploitReports.length > this.recentLimit) {
+        this.exploitReports.shift();
+      }
+
+      this.emit('task:auto-paused', { taskId, report: exploitReport });
+      this.emit('exploit:detected', exploitReport);
+    }
+
+    const detectionLatencyMs = Number((Number(process.hrtime.bigint() - startNs) / 1e6).toFixed(4));
+
+    return {
+      taskId,
+      isAnomalous,
+      autoPaused,
+      isStandardVolatileMarket,
+      anomalyScore: Number(adjustedAnomalyScore.toFixed(4)),
+      detectionLatencyMs,
+      withinLatencySla: detectionLatencyMs < 10,
+      reasons,
+      exploitReport,
+    };
+  }
+
+  isTaskQuarantined(taskId) {
+    return this.quarantinedTasks.has(String(taskId));
+  }
+
+  releaseQuarantine(taskId) {
+    return this.quarantinedTasks.delete(String(taskId));
+  }
+
+  getExploitReports() {
+    return [...this.exploitReports];
+  }
 }
 
-module.exports = { FraudDetectionService };
+/**
+ * Lightweight, fast (< 1ms) Isolation Forest model for real-timekeeper execution
+ * anomaly scoring (#1464).
+ */
+class IsolationForestDetector {
+  constructor(options = {}) {
+    this.numTrees = options.numTrees || 25;
+    this.sampleSize = options.sampleSize || 32;
+    this.maxDepth = Math.ceil(Math.log2(this.sampleSize));
+    this.trees = [];
+
+    // Seed baseline normal + standard volatile execution profiles
+    const baselineProfiles = options.baselineProfiles || IsolationForestDetector.defaultBaselines();
+    this.fit(baselineProfiles);
+  }
+
+  static defaultBaselines() {
+    const samples = [];
+    for (let i = 0; i < 64; i++) {
+      // [gasRatio, callDepth, stateZScore, logFlashLoan, drainRatio*10, reentrancy*3]
+      const gasRatio = 0.8 + (i % 10) * 0.12; // 0.8x - 1.88x
+      const callDepth = 1 + (i % 3); // 1 - 3
+      const stateZ = (i % 8) * 0.35; // 0 - 2.45
+      samples.push([gasRatio, callDepth, stateZ, 0, (i % 4) * 0.2, 0]);
+    }
+    return samples;
+  }
+
+  static cFactor(n) {
+    if (n <= 1) return 1;
+    if (n === 2) return 1;
+    return 2 * (Math.log(n - 1) + 0.5772156649) - (2 * (n - 1)) / n;
+  }
+
+  fit(samples = []) {
+    if (!samples.length) return;
+    this.trees = [];
+    for (let t = 0; t < this.numTrees; t++) {
+      const subset = [];
+      for (let i = 0; i < Math.min(this.sampleSize, samples.length); i++) {
+        subset.push(samples[(t * 7 + i * 3) % samples.length]);
+      }
+      this.trees.push(this._buildTree(subset, 0, t + 1));
+    }
+  }
+
+  _buildTree(points, depth, seed) {
+    if (depth >= this.maxDepth || points.length <= 1) {
+      return { external: true, size: points.length };
+    }
+    const dimCount = points[0].length;
+    const featureIdx = (depth + seed) % dimCount;
+    let minVal = Infinity;
+    let maxVal = -Infinity;
+    for (let i = 0; i < points.length; i++) {
+      const v = points[i][featureIdx];
+      if (v < minVal) minVal = v;
+      if (v > maxVal) maxVal = v;
+    }
+    if (Math.abs(maxVal - minVal) < 1e-9) {
+      return { external: true, size: points.length };
+    }
+    const ratio = 0.25 + (((seed * 31 + depth * 17) % 50) / 100);
+    const splitVal = minVal + (maxVal - minVal) * ratio;
+
+    const left = [];
+    const right = [];
+    for (let i = 0; i < points.length; i++) {
+      if (points[i][featureIdx] < splitVal) left.push(points[i]);
+      else right.push(points[i]);
+    }
+    return {
+      external: false,
+      featureIdx,
+      splitVal,
+      left: this._buildTree(left, depth + 1, seed + 3),
+      right: this._buildTree(right, depth + 1, seed + 5),
+    };
+  }
+
+  _pathLength(point, node, currentDepth) {
+    if (!node || node.external) {
+      return currentDepth + IsolationForestDetector.cFactor(node ? node.size : 1);
+    }
+    const val = point[node.featureIdx] ?? 0;
+    if (val < node.splitVal) {
+      return this._pathLength(point, node.left, currentDepth + 1);
+    }
+    return this._pathLength(point, node.right, currentDepth + 1);
+  }
+
+  score(point) {
+    if (!this.trees.length) return 0;
+    let totalPath = 0;
+    for (let i = 0; i < this.trees.length; i++) {
+      totalPath += this._pathLength(point, this.trees[i], 0);
+    }
+    const avgPath = totalPath / this.trees.length;
+    const cn = IsolationForestDetector.cFactor(this.sampleSize);
+    return Math.pow(2, -avgPath / cn);
+  }
+}
+
+module.exports = { FraudDetectionService, IsolationForestDetector };

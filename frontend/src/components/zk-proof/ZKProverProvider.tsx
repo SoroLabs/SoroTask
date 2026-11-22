@@ -2,20 +2,16 @@
 
 import React, { createContext, useContext, type ReactNode } from "react";
 import { useZKProverEngine } from "@/src/hooks/useZKProverEngine";
-import type {
-  ZkEngineConfig,
-  UseZKProverEngineReturn,
-} from "@/src/hooks/useZKProverEngine";
+import type { UseZKProverEngineReturn } from "@/src/hooks/useZKProverEngine";
 
 const ZKProverEngineContext = createContext<UseZKProverEngineReturn | null>(null);
 
 interface ZKProverProviderProps {
-  config?: Partial<ZkEngineConfig>;
   children: ReactNode;
 }
 
-export function ZKProverProvider({ config, children }: ZKProverProviderProps) {
-  const engine = useZKProverEngine(config);
+export function ZKProverProvider({ children }: ZKProverProviderProps) {
+  const engine = useZKProverEngine();
 
   return (
     <ZKProverEngineContext.Provider value={engine}>

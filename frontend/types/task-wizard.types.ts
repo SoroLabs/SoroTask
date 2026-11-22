@@ -10,8 +10,15 @@ export interface SimulationResult {
   success: boolean;
   minResourceFee: string;
   estimatedCpuInstructions: number;
-  estimatedMemoryBytes: number;
   errorMessage?: string;
+  networkFee?: string;
+  totalFee?: string;
+  storageReadBytes?: number;
+  storageWriteBytes?: number;
+  readOnlyEntries?: number;
+  readWriteEntries?: number;
+  stateChanges?: { created: number; updated: number; removed: number };
+  trace?: Array<{ step: string; detail: string }>;
 }
 
 export enum WizardStep {

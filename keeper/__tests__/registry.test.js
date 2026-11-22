@@ -356,4 +356,84 @@ describe('TaskRegistry', () => {
       expect.objectContaining({ error: 'bad event', eventId: 'bad-event' }),
     );
   });
+
+  describe('resolver result cache', () => {
+    test('stores and retrieves resolver check results', () => {
+      const registry = new TaskRegistry(mockServer([]), 'CABC123');
+
+      expect(registry.getResolverResult(1)).toBeNull();
+
+      registry.setResolverResult(1, { resolverId: 'gate', isReady: false, reason: 'waiting' });
+      expect(registry.getResolverResult(1)).toEqual({
+        resolverId: 'gate',
+        isReady: false,
+        reason: 'waiting',
+      });
+    });
+
+    test('evicts the least-recently-used resolver result when the cache is full', () => {
+      const registry = new TaskRegistry(mockServer([]), 'CABC123', { resolverCacheMaxSize: 2 });
+
+      registry.setResolverResult(1, { isReady: true });
+      registry.setResolverResult(2, { isReady: true });
+      registry.getResolverResult(1); // promote task 1 to most-recently-used
+      registry.setResolverResult(3, { isReady: true }); // evicts task 2
+
+      expect(registry.getResolverResult(1)).toEqual({ isReady: true });
+      expect(registry.getResolverResult(2)).toBeNull();
+      expect(registry.getResolverResult(3)).toEqual({ isReady: true });
+      expect(registry.getResolverCacheStats().evictions).toBe(1);
+    });
+
+    test('invalidates resolver results automatically on on-chain TaskUpdated events', () => {
+      const registry = new TaskRegistry(mockServer([]), 'CABC123', { logger: mockLogger() });
+
+      registry._processEvent(makeVersionedEvent('TaskRegistered', 7, 100));
+      registry.setResolverResult(7, { isReady: false, reason: 'stale' });
+      expect(registry.getResolverResult(7)).not.toBeNull();
+
+      registry._processEvent(makeVersionedEvent('TaskUpdated', 7, 150));
+      expect(registry.getResolverResult(7)).toBeNull();
+    });
+
+    test('invalidates resolver results on dependency events', () => {
+      const registry = new TaskRegistry(mockServer([]), 'CABC123', { logger: mockLogger() });
+
+      registry._processEvent(makeVersionedEvent('TaskRegistered', 7, 100));
+      registry.setResolverResult(7, { isReady: false, blockedBy: [2] });
+
+      registry._processEvent(makeVersionedEvent('DependencyAdded', 7, 150, taskIdValue(2)));
+      expect(registry.getResolverResult(7)).toBeNull();
+    });
+
+    test('handles TaskUpdated events without corrupting registry state', () => {
+      const registry = new TaskRegistry(mockServer([]), 'CABC123', { logger: mockLogger() });
+
+      registry._processEvent(makeVersionedEvent('TaskRegistered', 7, 100));
+      registry._processEvent(makeVersionedEvent('TaskUpdated', 7, 150));
+
+      expect(registry.getTaskIds()).toEqual([7]);
+      expect(registry.tasks.get(7)).toMatchObject({
+        id: 7,
+        status: 'registered',
+        configUpdatedAt: '2026-05-31T08:00:00Z',
+      });
+    });
+
+    test('can be disabled via resolverCacheEnabled option', () => {
+      const registry = new TaskRegistry(mockServer([]), 'CABC123', { resolverCacheEnabled: false });
+
+      registry.setResolverResult(1, { isReady: true });
+      expect(registry.getResolverResult(1)).toBeNull();
+      expect(registry.getResolverCacheStats()).toBeNull();
+      expect(registry.invalidateResolverResult(1)).toBe(false);
+    });
+
+    test('ignores falsy values when caching resolver results', () => {
+      const registry = new TaskRegistry(mockServer([]), 'CABC123');
+
+      registry.setResolverResult(1, null);
+      expect(registry.getResolverResult(1)).toBeNull();
+    });
+  });
 });

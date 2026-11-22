@@ -31,7 +31,10 @@ function createBullMqWebhookQueue(options = {}) {
 
   async function enqueueWebhook(payload, jobOptions = {}) {
     return queue.add("deliver", payload, {
-      attempts: 1,
+      // #1208 — BullMQ retries with 5 exponential-backoff attempts; the
+      // dispatcher's own internal retry loop remains the inner safety net.
+      attempts: 5,
+      backoff: { type: "exponential", delay: 1000 },
       removeOnComplete: true,
       removeOnFail: false,
       ...jobOptions,

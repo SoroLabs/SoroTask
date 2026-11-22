@@ -28,3 +28,23 @@ export interface ParsedSankeyData {
   feedbackLinks: SankeyLink[];
   warnings: string[];
 }
+
+export interface TokenAllocation {
+  id: string;
+  category: string;
+  percentage: number;
+  amountMillion: number;
+  color: string;
+  cliffMonths: number;
+  vestingMonths: number;
+}
+
+export interface VestingMilestone {
+  month: number;
+  label: string;
+  communityUnlockedPct: number;
+  teamUnlockedPct: number;
+  stakersPoolPct: number;
+  keepersPoolPct: number;
+  circulatingSupplyMillion: number;
+}

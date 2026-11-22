@@ -1,6 +1,6 @@
 'use strict';
 
-const { RedlockManager, LockResult, acquireRedlock, releaseRedlock } = require('../src/lock');
+const { RedlockManager, LockResult } = require('../src/lock');
 const { ExecutionCoordinator } = require('../src/coordinator');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -96,6 +96,10 @@ function makeMockNode() {
 
 function make3NodeCluster() {
   return [makeMockNode(), makeMockNode(), makeMockNode()];
+}
+
+function make5NodeCluster() {
+  return [makeMockNode(), makeMockNode(), makeMockNode(), makeMockNode(), makeMockNode()];
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -381,5 +385,80 @@ describe('Integration — RedlockManager with ExecutionCoordinator', () => {
     expect(() =>
       coord.assertValidExecution('task-split-brain', lock2.fencingToken, lock2.token, 'w2')
     ).not.toThrow();
+  });
+
+  test('5-node cluster quorum establishes lock across minimum 3/5 nodes (#1428)', async () => {
+    const nodes = make5NodeCluster();
+    const mgr = new RedlockManager(nodes);
+
+    // 1. All 5 nodes healthy (5/5 acquired)
+    const lockAll = await mgr.acquire('task-5node-healthy', 60000);
+    expect(lockAll).not.toBeNull();
+    expect(lockAll.fencingToken).toBeGreaterThan(0);
+
+    // 2. 2 of 5 nodes offline / error (3/5 acquired -> quorum achieved)
+    const deadNode = {
+      eval: async () => { throw new Error('geographic network partition'); },
+      set: async () => { throw new Error('geographic network partition'); },
+      get: async () => { throw new Error('geographic network partition'); },
+      quit: async () => {},
+    };
+    const nodesWith2Fails = [nodes[0], nodes[1], nodes[2], deadNode, deadNode];
+    const mgrQuorum = new RedlockManager(nodesWith2Fails);
+    const lockQuorum = await mgrQuorum.acquire('task-5node-quorum-ok', 60000);
+    expect(lockQuorum).not.toBeNull();
+    expect(lockQuorum.fencingToken).toBeGreaterThan(0);
+
+    // 3. 3 of 5 nodes offline / error (2/5 acquired -> quorum denied)
+    const nodesWith3Fails = [nodes[0], nodes[1], deadNode, deadNode, deadNode];
+    const mgrNoQuorum = new RedlockManager(nodesWith3Fails);
+    const lockNoQuorum = await mgrNoQuorum.acquire('task-5node-quorum-fail', 60000);
+    expect(lockNoQuorum).toBeNull();
+  });
+
+  test('zero duplicate concurrent task executions under simulated 5-second process pauses (#1428)', async () => {
+    const nodes = make5NodeCluster();
+    const mgr = new RedlockManager(nodes);
+    const coord = new ExecutionCoordinator({ lockManager: mgr });
+    const taskId = 'task-simulated-5s-pause';
+
+    // Worker 1 acquires lock with short TTL (e.g. 50ms simulating a lease that expires during a 5s freeze)
+    const worker1Lock = await mgr.acquire(taskId, 50);
+    expect(worker1Lock).not.toBeNull();
+    coord.registerLock(taskId, worker1Lock.fencingToken, worker1Lock.token, 50);
+
+    // Track simulated executions
+    const executions = [];
+
+    // Worker 1 enters a simulated 5-second (5000ms) process pause / GC freeze
+    // In our test, we simulate the passage of time by expiring the lease and having Worker 2 take over
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // While Worker 1 is paused, lease expired. Worker 2 acquires the lock across 5 nodes
+    const worker2Lock = await mgr.acquire(taskId, 60000);
+    expect(worker2Lock).not.toBeNull();
+    expect(worker2Lock.fencingToken).toBeGreaterThan(worker1Lock.fencingToken);
+    coord.registerLock(taskId, worker2Lock.fencingToken, worker2Lock.token, 60000);
+
+    // Worker 2 executes successfully
+    coord.assertValidExecution(taskId, worker2Lock.fencingToken, worker2Lock.token, 'worker-2');
+    executions.push({ worker: 'worker-2', fencingToken: worker2Lock.fencingToken });
+
+    // Worker 1 wakes up after simulated pause and attempts to execute
+    // Must be rejected with STALE_FENCING_TOKEN error before transaction submission
+    let worker1Error = null;
+    try {
+      coord.assertValidExecution(taskId, worker1Lock.fencingToken, worker1Lock.token, 'worker-1');
+      executions.push({ worker: 'worker-1', fencingToken: worker1Lock.fencingToken });
+    } catch (err) {
+      worker1Error = err;
+    }
+
+    expect(worker1Error).not.toBeNull();
+    expect(worker1Error.code).toBe('STALE_FENCING_TOKEN');
+
+    // Verification: Zero duplicate concurrent executions occurred
+    expect(executions).toHaveLength(1);
+    expect(executions[0].worker).toBe('worker-2');
   });
 });

@@ -4,10 +4,11 @@ This document describes the design token system used in the SoroTask frontend. D
 
 ## Overview
 
-Design tokens are stored in two places:
+Runtime theme tokens and design-system values are defined in:
 
-1. **`app/design-tokens.css`** — CSS custom properties (CSS variables) that define all token values
-2. **`tailwind.config.js`** — Tailwind CSS configuration that maps to our token system
+1. **`app/globals.css`** — active light, dark, and high-contrast CSS custom properties
+2. **`app/design-tokens.css`** — supplementary spacing and component tokens
+3. **`tailwind.config.js`** — Tailwind CSS configuration and utility mappings
 
 ## Why Design Tokens?
 
@@ -20,7 +21,7 @@ Design tokens are stored in two places:
 
 ### Color Tokens
 
-Colors are defined as CSS custom properties in `:root` (light mode) and `@media (prefers-color-scheme: dark)` (dark mode).
+Colors are defined as CSS custom properties in `:root` (light mode) and `[data-theme="dark"]` / `[data-theme="high-contrast"]` overrides. The theme selector in `app/theme/ThemeToggle.tsx` persists the selection and supports system preference.
 
 #### Semantic Colors
 
@@ -28,7 +29,7 @@ Colors are defined as CSS custom properties in `:root` (light mode) and `@media 
 |-------|-----------|-----------|-------|
 | `--color-background` | `#ffffff` | `#0a0a0a` | Page backgrounds |
 | `--color-foreground` | `#171717` | `#ededed` | Primary text |
-| `--color-foreground-muted` | `#737373` | `#a3a3a3` | Secondary text |
+| `--color-foreground-muted` | `#404040` | `#d4d4d8` | Secondary text |
 | `--color-surface` | `#ffffff` | `#171717` | Card backgrounds |
 | `--color-surface-alt` | `#f9fafb` | `#262626` | Alternate surfaces |
 
@@ -36,10 +37,20 @@ Colors are defined as CSS custom properties in `:root` (light mode) and `@media 
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--color-primary` | `#3b82f6` | Primary actions, links |
-| `--color-primary-hover` | `#2563eb` | Hover states |
+| `--color-primary` | `#0047ab` (light), `#9fc5ff` (dark) | Primary actions, links |
+| `--color-primary-hover` | `#003780` (light), `#c3dcff` (dark) | Hover states |
 | `--color-primary-active` | `#1d4ed8` | Active states |
 | `--color-primary-subtle` | `#eff6ff` | Background accents |
+
+The active foreground, secondary, muted, and accent colors are selected to exceed a 7:1 contrast ratio against each theme's base background. High-contrast mode uses a black canvas, yellow primary text, white secondary text, and cyan links/focus indicators. The palette is not a substitute for checking contrast for arbitrary hard-coded colors or text layered over images.
+
+| Theme | Background | Primary text | Secondary text | Accent / links |
+|-------|------------|--------------|----------------|----------------|
+| Light | `#ffffff` | `#171717` | `#404040` | `#0047ab` |
+| Dark | `#09090b` | `#fafafa` | `#d4d4d8` | `#9fc5ff` |
+| High contrast | `#000000` | `#ffff00` | `#ffffff` | `#00ffff` |
+
+`app/theme/__tests__/themeContrast.test.ts` verifies the active text and interaction color tokens against each mode's base background. The high-contrast stylesheet suppresses decorative fills and keeps focus rings visible; reduced-motion preferences are respected by the theme transition styles.
 
 #### Semantic Status Colors
 

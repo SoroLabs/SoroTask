@@ -502,7 +502,9 @@ class ReadBatcher extends EventEmitter {
       new xdr.LedgerKeyContractData({
         contract: xdr.ScAddress.scAddressTypeContract(contractBytes),
         key: dataKey,
-        durability: xdr.ContractDataDurability.persistent(),
+        durability: typeof xdr.ContractDataDurability.persistent === 'function'
+          ? xdr.ContractDataDurability.persistent()
+          : xdr.ContractDataDurability.persistent,
       }),
     );
   }

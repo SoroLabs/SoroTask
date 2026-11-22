@@ -103,8 +103,24 @@ function renderMarkdown(raw: string): string {
 }
 
 function inlineRender(text: string): string {
+  const safeEmbedUrl = (raw: string) => {
+    try {
+      const url = new URL(raw);
+      return url.protocol === "https:" || url.protocol === "http:" ? url.href : "";
+    } catch {
+      return "";
+    }
+  };
+
   return (
     escapeHtml(text)
+      // Embedded images are constrained to web URLs and sanitized again below.
+      .replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)(?:\s+"([^"]*)")?\)/g, (_match, alt, src, title) => {
+        const safeSrc = safeEmbedUrl(src);
+        return safeSrc
+          ? `<img class="md-embed" src="${escapeHtml(safeSrc)}" alt="${alt}"${title ? ` title="${title}"` : ""} />`
+          : alt;
+      })
       // Inline code
       .replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>')
       // Bold + italic
@@ -403,6 +419,7 @@ export default function MarkdownEditor({
         }
         .md-preview .md-link { color: #60a5fa; text-decoration: underline; }
         .md-preview .md-link:hover { color: #93c5fd; }
+        .md-preview .md-embed { display: block; max-width: 100%; max-height: 24rem; margin: .75em 0; border-radius: 6px; object-fit: contain; }
       `}</style>
     </div>
   );

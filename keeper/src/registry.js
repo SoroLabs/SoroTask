@@ -2,11 +2,13 @@ const EventEmitter = require('events');
 const { xdr } = require('@stellar/stellar-sdk');
 const { createLogger } = require('./logger');
 const TaskSnapshot = require('./taskSnapshot');
+const { TaskMetadataCache } = require('./taskMetadataCache');
 
 const EVENT_TOPICS = {
   TaskRegistered: 'AAAADwAAAA5UYXNrUmVnaXN0ZXJlZAAA',
   TaskPaused: 'AAAADwAAAApUYXNrUGF1c2VkAAA=',
   TaskResumed: 'AAAADwAAAAtUYXNrUmVzdW1lZAA=',
+  TaskUpdated: 'AAAADwAAAAtUYXNrVXBkYXRlZAA=',
   KeeperPaid: 'AAAADwAAAApLZWVwZXJQYWlkAAA=',
   GasDeposited: 'AAAADwAAAAxHYXNEZXBvc2l0ZWQ=',
   GasWithdrawn: 'AAAADwAAAAxHYXNXaXRoZHJhd24=',
@@ -14,6 +16,9 @@ const EVENT_TOPICS = {
   DependencyAdded: 'AAAADwAAAA9EZXBlbmRlbmN5QWRkZWQA',
   DependencyRemoved: 'AAAADwAAABFEZXBlbmRlbmN5UmVtb3ZlZAAAAA==',
 };
+
+const DEFAULT_RESOLVER_CACHE_TTL_SECONDS = 30;
+const DEFAULT_RESOLVER_CACHE_MAX_SIZE = 5000;
 
 class TaskRegistry extends EventEmitter {
   constructor(server, contractId, options = {}) {
@@ -24,6 +29,27 @@ class TaskRegistry extends EventEmitter {
     this.tasks = new Map(); // taskId -> TaskConfig
     this.lastSeenLedger = options.startLedger || 0;
     this.logger = options.logger || createLogger('registry');
+
+    // Resolver check result cache — LRU + TTL + event-driven invalidation
+    // (issue #788). The poller stores the outcome of a task's dependency
+    // resolver gate here so unchanged tasks are not re-evaluated every
+    // polling cycle. Entries are discarded automatically whenever an
+    // on-chain event mutates that task (TaskUpdated, DependencyAdded, ...).
+    this.resolverCacheEnabled = options.resolverCacheEnabled !== false;
+    if (this.resolverCacheEnabled) {
+      // TaskMetadataCache requires a `.debug` logger method; fall back to a
+      // dedicated logger when the injected one is minimal (e.g. test mocks).
+      const cacheLogger = this.logger && typeof this.logger.debug === 'function'
+        ? this.logger
+        : createLogger('resolver-cache');
+      this.resolverCache = new TaskMetadataCache({
+        ttlSeconds: options.resolverCacheTtlSeconds || DEFAULT_RESOLVER_CACHE_TTL_SECONDS,
+        maxSize: options.resolverCacheMaxSize || DEFAULT_RESOLVER_CACHE_MAX_SIZE,
+        logger: cacheLogger,
+      });
+    } else {
+      this.resolverCache = null;
+    }
 
     // Snapshot manager — injectable for testing, otherwise constructed from options
     this.snapshot = options.snapshot || new TaskSnapshot({
@@ -154,6 +180,55 @@ class TaskRegistry extends EventEmitter {
     }
   }
 
+  // ── Resolver check result cache ──────────────────────────────────────────
+
+  /**
+   * Return the cached resolver check result for a task, or `null` on a miss.
+   * The poller consults this before evaluating a task's dependency resolver
+   * so that unchanged tasks skip repeat resolver executions.
+   *
+   * @param {number|string} taskId
+   * @returns {Object|null}
+   */
+  getResolverResult(taskId) {
+    return this.resolverCache ? this.resolverCache.get(taskId) : null;
+  }
+
+  /**
+   * Cache a resolver check result for a task.
+   * No-op when the cache is disabled or the result is falsy. Entries are
+   * dropped on TTL expiry, on LRU eviction, or when an on-chain event
+   * mutates the task (see `_processEvent`).
+   *
+   * @param {number|string} taskId
+   * @param {Object}        result  The resolver result object to cache.
+   */
+  setResolverResult(taskId, result) {
+    if (this.resolverCache && result) {
+      this.resolverCache.set(taskId, result);
+    }
+  }
+
+  /**
+   * Invalidate the cached resolver result for a single task.
+   * Called automatically from `_processEvent` whenever an on-chain event
+   * changes a task's state.
+   *
+   * @param {number|string} taskId
+   * @returns {boolean} `true` if an entry was removed.
+   */
+  invalidateResolverResult(taskId) {
+    return this.resolverCache ? this.resolverCache.invalidate(taskId) : false;
+  }
+
+  /**
+   * Return resolver cache performance statistics.
+   * @returns {Object|null}
+   */
+  getResolverCacheStats() {
+    return this.resolverCache ? this.resolverCache.getStats() : null;
+  }
+
   /**
    * Return a summary of task ID allocation and any detected gaps or duplicates.
    * @returns {Object}
@@ -191,7 +266,7 @@ class TaskRegistry extends EventEmitter {
 
       if (!this.lastSeenLedger) {
         // Look back ~1 hour on testnet (≈ 720 ledgers)
-        this.lastSeenLedger = Math.max(currentLedger - 720, 0);
+        this.lastSeenLedger = Math.max(currentLedger - 720, 1);
       }
 
       const topicsList = Object.values(EVENT_TOPICS);
@@ -209,7 +284,7 @@ class TaskRegistry extends EventEmitter {
         }
 
         const params = {
-          startLedger: cursor ? undefined : this.lastSeenLedger,
+          startLedger: cursor ? undefined : Math.max(this.lastSeenLedger || 1, 1),
           filters,
           limit: 100,
         };
@@ -246,6 +321,23 @@ class TaskRegistry extends EventEmitter {
 
       await this._saveToDisk();
     } catch (err) {
+      const match = err.message && err.message.match(/ledger range:\s*(\d+)/i);
+      if (match) {
+        const minLedger = parseInt(match[1], 10);
+        if (minLedger > 0 && (!this.lastSeenLedger || this.lastSeenLedger < minLedger)) {
+          this.logger.warn('startLedger behind retained range, fast-forwarding', {
+            previous: this.lastSeenLedger,
+            fastForwardTo: minLedger,
+          });
+          this.lastSeenLedger = minLedger;
+          try {
+            return await this._fetchEvents();
+          } catch (retryErr) {
+            this.logger.error('Error fetching events after fast-forward', { error: retryErr.message });
+            return;
+          }
+        }
+      }
       this.logger.error('Error fetching events', { error: err.message });
     }
   }
@@ -290,6 +382,13 @@ class TaskRegistry extends EventEmitter {
 
       case 'TaskResumed':
         this.updateTask(taskId, { is_active: true, status: 'active' });
+        break;
+
+      case 'TaskUpdated':
+        // On-chain config change. The event only signals that the stored
+        // TaskConfig changed, so downstream caches are invalidated and the
+        // poller re-fetches the configuration on the next cycle.
+        this.updateTask(taskId, { configUpdatedAt: event.ledgerCloseAt });
         break;
 
       case 'KeeperPaid': {
@@ -355,6 +454,10 @@ class TaskRegistry extends EventEmitter {
         break;
       }
     }
+
+    // Any on-chain event that mutates a task invalidates its cached resolver
+    // check result so the next polling cycle re-evaluates with fresh state.
+    this.invalidateResolverResult(taskId);
   }
 
   /**
@@ -414,6 +517,83 @@ class TaskRegistry extends EventEmitter {
     } catch (err) {
       this.logger.warn('Could not persist tasks', { error: err.message });
     }
+  }
+
+  applyCDCEvent(event) {
+    if (!event || !event.payload) return;
+    const { op, after, before, source } = event.payload;
+    const table = source?.table;
+    if (table && table !== 'tasks' && table !== 'task_configs') return;
+
+    switch (op) {
+      case 'c':
+      case 'r':
+      case 'u': {
+        const row = after;
+        if (!row || row.id == null) return;
+        const taskId = Number(row.id);
+        if (isNaN(taskId)) return;
+        this.taskIds.add(taskId);
+        this.updateTask(taskId, {
+          id: taskId,
+          ...row,
+        }, { source: 'CDC' });
+        this.emit('cdcTaskUpdated', { taskId, op, row });
+        break;
+      }
+      case 'd': {
+        const row = before;
+        if (!row || row.id == null) return;
+        const taskId = Number(row.id);
+        if (isNaN(taskId)) return;
+        this.tasks.delete(taskId);
+        this.taskIds.delete(taskId);
+        this.emit('cdcTaskDeleted', { taskId });
+        break;
+      }
+      default:
+        break;
+    }
+    const affectedId = after?.id ?? before?.id;
+    if (affectedId != null && !isNaN(Number(affectedId))) {
+      this.invalidateResolverResult(Number(affectedId));
+    }
+  }
+
+  async startCDCSubscriber(options = {}) {
+    const brokers = (options.brokers || process.env.KAFKA_BROKERS || 'localhost:9092').split(',').filter(Boolean);
+    const topic = options.topic || process.env.KEEPER_CDC_TOPIC || 'sorotask.cdc.keeper.mutations';
+    const groupId = options.groupId || 'keeper-cdc-registry-group';
+
+    let Kafka;
+    try {
+      ({ Kafka } = require('kafkajs'));
+    } catch (_err) {
+      if (this.logger && typeof this.logger.warn === 'function') {
+        this.logger.warn('kafkajs not available; CDC subscriber inactive');
+      }
+      return null;
+    }
+
+    const kafka = new Kafka({ clientId: 'keeper-cdc-consumer', brokers });
+    const consumer = kafka.consumer({ groupId });
+    await consumer.connect();
+    await consumer.subscribe({ topic, fromBeginning: false });
+
+    await consumer.run({
+      eachMessage: async ({ message }) => {
+        try {
+          const payload = JSON.parse(message.value.toString());
+          this.applyCDCEvent(payload);
+        } catch (err) {
+          if (this.logger && typeof this.logger.warn === 'function') {
+            this.logger.warn('Error processing CDC event', { error: err.message });
+          }
+        }
+      },
+    });
+
+    return consumer;
   }
 }
 

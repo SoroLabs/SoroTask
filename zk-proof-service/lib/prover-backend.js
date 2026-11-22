@@ -36,8 +36,9 @@
 const { execSync } = require('child_process');
 
 /** Backends this selection layer understands. Only 'cpu' is actually implemented. */
-const KNOWN_BACKENDS = Object.freeze(['cpu', 'cuda', 'metal']);
+const KNOWN_BACKENDS = Object.freeze(['cpu', 'rapidsnark', 'cuda', 'metal', 'auto']);
 const GPU_BACKENDS = Object.freeze(['cuda', 'metal']);
+const RAPIDSNARK_BINARY = 'rapidsnark';
 
 /**
  * Safe existence check for a binary on PATH (e.g. nvidia-smi). Never throws.
@@ -55,15 +56,16 @@ function isBinaryOnPath(binary) {
 }
 
 /**
- * Inspect host signals that *might* indicate GPU availability. This reports
- * detected signals only — a positive signal does NOT mean a working accelerated
- * backend module is present (none is, in this build).
+ * Inspect host signals that *might* indicate accelerated proving support.
+ * A positive signal does NOT mean a working accelerated backend module is
+ * present in this build — it is reported so the selection layer (and
+ * operators) can act on it honestly.
  *
  * @param {{ env?: NodeJS.ProcessEnv }} [opts]
  * @returns {{
  *   cpu: boolean,
  *   requestedBackend: string | null,
- *   signals: { cudaVisibleDevices: boolean, nvidiaSmi: boolean },
+ *   signals: { cudaVisibleDevices: boolean, nvidiaSmi: boolean, rapidsnark: boolean },
  *   accelerationAvailable: boolean
  * }}
  */
@@ -76,11 +78,15 @@ function detectAvailableBackends(opts = {}) {
     env.CUDA_VISIBLE_DEVICES.trim() !== '' &&
     env.CUDA_VISIBLE_DEVICES.trim() !== '-1';
   const nvidiaSmi = isBinaryOnPath('nvidia-smi');
+  const rapidsnark =
+    isBinaryOnPath(RAPIDSNARK_BINARY) ||
+    (typeof env.PROVER_RAPIDSNARK_PATH === 'string' &&
+      env.PROVER_RAPIDSNARK_PATH.trim() !== '');
 
   return {
     cpu: true, // the CPU path is always available
     requestedBackend: requested,
-    signals: { cudaVisibleDevices, nvidiaSmi },
+    signals: { cudaVisibleDevices, nvidiaSmi, rapidsnark },
     // No real accelerated backend module ships in this build, so regardless of
     // host signals there is no genuinely-available acceleration. Kept explicit
     // so a future real backend can flip this to true honestly.
@@ -94,6 +100,13 @@ function detectAvailableBackends(opts = {}) {
  * Behaviour contract:
  *   - No PROVER_BACKEND set, or set to 'cpu'  -> { backend:'cpu', accelerated:false }.
  *     ZERO behaviour change for the existing CPU proving path.
+ *   - PROVER_BACKEND = 'rapidsnark' and the rapidsnark binary is detected
+ *     -> { backend:'rapidsnark', accelerated:true, impl:{kind, binaryPath} }.
+ *     If the binary is NOT found, the selection falls back to the CPU prover
+ *     and reports `fellBackToCpu: true` (#1210 rapidsnark fallback) instead of
+ *     failing the service.
+ *   - PROVER_BACKEND = 'auto' -> GPU backend if one is injected, else
+ *     rapidsnark when detected, else CPU — never throws.
  *   - PROVER_BACKEND = 'cuda' | 'metal' and a matching real backend is injected
  *     via opts.gpuBackends -> returns that backend.
  *   - PROVER_BACKEND = 'cuda' | 'metal' with NO real backend (the case here)
@@ -102,7 +115,7 @@ function detectAvailableBackends(opts = {}) {
  *   - Any other value -> THROWS (unknown backend).
  *
  * @param {{ env?: NodeJS.ProcessEnv, gpuBackends?: Record<string, object> }} [opts]
- * @returns {{ backend: string, accelerated: boolean, impl: object | null }}
+ * @returns {{ backend: string, accelerated: boolean, impl: object | null, fellBackToCpu?: boolean, fallbackReason?: string }}
  */
 function selectProverBackend(opts = {}) {
   const env = opts.env ?? process.env;
@@ -111,6 +124,53 @@ function selectProverBackend(opts = {}) {
 
   if (requested === '' || requested === 'cpu') {
     return { backend: 'cpu', accelerated: false, impl: null };
+  }
+
+  const rapidsnarkAvailable =
+    isBinaryOnPath(RAPIDSNARK_BINARY) ||
+    (typeof env.PROVER_RAPIDSNARK_PATH === 'string' &&
+      env.PROVER_RAPIDSNARK_PATH.trim() !== '');
+
+  if (requested === 'auto') {
+    // GPU backend first (only when genuinely injected), then the rapidsnark
+    // native prover, then the always-available CPU path.
+    for (const gpu of GPU_BACKENDS) {
+      const impl = gpuBackends[gpu];
+      if (impl) return { backend: gpu, accelerated: true, impl };
+    }
+    if (rapidsnarkAvailable) {
+      return {
+        backend: 'rapidsnark',
+        accelerated: true,
+        impl: { kind: 'rapidsnark', binaryPath: env.PROVER_RAPIDSNARK_PATH || RAPIDSNARK_BINARY },
+      };
+    }
+    return {
+      backend: 'cpu',
+      accelerated: false,
+      impl: null,
+      fellBackToCpu: true,
+      fallbackReason: 'No GPU backend injected and rapidsnark binary not detected',
+    };
+  }
+
+  if (requested === 'rapidsnark') {
+    if (rapidsnarkAvailable) {
+      return {
+        backend: 'rapidsnark',
+        accelerated: true,
+        impl: { kind: 'rapidsnark', binaryPath: env.PROVER_RAPIDSNARK_PATH || RAPIDSNARK_BINARY },
+      };
+    }
+    // #1210 — rapidsnark fallback: degrade to CPU instead of failing, and say so.
+    return {
+      backend: 'cpu',
+      accelerated: false,
+      impl: null,
+      fellBackToCpu: true,
+      fallbackReason:
+        'rapidsnark binary not found on PATH and PROVER_RAPIDSNARK_PATH is not set',
+    };
   }
 
   if (!KNOWN_BACKENDS.includes(requested)) {

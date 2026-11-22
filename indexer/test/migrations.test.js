@@ -36,6 +36,19 @@ test("003 migration adds dashboard composite and JSONB indexes", () => {
   assert.match(sql, /raw_events USING GIN \(data_json\)/i);
 });
 
+test("004 migration configures TimescaleDB hypertable for executions", () => {
+  const sql = fs.readFileSync(
+    path.join(migrationsDir, "004_timescaledb_executions_hypertable.sql"),
+    "utf8",
+  );
+
+  assert.match(sql, /CREATE EXTENSION IF NOT EXISTS timescaledb/i);
+  assert.match(sql, /chunk_time_interval\s*=>\s*INTERVAL '7 days'/i);
+  assert.match(sql, /timescaledb\.compress/i);
+  assert.match(sql, /add_compression_policy[\s\S]*INTERVAL '14 days'/i);
+  assert.match(sql, /004_timescaledb_executions_hypertable/);
+});
+
 test("migration versions are unique and ordered", () => {
   const files = fs
     .readdirSync(migrationsDir)
@@ -46,6 +59,11 @@ test("migration versions are unique and ordered", () => {
     "001_initial_schema.sql",
     "002_timescaledb_raw_events_retention.sql",
     "003_dashboard_query_indexes.sql",
+    "004_timescaledb_executions_hypertable.sql",
+    "005_timescaledb_execution_continuous_aggregates.sql",
+    "006_executions_created_at_and_ledger_index.sql",
+    "007_keeper_dead_letter_postgres.sql",
+    "008_contract_versioning.sql",
   ]);
 
   for (const file of files) {

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { Task, TasksByDate } from '@/types/task';
+import { Task, TaskExecution, TasksByDate } from '@/types/task';
 import {
   getMonthCalendarGrid,
   formatDateKey,
@@ -17,7 +17,11 @@ import DenseTaskPopover from './DenseTaskPopover';
 
 interface CalendarProps {
   tasks: Task[];
+  /** Execution history, used to show per-day run density. */
+  executions?: TaskExecution[];
   onTaskClick?: (task: Task) => void;
+  /** Called with the runs recorded on a day, for the execution drilldown. */
+  onDayDrilldown?: (date: Date, executions: TaskExecution[]) => void;
   locale?: string;
   timezone?: string;
   compact?: boolean;
@@ -25,7 +29,9 @@ interface CalendarProps {
 
 export default function Calendar({
   tasks,
+  executions = [],
   onTaskClick,
+  onDayDrilldown,
   locale = 'en-US',
   timezone = getUserTimezone(),
   compact = false,
@@ -48,6 +54,24 @@ export default function Calendar({
     });
     return grouped;
   }, [tasks]);
+
+  // Map executions onto calendar days so the grid can show how busy each day
+  // was, not just how many deadlines land on it.
+  const executionsByDate: Record<string, TaskExecution[]> = useMemo(() => {
+    const grouped: Record<string, TaskExecution[]> = {};
+    for (const execution of executions) {
+      const dateKey = formatDateKey(execution.executedAt);
+      grouped[dateKey] = [...(grouped[dateKey] ?? []), execution];
+    }
+    return grouped;
+  }, [executions]);
+
+  // Peak day, used to scale the density bar against the busiest day in view
+  // rather than an arbitrary constant.
+  const peakDayCount = useMemo(
+    () => Object.values(executionsByDate).reduce((max, list) => Math.max(max, list.length), 0),
+    [executionsByDate],
+  );
 
   // Get calendar grid for current month
   const calendarGrid = useMemo(
@@ -163,6 +187,14 @@ export default function Calendar({
                       isToday={isTodayDate}
                       isSelected={isSelectedDate}
                       compact={compact}
+                      // Run density for the day, relative to the busiest day
+                      // in the month.
+                      executionCount={executionsByDate[dateKey]?.length ?? 0}
+                      executionIntensity={
+                        peakDayCount > 0
+                          ? (executionsByDate[dateKey]?.length ?? 0) / peakDayCount
+                          : 0
+                      }
                       onSelect={() => setSelectedDate(day)}
                       onTaskClick={onTaskClick}
                       onExpandClick={() =>
@@ -234,6 +266,48 @@ export default function Calendar({
               <p className="text-xs text-neutral-500">No tasks scheduled</p>
             )}
           </div>
+
+          {/* Execution drilldown: what actually ran on the selected day. */}
+          {(() => {
+            const dayExecutions = executionsByDate[formatDateKey(selectedDate)] ?? [];
+            if (dayExecutions.length === 0) return null;
+
+            return (
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-semibold text-neutral-300">
+                    Executions ({dayExecutions.length})
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => onDayDrilldown?.(selectedDate, dayExecutions)}
+                    className="text-xs px-2 py-1 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700 transition-colors"
+                  >
+                    View logs
+                  </button>
+                </div>
+                <ul className="space-y-1" data-testid="calendar-day-executions">
+                  {dayExecutions.map((execution) => (
+                    <li
+                      key={execution.id}
+                      className="flex items-center justify-between text-xs bg-neutral-900/50 border border-neutral-700/30 rounded px-2 py-1.5"
+                    >
+                      <span className="font-mono text-neutral-400">{execution.id}</span>
+                      <span
+                        className={
+                          execution.status === 'failed'
+                            ? 'text-red-300'
+                            : 'text-emerald-300'
+                        }
+                      >
+                        {execution.status}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

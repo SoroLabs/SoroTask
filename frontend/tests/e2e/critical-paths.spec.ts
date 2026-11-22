@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { MockWalletProvider } from './helpers';
 
 const VALID_CONTRACT_ADDRESS = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
@@ -7,11 +8,22 @@ test.describe('SoroTask critical paths', () => {
     await page.goto('/tasks/create');
   });
 
+  // Easy: Check homepage title
+  test('homepage shows correct title', async ({ page }) => {
+    await page.goto('/');
+    await expect(page).toHaveTitle(/SoroTask/);
+  });
+
+  // Medium: Test wallet connection modal opens
+  test('wallet connection modal opens', async ({ page }) => {
+    await page.getByTestId('connect-wallet-button').click();
+    await expect(page.getByTestId('wallet-modal')).toBeVisible();
+  });
+
+  // Easy: Connect mock wallet
   test('connects a mock wallet', async ({ page }) => {
     await expect(page.getByRole('heading', { name: 'Create Automation Task' })).toBeVisible();
-
     await page.getByTestId('connect-wallet-button').click();
-
     await expect(page.getByTestId('wallet-connected-button')).toBeVisible();
     await expect(page.getByTestId('wallet-connected-button')).toContainText('Futurenet');
   });

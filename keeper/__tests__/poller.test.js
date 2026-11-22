@@ -378,6 +378,92 @@ describe('TaskPoller', () => {
       });
     });
 
+    it('serves resolver results from the registry cache without re-evaluating', async () => {
+      const resolverRuntime = {
+        evaluate: jest.fn().mockResolvedValue({
+          isReady: false,
+          reason: 'not-yet',
+          runtime: 'javascript',
+          durationMs: 4,
+        }),
+      };
+      const cachedPoller = new TaskPoller(mockServer, contractId, {
+        maxConcurrentReads: 5,
+        resolverRuntime,
+      });
+      const registryCache = {
+        updateTask: jest.fn(),
+        getResolverResult: jest.fn().mockReturnValue(null),
+        setResolverResult: jest.fn(),
+      };
+
+      jest.spyOn(cachedPoller, 'getTaskConfig').mockResolvedValue({
+        last_run: 500,
+        interval: 400,
+        gas_balance: 1000,
+        resolver: 'external-check',
+      });
+
+      const first = await cachedPoller.checkTask(10, 1000, registryCache);
+      expect(registryCache.setResolverResult).toHaveBeenCalledWith(10, expect.objectContaining({
+        resolverId: 'external-check',
+        isReady: false,
+      }));
+
+      // Subsequent polls hit the cache: resolver is NOT re-evaluated.
+      registryCache.getResolverResult.mockReturnValue({
+        resolverId: 'external-check',
+        isReady: false,
+        reason: 'not-yet',
+        runtime: 'javascript',
+        durationMs: 4,
+      });
+      const second = await cachedPoller.checkTask(10, 1000, registryCache);
+
+      expect(resolverRuntime.evaluate).toHaveBeenCalledTimes(1);
+      expect(first).toMatchObject({ isDue: false, reason: 'resolver_not_ready' });
+      expect(second).toMatchObject({
+        isDue: false,
+        reason: 'resolver_not_ready',
+        resolver: { resolverId: 'external-check', isReady: false, reason: 'not-yet' },
+      });
+    });
+
+    it('re-evaluates the resolver when the registry cache entry is invalidated', async () => {
+      const resolverRuntime = {
+        evaluate: jest.fn().mockResolvedValue({
+          isReady: true,
+          runtime: 'javascript',
+          durationMs: 3,
+        }),
+      };
+      const cachedPoller = new TaskPoller(mockServer, contractId, {
+        maxConcurrentReads: 5,
+        resolverRuntime,
+      });
+      const registryCache = {
+        updateTask: jest.fn(),
+        getResolverResult: jest.fn().mockReturnValue(null), // entry invalidated each poll
+        setResolverResult: jest.fn(),
+      };
+
+      jest.spyOn(cachedPoller, 'getTaskConfig').mockResolvedValue({
+        last_run: 500,
+        interval: 400,
+        gas_balance: 1000,
+        resolver: 'gate',
+      });
+
+      await cachedPoller.checkTask(10, 1000, registryCache);
+      await cachedPoller.checkTask(10, 1000, registryCache);
+
+      expect(resolverRuntime.evaluate).toHaveBeenCalledTimes(2);
+      expect(registryCache.setResolverResult).toHaveBeenCalledWith(10, expect.objectContaining({
+        resolverId: 'gate',
+        isReady: true,
+      }));
+    });
+
     it('should return not due when last_run + interval > currentTimestamp', async () => {
       jest.spyOn(poller, 'getTaskConfig').mockResolvedValue({
         last_run: 800,

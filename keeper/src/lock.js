@@ -162,8 +162,9 @@ class RedlockManager {
     }
 
     if (this.nodes.length === 0) {
-      // In-memory mock nodes for 3-node quorum testing / fallback
-      for (let i = 0; i < 3; i++) {
+      // In-memory mock nodes for 5-node geographic multi-cluster Redlock (minimum 3/5 quorum) (#1428)
+      const defaultClusterNodes = Number(process.env.REDIS_MOCK_NODES_COUNT) || 5;
+      for (let i = 0; i < defaultClusterNodes; i++) {
         const map = new Map();
         const fencingMap = new Map();
 

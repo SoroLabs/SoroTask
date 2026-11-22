@@ -211,15 +211,18 @@ function createTransitionKeyring(primaryKeypair, incomingKeypair = null) {
      */
     verifyTransactionSigned(tx) {
       const hash = tx.hash();
-      return tx.signatures.some((sig) =>
-        keypairs.some((kp) => {
+      return tx.signatures.some((sig) => {
+        const sigBuf = typeof sig.signature === 'function'
+          ? sig.signature()
+          : (sig.signature?.value || sig.signature);
+        return keypairs.some((kp) => {
           try {
-            return Keypair.fromPublicKey(kp.publicKey()).verify(hash, sig.signature());
+            return Keypair.fromPublicKey(kp.publicKey()).verify(hash, sigBuf);
           } catch (_e) {
             return false;
           }
-        }),
-      );
+        });
+      });
     },
   };
 }

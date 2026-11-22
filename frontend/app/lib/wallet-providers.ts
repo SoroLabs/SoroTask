@@ -10,6 +10,11 @@ import type { WalletProvider } from "./wallet-provider";
 import { WalletProviderError } from "./wallet-provider";
 import { EXPECTED_NETWORK_PASSPHRASE } from "./wallet";
 
+// Re-export all wallet providers
+export { AlbedoWalletProvider } from "./wallet-providers-albedo";
+export { XBullWalletProvider } from "./wallet-providers-xbull";
+export { LobstrWalletProvider } from "./wallet-providers-lobstr";
+
 export class FreighterWalletProvider implements WalletProvider {
   readonly id = "freighter" as const;
   readonly name = "Freighter";

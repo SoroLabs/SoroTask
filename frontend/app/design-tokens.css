@@ -175,6 +175,61 @@
   --color-info-subtle: #0c2a3a;
 }
 
+/* ===== High-Contrast OLED tokens (#1241) =====
+   Pure black surfaces so unlit OLED pixels draw no power, and every foreground
+   pair cleared at AAA (7:1) rather than AA. Held to the ratios asserted in
+   src/lib/theme/__tests__/themeEngine.test.ts. */
+[data-theme="oled"] {
+  --color-background: #000000;
+  --color-background-alt: #0a0a0a;
+  --color-foreground: #ffffff;
+  --color-foreground-muted: #d4d4d8;
+  --color-foreground-subtle: #e5e5e5;
+
+  --color-surface: #0a0a0a;
+  --color-surface-alt: #171717;
+  --color-surface-elevated: #171717;
+  --color-surface-card: #0a0a0a;
+  --color-surface-card-alt: #171717;
+
+  /* Brighter than dark mode so control boundaries stay visible against black
+     without depending on a surface-fill difference. */
+  --color-border: #52525b;
+  --color-border-strong: #a3a3a3;
+  --color-border-subtle: #27272a;
+
+  --color-neutral-50: #0a0a0a;
+  --color-neutral-100: #171717;
+  --color-neutral-200: #27272a;
+  --color-neutral-300: #52525b;
+  --color-neutral-400: #a3a3a3;
+  --color-neutral-500: #d4d4d8;
+  --color-neutral-600: #e5e5e5;
+  --color-neutral-700: #f4f4f5;
+  --color-neutral-800: #fafafa;
+  --color-neutral-900: #ffffff;
+  --color-neutral-950: #ffffff;
+
+  --color-primary: #93c5fd;
+  --color-primary-hover: #bfdbfe;
+  --color-primary-active: #dbeafe;
+  --color-primary-foreground: #000000;
+  --color-primary-subtle: #172554;
+
+  --color-success: #bbf7d0;
+  --color-success-foreground: #000000;
+  --color-success-subtle: #052e16;
+  --color-warning: #fde68a;
+  --color-warning-foreground: #000000;
+  --color-warning-subtle: #4a2e00;
+  --color-error: #fecaca;
+  --color-error-foreground: #000000;
+  --color-error-subtle: #4f1a1a;
+  --color-info: #bae6fd;
+  --color-info-foreground: #000000;
+  --color-info-subtle: #0c2a3a;
+}
+
 /* ===== Component Token Mappings ===== */
 /* These map semantic tokens to specific component usage */
 

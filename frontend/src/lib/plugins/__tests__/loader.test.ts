@@ -8,12 +8,6 @@ import { PLUGIN_EVENT_NAME, type PluginManifest } from "../types";
 
 const mockComponent = () => null;
 
-jest.mock(
-  "/plugins/analytics/index.js",
-  () => ({ default: mockComponent }),
-  { virtual: true },
-);
-
 const sampleManifest: PluginManifest = {
   id: "analytics-widget",
   name: "Analytics Widget",
@@ -41,6 +35,22 @@ describe("plugin loader", () => {
     expect(result.error).toBeNull();
     expect(result.plugin?.status).toBe("ready");
     expect(result.plugin?.component).toBeDefined();
+    expect(result.plugin?.component).not.toBe(mockComponent);
+  });
+
+  it("rejects plugin URLs outside the trusted origins", async () => {
+    const registry = getPluginRegistry();
+    registry.register({
+      ...sampleManifest,
+      id: "untrusted-plugin",
+      entry: "https://untrusted.example/plugin/",
+    });
+    const loader = createPluginLoader();
+
+    const result = await loader.loadById("untrusted-plugin");
+
+    expect(result.plugin?.status).toBe("error");
+    expect(result.error?.message).toContain("not trusted");
   });
 
   it("returns error for unknown plugin", async () => {

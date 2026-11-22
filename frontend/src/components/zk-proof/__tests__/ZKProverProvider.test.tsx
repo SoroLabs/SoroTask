@@ -12,19 +12,19 @@ describe("ZKProverProvider", () => {
       return (
         <div>
           <span>Status: {ctx.state.status}</span>
-          <span>Workers: {ctx.workerStats.total}</span>
+          <span>{ctx.isBusy ? "Proof generation active" : "Proof engine ready"}</span>
         </div>
       );
     }
 
     render(
-      <ZKProverProvider config={{ workerCount: 4, baseDelayMs: 0 }}>
+      <ZKProverProvider>
         <TestChild />
       </ZKProverProvider>,
     );
 
     expect(screen.getByText("Status: idle")).toBeInTheDocument();
-    expect(screen.getByText("Workers: 4")).toBeInTheDocument();
+    expect(screen.getByText("Proof engine ready")).toBeInTheDocument();
   });
 
   it("throws error when used outside provider", () => {
@@ -38,20 +38,5 @@ describe("ZKProverProvider", () => {
       "useZKProverEngineContext must be used within a ZKProverProvider",
     );
     consoleSpy.mockRestore();
-  });
-
-  it("accepts config overrides", () => {
-    function TestChild() {
-      const ctx = useZKProverEngineContext();
-      return <div>Workers: {ctx.workerStats.total}</div>;
-    }
-
-    render(
-      <ZKProverProvider config={{ workerCount: 8, baseDelayMs: 0 }}>
-        <TestChild />
-      </ZKProverProvider>,
-    );
-
-    expect(screen.getByText("Workers: 8")).toBeInTheDocument();
   });
 });

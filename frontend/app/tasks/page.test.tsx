@@ -5,6 +5,23 @@ import type { ReactNode } from "react";
 
 jest.mock("@/src/hooks/tasks", () => ({
   useTasks: jest.fn(),
+  usePauseTask: jest.fn(() => ({
+    isPending: false,
+    error: null,
+    mutate: jest.fn(),
+  })),
+  useResumeTask: jest.fn(() => ({
+    isPending: false,
+    error: null,
+    mutate: jest.fn(),
+  })),
+}));
+
+jest.mock("@/app/context/WalletContext", () => ({
+  useWalletOptional: () => ({
+    status: "disconnected",
+    session: null,
+  }),
 }));
 
 jest.mock("@/src/store/layoutStore", () => ({
@@ -24,6 +41,27 @@ jest.mock("@/components/TaskCardWithSelection", () => ({
   default: ({ task }: { task: { id: string } }) => (
     <article data-testid="task-card">{task.id}</article>
   ),
+}));
+
+jest.mock("@/app/tasks/bulk/TaskSelectableCard", () => ({
+  __esModule: true,
+  default: ({ task }: { task: { id: string } }) => (
+    <article data-testid="task-card">{task.id}</article>
+  ),
+}));
+
+jest.mock("@/app/tasks/bulk/BulkSelectAllBar", () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
+jest.mock("@/app/tasks/bulk/BatchActionConsole", () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
+jest.mock("@/app/tasks/bulk/bulkSelectionStore", () => ({
+  useTaskBulkSelection: jest.fn(() => []),
 }));
 
 const mockUseTasks = useTasks as jest.Mock;

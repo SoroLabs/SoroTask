@@ -31,8 +31,8 @@ const config: NextAuthConfig = {
     },
     // GitHub provider
     GitHubProvider({
-      clientId: process.env.AUTH_GITHUB_ID || "",
-      clientSecret: process.env.AUTH_GITHUB_SECRET || "",
+      clientId: (process.env.AUTH_GITHUB_ID ?? process.env.GITHUB_CLIENT_ID) || "",
+      clientSecret: (process.env.AUTH_GITHUB_SECRET ?? process.env.GITHUB_CLIENT_SECRET) || "",
       authorization: {
         params: {
           scope: "read:user user:email",
@@ -41,8 +41,8 @@ const config: NextAuthConfig = {
     }),
     // Google provider
     GoogleProvider({
-      clientId: process.env.AUTH_GOOGLE_ID || "",
-      clientSecret: process.env.AUTH_GOOGLE_SECRET || "",
+      clientId: (process.env.AUTH_GOOGLE_ID ?? process.env.GOOGLE_CLIENT_ID) || "",
+      clientSecret: (process.env.AUTH_GOOGLE_SECRET ?? process.env.GOOGLE_CLIENT_SECRET) || "",
       authorization: {
         params: {
           prompt: "consent",
@@ -79,7 +79,7 @@ const config: NextAuthConfig = {
   session: {
     strategy: "jwt",
   },
-  secret: process.env.AUTH_SECRET,
+  secret: process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET,
 };
 
 export const { handlers, auth, signIn, signOut } = NextAuth(config);

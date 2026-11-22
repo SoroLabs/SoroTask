@@ -23,7 +23,7 @@ paths = [
   # Config files
   '''\.(env\.example|env\.template|env\.sample)$''',
   # Dependencies and build artifacts
-  '''(node_modules|target|dist|build)''',
+  '''(node_modules|target|dist|build|.next)''',
 ]
 
 commits = []

@@ -48,7 +48,7 @@ const customConfig = {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
   },
-  transformIgnorePatterns: ['/node_modules/(?!.*(@noble|@stellar|@scure|next-auth))'],
+  transformIgnorePatterns: ['/node_modules/(?!.*(@noble|@stellar|@scure|@exodus|next-auth))'],
 };
 
 module.exports = async () => {
@@ -56,7 +56,7 @@ module.exports = async () => {
   return {
     ...config,
     transformIgnorePatterns: [
-      '/node_modules/(?!(@noble|@stellar|@scure|next-auth|uint8array-extras|openai)/)',
+      '/node_modules/(?!(@noble|@stellar|@scure|@exodus|next-auth|uint8array-extras|openai)/)',
     ],
   };
 };

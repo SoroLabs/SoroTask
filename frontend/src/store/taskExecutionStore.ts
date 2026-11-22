@@ -14,6 +14,16 @@ import {
   ExecutionTrace,
 } from '@/src/types/taskExecution';
 
+// Toast notification callback
+let toastHandler: ((msg: string, type?: string) => void) | null = null;
+export function setExecutionToastHandler(fn: (msg: string, type?: string) => void) {
+  toastHandler = fn;
+}
+
+function showToast(msg: string, type = 'success') {
+  toastHandler?.(msg, type);
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ExecutionStore {
@@ -172,6 +182,13 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
     set((current) => {
       const execution = current.executions[taskId];
       if (!execution) return current;
+
+      // Show toast notification
+      if (success) {
+        showToast(`Task ${taskId} executed successfully!`);
+      } else {
+        showToast(`Task ${taskId} execution failed`, 'error');
+      }
 
       return {
         executions: {

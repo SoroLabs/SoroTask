@@ -1,7 +1,9 @@
 export type OptimisticTxState =
   | "optimistic"
   | "confirmed"
+  | "finalized"
   | "rolled_back"
+  | "reorg_rolled_back"
   | "conflict"
   | "stale";
 
@@ -27,6 +29,7 @@ export type OptimisticTransaction = {
   createdAt: number;
   updatedAt: number;
   confirmedAt?: number;
+  finalizedAt?: number;
   rolledBackAt?: number;
   staleAt?: number;
   error?: string;
@@ -37,7 +40,7 @@ export type TransactionConfirmation = {
   taskId: string;
   operation: OptimisticTxOperation;
   txHash?: string;
-  status: "confirmed" | "failed";
+  status: "confirmed" | "finalized" | "failed" | "reorg_dropped";
   serverPayload?: OptimisticTxPayload;
   error?: string;
   observedAt: number;
@@ -45,7 +48,9 @@ export type TransactionConfirmation = {
 
 export type OptimisticTxAuditCode =
   | "confirmed"
+  | "finalized"
   | "rolled_back"
+  | "reorg_rolled_back"
   | "conflict"
   | "stale";
 
@@ -58,6 +63,12 @@ export type OptimisticTxAuditEvent = {
   timestamp: number;
   message: string;
   redactedPayload: OptimisticTxPayload;
+};
+
+export type ManualRecoveryAction = {
+  type: "retry" | "rollback" | "override";
+  label: string;
+  description: string;
 };
 
 export type ReconcileOptimisticTransactionsInput = {
@@ -105,13 +116,15 @@ export function summarizeOptimisticTransactions(
 ): Record<OptimisticTxState, number> {
   return transactions.reduce<Record<OptimisticTxState, number>>(
     (summary, transaction) => {
-      summary[transaction.state] += 1;
+      summary[transaction.state] = (summary[transaction.state] || 0) + 1;
       return summary;
     },
     {
       optimistic: 0,
       confirmed: 0,
+      finalized: 0,
       rolled_back: 0,
+      reorg_rolled_back: 0,
       conflict: 0,
       stale: 0,
     },
@@ -174,6 +187,90 @@ function makeAuditEvent(input: {
   };
 }
 
+/**
+ * Appends new task item immediately to list state with pending optimistic status.
+ */
+export function appendOptimisticTaskToList<T extends { id: string }>(
+  currentList: T[],
+  newItem: T,
+): T[] {
+  // Prevent duplicate insertion
+  if (currentList.some((item) => item.id === newItem.id)) {
+    return currentList.map((item) => (item.id === newItem.id ? { ...item, ...newItem } : item));
+  }
+  return [newItem, ...currentList];
+}
+
+/**
+ * Cleanly rolls back failed or dropped task items from list state without corrupting local store.
+ */
+export function rollbackOptimisticTaskFromList<T extends { id: string }>(
+  currentList: T[],
+  taskId: string,
+  rollbackPayload?: Partial<T>,
+): T[] {
+  if (!rollbackPayload) {
+    // Remove optimistic item if no prior state existed
+    return currentList.filter((item) => item.id !== taskId);
+  }
+  // Restore previous state cleanly
+  return currentList.map((item) =>
+    item.id === taskId ? ({ ...item, ...rollbackPayload } as T) : item,
+  );
+}
+
+/**
+ * Returns available manual recovery actions for non-finalized or failed transactions.
+ */
+export function getManualRecoveryActions(
+  transaction: OptimisticTransaction,
+): ManualRecoveryAction[] {
+  switch (transaction.state) {
+    case "rolled_back":
+    case "reorg_rolled_back":
+      return [
+        {
+          type: "retry",
+          label: "Retry Transaction",
+          description: "Re-submit transaction with fresh sequence number.",
+        },
+        {
+          type: "rollback",
+          label: "Discard Draft",
+          description: "Cleanly remove pending state changes.",
+        },
+      ];
+    case "conflict":
+      return [
+        {
+          type: "override",
+          label: "Accept On-Chain State",
+          description: "Overrule local optimistic state with confirmed ledger state.",
+        },
+        {
+          type: "retry",
+          label: "Re-apply Changes",
+          description: "Re-submit optimistic state modifications.",
+        },
+      ];
+    case "stale":
+      return [
+        {
+          type: "retry",
+          label: "Check Ledger Status",
+          description: "Poll network to verify if transaction was mined.",
+        },
+        {
+          type: "rollback",
+          label: "Cancel Optimistic Update",
+          description: "Revert pending changes to last confirmed snapshot.",
+        },
+      ];
+    default:
+      return [];
+  }
+}
+
 export function reconcileOptimisticTransactions({
   transactions,
   confirmations,
@@ -183,13 +280,41 @@ export function reconcileOptimisticTransactions({
   const auditEvents: OptimisticTxAuditEvent[] = [];
 
   const nextTransactions = transactions.map((transaction) => {
-    if (transaction.state !== "optimistic" && transaction.state !== "stale") {
+    // Two-Phase Optimistic State Machine: Optimistic -> Confirmed -> Finalized
+    // (Also handles reorg drops and transaction failures)
+    if (
+      transaction.state !== "optimistic" &&
+      transaction.state !== "confirmed" &&
+      transaction.state !== "stale"
+    ) {
       return transaction;
     }
 
     const confirmation = confirmations.find((candidate) =>
       confirmationMatchesTransaction(transaction, candidate),
     );
+
+    // Reorg rollback defense: transaction dropped from block reorg
+    if (confirmation?.status === "reorg_dropped") {
+      const reorgRolledBack: OptimisticTransaction = {
+        ...transaction,
+        state: "reorg_rolled_back",
+        error: confirmation.error ?? "Transaction dropped during block reorg.",
+        updatedAt: confirmation.observedAt,
+        rolledBackAt: confirmation.observedAt,
+      };
+      auditEvents.push(
+        makeAuditEvent({
+          code: "reorg_rolled_back",
+          transaction: reorgRolledBack,
+          retriable: true,
+          timestamp: confirmation.observedAt,
+          message: confirmation.error ?? "Reorg rollback executed safely without corrupting store.",
+          payload: transaction.rollbackPayload ?? transaction.optimisticPayload,
+        }),
+      );
+      return reorgRolledBack;
+    }
 
     if (confirmation?.status === "failed") {
       const rolledBack: OptimisticTransaction = {
@@ -212,7 +337,30 @@ export function reconcileOptimisticTransactions({
       return rolledBack;
     }
 
-    if (confirmation?.status === "confirmed") {
+    // Level 2 Finalization phase
+    if (confirmation?.status === "finalized" || (transaction.state === "confirmed" && confirmation?.status === "confirmed")) {
+      const finalized: OptimisticTransaction = {
+        ...transaction,
+        state: "finalized",
+        confirmedPayload: confirmation.serverPayload ?? transaction.confirmedPayload,
+        updatedAt: confirmation.observedAt,
+        finalizedAt: confirmation.observedAt,
+      };
+      auditEvents.push(
+        makeAuditEvent({
+          code: "finalized",
+          transaction: finalized,
+          retriable: false,
+          timestamp: confirmation.observedAt,
+          message: "Transaction achieved block finality.",
+          payload: confirmation.serverPayload ?? transaction.optimisticPayload,
+        }),
+      );
+      return finalized;
+    }
+
+    // Level 1 Confirmation phase
+    if (confirmation?.status === "confirmed" && transaction.state === "optimistic") {
       const conflictKeys = getConflictKeys(transaction, confirmation.serverPayload);
       if (conflictKeys.length > 0) {
         const conflicted: OptimisticTransaction = {

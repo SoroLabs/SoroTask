@@ -1,30 +1,40 @@
 'use client';
 
 import { useReducer, useCallback } from 'react';
-import { mapContractError } from '@/src/lib/errors/contractErrors';
+import {
+  decodeContractDiagnostic,
+  mapContractError,
+} from '@/src/lib/errors/contractErrors';
 import type { FailureLog, WizardStep, WizardState, ResolutionAction } from './types';
-
-// ---------------------------------------------------------------------------
-// Step generation — maps a MappedContractError to fix actions
-// ---------------------------------------------------------------------------
 
 let stepCounter = 0;
 
 export function generateSteps(logs: FailureLog[]): WizardStep[] {
-  // Deduplicate by category so we don't repeat the same fix twice
   const seen = new Set<string>();
   const steps: WizardStep[] = [];
 
   for (const log of logs) {
+    // 1. Try decoding raw Soroban contract error stream / discriminant
+    const diagnostic = decodeSorobanContractError(log.errorMessage) || decodeSorobanContractError(log.errorCode);
+    
+    // 2. Fall back to mapped contract error category
     const mapped = mapContractError({
       message: log.errorMessage,
       code: log.errorCode,
+      diagnosticPayload: log.diagnosticPayload,
     });
+    const diagnostic = log.diagnosticPayload === undefined
+      ? undefined
+      : decodeContractDiagnostic(log.diagnosticPayload);
 
-    if (seen.has(mapped.category)) continue;
-    seen.add(mapped.category);
+    const stepKey = diagnostic ? `contract-${diagnostic.code}` : mapped.category;
+    if (seen.has(stepKey)) continue;
+    seen.add(stepKey);
 
-    const actions = buildActions(mapped.category, log);
+    const actions = diagnostic
+      ? buildDiagnosticActions(diagnostic)
+      : buildActions(mapped.category, log);
+
     if (actions.length === 0) continue;
 
     steps.push({
@@ -32,12 +42,69 @@ export function generateSteps(logs: FailureLog[]): WizardStep[] {
       category: mapped.category,
       title: mapped.title,
       explanation: mapped.userMessage,
+      diagnostic,
       actions,
       status: 'pending',
     });
   }
 
   return steps;
+}
+
+function buildDiagnosticActions(diagnostic: ReturnType<typeof decodeSorobanContractError> & object): ResolutionAction[] {
+  switch (diagnostic.action) {
+    case 'increase_gas':
+      return [
+        {
+          type: 'increase_gas',
+          label: 'Increase gas escrow (+50 XLM)',
+          description: diagnostic.fixSuggestion,
+          patch: { field: 'gasBalance', value: 50 },
+        },
+      ];
+    case 'reconnect_wallet':
+      return [
+        {
+          type: 'reconnect_wallet',
+          label: 'Reconnect Authorized Wallet',
+          description: diagnostic.fixSuggestion,
+        },
+      ];
+    case 'switch_network':
+      return [
+        {
+          type: 'switch_network',
+          label: 'Switch Network',
+          description: diagnostic.fixSuggestion,
+        },
+      ];
+    case 'wait':
+      return [
+        {
+          type: 'wait_and_retry',
+          label: 'Wait & Retry Execution',
+          description: diagnostic.fixSuggestion,
+        },
+      ];
+    case 'retry':
+      return [
+        {
+          type: 'wait_and_retry',
+          label: 'Retry Execution',
+          description: diagnostic.fixSuggestion,
+        },
+      ];
+    case 'fix_input':
+    default:
+      return [
+        {
+          type: 'fix_contract_address',
+          label: 'Apply Remediation Fix',
+          description: diagnostic.fixSuggestion,
+          patch: { field: 'remediation', value: diagnostic.name },
+        },
+      ];
+  }
 }
 
 function buildActions(
@@ -53,7 +120,7 @@ function buildActions(
         type: 'increase_gas',
         label: 'Increase gas budget',
         description: `Set gas budget to ${suggested} (1.5× current).`,
-        patch: { field: 'gasBalance', value: suggested },
+        patch: { field: 'gasBudget', value: suggested },
       }];
     }
     case 'INSUFFICIENT_BALANCE':
@@ -62,12 +129,21 @@ function buildActions(
         label: 'Top up account balance',
         description: 'Add XLM to your account before the next execution.',
       }];
+    case 'TOKEN_APPROVAL_REQUIRED':
+      return [{
+        type: 'approve_token',
+        label: 'Review token approval',
+        description: [
+          ctx.tokenAddress ? `Token: ${ctx.tokenAddress}.` : '',
+          ctx.spenderAddress ? `Spender: ${ctx.spenderAddress}.` : '',
+          'Verify both addresses and approve only the required amount in your wallet.',
+        ].filter(Boolean).join(' '),
+      }];
     case 'INSUFFICIENT_FEE':
       return [{
         type: 'increase_gas',
         label: 'Raise transaction fee',
-        description: 'The fee was below the network minimum. Increase gas balance.',
-        patch: { field: 'gasBalance', value: 10 },
+        description: 'Rebuild the transaction so the fee can be recalculated using the latest network minimum.',
       }];
     case 'BAD_AUTH':
     case 'WALLET_LOCKED':
@@ -86,8 +162,8 @@ function buildActions(
     case 'WRONG_NETWORK':
       return [{
         type: 'switch_network',
-        label: 'Switch to Futurenet',
-        description: 'Open Freighter and switch the network to Futurenet.',
+        label: 'Switch Network',
+        description: 'Open Freighter and switch the network to active chain.',
       }];
     case 'INVALID_ARGS':
     case 'SIMULATION_FAILED':
@@ -146,10 +222,6 @@ function buildActions(
       }];
   }
 }
-
-// ---------------------------------------------------------------------------
-// Reducer
-// ---------------------------------------------------------------------------
 
 type Action =
   | { type: 'ANALYZE'; logs: FailureLog[] }
@@ -210,10 +282,6 @@ function reducer(state: WizardState, action: Action): WizardState {
       return state;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Hook
-// ---------------------------------------------------------------------------
 
 export function useErrorWizard() {
   const [state, dispatch] = useReducer(reducer, initial);
