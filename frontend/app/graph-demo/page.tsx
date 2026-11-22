@@ -96,6 +96,52 @@ export default function GraphDemoPage() {
     }
   }
 
+  function handleLoadLargeGraph() {
+    const store = useTaskStore.getState();
+    const largeTasks: Task[] = Array.from({ length: 120 }, (_, i) => ({
+      id: `task-${i + 1}`,
+      title: `Pipeline Node #${i + 1}`,
+      description: `Automated high-throughput task worker ${i + 1}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }));
+
+    const largeDeps: TaskDependency[] = [];
+    for (let i = 1; i < 118; i++) {
+      // Connect to next node and sometimes skip one for realistic DAG
+      largeDeps.push({ fromId: `task-${i + 1}`, toId: `task-${i}` });
+      if (i % 3 === 0 && i + 2 <= 120) {
+        largeDeps.push({ fromId: `task-${i + 2}`, toId: `task-${i}` });
+      }
+    }
+
+    store.setTasks(largeTasks);
+    store.setDependencies(largeDeps);
+  }
+
+  function handleInjectCycle() {
+    const store = useTaskStore.getState();
+    if (taskIds.length >= 3) {
+      // Direct raw dependency injection to demonstrate cycle visualization
+      const currentDeps = store.dependencies;
+      const t1 = taskIds[0];
+      const t2 = taskIds[1];
+      const t3 = taskIds[2];
+      store.setDependencies([
+        ...currentDeps,
+        { fromId: t1, toId: t2 },
+        { fromId: t2, toId: t3 },
+        { fromId: t3, toId: t1 },
+      ]);
+    }
+  }
+
+  function handleResetSeed() {
+    const store = useTaskStore.getState();
+    store.setTasks(SEED_TASKS);
+    store.setDependencies(SEED_DEPS);
+  }
+
   const managerTasks: ManagerTask[] = taskIds
     .map((id) => tasks[id])
     .filter(Boolean)
@@ -112,13 +158,34 @@ export default function GraphDemoPage() {
         </p>
       </header>
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={handleAddRandomDependency}
           className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400"
         >
           Add Random Dependency
+        </button>
+        <button
+          type="button"
+          onClick={handleLoadLargeGraph}
+          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+        >
+          Load 120+ Node DAG
+        </button>
+        <button
+          type="button"
+          onClick={handleInjectCycle}
+          className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-400"
+        >
+          Inject Cycle (Show Red Highlight)
+        </button>
+        <button
+          type="button"
+          onClick={handleResetSeed}
+          className="rounded-lg bg-neutral-700 px-4 py-2 text-sm font-medium text-neutral-200 hover:bg-neutral-600 focus:outline-none focus:ring-2 focus:ring-neutral-400"
+        >
+          Reset Graph
         </button>
         <span className="text-xs text-neutral-500">
           {deps.length} dependencies · {taskIds.length} tasks
