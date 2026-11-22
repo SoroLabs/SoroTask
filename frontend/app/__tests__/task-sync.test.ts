@@ -1,13 +1,56 @@
 /**
- * Unit tests for TaskContext reducer — covers state reconciliation, 
+ * Unit tests for TaskContext reducer — covers state reconciliation,
  * deduplication, optimistic updates, and rollback.
+ *
+ * The reducer is inlined below (mirroring the logic in TaskContext.tsx) so the
+ * pure state transitions can be exercised without mounting React. All state,
+ * action, and payload shapes are explicitly typed against the shared socket
+ * types so this file compiles under `strict` mode.
  */
+
+import type {
+  HealthStatus,
+  KeeperMetrics,
+  TaskSummary,
+  TaskUpdate,
+} from '../hooks/useSocket';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type TaskStatus = TaskSummary['status'];
+
+interface LogEntry {
+  id: string;
+  taskId: number;
+  status: TaskStatus;
+  message: string;
+  timestamp: string;
+}
+
+interface TaskState {
+  tasks: TaskSummary[];
+  metrics: KeeperMetrics | null;
+  health: HealthStatus | null;
+  logs: LogEntry[];
+  connected: boolean;
+  pendingIds: Set<number>;
+}
+
+type TaskAction =
+  | { type: 'SYNC_TASKS'; tasks: TaskSummary[] }
+  | { type: 'TASK_UPDATED'; update: TaskUpdate }
+  | { type: 'SYNC_METRICS'; metrics: KeeperMetrics }
+  | { type: 'SYNC_HEALTH'; health: HealthStatus }
+  | { type: 'SET_CONNECTED'; connected: boolean }
+  | { type: 'OPTIMISTIC_ADD'; task: TaskSummary }
+  | { type: 'CONFIRM_TASK'; taskId: number }
+  | { type: 'ROLLBACK_TASK'; taskId: number };
 
 // ─── Inline the pure reducer (copy of logic in TaskContext.tsx) ───────────────
 
 const MAX_LOGS = 100;
 
-function logEntry(taskId, status, message) {
+function logEntry(taskId: number, status: TaskStatus, message: string): LogEntry {
   return {
     id: `${taskId}-${Date.now()}`,
     taskId,
@@ -17,7 +60,7 @@ function logEntry(taskId, status, message) {
   };
 }
 
-function tasksReducer(state, action) {
+function tasksReducer(state: TaskState, action: TaskAction): TaskState {
   switch (action.type) {
     case 'SYNC_TASKS': {
       const serverIds = new Set(action.tasks.map((t) => t.id));
@@ -92,32 +135,35 @@ function tasksReducer(state, action) {
   }
 }
 
-const INITIAL = {
+const INITIAL: TaskState = {
   tasks: [],
   metrics: null,
   health: null,
   logs: [],
   connected: false,
-  pendingIds: new Set(),
+  pendingIds: new Set<number>(),
 };
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('TaskContext reducer', () => {
   test('SYNC_TASKS replaces tasks with server data', () => {
-    const s0 = { ...INITIAL, tasks: [{ id: 1, status: 'active' }] };
-    const serverTasks = [{ id: 2, status: 'registered' }, { id: 3, status: 'active' }];
+    const s0: TaskState = { ...INITIAL, tasks: [{ id: 1, status: 'active' }] };
+    const serverTasks: TaskSummary[] = [
+      { id: 2, status: 'registered' },
+      { id: 3, status: 'active' },
+    ];
     const s1 = tasksReducer(s0, { type: 'SYNC_TASKS', tasks: serverTasks });
     expect(s1.tasks).toHaveLength(2);
     expect(s1.tasks.map((t) => t.id)).toEqual([2, 3]);
   });
 
   test('SYNC_TASKS preserves pending optimistic tasks not yet on server', () => {
-    const optimistic = { id: -1, status: 'registered' };
-    const s0 = {
+    const optimistic: TaskSummary = { id: -1, status: 'registered' };
+    const s0: TaskState = {
       ...INITIAL,
       tasks: [optimistic, { id: 1, status: 'active' }],
-      pendingIds: new Set([-1]),
+      pendingIds: new Set<number>([-1]),
     };
     const s1 = tasksReducer(s0, {
       type: 'SYNC_TASKS',
@@ -127,23 +173,29 @@ describe('TaskContext reducer', () => {
   });
 
   test('SYNC_TASKS removes optimistic task once server confirms it', () => {
-    const s0 = {
+    const s0: TaskState = {
       ...INITIAL,
-      tasks: [{ id: -1, status: 'registered' }, { id: 1, status: 'active' }],
-      pendingIds: new Set([-1]),
+      tasks: [
+        { id: -1, status: 'registered' },
+        { id: 1, status: 'active' },
+      ],
+      pendingIds: new Set<number>([-1]),
     };
     // Server now returns real task (different ID — pending still present but
     // confirm removes it separately via CONFIRM_TASK)
     const s1 = tasksReducer(s0, {
       type: 'SYNC_TASKS',
-      tasks: [{ id: 1, status: 'active' }, { id: 99, status: 'registered' }],
+      tasks: [
+        { id: 1, status: 'active' },
+        { id: 99, status: 'registered' },
+      ],
     });
     // Pending id -1 not in server list → still merged
     expect(s1.tasks.some((t) => t.id === -1)).toBe(true);
   });
 
   test('TASK_UPDATED mutates only the target task', () => {
-    const s0 = {
+    const s0: TaskState = {
       ...INITIAL,
       tasks: [
         { id: 1, status: 'active' },
@@ -154,8 +206,8 @@ describe('TaskContext reducer', () => {
       type: 'TASK_UPDATED',
       update: { taskId: 1, status: 'executing' },
     });
-    expect(s1.tasks.find((t) => t.id === 1).status).toBe('executing');
-    expect(s1.tasks.find((t) => t.id === 2).status).toBe('registered');
+    expect(s1.tasks.find((t) => t.id === 1)?.status).toBe('executing');
+    expect(s1.tasks.find((t) => t.id === 2)?.status).toBe('registered');
   });
 
   test('TASK_UPDATED appends a log entry', () => {
@@ -170,7 +222,7 @@ describe('TaskContext reducer', () => {
   });
 
   test('logs are capped at MAX_LOGS', () => {
-    let s = INITIAL;
+    let s: TaskState = INITIAL;
     for (let i = 0; i < 120; i++) {
       s = tasksReducer(s, {
         type: 'TASK_UPDATED',
@@ -181,23 +233,23 @@ describe('TaskContext reducer', () => {
   });
 
   test('OPTIMISTIC_ADD prepends task and tracks pendingId', () => {
-    const task = { id: -1, status: 'registered', target: 'C...XYZ' };
+    const task: TaskSummary = { id: -1, status: 'registered', target: 'C...XYZ' };
     const s1 = tasksReducer(INITIAL, { type: 'OPTIMISTIC_ADD', task });
     expect(s1.tasks[0]).toEqual(task);
     expect(s1.pendingIds.has(-1)).toBe(true);
   });
 
   test('OPTIMISTIC_ADD is idempotent — same id not duplicated', () => {
-    const task = { id: -1, status: 'registered' };
+    const task: TaskSummary = { id: -1, status: 'registered' };
     const s1 = tasksReducer(INITIAL, { type: 'OPTIMISTIC_ADD', task });
     const s2 = tasksReducer(s1, { type: 'OPTIMISTIC_ADD', task });
     expect(s2.tasks.filter((t) => t.id === -1)).toHaveLength(1);
   });
 
   test('CONFIRM_TASK removes id from pendingIds', () => {
-    const s0 = {
+    const s0: TaskState = {
       ...INITIAL,
-      pendingIds: new Set([-1, -2]),
+      pendingIds: new Set<number>([-1, -2]),
     };
     const s1 = tasksReducer(s0, { type: 'CONFIRM_TASK', taskId: -1 });
     expect(s1.pendingIds.has(-1)).toBe(false);
@@ -205,10 +257,13 @@ describe('TaskContext reducer', () => {
   });
 
   test('ROLLBACK_TASK removes task and clears pendingId', () => {
-    const s0 = {
+    const s0: TaskState = {
       ...INITIAL,
-      tasks: [{ id: -1, status: 'registered' }, { id: 1, status: 'active' }],
-      pendingIds: new Set([-1]),
+      tasks: [
+        { id: -1, status: 'registered' },
+        { id: 1, status: 'active' },
+      ],
+      pendingIds: new Set<number>([-1]),
     };
     const s1 = tasksReducer(s0, { type: 'ROLLBACK_TASK', taskId: -1 });
     expect(s1.tasks.find((t) => t.id === -1)).toBeUndefined();
@@ -224,13 +279,25 @@ describe('TaskContext reducer', () => {
   });
 
   test('SYNC_METRICS stores metrics', () => {
-    const metrics = { tasksCheckedTotal: 5, tasksExecutedTotal: 3, tasksFailedTotal: 0, tasksDueTotal: 3, avgFeePaidXlm: 0.001, lastCycleDurationMs: 120 };
+    const metrics: KeeperMetrics = {
+      tasksCheckedTotal: 5,
+      tasksExecutedTotal: 3,
+      tasksFailedTotal: 0,
+      tasksDueTotal: 3,
+      avgFeePaidXlm: 0.001,
+      lastCycleDurationMs: 120,
+    };
     const s1 = tasksReducer(INITIAL, { type: 'SYNC_METRICS', metrics });
     expect(s1.metrics).toEqual(metrics);
   });
 
   test('SYNC_HEALTH stores health status', () => {
-    const health = { status: 'ok', uptime: 3600, lastPollAt: null, rpcConnected: true };
+    const health: HealthStatus = {
+      status: 'ok',
+      uptime: 3600,
+      lastPollAt: null,
+      rpcConnected: true,
+    };
     const s1 = tasksReducer(INITIAL, { type: 'SYNC_HEALTH', health });
     expect(s1.health).toEqual(health);
   });

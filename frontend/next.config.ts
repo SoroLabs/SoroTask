@@ -68,9 +68,8 @@ const nextConfig: NextConfig = {
       "date-fns",
     ],
   },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
+  // TypeScript errors are no longer masked: `next build` fails on any type
+  // error so CI enforces `tsc --noEmit` cleanliness (issue #1732).
   async headers() {
     return [
       {

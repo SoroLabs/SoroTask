@@ -71,7 +71,7 @@ export function useSocket(options: UseSocketOptions = {}) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  const connectRef = useRef<() => Socket>();
+  const connectRef = useRef<(() => Socket) | null>(null);
 
   const connect = useCallback(() => {
     const socket = io(KEEPER_URL, {
