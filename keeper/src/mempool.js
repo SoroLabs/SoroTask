@@ -109,7 +109,8 @@ class FeeBumpProtection {
     const source = typeof this.feeSource.publicKey === 'function'
       ? this.feeSource.publicKey()
       : String(this.feeSource);
-    if (String(transaction.source || '') !== source) {
+    const transactionSource = transaction.source || transaction.sourceAccount || transaction.source_account;
+    if (String(transactionSource || '') !== source) {
       throw new Error('Fee-bump protection only accepts a transaction signed by the configured keeper account.');
     }
 

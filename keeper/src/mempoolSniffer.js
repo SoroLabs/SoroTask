@@ -87,6 +87,19 @@ class MempoolTransactionSniffer {
     return transactions;
   }
 
+  async _notifyConflict(conflict) {
+    try {
+      await this.onConflict(conflict);
+    } catch (error) {
+      // Observability hooks must not prevent the sniffer from recording other
+      // conflicts in the same batch or from refreshing its seen set.
+      safeLog(this.logger, 'warn', 'Mempool conflict handler failed', {
+        error: error?.message || String(error),
+        conflictKey: conflict.key,
+      });
+    }
+  }
+
   _prune(now) {
     for (const [hash, entry] of this.seen) {
       if (now - entry.seenAt > this.seenTtlMs) this.seen.delete(hash);
@@ -146,7 +159,7 @@ class MempoolTransactionSniffer {
           };
           conflicts.push(conflict);
           this.metrics.conflictsDetected += 1;
-          await this.onConflict(conflict);
+          await this._notifyConflict(conflict);
         }
         for (const key of this.latestTransactions.keys()) {
           if (!groups.has(key) || groups.get(key).length < 2) {
@@ -253,7 +266,7 @@ class MempoolTransactionSniffer {
       this.latestTransactions.delete(key);
       this.latestTransactions.set(key, { signature, seenAt: this.now() });
       this.metrics.conflictsDetected += 1;
-      await this.onConflict({
+      await this._notifyConflict({
         key,
         candidates,
         action: 'fee-bump-or-private-submit',
