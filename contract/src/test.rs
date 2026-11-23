@@ -65,24 +65,99 @@ fn test_verify_vdf_proof_gate() {
     let contract_id = env.register(SoroTaskContract, ());
     let client = SoroTaskContractClient::new(&env, &contract_id);
 
-    let output = Bytes::from_slice(&env, &[1, 2, 3, 4]);
-    let seed = Bytes::from_slice(&env, &[10, 20]);
-
+    let seed = Bytes::from_slice(&env, &[10; 32]);
+    let keeper = Address::generate(&env);
+    let task_id = 42;
+    let output = compute_vdf_output(&env, &keeper, task_id, &seed, 150);
     let valid_vdf = VdfProof {
         output: output.clone(),
         difficulty: 150,
         seed: seed.clone(),
+        task_id,
+        keeper: keeper.clone(),
     };
-
     assert!(client.verify_vdf_proof(&valid_vdf, &100));
 
-    let invalid_vdf = VdfProof {
+    let insufficient_work = VdfProof {
         output: output.clone(),
         difficulty: 50,
         seed: seed.clone(),
+        task_id,
+        keeper: keeper.clone(),
     };
+    assert!(!client.verify_vdf_proof(&insufficient_work, &100));
 
-    assert!(!client.verify_vdf_proof(&invalid_vdf, &100));
+    let forged_output = VdfProof {
+        output: Bytes::from_slice(&env, &[7; 32]),
+        difficulty: 150,
+        seed: seed.clone(),
+        task_id,
+        keeper: keeper.clone(),
+    };
+    assert!(!client.verify_vdf_proof(&forged_output, &100));
+
+    let wrong_seed = VdfProof {
+        output,
+        difficulty: 150,
+        seed: Bytes::from_slice(&env, &[99; 32]),
+        task_id,
+        keeper: keeper.clone(),
+    };
+    assert!(!client.verify_vdf_proof(&wrong_seed, &100));
+
+    let mut wrong_task = valid_vdf.clone();
+    wrong_task.task_id = task_id + 1;
+    assert!(!client.verify_vdf_proof(&wrong_task, &100));
+
+    let mut wrong_keeper = valid_vdf.clone();
+    wrong_keeper.keeper = Address::generate(&env);
+    assert!(!client.verify_vdf_proof(&wrong_keeper, &100));
+}
+
+#[test]
+fn test_vdf_rejects_malformed_and_excessive_proofs() {
+    let env = Env::default();
+    let contract_id = env.register(SoroTaskContract, ());
+    let client = SoroTaskContractClient::new(&env, &contract_id);
+    let seed = Bytes::from_slice(&env, &[1; 32]);
+    let keeper = Address::generate(&env);
+    let task_id = 7;
+
+    let empty_seed = VdfProof {
+        output: Bytes::from_slice(&env, &[0; 32]),
+        difficulty: 150,
+        seed: Bytes::new(&env),
+        task_id,
+        keeper: keeper.clone(),
+    };
+    assert!(!client.verify_vdf_proof(&empty_seed, &100));
+
+    let short_seed = VdfProof {
+        output: Bytes::from_slice(&env, &[0; 32]),
+        difficulty: 150,
+        seed: Bytes::from_slice(&env, &[2; 15]),
+        task_id,
+        keeper: keeper.clone(),
+    };
+    assert!(!client.verify_vdf_proof(&short_seed, &100));
+
+    let short_output = VdfProof {
+        output: Bytes::from_slice(&env, &[1, 2, 3]),
+        difficulty: 150,
+        seed: seed.clone(),
+        task_id,
+        keeper: keeper.clone(),
+    };
+    assert!(!client.verify_vdf_proof(&short_output, &100));
+
+    let excessive_difficulty = VdfProof {
+        output: Bytes::from_slice(&env, &[0; 32]),
+        difficulty: 1_001,
+        seed,
+        task_id,
+        keeper,
+    };
+    assert!(!client.verify_vdf_proof(&excessive_difficulty, &100));
 }
 
 #[test]

@@ -365,6 +365,14 @@ impl AddressExt for Address {
     }
 }
 
+/// Minimum sequential work required for VDF-gated task execution.
+const MIN_VDF_DIFFICULTY: u64 = 100;
+/// Hard upper bound prevents attacker-controlled verification loops from exhausting CPU.
+const MAX_VDF_DIFFICULTY: u64 = 1_000;
+/// VDF seeds are domain-separated inputs, not arbitrary unbounded payloads.
+const MIN_VDF_SEED_BYTES: u32 = 16;
+const MAX_VDF_SEED_BYTES: u32 = 64;
+
 /// Maximum number of arguments allowed in a task payload
 const MAX_ARGS_COUNT: u32 = 32;
 
@@ -646,9 +654,44 @@ pub struct StateChannelSettlement {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct VdfProof {
+    /// Output of the sequential VDF evaluation.
     pub output: Bytes,
+    /// Number of sequential hash rounds performed.
     pub difficulty: u64,
+    /// Unpredictable input selected by the keeper.
     pub seed: Bytes,
+    /// Execution context prevents a proof from being copied to another task.
+    pub task_id: u64,
+    /// Execution context prevents a proof from being front-run by another keeper.
+    pub keeper: Address,
+}
+
+/// Computes the deterministic, domain-separated sequential hash chain used by
+/// the VDF verifier. Each round depends on the previous round, so rounds cannot
+/// be independently evaluated or reordered.
+fn compute_vdf_output(
+    env: &Env,
+    keeper: &Address,
+    task_id: u64,
+    seed: &Bytes,
+    difficulty: u64,
+) -> Bytes {
+    let mut initial = Bytes::from_slice(env, b"SOROTASK_VDF_V1_INIT");
+    let keeper_xdr: Bytes = keeper.clone().to_xdr(env);
+    initial.append(&keeper_xdr);
+    initial.append(&Bytes::from_slice(env, &task_id.to_be_bytes()));
+    initial.append(seed);
+    initial.append(&Bytes::from_slice(env, &difficulty.to_be_bytes()));
+    let mut state = env.crypto().sha256(&initial).to_bytes();
+
+    for round in 0..difficulty {
+        let mut step = Bytes::from_slice(env, b"SOROTASK_VDF_V1_STEP");
+        step.append(&state);
+        step.append(&Bytes::from_slice(env, &round.to_be_bytes()));
+        state = env.crypto().sha256(&step).to_bytes();
+    }
+
+    state
 }
 
 /// Role enumeration for granular access control
@@ -6308,25 +6351,51 @@ impl SoroTaskContract {
         Self::execute_internal(&env, &keeper, task_id, true);
     }
 
-    /// Verifies VDF proof difficulty and non-empty output integrity, ensuring un-cheatable
-    /// execution delays independent of block clock drift before updating last_run.
-    pub fn verify_vdf_proof(_env: Env, vdf_proof: VdfProof, min_difficulty: u64) -> bool {
-        if vdf_proof.difficulty < min_difficulty {
+    /// Verifies the sequential SHA-256 VDF transcript. A valid proof must contain
+    /// the exact 32-byte output obtained after `difficulty` sequential rounds.
+    /// Difficulty is bounded to keep on-chain verification within a predictable
+    /// Soroban CPU budget; empty/oversized seeds and malformed outputs are rejected.
+    pub fn verify_vdf_proof(env: Env, vdf_proof: VdfProof, min_difficulty: u64) -> bool {
+        if min_difficulty == 0
+            || min_difficulty > MAX_VDF_DIFFICULTY
+            || vdf_proof.difficulty < min_difficulty
+            || vdf_proof.difficulty > MAX_VDF_DIFFICULTY
+            || vdf_proof.seed.len() < MIN_VDF_SEED_BYTES
+            || vdf_proof.seed.len() > MAX_VDF_SEED_BYTES
+            || vdf_proof.output.len() != 32
+        {
             return false;
         }
-        if vdf_proof.output.is_empty() || vdf_proof.seed.is_empty() {
-            return false;
-        }
-        true
+
+        compute_vdf_output(
+            &env,
+            &vdf_proof.keeper,
+            vdf_proof.task_id,
+            &vdf_proof.seed,
+            vdf_proof.difficulty,
+        ) == vdf_proof.output
     }
 
-    /// Executes task after validating Verifiable Delay Function (VDF) proof.
+    /// Executes a task only after validating its VDF output. The most recent
+    /// output is recorded per task so the same proof cannot be replayed.
     pub fn execute_with_vdf(env: Env, keeper: Address, task_id: u64, vdf_proof: VdfProof) -> bool {
         let _guard = security::ReentrancyGuard::new(&env);
-        if !Self::verify_vdf_proof(env.clone(), vdf_proof, 100) {
+        if vdf_proof.task_id != task_id
+            || vdf_proof.keeper != keeper
+            || !Self::verify_vdf_proof(env.clone(), vdf_proof.clone(), MIN_VDF_DIFFICULTY)
+        {
             panic_with_error!(&env, Error::InvalidVdfProof);
         }
+
+        let proof_key = DataKey::VdfProofs(task_id);
+        let previous_output: Option<Bytes> = env.storage().persistent().get(&proof_key);
+        if previous_output.as_ref() == Some(&vdf_proof.output) {
+            panic_with_error!(&env, Error::InvalidVdfProof);
+        }
+
         Self::execute_internal(&env, &keeper, task_id, false);
+        env.storage().persistent().set(&proof_key, &vdf_proof.output);
+        env.storage().persistent().extend_ttl(&proof_key, MIN_THRESHOLD_LEDGERS, EXTEND_TO_LEDGERS);
         true
     }
 
