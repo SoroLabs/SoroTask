@@ -10,10 +10,10 @@
 //! - **Atomic Execution**: Executes DEX swap instantly when stop-loss triggers
 //! - **Take-Profit**: Optional take-profit threshold for additional exit automation
 
-use soroban_sdk::{Address, BytesN, Env, Symbol, Vec, panic_with_error};
+use soroban_sdk::{panic_with_error, Address, Env, Symbol, Vec};
 
-use crate::DataKey;
 use crate::dex_router::DexRouter;
+use crate::DataKey;
 use crate::Error;
 
 /// Default trailing stop-loss percentage in basis points (1% = 100 bps)
@@ -27,6 +27,19 @@ pub const MAX_TRAILING_BPS: u32 = 5000;
 
 /// Minimum trailing delta to prevent dust-level triggers
 pub const MIN_TRAILING_BPS: u32 = 10;
+
+pub const DEFAULT_MAX_SLIPPAGE_BPS: u32 = 100;
+
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug)]
+pub struct TrailingSlippageConfig {
+    pub order_id: u64,
+    pub reserve_in: i128,
+    pub reserve_out: i128,
+    pub max_slippage_bps: u32,
+    pub last_price: i128,
+    pub updated_at: u64,
+}
 
 /// Lifecycle status of a trailing order.
 #[soroban_sdk::contracttype]
@@ -154,6 +167,123 @@ fn increment_order_counter(env: &Env) -> u64 {
     counter
 }
 
+pub fn get_trailing_peak_price(env: &Env, order_id: u64) -> i128 {
+    if let Some(peak) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, i128>(&DataKey::TrailingPeakPrice(order_id))
+    {
+        return peak;
+    }
+    env.storage()
+        .persistent()
+        .get::<DataKey, TrailingOrderConfig>(&DataKey::TrailingOrder(order_id))
+        .map(|order| order.peak_price)
+        .unwrap_or(0)
+}
+
+fn save_trailing_peak_price(env: &Env, order_id: u64, peak: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::TrailingPeakPrice(order_id), &peak);
+}
+
+pub fn get_trailing_slippage_config(env: &Env, order_id: u64) -> Option<TrailingSlippageConfig> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TrailingSlippageConfig(order_id))
+}
+
+fn save_trailing_slippage_config(env: &Env, config: &TrailingSlippageConfig) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::TrailingSlippageConfig(config.order_id), config);
+}
+
+pub fn set_trailing_pool_depth(
+    env: &Env,
+    order_id: u64,
+    reserve_in: i128,
+    reserve_out: i128,
+    max_slippage_bps: u32,
+) {
+    let order = load_order(env, order_id);
+    order.owner.require_auth();
+
+    if reserve_in <= 0 || reserve_out <= 0 || max_slippage_bps > 10_000 {
+        panic_with_error!(env, Error::TrailingPoolDepthInvalid);
+    }
+
+    save_trailing_slippage_config(
+        env,
+        &TrailingSlippageConfig {
+            order_id,
+            reserve_in,
+            reserve_out,
+            max_slippage_bps,
+            last_price: get_trailing_peak_price(env, order_id),
+            updated_at: env.ledger().timestamp(),
+        },
+    );
+}
+
+pub fn calculate_dynamic_slippage_bps(
+    amount_in: i128,
+    reserve_in: i128,
+    reserve_out: i128,
+    max_slippage_bps: u32,
+    last_price: i128,
+    current_price: i128,
+) -> u32 {
+    if max_slippage_bps == 0 || reserve_in <= 0 || reserve_out <= 0 {
+        return 0;
+    }
+
+    let impact_bps = if amount_in > 0 {
+        let impact = amount_in.saturating_mul(10_000) / reserve_in.saturating_add(amount_in);
+        impact.min(10_000) as u32
+    } else {
+        0
+    };
+
+    let drop_bps = if last_price > 0 && current_price < last_price {
+        let drop = last_price
+            .saturating_sub(current_price)
+            .saturating_mul(10_000)
+            / last_price;
+        (drop.min(10_000) / 2) as u32
+    } else {
+        0
+    };
+
+    max_slippage_bps
+        .saturating_sub(impact_bps)
+        .saturating_sub(drop_bps)
+}
+
+pub fn calculate_dynamic_min_out(
+    amount_in: i128,
+    reserve_in: i128,
+    reserve_out: i128,
+    max_slippage_bps: u32,
+    last_price: i128,
+    current_price: i128,
+) -> i128 {
+    if reserve_in <= 0 || reserve_out <= 0 {
+        return 0;
+    }
+    let expected = DexRouter::quote_out(amount_in, reserve_in, reserve_out);
+    let bps = calculate_dynamic_slippage_bps(
+        amount_in,
+        reserve_in,
+        reserve_out,
+        max_slippage_bps,
+        last_price,
+        current_price,
+    );
+    expected.saturating_mul((10_000 - bps as i128).max(0)) / 10_000
+}
+
 /// Creates a new trailing stop-loss order.
 ///
 /// # Arguments
@@ -222,13 +352,22 @@ pub fn create_trailing_order(
     };
 
     save_order(env, order_id, &order);
+    save_trailing_peak_price(env, order_id, initial_price);
+    save_trailing_slippage_config(
+        env,
+        &TrailingSlippageConfig {
+            order_id,
+            reserve_in: 0,
+            reserve_out: 0,
+            max_slippage_bps: DEFAULT_MAX_SLIPPAGE_BPS,
+            last_price: initial_price,
+            updated_at: now,
+        },
+    );
 
     // Emit event
     env.events().publish(
-        (
-            Symbol::new(env, "TrailingOrderCreated"),
-            order_id,
-        ),
+        (Symbol::new(env, "TrailingOrderCreated"), order_id),
         (owner.clone(), initial_price, trailing_bps),
     );
 
@@ -247,7 +386,11 @@ pub fn create_trailing_order(
 /// # Returns
 /// * `true` if order was updated, `false` if order was executed or is invalid
 pub fn update_trailing_order(env: &Env, order_id: u64, current_price: i128) -> bool {
-    let mut order = match env.storage().persistent().get::<DataKey, TrailingOrderConfig>(&DataKey::TrailingOrder(order_id)) {
+    let mut order = match env
+        .storage()
+        .persistent()
+        .get::<DataKey, TrailingOrderConfig>(&DataKey::TrailingOrder(order_id))
+    {
         Some(o) => o,
         None => return false,
     };
@@ -270,39 +413,59 @@ pub fn update_trailing_order(env: &Env, order_id: u64, current_price: i128) -> b
     }
 
     let now = env.ledger().timestamp();
+    let slippage = get_trailing_slippage_config(env, order_id);
+    let peak = get_trailing_peak_price(env, order_id);
 
     // Check take-profit first
     if let Some(tp_bps) = order.take_profit_bps {
         let take_profit_price = calculate_take_profit_price(order.initial_price, tp_bps);
         if current_price >= take_profit_price {
-            // Take-profit triggered, execute the swap
-            return execute_trailing_order(env, order_id, current_price, TrailingOrderStatus::TakeProfitExecuted);
+            return execute_trailing_order(
+                env,
+                order_id,
+                current_price,
+                TrailingOrderStatus::TakeProfitExecuted,
+                slippage,
+            );
         }
     }
 
-    // Update peak price if current price is higher (ratchet up)
-    if current_price > order.peak_price {
+    if current_price > peak {
         order.peak_price = current_price;
         order.trigger_price = calculate_trigger_price(current_price, order.trailing_bps);
         order.last_updated = now;
         save_order(env, order_id, &order);
+        save_trailing_peak_price(env, order_id, current_price);
 
         env.events().publish(
-            (
-                Symbol::new(env, "TrailingOrderRatcheted"),
-                order_id,
-            ),
+            (Symbol::new(env, "TrailingOrderRatcheted"), order_id),
             (current_price, order.trigger_price),
         );
     }
 
     // Check stop-loss trigger
     if current_price <= order.trigger_price {
-        // Stop-loss triggered, execute the swap
-        return execute_trailing_order(env, order_id, current_price, TrailingOrderStatus::StopLossExecuted);
+        return execute_trailing_order(
+            env,
+            order_id,
+            current_price,
+            TrailingOrderStatus::StopLossExecuted,
+            slippage,
+        );
+    }
+
+    if let Some(mut config) = slippage {
+        config.last_price = current_price;
+        config.updated_at = now;
+        save_trailing_slippage_config(env, &config);
     }
 
     true
+}
+
+pub fn update_trailing_order_from_oracle(env: &Env, order_id: u64) -> bool {
+    let price = crate::SoroTaskContract::get_medianized_oracle_price(env.clone());
+    update_trailing_order(env, order_id, price)
 }
 
 /// Executes the trailing order by performing the atomic DEX swap.
@@ -319,8 +482,13 @@ fn execute_trailing_order(
     order_id: u64,
     execution_price: i128,
     execution_type: TrailingOrderStatus,
+    slippage: Option<TrailingSlippageConfig>,
 ) -> bool {
-    let mut order = match env.storage().persistent().get::<DataKey, TrailingOrderConfig>(&DataKey::TrailingOrder(order_id)) {
+    let mut order = match env
+        .storage()
+        .persistent()
+        .get::<DataKey, TrailingOrderConfig>(&DataKey::TrailingOrder(order_id))
+    {
         Some(o) => o,
         None => return false,
     };
@@ -329,35 +497,49 @@ fn execute_trailing_order(
     let peak_before_trigger = order.peak_price;
     let trigger_at_execution = order.trigger_price;
 
+    let dynamic_min_out = match &slippage {
+        Some(config) => calculate_dynamic_min_out(
+            order.amount_in,
+            config.reserve_in,
+            config.reserve_out,
+            config.max_slippage_bps,
+            config.last_price,
+            execution_price,
+        ),
+        None => 0,
+    };
+    let effective_min_out = order.min_amount_out.max(dynamic_min_out);
+
     // Transfer sell_token from owner to contract for swap
     let token_client = soroban_sdk::token::Client::new(env, &order.sell_token);
-    token_client.transfer(&order.owner, &env.current_contract_address(), &order.amount_in);
-
-    // Approve router to spend sell_token
-    // Note: In production, this would involve calling token.approve()
-    // For this implementation, we assume the contract has approval or uses direct transfer
+    token_client.transfer(
+        &order.owner,
+        &env.current_contract_address(),
+        &order.amount_in,
+    );
 
     // Execute swap via DEX router
     let amount_out = DexRouter::execute_swap(
         env,
-        order.router.clone(),
         order.swap_path.clone(),
         order.amount_in,
-        order.min_amount_out,
+        effective_min_out,
         order.owner.clone(),
         order.expiration,
     );
 
-    // Verify swap succeeded with minimum amount
-    if amount_out < order.min_amount_out {
-        // Swap failed or slippage too high, revert transfer
-        token_client.transfer(&env.current_contract_address(), &order.owner, &order.amount_in);
-        return false;
+    if amount_out < effective_min_out {
+        panic_with_error!(env, Error::TrailingSlippageExceeded);
     }
 
     // Update order status
     order.status = execution_type;
     save_order(env, order_id, &order);
+    if let Some(mut config) = slippage {
+        config.last_price = execution_price;
+        config.updated_at = env.ledger().timestamp();
+        save_trailing_slippage_config(env, &config);
+    }
 
     // Record execution
     let execution = TrailingOrderExecution {
@@ -375,11 +557,13 @@ fn execute_trailing_order(
 
     // Emit execution event
     env.events().publish(
+        (Symbol::new(env, "TrailingOrderExecuted"), order_id),
         (
-            Symbol::new(env, "TrailingOrderExecuted"),
-            order_id,
+            execution_type,
+            execution_price,
+            amount_out,
+            effective_min_out,
         ),
-        (execution_type, execution_price, amount_out),
     );
 
     true
@@ -410,10 +594,7 @@ pub fn cancel_trailing_order(env: &Env, order_id: u64, caller: &Address) -> i128
     save_order(env, order_id, &order);
 
     env.events().publish(
-        (
-            Symbol::new(env, "TrailingOrderCancelled"),
-            order_id,
-        ),
+        (Symbol::new(env, "TrailingOrderCancelled"), order_id),
         caller.clone(),
     );
 
@@ -471,9 +652,9 @@ pub fn batch_update_trailing_orders(env: &Env, order_ids: Vec<u64>, prices: Vec<
         let order_id = order_ids.get(i).unwrap();
         let price = prices.get(i).unwrap();
 
-        if update_trailing_order(env, *order_id, *price) {
+        if update_trailing_order(env, order_id, price) {
             // Check if order was executed
-            if let Some(order) = get_trailing_order(env, *order_id) {
+            if let Some(order) = get_trailing_order(env, order_id) {
                 if order.status != TrailingOrderStatus::Active {
                     executed_count += 1;
                 }
@@ -517,5 +698,31 @@ mod tests {
         assert!(!validate_trailing_params(5, None)); // Below minimum
         assert!(!validate_trailing_params(5001, None)); // Above maximum
         assert!(!validate_trailing_params(500, Some(5001))); // TP above maximum
+    }
+
+    #[test]
+    fn test_dynamic_slippage_shrinks_with_price_impact() {
+        let deep = calculate_dynamic_slippage_bps(1_000, 1_000_000, 1_000_000, 100, 100, 100);
+        let shallow = calculate_dynamic_slippage_bps(1_000, 10_000, 10_000, 100, 100, 100);
+        assert!(deep > shallow);
+        assert_eq!(deep, 91);
+        assert_eq!(shallow, 0);
+    }
+
+    #[test]
+    fn test_dynamic_slippage_shrinks_on_flash_drop() {
+        let stable = calculate_dynamic_slippage_bps(1_000, 1_000_000, 1_000_000, 200, 100, 100);
+        let crash = calculate_dynamic_slippage_bps(1_000, 1_000_000, 1_000_000, 200, 100, 80);
+        assert_eq!(stable, 191);
+        assert_eq!(crash, 0);
+    }
+
+    #[test]
+    fn test_dynamic_min_out_uses_pool_depth() {
+        let min_out = calculate_dynamic_min_out(1_000, 100_000, 100_000, 100, 100, 100);
+        let expected = DexRouter::quote_out(1_000, 100_000, 100_000);
+        assert!(min_out > 0);
+        assert!(min_out < expected);
+        assert_eq!(min_out, expected * 9_999 / 10_000);
     }
 }

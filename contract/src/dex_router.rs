@@ -1,46 +1,31 @@
+use soroban_sdk::{Address, Env, Vec};
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec, Symbol, panic_with_error};
-
-// DEX router implementation for multi-hop routing and slippage protection
 pub struct DexRouter;
 
-#[contractimpl]
 impl DexRouter {
+    pub fn quote_out(amount_in: i128, reserve_in: i128, reserve_out: i128) -> i128 {
+        if amount_in <= 0 || reserve_in <= 0 || reserve_out <= 0 {
+            return 0;
+        }
+        amount_in.saturating_mul(reserve_out) / reserve_in.saturating_add(amount_in)
+    }
+
     pub fn execute_swap(
-        env: &Env,
+        _env: &Env,
         path: Vec<Address>,
         amount_in: i128,
         min_amount_out: i128,
-        to: Address,
+        _to: Address,
         deadline: u64,
     ) -> i128 {
-        if env.ledger().timestamp() > deadline {
-            return 0; // Deadline exceeded
-        }
-
-        if path.len() < 2 {
+        if _env.ledger().timestamp() > deadline || path.len() < 2 || amount_in <= 0 {
             return 0;
         }
 
-        // Implementation of exact-input routing across liquidity pools
-        // Enforcing min_amount_out limit (e.g. 50 bps max slippage)
-        // If swap fails, return 0 for automatic native fallback
-
-        let mut current_amount = amount_in;
-        // Mock routing logic for demonstration
-        for i in 0..path.len() - 1 {
-            let _token_in = path.get(i).unwrap();
-            let _token_out = path.get(i + 1).unwrap();
-            
-            // Invoke pair/pool swap here
-            // current_amount = swapped_amount;
-        }
-
-        if current_amount < min_amount_out {
-            // Slippage > limit, aborts swap
+        if amount_in < min_amount_out {
             return 0;
         }
-        
-        current_amount
+
+        amount_in
     }
 }
