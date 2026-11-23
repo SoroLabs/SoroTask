@@ -210,9 +210,8 @@ class DistributedIdempotencyEngine {
 
   async _writeRecord(key, record) {
     this.records.set(key, record);
-    if (this.redis?.set) {
-      await this.redis.set(this._redisKey(key), JSON.stringify(record), 'PX', this.ttlMs);
-    }
+    if (!this.redis?.set) return;
+    await this.redis.set(this._redisKey(key), JSON.stringify(record), 'PX', this.ttlMs);
   }
 
   /**
@@ -266,12 +265,36 @@ class DistributedIdempotencyEngine {
 
   async _reserve(key, meta, now) {
     this.filter.add(key);
-    await this._writeRecord(key, {
+    const record = {
       ...meta,
       status: DispatchStatus.PENDING,
       reservedAt: now,
       expiresAt: now + this.ttlMs,
-    });
+    };
+
+    if (this.redis?.set) {
+      let won = true;
+      if (typeof this.redis.eval === 'function') {
+        const result = await this.redis.eval(
+          "if redis.call('exists', KEYS[1]) == 0 then redis.call('set', KEYS[1], ARGV[1], 'PX', ARGV[2]); return 1 end return 0",
+          1,
+          this._redisKey(key),
+          JSON.stringify(record),
+          this.ttlMs
+        );
+        won = Number(result) === 1;
+      } else {
+        const result = await this.redis.set(this._redisKey(key), JSON.stringify(record), 'PX', 'NX', this.ttlMs);
+        won = result === undefined || result === 'OK' || result === 1;
+      }
+      if (!won) {
+        this.records.delete(key);
+        return { won: false, record };
+      }
+    }
+
+    this.records.set(key, record);
+    return { won: true, record };
   }
 
   /** Mark a reserved execution confirmed on-chain. */
