@@ -57,6 +57,10 @@ pub fn record_claim_payment(env: &Env, amount: i128) {
 }
 
 pub fn claimable_balance(env: &Env) -> i128 {
+    funded_balance(env).min(liquid_surplus_balance(env))
+}
+
+pub fn liquid_surplus_balance(env: &Env) -> i128 {
     let Some(token_address) = env
         .storage()
         .instance()
@@ -92,13 +96,19 @@ pub fn claimable_balance(env: &Env) -> i128 {
         .saturating_sub(invested_escrows)
         .saturating_add(keeper_stakes)
         .saturating_add(unclaimed_fees);
-    let liquid_surplus = contract_balance.saturating_sub(liquid_liabilities);
-    funded_balance(env).min(liquid_surplus)
+    contract_balance.saturating_sub(liquid_liabilities)
 }
 
 pub fn solvency_balance(env: &Env) -> i128 {
     if env.storage().instance().has(&DataKey::Token) {
-        claimable_balance(env)
+        let underwriter_stake: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalInsuranceUnderwriterStake)
+            .unwrap_or(0);
+        funded_balance(env)
+            .saturating_add(underwriter_stake)
+            .min(liquid_surplus_balance(env))
     } else {
         env.storage()
             .instance()

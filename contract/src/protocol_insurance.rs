@@ -15,7 +15,9 @@
 use soroban_sdk::{Address, Bytes, Env, Symbol, Vec, panic_with_error};
 
 use crate::DataKey;
-use crate::insurance::{self, claimable_balance, funded_balance, record_claim_payment, record_premium};
+use crate::insurance::{
+    claimable_balance, liquid_surplus_balance, record_claim_payment, record_premium,
+};
 use crate::Error;
 
 /// Minimum stake required to become an insurance underwriter
@@ -30,17 +32,15 @@ pub const MAX_CLAIM_AMOUNT: i128 = 1_000_000;
 /// Insurance fund fee allocation percentage (5% of execution fees)
 pub const INSURANCE_FEE_ALLOCATION_BPS: u32 = 500;
 
-/// Coverage levels for different user tiers
-pub const COVERAGE_LEVEL_BRONZE: i128 = 1000;
+/// Minimum stake for an underwriter to be assigned to Senior.
 pub const COVERAGE_LEVEL_SILVER: i128 = 10_000;
-pub const COVERAGE_LEVEL_GOLD: i128 = 100_000;
-pub const COVERAGE_LEVEL_PLATINUM: i128 = 1_000_000;
 
-/// Waterfall tranche percentages for claim distribution
-pub const TRANCHE_1_RATIO_BPS: u32 = 4000; // 40% from first tranche
-pub const TRANCHE_2_RATIO_BPS: u32 = 3000; // 30% from second tranche
-pub const TRANCHE_3_RATIO_BPS: u32 = 2000; // 20% from third tranche
-pub const TRANCHE_4_RATIO_BPS: u32 = 1000; // 10% from fourth tranche
+/// Junior capital is exposed to losses before senior capital.
+pub const JUNIOR_TRANCHE_ID: u32 = 1;
+pub const SENIOR_TRANCHE_ID: u32 = 2;
+pub const SENIOR_TRANCHE_MIN_STAKE: i128 = COVERAGE_LEVEL_SILVER;
+const TRANCHE_COVERAGE_BPS: u32 = 10_000;
+const TRANCHE_INDEX_SCALE: u32 = 1_000_000_000;
 
 /// Challenge window for claims verification (1 hour)
 pub const CLAIM_CHALLENGE_WINDOW_SECONDS: u64 = 60 * 60;
@@ -138,7 +138,7 @@ pub struct RiskTranche {
     pub min_stake: i128,
     /// Maximum coverage this tranche can provide
     pub max_coverage: i128,
-    /// Share of claims this tranche covers (in bps)
+    /// Share of this tranche's capital exposed to claims (in bps)
     pub coverage_share_bps: u32,
     /// Whether tranche is active
     pub is_active: bool,
@@ -178,43 +178,21 @@ fn initialize_tranches(env: &Env) {
 fn create_default_tranches(env: &Env) -> Vec<RiskTranche> {
     let mut tranches = Vec::new(env);
 
-    // Tranche 1: Bronze (entry level)
     tranches.push_back(RiskTranche {
-        tranche_id: 1,
-        name: Bytes::from_slice(env, b"Bronze"),
+        tranche_id: JUNIOR_TRANCHE_ID,
+        name: Bytes::from_slice(env, b"Junior"),
         min_stake: MIN_UNDERWRITER_STAKE,
-        max_coverage: COVERAGE_LEVEL_BRONZE,
-        coverage_share_bps: TRANCHE_1_RATIO_BPS,
+        max_coverage: COVERAGE_LEVEL_SILVER - 1,
+        coverage_share_bps: TRANCHE_COVERAGE_BPS,
         is_active: true,
     });
 
-    // Tranche 2: Silver
     tranches.push_back(RiskTranche {
-        tranche_id: 2,
-        name: Bytes::from_slice(env, b"Silver"),
-        min_stake: COVERAGE_LEVEL_SILVER,
-        max_coverage: COVERAGE_LEVEL_SILVER,
-        coverage_share_bps: TRANCHE_2_RATIO_BPS,
-        is_active: true,
-    });
-
-    // Tranche 3: Gold
-    tranches.push_back(RiskTranche {
-        tranche_id: 3,
-        name: Bytes::from_slice(env, b"Gold"),
-        min_stake: COVERAGE_LEVEL_GOLD,
-        max_coverage: COVERAGE_LEVEL_GOLD,
-        coverage_share_bps: TRANCHE_3_RATIO_BPS,
-        is_active: true,
-    });
-
-    // Tranche 4: Platinum (highest level)
-    tranches.push_back(RiskTranche {
-        tranche_id: 4,
-        name: Bytes::from_slice(env, b"Platinum"),
-        min_stake: COVERAGE_LEVEL_PLATINUM,
-        max_coverage: COVERAGE_LEVEL_PLATINUM,
-        coverage_share_bps: TRANCHE_4_RATIO_BPS,
+        tranche_id: SENIOR_TRANCHE_ID,
+        name: Bytes::from_slice(env, b"Senior"),
+        min_stake: SENIOR_TRANCHE_MIN_STAKE,
+        max_coverage: i128::MAX,
+        coverage_share_bps: TRANCHE_COVERAGE_BPS,
         is_active: true,
     });
 
@@ -240,29 +218,205 @@ fn increment_claim_counter(env: &Env) -> u64 {
 
 /// Loads an underwriter's stake record.
 fn load_underwriter(env: &Env, underwriter: &Address) -> Option<UnderwriterStake> {
-    env.storage()
+    let mut stake: UnderwriterStake = env.storage()
         .persistent()
-        .get(&DataKey::InsuranceUnderwriter(underwriter.clone()))
+        .get(&DataKey::InsuranceUnderwriter(underwriter.clone()))?;
+    let (tranche_id, epoch, snapshot) = env
+        .storage()
+        .persistent()
+        .get::<_, (u32, u32, u32)>(&DataKey::InsuranceUnderwriterPosition(
+            underwriter.clone(),
+        ))
+        .unwrap_or((
+            calculate_tranche(stake.staked_amount),
+            tranche_epoch(env, calculate_tranche(stake.staked_amount)),
+            TRANCHE_INDEX_SCALE,
+        ));
+    let current_epoch = tranche_epoch(env, tranche_id);
+    let current_index = tranche_index(env, tranche_id);
+    if epoch != current_epoch {
+        stake.staked_amount = 0;
+    } else if snapshot > 0 {
+        stake.staked_amount = scale_by_index(stake.staked_amount, current_index, snapshot);
+    }
+    if stake.staked_amount < MIN_UNDERWRITER_STAKE {
+        stake.is_active = false;
+    }
+    Some(stake)
 }
 
 /// Saves an underwriter's stake record.
 fn save_underwriter(env: &Env, underwriter: &Address, stake: &UnderwriterStake) {
+    let tranche_id = underwriter_tranche(env, underwriter)
+        .unwrap_or_else(|| calculate_tranche(stake.staked_amount));
+    save_underwriter_in_tranche(env, underwriter, stake, tranche_id);
+}
+
+fn save_underwriter_in_tranche(
+    env: &Env,
+    underwriter: &Address,
+    stake: &UnderwriterStake,
+    tranche_id: u32,
+) {
     env.storage()
         .persistent()
         .set(&DataKey::InsuranceUnderwriter(underwriter.clone()), stake);
+    env.storage().persistent().set(
+        &DataKey::InsuranceUnderwriterPosition(underwriter.clone()),
+        &(
+            tranche_id,
+            tranche_epoch(env, tranche_id),
+            tranche_index(env, tranche_id),
+        ),
+    );
 }
 
 /// Calculates the appropriate tranche for a given stake amount.
-fn calculate_tranche(env: &Env, stake_amount: i128) -> u32 {
-    if stake_amount >= COVERAGE_LEVEL_PLATINUM {
-        4
-    } else if stake_amount >= COVERAGE_LEVEL_GOLD {
-        3
-    } else if stake_amount >= COVERAGE_LEVEL_SILVER {
-        2
+fn calculate_tranche(stake_amount: i128) -> u32 {
+    if stake_amount >= SENIOR_TRANCHE_MIN_STAKE {
+        SENIOR_TRANCHE_ID
     } else {
-        1
+        JUNIOR_TRANCHE_ID
     }
+}
+
+fn underwriter_tranche(env: &Env, underwriter: &Address) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get::<_, (u32, u32, u32)>(&DataKey::InsuranceUnderwriterPosition(
+            underwriter.clone(),
+        ))
+        .map(|(tranche_id, _, _)| tranche_id)
+}
+
+fn tranche_capital(env: &Env, tranche_id: u32) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::InsuranceTrancheCapital(tranche_id))
+        .unwrap_or(0)
+}
+
+fn change_tranche_capital(env: &Env, tranche_id: u32, change: i128) {
+    let capital = tranche_capital(env, tranche_id);
+    let updated = if change >= 0 {
+        capital.saturating_add(change)
+    } else {
+        capital.saturating_sub(change.saturating_abs())
+    };
+    env.storage()
+        .instance()
+        .set(&DataKey::InsuranceTrancheCapital(tranche_id), &updated);
+    if capital > 0 && updated == 0 {
+        advance_tranche_epoch(env, tranche_id);
+    }
+}
+
+fn tranche_index(env: &Env, tranche_id: u32) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::InsuranceTrancheIndex(tranche_id))
+        .unwrap_or(TRANCHE_INDEX_SCALE)
+}
+
+fn tranche_epoch(env: &Env, tranche_id: u32) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::InsuranceTrancheEpoch(tranche_id))
+        .unwrap_or(0)
+}
+
+fn advance_tranche_epoch(env: &Env, tranche_id: u32) {
+    let epoch = tranche_epoch(env, tranche_id).saturating_add(1);
+    env.storage()
+        .instance()
+        .set(&DataKey::InsuranceTrancheEpoch(tranche_id), &epoch);
+    env.storage()
+        .instance()
+        .set(&DataKey::InsuranceTrancheIndex(tranche_id), &TRANCHE_INDEX_SCALE);
+}
+
+fn scale_by_index(amount: i128, index: u32, snapshot: u32) -> i128 {
+    if amount <= 0 || index >= snapshot || snapshot == 0 {
+        return amount.max(0);
+    }
+    let whole = amount / snapshot as i128;
+    let remainder = amount % snapshot as i128;
+    whole
+        .saturating_mul(index as i128)
+        .saturating_add(remainder.saturating_mul(index as i128) / snapshot as i128)
+}
+
+fn apply_tranche_loss(env: &Env, tranche_id: u32, amount: i128) {
+    if amount <= 0 {
+        return;
+    }
+
+    let old_capital = tranche_capital(env, tranche_id);
+    let loss = amount.min(old_capital);
+    if loss == 0 {
+        return;
+    }
+
+    let mut remaining = old_capital - loss;
+    let loss_index = ratio_index_ceil(loss, old_capital);
+    let index = tranche_index(env, tranche_id);
+    let remaining_index = TRANCHE_INDEX_SCALE.saturating_sub(loss_index);
+    let next_index = ((index as u64 * remaining_index as u64) / TRANCHE_INDEX_SCALE as u64) as u32;
+    let accounted_loss = if remaining > 0 && next_index == 0 {
+        remaining = 0;
+        old_capital
+    } else {
+        loss
+    };
+    env.storage()
+        .instance()
+        .set(&DataKey::InsuranceTrancheCapital(tranche_id), &remaining);
+    if remaining == 0 {
+        advance_tranche_epoch(env, tranche_id);
+    } else {
+        env.storage()
+            .instance()
+            .set(&DataKey::InsuranceTrancheIndex(tranche_id), &next_index);
+    }
+
+    let total_stake: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TotalInsuranceUnderwriterStake)
+        .unwrap_or(0);
+    env.storage().instance().set(
+        &DataKey::TotalInsuranceUnderwriterStake,
+        &total_stake.saturating_sub(accounted_loss),
+    );
+    let mut stats = get_insurance_pool_stats(env);
+    stats.total_underwriter_stake = stats
+        .total_underwriter_stake
+        .saturating_sub(accounted_loss);
+    save_insurance_pool_stats(env, &stats);
+}
+
+fn ratio_index_ceil(numerator: i128, denominator: i128) -> u32 {
+    if numerator <= 0 || denominator <= 0 {
+        return 0;
+    }
+    let mut low = 0u32;
+    let mut high = TRANCHE_INDEX_SCALE;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        let quotient = denominator / TRANCHE_INDEX_SCALE as i128;
+        let remainder = denominator % TRANCHE_INDEX_SCALE as i128;
+        let threshold = quotient
+            .saturating_mul(middle as i128)
+            .saturating_add(
+                remainder.saturating_mul(middle as i128) / TRANCHE_INDEX_SCALE as i128,
+            );
+        if threshold >= numerator {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low
 }
 
 /// Stakes funds to become an insurance underwriter.
@@ -303,23 +457,35 @@ pub fn stake_as_underwriter(env: &Env, underwriter: &Address, amount: i128) -> u
         },
     };
 
+    let old_amount = stake.staked_amount;
+    let old_tranche =
+        underwriter_tranche(env, underwriter).unwrap_or_else(|| calculate_tranche(old_amount));
     stake.staked_amount = stake.staked_amount.saturating_add(amount);
     stake.last_updated = env.ledger().timestamp();
     stake.is_active = true;
 
-    // Calculate tranche
-    let tranche = calculate_tranche(env, stake.staked_amount);
+    let tranche = calculate_tranche(stake.staked_amount);
+    if old_amount > 0 && old_tranche != tranche {
+        change_tranche_capital(env, old_tranche, -old_amount);
+        change_tranche_capital(env, tranche, stake.staked_amount);
+    } else {
+        change_tranche_capital(env, tranche, amount);
+    }
 
-    save_underwriter(env, underwriter, &stake);
+    save_underwriter_in_tranche(env, underwriter, &stake, tranche);
 
     // Update total underwriter stake
     let total_stake: i128 = env.storage()
         .instance()
         .get(&DataKey::TotalInsuranceUnderwriterStake)
         .unwrap_or(0);
-    env.storage()
-        .instance()
-        .set(&DataKey::TotalInsuranceUnderwriterStake, &(total_stake.saturating_add(amount)));
+    env.storage().instance().set(
+        &DataKey::TotalInsuranceUnderwriterStake,
+        &(total_stake.saturating_add(amount)),
+    );
+    let mut stats = get_insurance_pool_stats(env);
+    stats.total_underwriter_stake = stats.total_underwriter_stake.saturating_add(amount);
+    save_insurance_pool_stats(env, &stats);
 
     env.events().publish(
         (
@@ -352,6 +518,19 @@ pub fn unstake_as_underwriter(env: &Env, underwriter: &Address, amount: i128) ->
         None => panic_with_error!(env, Error::NotInitialized),
     };
 
+    let old_amount = stake.staked_amount;
+    if old_amount <= 0 {
+        panic_with_error!(env, Error::InsufficientBalance);
+    }
+    let old_tranche =
+        underwriter_tranche(env, underwriter).unwrap_or_else(|| calculate_tranche(old_amount));
+
+    let withdrawable = available_claim_capacity(env).saturating_sub(pending_claim_amount(env));
+    amount = amount.min(withdrawable);
+    if amount <= 0 {
+        panic_with_error!(env, Error::InsufficientBalance);
+    }
+
     // Check for outstanding exposure (cannot unstake if backing claims)
     if stake.total_exposure > 0 {
         let available = stake.staked_amount.saturating_sub(stake.total_exposure);
@@ -365,12 +544,20 @@ pub fn unstake_as_underwriter(env: &Env, underwriter: &Address, amount: i128) ->
     stake.staked_amount = stake.staked_amount.saturating_sub(unstake_amount);
     stake.last_updated = env.ledger().timestamp();
 
+    let new_tranche = calculate_tranche(stake.staked_amount);
+    if stake.staked_amount > 0 && old_tranche != new_tranche {
+        change_tranche_capital(env, old_tranche, -old_amount);
+        change_tranche_capital(env, new_tranche, stake.staked_amount);
+    } else {
+        change_tranche_capital(env, old_tranche, -unstake_amount);
+    }
+
     // Deactivate if fully unstaked
     if stake.staked_amount < MIN_UNDERWRITER_STAKE {
         stake.is_active = false;
     }
 
-    save_underwriter(env, underwriter, &stake);
+    save_underwriter_in_tranche(env, underwriter, &stake, new_tranche);
 
     // Return funds to underwriter
     let token_address = env.storage()
@@ -389,6 +576,11 @@ pub fn unstake_as_underwriter(env: &Env, underwriter: &Address, amount: i128) ->
     env.storage()
         .instance()
         .set(&DataKey::TotalInsuranceUnderwriterStake, &(total_stake.saturating_sub(unstake_amount)));
+    let mut stats = get_insurance_pool_stats(env);
+    stats.total_underwriter_stake = stats
+        .total_underwriter_stake
+        .saturating_sub(unstake_amount);
+    save_insurance_pool_stats(env, &stats);
 
     env.events().publish(
         (
@@ -483,8 +675,8 @@ pub fn submit_insurance_claim(
 
 /// Certifies an insurance claim as valid and sets approved payout amount.
 ///
-/// This function is called by an authorized certifier (typically admin or oracle)
-/// to verify a claim and set the payout amount.
+/// The configured administrator validates the submitted failure evidence and
+/// sets the payout amount.
 ///
 /// # Arguments
 /// * `claim_id` - The claim to certify
@@ -498,8 +690,15 @@ pub fn certify_insurance_claim(
     approved_amount: i128,
     risk_level: ClaimRiskLevel,
 ) {
-    // In production, this would verify certifier authorization
-    // certifier.require_auth();
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminAddress)
+        .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
+    if certifier != &admin {
+        panic_with_error!(env, Error::Unauthorized);
+    }
+    certifier.require_auth();
 
     if approved_amount <= 0 {
         panic_with_error!(env, Error::InsufficientBalance);
@@ -514,8 +713,11 @@ pub fn certify_insurance_claim(
         panic_with_error!(env, Error::InsuranceClaimNotCertified);
     }
 
-    // Verify claim is within available funds
-    let available = claimable_balance(env);
+    if approved_amount > claim.claim_amount || approved_amount > claim.loss_amount {
+        panic_with_error!(env, Error::InvalidBounty);
+    }
+
+    let available = available_claim_capacity(env).saturating_sub(pending_claim_amount(env));
     if approved_amount > available {
         panic_with_error!(env, Error::InsuranceReserveInsufficient);
     }
@@ -528,6 +730,10 @@ pub fn certify_insurance_claim(
     env.storage()
         .persistent()
         .set(&DataKey::ProtocolInsuranceClaim(claim_id), &claim);
+    env.storage().instance().set(
+        &DataKey::InsurancePendingClaimAmount,
+        &pending_claim_amount(env).saturating_add(approved_amount),
+    );
 
     env.events().publish(
         (
@@ -536,6 +742,10 @@ pub fn certify_insurance_claim(
         ),
         (approved_amount, risk_level),
     );
+
+    if env.ledger().timestamp() >= claim.challenge_deadline {
+        process_insurance_claim(env, claim_id);
+    }
 }
 
 /// Processes an approved insurance claim and executes payout.
@@ -559,13 +769,22 @@ pub fn process_insurance_claim(env: &Env, claim_id: u64) -> i128 {
         panic_with_error!(env, Error::ChannelChallengeWindowActive);
     }
 
+    let pending = pending_claim_amount(env);
+    if pending < claim.approved_amount {
+        panic_with_error!(env, Error::InsuranceReserveInsufficient);
+    }
+    env.storage().instance().set(
+        &DataKey::InsurancePendingClaimAmount,
+        &pending.saturating_sub(claim.approved_amount),
+    );
+
     claim.status = InsuranceClaimStatus::Processing;
     env.storage()
         .persistent()
         .set(&DataKey::ProtocolInsuranceClaim(claim_id), &claim);
 
-    // Execute waterfall payout
-    let payout_amount = execute_waterfall_payout(env, claim.approved_amount);
+    // Execute waterfall payout.
+    let (payout_amount, funded_amount) = execute_waterfall_payout(env, claim.approved_amount);
 
     // Transfer payout to claimant
     let token_address = env.storage()
@@ -577,7 +796,7 @@ pub fn process_insurance_claim(env: &Env, claim_id: u64) -> i128 {
     token_client.transfer(&env.current_contract_address(), &claim.claimant, &payout_amount);
 
     // Record the payment
-    record_claim_payment(env, payout_amount);
+    record_claim_payment(env, funded_amount);
 
     // Update underwriter exposure
     update_underwriter_exposure(env, &claim.keeper, payout_amount);
@@ -615,25 +834,57 @@ pub fn process_insurance_claim(env: &Env, claim_id: u64) -> i128 {
 ///
 /// # Returns
 /// * The actual amount paid out
-fn execute_waterfall_payout(env: &Env, amount: i128) -> i128 {
-    let total_stake: i128 = env.storage()
-        .instance()
-        .get(&DataKey::TotalInsuranceUnderwriterStake)
-        .unwrap_or(0);
+fn available_claim_capacity(env: &Env) -> i128 {
+    claimable_balance(env)
+        .saturating_add(tranche_capital(env, JUNIOR_TRANCHE_ID))
+        .saturating_add(tranche_capital(env, SENIOR_TRANCHE_ID))
+        .min(liquid_surplus_balance(env))
+}
 
-    if total_stake == 0 {
-        return 0; // No coverage available
+fn pending_claim_amount(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::InsurancePendingClaimAmount)
+        .unwrap_or(0)
+}
+
+fn execute_waterfall_payout(env: &Env, amount: i128) -> (i128, i128) {
+    if amount > available_claim_capacity(env) {
+        panic_with_error!(env, Error::InsuranceReserveInsufficient);
     }
 
-    // Calculate available from funded balance first
-    let funded = funded_balance(env);
-    let from_funded = amount.min(funded);
+    let junior = tranche_capital(env, JUNIOR_TRANCHE_ID);
+    let funded = claimable_balance(env);
+    let senior = tranche_capital(env, SENIOR_TRANCHE_ID);
+    let Some((junior_loss, funded_payment, senior_loss)) =
+        waterfall_allocation(amount, junior, funded, senior)
+    else {
+        panic_with_error!(env, Error::InsuranceReserveInsufficient);
+    };
 
-    // If funded balance is insufficient, use underwriter stake
-    let remaining = amount.saturating_sub(from_funded);
-    let from_underwriters = remaining.min(total_stake);
+    apply_tranche_loss(env, JUNIOR_TRANCHE_ID, junior_loss);
+    apply_tranche_loss(env, SENIOR_TRANCHE_ID, senior_loss);
+    (amount, funded_payment)
+}
 
-    from_funded.saturating_add(from_underwriters)
+fn waterfall_allocation(
+    amount: i128,
+    junior: i128,
+    funded: i128,
+    senior: i128,
+) -> Option<(i128, i128, i128)> {
+    if amount < 0 || junior < 0 || funded < 0 || senior < 0 {
+        return None;
+    }
+    let from_junior = amount.min(junior);
+    let after_junior = amount - from_junior;
+    let from_funded = after_junior.min(funded);
+    let after_funded = after_junior - from_funded;
+    let from_senior = after_funded.min(senior);
+    if from_senior != after_funded {
+        return None;
+    }
+    Some((from_junior, from_funded, from_senior))
 }
 
 /// Updates underwriter exposure after a claim is paid.
@@ -656,6 +907,13 @@ fn update_underwriter_exposure(env: &Env, keeper: &Address, payout_amount: i128)
 /// * `claim_id` - The claim to reject
 /// * `reason` - Reason for rejection
 pub fn reject_insurance_claim(env: &Env, claim_id: u64, reason: Bytes) {
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminAddress)
+        .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
+    admin.require_auth();
+
     let mut claim: ProtocolInsuranceClaim = env.storage()
         .persistent()
         .get(&DataKey::ProtocolInsuranceClaim(claim_id))
@@ -798,26 +1056,97 @@ pub fn get_risk_tranches(env: &Env) -> Vec<RiskTranche> {
         .unwrap_or_else(Vec::new)
 }
 
+/// Returns the current principal in a tranche.
+pub fn get_tranche_capital(env: &Env, tranche_id: u32) -> i128 {
+    tranche_capital(env, tranche_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_tranche_calculation() {
-        // Test tranche assignment based on stake amount
-        let env = Env::default();
-        
-        // These would need proper env setup in actual tests
-        assert_eq!(calculate_tranche(&env, 500), 1); // Below minimum
-        assert_eq!(calculate_tranche(&env, 1000), 1); // Bronze
-        assert_eq!(calculate_tranche(&env, 10000), 2); // Silver
-        assert_eq!(calculate_tranche(&env, 100000), 3); // Gold
-        assert_eq!(calculate_tranche(&env, 1000000), 4); // Platinum
+        assert_eq!(calculate_tranche(500), JUNIOR_TRANCHE_ID);
+        assert_eq!(calculate_tranche(SENIOR_TRANCHE_MIN_STAKE - 1), JUNIOR_TRANCHE_ID);
+        assert_eq!(calculate_tranche(SENIOR_TRANCHE_MIN_STAKE), SENIOR_TRANCHE_ID);
     }
 
     #[test]
-    fn test_waterfall_ratios() {
-        assert_eq!(TRANCHE_1_RATIO_BPS + TRANCHE_2_RATIO_BPS + 
-                   TRANCHE_3_RATIO_BPS + TRANCHE_4_RATIO_BPS, 10000);
+    fn test_waterfall_absorbs_junior_then_funded_then_senior() {
+        assert_eq!(
+            waterfall_allocation(350, 100, 50, 200),
+            Some((100, 50, 200))
+        );
+    }
+
+    #[test]
+    fn test_full_loss_cannot_overdraw_tranches() {
+        assert_eq!(waterfall_allocation(400, 100, 100, 200), Some((100, 100, 200)));
+        assert_eq!(waterfall_allocation(401, 100, 100, 200), None);
+    }
+
+    #[test]
+    fn test_tranche_loss_haircut_preserves_remaining_senior_balance() {
+        let env = Env::default();
+        env.as_contract(&Address::generate(&env), || {
+            change_tranche_capital(&env, JUNIOR_TRANCHE_ID, 100);
+            change_tranche_capital(&env, SENIOR_TRANCHE_ID, 200);
+            apply_tranche_loss(&env, JUNIOR_TRANCHE_ID, 100);
+
+            assert_eq!(tranche_capital(&env, JUNIOR_TRANCHE_ID), 0);
+            assert_eq!(tranche_capital(&env, SENIOR_TRANCHE_ID), 200);
+        });
+    }
+
+    #[test]
+    fn test_partial_loss_haircuts_underwriter_value_proportionally() {
+        let env = Env::default();
+        env.as_contract(&Address::generate(&env), || {
+            change_tranche_capital(&env, JUNIOR_TRANCHE_ID, 10_000);
+            apply_tranche_loss(&env, JUNIOR_TRANCHE_ID, 2_500);
+
+            assert_eq!(tranche_capital(&env, JUNIOR_TRANCHE_ID), 7_500);
+            assert_eq!(
+                scale_by_index(10_000, tranche_index(&env, JUNIOR_TRANCHE_ID), 10_000),
+                7_500
+            );
+        });
+    }
+
+    #[test]
+    fn test_loss_index_ratio_rounds_up_at_high_precision() {
+        assert_eq!(ratio_index_ceil(1, 1), TRANCHE_INDEX_SCALE);
+        assert_eq!(ratio_index_ceil(1, 10_000), 100_000);
+    }
+
+    #[test]
+    fn test_wiped_tranche_epoch_does_not_restore_old_underwriter_value() {
+        let env = Env::default();
+        let underwriter = Address::generate(&env);
+        env.as_contract(&Address::generate(&env), || {
+            let stake = UnderwriterStake {
+                underwriter: underwriter.clone(),
+                staked_amount: 100,
+                accumulated_rewards: 0,
+                claims_backed: 0,
+                total_exposure: 0,
+                last_updated: 0,
+                is_active: true,
+            };
+            env.storage().persistent().set(
+                &DataKey::InsuranceUnderwriter(underwriter.clone()),
+                &stake,
+            );
+            env.storage().persistent().set(
+                &DataKey::InsuranceUnderwriterPosition(underwriter.clone()),
+                &(JUNIOR_TRANCHE_ID, 0u32, TRANCHE_INDEX_SCALE),
+            );
+            change_tranche_capital(&env, JUNIOR_TRANCHE_ID, 100);
+            apply_tranche_loss(&env, JUNIOR_TRANCHE_ID, 100);
+            change_tranche_capital(&env, JUNIOR_TRANCHE_ID, 100);
+
+            assert_eq!(load_underwriter(&env, &underwriter).unwrap().staked_amount, 0);
+        });
     }
 }
