@@ -1,11 +1,11 @@
 'use strict';
 
 /**
- * GraphQL Query Complexity Analysis & Depth Limiting (Issue #1066).
+ * GraphQL Query Complexity Analysis & Depth Limiting (Issue #1066, BE-FINAL-14).
  *
  * Enforces:
  * 1. Query Depth Limit: Hard maximum depth of 5 to prevent recursive nest attacks.
- * 2. Query Complexity Analysis: Maximum cost threshold of 1000 points per request.
+ * 2. Query Complexity Analysis: Maximum cost threshold of 250 points per request.
  * 3. Pagination Bounds: Hard cap on list resolutions (max: 50).
  */
 
@@ -32,7 +32,7 @@ const {
 } = require('graphql-query-complexity');
 
 const MAX_DEPTH = 5;
-const MAX_COMPLEXITY = 1000;
+const MAX_COMPLEXITY = 250;
 const MAX_PAGINATION_LIMIT = 50;
 
 /**
@@ -78,7 +78,7 @@ function createDepthRule(maxDepth = MAX_DEPTH) {
 }
 
 /**
- * Validation rule enforcing query complexity <= 1000.
+ * Validation rule enforcing query complexity <= 250.
  */
 function createComplexityLimitRule(maxComplexity = MAX_COMPLEXITY) {
   return createComplexityRule({

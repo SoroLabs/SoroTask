@@ -14,6 +14,11 @@ const { createRateLimiter } = require('./rateLimiter');
 const { traceContextMiddleware } = require('../../scripts/traceContext');
 const { requestSpanMiddleware, getTrace } = require('./otel');
 const { openApiSpec } = require('./openapi');
+const {
+  createDepthRule,
+  createComplexityLimitRule,
+  createPaginationBoundsRule,
+} = require('./graphql/complexity');
 
 const DEFAULT_PORT = 4000;
 
@@ -235,19 +240,16 @@ function createExpressApp() {
   const schema = makeExecutableSchema({ typeDefs, resolvers });
   app.locals.graphqlSchema = schema;
 
-const {
-  createDepthRule,
-  createComplexityLimitRule,
-  createPaginationBoundsRule,
-} = require('./graphql/complexity');
-
+  // Query complexity scoring and depth validation run as validation rules
+  // before execution. Queries exceeding depth 5 or complexity 250 are rejected
+  // with a validation error, which Apollo returns as HTTP 400 Bad Request.
   const server = new ApolloServer({
     schema,
     context: createContext,
     introspection: true,
     validationRules: [
       createDepthRule(5),
-      createComplexityLimitRule(1000),
+      createComplexityLimitRule(250),
       createPaginationBoundsRule(50),
     ],
   });
