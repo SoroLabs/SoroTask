@@ -215,6 +215,28 @@ RESOLVER_FAILURE_MODE=skip
 - **`RPC_FAILOVER_FAILURE_THRESHOLD` / `RPC_FAILOVER_COOLDOWN_MS`**: Endpoint quarantine policy after repeated failures.
 - **`RPC_FAILOVER_HEALTH_CHECK_INTERVAL_MS`**: Background health-probe interval used for endpoint recovery and rebalancing.
 
+## Mempool Conflict Protection
+
+Optional protection is enabled with `MEMPOOL_PROTECTION_ENABLED=true` and a
+`STELLAR_MEMPOOL_RPC_URL` for a Stellar Core overlay/RPC gateway implementing
+`getPendingTransactions` (or the configured
+`STELLAR_MEMPOOL_RPC_METHOD`). Standard public Soroban RPC endpoints do not
+expose the Core transaction queue, so this feature reports the unsupported
+endpoint and continues normal transaction submission when no compatible
+gateway is available. Scan cadence is configurable, but actual detection
+latency depends on the gateway; polling alone does not guarantee a 15 ms
+observation window.
+
+On a conflicting transaction identified by the same contract/task ID, or by
+the keeper's own account and sequence, the keeper can submit a Stellar fee-bump
+envelope for its already-signed transaction. Task-level conflicts require the
+gateway to return decoded `contractId` and `taskId` fields. It only bumps when
+the registry bounty is available and the resulting fee stays below both
+`MEMPOOL_MAX_FEE_STROOPS` and the bounty less `MEMPOOL_MIN_PROFIT_STROOPS`.
+Configure a finite fee cap; if a conflict cannot be safely bumped, the original
+signed transaction is submitted unchanged. HSM-backed keepers use the
+configured HSM signer for the outer fee-bump envelope.
+
 ## RPC Load Balancer Configuration
 
 The keeper supports a custom load balancer for Soroban RPC nodes to improve reliability, performance, and scalability. This enables distributing RPC requests across multiple Soroban RPC endpoints with health monitoring, automatic failover, and load distribution.

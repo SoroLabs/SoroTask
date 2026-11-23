@@ -559,6 +559,19 @@ function loadConfig() {
     resolverFailureMode: process.env.RESOLVER_FAILURE_MODE || 'skip',
     gasThreshold: parseInteger(process.env.GAS_THRESHOLD, 0),
     minGasThreshold: parseInteger(process.env.MIN_GAS_THRESHOLD, 0),
+    mempoolProtection: {
+      enabled: parseBoolean(
+        process.env.MEMPOOL_PROTECTION_ENABLED,
+        Boolean(process.env.STELLAR_MEMPOOL_RPC_URL),
+      ),
+      rpcUrl: process.env.STELLAR_MEMPOOL_RPC_URL || null,
+      rpcMethod: process.env.STELLAR_MEMPOOL_RPC_METHOD || 'getPendingTransactions',
+      scanIntervalMs: parseInteger(process.env.MEMPOOL_SCAN_INTERVAL_MS, 1000),
+      requestTimeoutMs: parseInteger(process.env.MEMPOOL_REQUEST_TIMEOUT_MS, 1000),
+      maxFeeStroops: parseInteger(process.env.MEMPOOL_MAX_FEE_STROOPS, 0),
+      minProfitStroops: parseInteger(process.env.MEMPOOL_MIN_PROFIT_STROOPS, 0),
+      maxBumpMultiplier: parseInteger(process.env.MEMPOOL_MAX_BUMP_MULTIPLIER, 100),
+    },
   };
 
   globalActiveConfig = config;

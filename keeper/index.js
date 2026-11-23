@@ -37,6 +37,7 @@ const { KeeperAlertManager } = require("./src/keeperAlerts");
 const { WebhookAuthProtocol, InMemoryReplayStore } = require("./src/webhookAuth");
 const { WebhookTriggerHandler } = require("./src/webhookTrigger");
 const { KeeperP2PNetwork } = require("./src/p2pNetwork");
+const { MempoolTransactionSniffer } = require("./src/mempoolSniffer");
 
 // Create root logger for the main module
 const logger = createLogger("keeper");
@@ -229,6 +230,21 @@ async function main() {
   });
 
   const shutdownManager = new GracefulShutdownManager(logger);
+  const mempoolSniffer = config.mempoolProtection.enabled && config.mempoolProtection.rpcUrl
+    ? new MempoolTransactionSniffer({
+      rpcUrl: config.mempoolProtection.rpcUrl,
+      method: config.mempoolProtection.rpcMethod,
+      intervalMs: config.mempoolProtection.scanIntervalMs,
+      timeoutMs: config.mempoolProtection.requestTimeoutMs,
+      logger: createLogger("mempool-sniffer"),
+      onConflict: (conflict) => {
+        logger.warn("Competing pending transactions detected", {
+          conflictKey: conflict.key,
+          candidates: conflict.candidates.length,
+        });
+      },
+    })
+    : null;
 
   // Initialize task metadata LRU cache (event wiring deferred until registry is ready)
   let taskMetadataCache = null;
@@ -401,6 +417,12 @@ async function main() {
       contractId: config.contractId,
       networkPassphrase: config.networkPassphrase || Networks.FUTURENET,
       hsmSigner,
+      mempoolSniffer,
+      bountyStroops: Number((registry.tasks.get(taskId) || registry.tasks.get(String(taskId)))?.bounty) || 0,
+    };
+    deps.config = {
+      ...config,
+      bountyStroops: deps.bountyStroops,
     };
 
     if (DRY_RUN) {
@@ -749,6 +771,12 @@ async function main() {
     alertManager.stopRpcMonitor();
   });
 
+  if (mempoolSniffer) {
+    shutdownManager.registerResource("mempool-sniffer", async () => {
+      mempoolSniffer.stop();
+    });
+  }
+
   // Register registry cleanup
   shutdownManager.registerResource("task-registry", async () => {
     logger.info("Closing task registry");
@@ -794,6 +822,7 @@ async function main() {
   });
 
   // Initialize and start listening for signals
+  if (mempoolSniffer) mempoolSniffer.start();
   shutdownManager.init();
 
   // Listen to shutdown events for additional logging
