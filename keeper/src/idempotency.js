@@ -24,10 +24,17 @@ class ExecutionIdempotencyGuard {
       options.stateDir ||
       process.env.KEEPER_STATE_DIR ||
       path.join(process.cwd(), "data");
-    this.stateFile =
+    const configuredStateFile =
       options.stateFile ||
       process.env.IDEMPOTENCY_STATE_FILE ||
       path.join(stateDir, "execution_locks.json");
+    const networkId = String(process.env.KEEPER_NETWORK_ID || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (networkId) {
+      const statePath = path.parse(configuredStateFile);
+      this.stateFile = path.join(statePath.dir, `${statePath.name}.${networkId}${statePath.ext}`);
+    } else {
+      this.stateFile = configuredStateFile;
+    }
 
     this.state = { version: 1, locks: {} };
     this._loadState();
