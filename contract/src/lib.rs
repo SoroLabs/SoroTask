@@ -54,9 +54,15 @@ pub use gas_refund::{
 pub use storage::{ExecutionLog, TaskMeta, TaskPayload, TaskStats};
 pub use upgrade::{UpgradeProposal, UPGRADE_TIMELOCK_SECONDS};
 pub use governance::{
-    GovernanceConfig, GovernanceProposal, VoteChoice, VoteRecord, VoteSnapshot, VoteStatus,
-    DEFAULT_APPROVAL_THRESHOLD_BPS, DEFAULT_QUORUM_BPS, DEFAULT_VOTING_PERIOD_LEDGERS,
-    MIN_VOTING_PERIOD_LEDGERS,
+    ArbitrationConfig, ArbitrationStatus, Dispute, GovernanceConfig, GovernanceError,
+    GovernanceProposal, Juror, JurorCommit, JurorVote, VoteChoice, VoteRecord, VoteSnapshot,
+    VoteStatus, DEFAULT_APPROVAL_THRESHOLD_BPS, DEFAULT_QUORUM_BPS,
+    DEFAULT_VOTING_PERIOD_LEDGERS, MIN_VOTING_PERIOD_LEDGERS,
+};
+pub use governance::{
+    commit_juror_vote, compute_juror_commitment, finalize_dispute, get_arbitration_config,
+    get_dispute, get_juror, get_juror_vote, initialize_arbitration, open_dispute,
+    reveal_juror_vote, stake_juror, unstake_juror,
 };
 pub use escrow_pool::{
     DepositResult, EscrowPoolError, PoolConfig, SHARE_PRECISION, WithdrawalResult,
@@ -255,6 +261,26 @@ pub enum Error {
     // Congestion surcharge errors (SC-PROD-29)
     InvalidSurchargeConfig = 960,
     InvalidInclusionFee = 961,
+    ArbitrationNotInitialized = 970,
+    ArbitrationAlreadyInitialized = 971,
+    ArbitrationInvalidConfig = 972,
+    ArbitrationInsufficientStake = 973,
+    ArbitrationJurorNotRegistered = 974,
+    ArbitrationAlreadyRegistered = 975,
+    ArbitrationInvalidAmount = 976,
+    ArbitrationDisputeNotFound = 977,
+    ArbitrationDisputeNotOpen = 978,
+    ArbitrationJurorNotSelected = 979,
+    ArbitrationCommitWindowClosed = 980,
+    ArbitrationAlreadyCommitted = 981,
+    ArbitrationCommitmentNotFound = 982,
+    ArbitrationCommitmentMismatch = 983,
+    ArbitrationAlreadyRevealed = 984,
+    ArbitrationRevealWindowClosed = 985,
+    ArbitrationRevealWindowOpen = 986,
+    ArbitrationNoMajority = 987,
+    ArbitrationActiveDispute = 988,
+    ArbitrationInsufficientJurors = 989,
 }
 
 #[contracttype]
@@ -1472,6 +1498,13 @@ pub enum DataKey {
     GovernanceVote(u64, Address),
     /// Vote snapshot for a proposal
     GovernanceSnapshot(u64),
+    ArbitrationConfig,
+    ArbitrationJuror(Address),
+    ArbitrationJurors,
+    ArbitrationDispute(u64),
+    ArbitrationDisputeCounter,
+    ArbitrationCommit(u64, Address),
+    ArbitrationVote(u64, Address),
 
     // ========== SC-PROD-36: Time-Locked Upgrade ==========
     /// Guardian configuration for emergency upgrade actions
@@ -9984,6 +10017,100 @@ impl SoroTaskContract {
     }
 
     /// Gets staking pool information.
+    pub fn initialize_arbitration(
+        env: Env,
+        admin: Address,
+        token: Address,
+        min_stake: i128,
+        juror_count: u32,
+        commit_window: u64,
+        reveal_window: u64,
+        arbitration_fee_bps: u32,
+        slash_bps: u32,
+    ) {
+        governance::initialize_arbitration(
+            &env,
+            &admin,
+            &token,
+            min_stake,
+            juror_count,
+            commit_window,
+            reveal_window,
+            arbitration_fee_bps,
+            slash_bps,
+        )
+    }
+
+    pub fn stake_juror(env: Env, juror: Address, amount: i128) {
+        governance::stake_juror(&env, &juror, amount)
+    }
+
+    pub fn unstake_juror(env: Env, juror: Address, amount: i128) {
+        governance::unstake_juror(&env, &juror, amount)
+    }
+
+    pub fn open_dispute(
+        env: Env,
+        claimant: Address,
+        task_id: u64,
+        escrow_amount: i128,
+        evidence_hash: BytesN<32>,
+        respondent: Address,
+    ) -> u64 {
+        governance::open_dispute(
+            &env,
+            &claimant,
+            task_id,
+            escrow_amount,
+            &evidence_hash,
+            &respondent,
+        )
+    }
+
+    pub fn commit_juror_vote(env: Env, dispute_id: u64, juror: Address, commitment: BytesN<32>) {
+        governance::commit_juror_vote(&env, dispute_id, &juror, commitment)
+    }
+
+    pub fn reveal_juror_vote(
+        env: Env,
+        dispute_id: u64,
+        juror: Address,
+        choice: VoteChoice,
+        salt: BytesN<32>,
+    ) {
+        governance::reveal_juror_vote(&env, dispute_id, &juror, choice, &salt)
+    }
+
+    pub fn finalize_dispute(env: Env, dispute_id: u64) {
+        governance::finalize_dispute(&env, dispute_id)
+    }
+
+    pub fn get_arbitration_config(env: Env) -> Option<ArbitrationConfig> {
+        get_arbitration_config(&env)
+    }
+
+    pub fn get_juror(env: Env, juror: Address) -> Option<Juror> {
+        get_juror(&env, &juror)
+    }
+
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Option<Dispute> {
+        get_dispute(&env, dispute_id)
+    }
+
+    pub fn get_juror_vote(env: Env, dispute_id: u64, juror: Address) -> Option<JurorVote> {
+        get_juror_vote(&env, dispute_id, &juror)
+    }
+
+    pub fn compute_juror_commitment(
+        env: Env,
+        dispute_id: u64,
+        juror: Address,
+        choice: VoteChoice,
+        salt: BytesN<32>,
+    ) -> BytesN<32> {
+        compute_juror_commitment(&env, dispute_id, &juror, choice, &salt)
+    }
+
     pub fn get_staking_pool(env: Env) -> StakingPool {
         env.storage()
             .instance()
@@ -16026,3 +16153,6 @@ mod test_state_channel;
 
 #[cfg(test)]
 mod test_booster;
+
+#[cfg(test)]
+mod test_arbitration;
