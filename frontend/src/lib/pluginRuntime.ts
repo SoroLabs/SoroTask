@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState, type ComponentType } from "react";
+import { createElement, useEffect, useRef, useState, type ComponentType } from "react";
 import type { PluginComponentProps, PluginManifest } from "./plugins/types";
 
 const MAX_CONTEXT_BYTES = 64 * 1024;
 const DEFAULT_INIT_TIMEOUT_MS = 10_000;
+const MAX_ERROR_MESSAGE_LENGTH = 500;
 const CONFIGURED_TRUSTED_ORIGINS = (
   process.env.NEXT_PUBLIC_SOROTASK_PLUGIN_ORIGINS ?? ""
 )
@@ -16,6 +17,57 @@ export type PluginRuntimeConfig = {
   defaultTimeoutMs?: number;
   trustedOrigins?: string[];
 };
+
+/** Typed postMessage envelope sent from plugin iframes to the host. */
+export type PluginToHostMessage =
+  | { type: "SOROTASK_PLUGIN_READY"; pluginId: string; version: string }
+  | { type: "SOROTASK_PLUGIN_ERROR"; pluginId: string; message?: unknown };
+
+/** Typed postMessage envelope sent from the host to plugin iframes. */
+export type HostToPluginMessage = {
+  type: "SOROTASK_PLUGIN_INIT";
+  pluginId: string;
+  version: string;
+  context: Record<string, unknown>;
+};
+
+/**
+ * Runtime validation for inbound plugin messages. Returns a typed message
+ * when the payload matches the protocol exactly, otherwise null.
+ */
+export function parsePluginMessage(
+  data: unknown,
+  pluginId: string,
+): PluginToHostMessage | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return null;
+  }
+  const candidate = data as Record<string, unknown>;
+  if (candidate.pluginId !== pluginId) {
+    return null;
+  }
+
+  if (candidate.type === "SOROTASK_PLUGIN_READY") {
+    if (typeof candidate.version !== "string") {
+      return null;
+    }
+    return {
+      type: "SOROTASK_PLUGIN_READY",
+      pluginId,
+      version: candidate.version,
+    };
+  }
+
+  if (candidate.type === "SOROTASK_PLUGIN_ERROR") {
+    const message =
+      typeof candidate.message === "string"
+        ? candidate.message.slice(0, MAX_ERROR_MESSAGE_LENGTH)
+        : "Plugin reported an error";
+    return { type: "SOROTASK_PLUGIN_ERROR", pluginId, message };
+  }
+
+  return null;
+}
 
 export function resolvePluginEntry(
   entry: string,
@@ -79,6 +131,7 @@ export function createSandboxedPluginComponent(
   config: PluginRuntimeConfig = {},
 ): ComponentType<PluginComponentProps> {
   const src = resolvePluginEntry(manifest.entry, config.trustedOrigins);
+  const targetOrigin = new URL(src).origin;
   const timeoutMs = config.defaultTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS;
 
   return function SandboxedPluginFrame({
@@ -98,38 +151,31 @@ export function createSandboxedPluginComponent(
     }, [context, onError]);
 
     useEffect(() => {
-      let timeout: ReturnType<typeof setTimeout>;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
       const fail = (message: string) => {
         setError(message);
         onErrorRef.current?.(new Error(message));
-        clearTimeout(timeout);
+        if (timeout !== undefined) clearTimeout(timeout);
       };
 
       const handleMessage = (event: MessageEvent) => {
-        if (
-          event.source !== frameRef.current?.contentWindow ||
-          event.origin !== "null" ||
-          !event.data ||
-          typeof event.data !== "object" ||
-          event.data.pluginId !== pluginId
-        ) {
+        // Sandboxed iframes without allow-same-origin report origin "null";
+        // the source window check is the primary binding to this frame.
+        if (event.source !== frameRef.current?.contentWindow) {
           return;
         }
 
-        if (event.data.type === "SOROTASK_PLUGIN_ERROR") {
-          const message =
-            typeof event.data.message === "string"
-              ? event.data.message.slice(0, 500)
-              : "Plugin reported an error";
-          fail(message);
+        const message = parsePluginMessage(event.data, pluginId);
+        if (!message) {
           return;
         }
 
-        if (
-          event.data.type !== "SOROTASK_PLUGIN_READY" ||
-          event.data.version !== manifest.version ||
-          readyRef.current
-        ) {
+        if (message.type === "SOROTASK_PLUGIN_ERROR") {
+          fail(message.message ?? "Plugin reported an error");
+          return;
+        }
+
+        if (message.version !== manifest.version || readyRef.current) {
           return;
         }
 
@@ -147,16 +193,18 @@ export function createSandboxedPluginComponent(
         }
 
         readyRef.current = true;
-        clearTimeout(timeout);
-        frameRef.current?.contentWindow?.postMessage(
-          {
-            type: "SOROTASK_PLUGIN_INIT",
-            pluginId,
-            version: manifest.version,
-            context: JSON.parse(serializedContext) as Record<string, unknown>,
-          },
-          "*",
-        );
+        if (timeout !== undefined) clearTimeout(timeout);
+
+        const parsedContext: Record<string, unknown> = JSON.parse(serializedContext);
+        const init: HostToPluginMessage = {
+          type: "SOROTASK_PLUGIN_INIT",
+          pluginId,
+          version: manifest.version,
+          context: parsedContext,
+        };
+        // Pin delivery to the validated plugin origin so context never leaks
+        // to a different origin if the frame navigates.
+        frameRef.current?.contentWindow?.postMessage(init, targetOrigin);
       };
 
       window.addEventListener("message", handleMessage);
@@ -167,29 +215,28 @@ export function createSandboxedPluginComponent(
       }, timeoutMs);
 
       return () => {
-        clearTimeout(timeout);
+        if (timeout !== undefined) clearTimeout(timeout);
         window.removeEventListener("message", handleMessage);
       };
     }, [manifest.version, pluginId, timeoutMs]);
 
     if (error) {
-      return (
-        <div role="alert" data-testid={`plugin-error-${pluginId}`}>
-          Plugin failed to initialize: {error}
-        </div>
+      return createElement(
+        "div",
+        { role: "alert", "data-testid": `plugin-error-${pluginId}` },
+        `Plugin failed to initialize: ${error}`,
       );
     }
 
-    return (
-      <iframe
-        ref={frameRef}
-        src={src}
-        title={manifest.name}
-        sandbox="allow-scripts"
-        referrerPolicy="no-referrer"
-        data-testid={`plugin-frame-${pluginId}`}
-        style={{ width: "100%", minHeight: 320, border: 0 }}
-      />
-    );
+    return createElement("iframe", {
+      ref: frameRef,
+      src,
+      title: manifest.name,
+      sandbox: "allow-scripts",
+      referrerPolicy: "no-referrer",
+      loading: "lazy",
+      "data-testid": `plugin-frame-${pluginId}`,
+      style: { width: "100%", minHeight: 320, border: 0 },
+    });
   };
 }
