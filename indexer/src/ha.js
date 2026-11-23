@@ -7,7 +7,9 @@ const ROLES = Object.freeze({
 
 /**
  * PostgreSQL advisory lock-based leader election provider.
- * Uses pg_advisory_lock / pg_advisory_unlock for distributed mutex.
+ * Uses pg_try_advisory_lock / pg_advisory_unlock for a non-blocking distributed mutex.
+ * Session-level advisory locks are held by the database connection, so when the
+ * leader process dies the server releases the lock and a standby can acquire it.
  */
 class PostgresLockProvider {
   /**
@@ -21,8 +23,8 @@ class PostgresLockProvider {
   }
 
   async acquire() {
-    const res = await this.pool.query('SELECT pg_advisory_lock($1)', [this.lockId]);
-    this.locked = res.rows[0]?.pg_advisory_lock === true;
+    const res = await this.pool.query('SELECT pg_try_advisory_lock($1) AS acquired', [this.lockId]);
+    this.locked = res.rows[0]?.acquired === true;
     return this.locked;
   }
 
@@ -33,11 +35,11 @@ class PostgresLockProvider {
   }
 
   async isHeld() {
+    if (!this.locked) return false;
     const res = await this.pool.query(
-      'SELECT pg_advisory_lock($1) AS held',
-      [this.lockId],
+      'SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = $1 AND objid = $2 AND pid = pg_backend_pid() AND granted) AS held',
+      ['advisory', this.lockId],
     );
-    // pg_advisory_lock is re-entrant; we just check if we can acquire
     return res.rows[0]?.held === true;
   }
 }
@@ -150,7 +152,8 @@ class HighAvailabilityManager extends EventEmitter {
 
     // Distributed lock provider (optional; falls back to SQLite heartbeat)
     this.lockProvider = options.lockProvider || new SqliteLockProvider(db);
-    this.lockRenewIntervalMs = options.lockRenewIntervalMs || Math.floor(this.heartbeatTimeoutMs / 2);
+    // Poll fast enough that a standby takes over within the 3s failover target.
+    this.lockRenewIntervalMs = options.lockRenewIntervalMs || Math.min(1000, Math.floor(this.heartbeatTimeoutMs / 2));
     this._hasDistributedLock = false;
   }
 
@@ -302,8 +305,9 @@ class HighAvailabilityManager extends EventEmitter {
       this.checkFailover().catch((err) => console.error('[HA] Error checking failover:', err));
     }, this.heartbeatIntervalMs);
 
-    // If we have a distributed lock provider, try to acquire leadership
-    // and start periodic lock renewal.
+    // If we have a distributed lock provider, contend for leadership and keep
+    // the lock state in sync. A standby retries acquisition every tick so it
+    // takes over as soon as the leader's session releases the lock.
     if (!(this.lockProvider instanceof SqliteLockProvider)) {
       this.tryAcquireLeadership().catch((err) =>
         console.error('[HA] Error acquiring leadership:', err),
@@ -311,15 +315,21 @@ class HighAvailabilityManager extends EventEmitter {
 
       this.lockRenewTimer = setInterval(() => {
         if (this.isLeader && this._hasDistributedLock) {
-          // Renew the distributed lock by re-acquiring it
-          this.lockProvider.acquire().catch((err) => {
-            console.error(`[HA] Failed to renew distributed lock: ${err.message}`);
-            // If renewal fails, demote and let another node take over
-            this._hasDistributedLock = false;
-            this.demote().catch(() => {});
-          });
+          // Verify we still hold the lock; if the session was lost, step down.
+          this.lockProvider.isHeld()
+            .then((held) => {
+              if (!held) {
+                console.error('[HA] Distributed lock lost; demoting to STANDBY.');
+                this._hasDistributedLock = false;
+                return this.demote();
+              }
+            })
+            .catch((err) => {
+              console.error(`[HA] Failed to verify distributed lock: ${err.message}`);
+              this._hasDistributedLock = false;
+              this.demote().catch(() => {});
+            });
         } else if (!this.isLeader) {
-          // Try to acquire leadership if current leader dropped
           this.tryAcquireLeadership().catch(() => {});
         }
       }, this.lockRenewIntervalMs);

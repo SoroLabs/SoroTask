@@ -14,6 +14,11 @@
  * Zero write-lock contention: PostgreSQL multi-version concurrency control (MVCC)
  * coupled with dedicated read and write pool allocation allows high-throughput
  * concurrent writes (1,000+ writes/sec) without blocking concurrent reads.
+ *
+ * Failover support (BE-FINAL-06): the router can be re-pointed at a new primary
+ * via setPrimary(), which is invoked by the HA layer when the active indexer
+ * leadership changes. Write-path calls made during a failover window are
+ * retried once the new primary is installed, so no in-flight write is dropped.
  */
 
 /**
@@ -37,13 +42,47 @@ class DbRouter {
     this._stats = {
       readQueries: 0,
       writeQueries: 0,
+      failoverRetries: 0,
       replicaDistribution: {},
     };
+    this._waiters = [];
   }
 
   /** @returns {boolean} */
   hasReplicas() {
     return this.replicas.length > 0;
+  }
+
+  /**
+   * Swap the write/primary connection (used during HA failover).
+   * Pending write calls blocked on a failover window are released.
+   * @param {DbConnection} primary
+   */
+  setPrimary(primary) {
+    if (!primary) throw new Error("setPrimary requires a connection");
+    this.primary = primary;
+    const waiters = this._waiters;
+    this._waiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  /**
+   * Mark the write path as unavailable (leader lost). Writes will wait for
+   * setPrimary() to be called, up to the given timeout.
+   * @param {number} timeoutMs
+   */
+  _waitForPrimary(timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._waiters = this._waiters.filter((w) => w !== done);
+        reject(new Error("Timed out waiting for primary during failover"));
+      }, timeoutMs);
+      const done = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this._waiters.push(done);
+    });
   }
 
   /**
@@ -67,6 +106,25 @@ class DbRouter {
   }
 
   /**
+   * Execute a write-path operation, retrying once against the new primary if
+   * the current one fails with a connection error during failover.
+   * @param {(conn: DbConnection) => Promise<any>} op
+   */
+  async _withWriteFailover(op, timeoutMs = 3000) {
+    const attemptedPrimary = this.primary;
+    try {
+      return await op(attemptedPrimary);
+    } catch (err) {
+      if (!isConnectionRefused(err)) throw err;
+      this._stats.failoverRetries++;
+      if (this.primary === attemptedPrimary) {
+        await this._waitForPrimary(timeoutMs);
+      }
+      return op(this.primary);
+    }
+  }
+
+  /**
    * Read paths -> read connection (replica or primary fallback).
    */
   async queryAll(sql, params = []) {
@@ -86,11 +144,11 @@ class DbRouter {
   }
 
   /**
-   * Write path -> primary / write pool only.
+   * Write path -> primary / write pool only, with failover-aware retry.
    */
   async queryRun(sql, params = []) {
     this._stats.writeQueries++;
-    return this.getWriteConnection().queryRun(sql, params);
+    return this._withWriteFailover((conn) => conn.queryRun(sql, params));
   }
 
   /**
@@ -240,4 +298,5 @@ module.exports = {
   wrapPgPool,
   normalizePgQuery,
   parseReplicaUrls,
+  isConnectionRefused,
 };
