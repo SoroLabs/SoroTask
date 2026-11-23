@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { createLogger } = require("./logger");
+const { computeTransactionFingerprint } = require("./distributedIdempotency");
 
 function parseIntOrDefault(value, fallback) {
   const parsed = parseInt(value, 10);
@@ -30,8 +31,17 @@ class ExecutionIdempotencyGuard {
       path.join(stateDir, "execution_locks.json");
 
     this.state = { version: 1, locks: {} };
+    this.distributedEngine = options.distributedEngine || null;
     this._loadState();
     this.cleanupExpired();
+  }
+
+  /**
+   * Compute a deterministic SHA-256 transaction fingerprint from
+   * { taskId, interval, blockHeight, payload }.
+   */
+  computeFingerprint(descriptor) {
+    return computeTransactionFingerprint(descriptor);
   }
 
   _loadState() {
@@ -107,6 +117,7 @@ class ExecutionIdempotencyGuard {
         reason: "locked",
         attemptId: existing.attemptId,
         lock: existing,
+        receipt: existing.receipt || null,
       };
     }
 
@@ -114,12 +125,14 @@ class ExecutionIdempotencyGuard {
     const lock = {
       taskId,
       attemptId,
+      fingerprint: metadata.fingerprint || null,
       status: "in_progress",
       createdAt: now,
       updatedAt: now,
       expiresAt: now + this.lockTtlMs,
       retries: 0,
       lastError: null,
+      receipt: null,
     };
 
     this.state.locks[key] = lock;
@@ -130,6 +143,7 @@ class ExecutionIdempotencyGuard {
       reason: "acquired",
       attemptId,
       lock,
+      receipt: null,
     };
   }
 
@@ -159,6 +173,11 @@ class ExecutionIdempotencyGuard {
     lock.updatedAt = now;
     lock.status = details.status || "completed";
     lock.txHash = details.txHash || lock.txHash || null;
+    if (details.receipt !== undefined) {
+      lock.receipt = details.receipt;
+    } else if (details.txHash) {
+      lock.receipt = { txHash: details.txHash, ...details };
+    }
     lock.expiresAt = now + this.completedTtlMs;
 
     this._persistState();
@@ -266,6 +285,58 @@ class ExecutionIdempotencyGuard {
       txHash: details.txHash || null,
       ...details,
     });
+  }
+
+  /**
+   * Acquire a distributed idempotency reservation keyed by deterministic
+   * transaction fingerprint ({ taskId, interval, blockHeight, payload }).
+   * Falls back to local fingerprint-keyed lock if no distributedEngine is configured.
+   */
+  async acquireDistributed(descriptor) {
+    const fingerprint = this.computeFingerprint(descriptor);
+    if (this.distributedEngine) {
+      const result = await this.distributedEngine.checkAndReserve({
+        ...descriptor,
+        fingerprint,
+      });
+      return {
+        acquired: result.allowed,
+        fingerprint: result.key,
+        reason: result.reason,
+        receipt: result.receipt ?? null,
+        record: result.record || null,
+      };
+    }
+
+    const local = this.acquire(fingerprint, { fingerprint });
+    return {
+      acquired: local.acquired,
+      fingerprint,
+      reason: local.reason,
+      receipt: local.receipt ?? null,
+      record: local.lock,
+    };
+  }
+
+  /**
+   * Confirm a distributed idempotency reservation and persist its original receipt.
+   */
+  async confirmDistributed(fingerprint, details = {}) {
+    if (this.distributedEngine) {
+      return this.distributedEngine.markConfirmed(fingerprint, details);
+    }
+    return this.markCompleted(fingerprint, { status: "confirmed", ...details });
+  }
+
+  /**
+   * Mark a distributed idempotency reservation as failed so retries can proceed.
+   */
+  async failDistributed(fingerprint, details = {}) {
+    if (this.distributedEngine) {
+      return this.distributedEngine.markFailed(fingerprint, details);
+    }
+    this.markFailed(fingerprint, details);
+    return this.release(fingerprint);
   }
 }
 
