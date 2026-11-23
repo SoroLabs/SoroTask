@@ -4,6 +4,7 @@ import { KeeperIdentityPanel } from "../KeeperIdentityPanel";
 import { KeeperSocialBadges } from "../KeeperSocialBadges";
 import { identityLinkMessage, type IdentityChallenge, type VerifiedSocialIdentity } from "@/src/lib/auth/keeper-identities";
 import { signKeeperIdentity, signSocialOwner } from "@/src/lib/auth/identity-wallet";
+import { signIn } from "next-auth/react";
 
 jest.mock("@/src/lib/auth/identity-wallet", () => ({ signKeeperIdentity: jest.fn(), signSocialOwner: jest.fn() }));
 jest.mock("next-auth/react", () => ({ signIn: jest.fn() }));
@@ -88,6 +89,36 @@ describe("keeper verified social interface", () => {
     expect(fetcher.mock.calls.filter(([, args]) => args?.body && JSON.parse(args.body).operation === "complete")).toHaveLength(0);
   });
 
+  test.each(["wallet change", "unmount"])("%s during social signing prevents a second wallet prompt", async (reason) => {
+    const view = render(<KeeperIdentityPanel address={ADDRESS} identities={[]} onChanged={jest.fn()} />);
+    await screen.findByText("Signed in as GitHub synthetic-keeper.");
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "farcaster" } });
+    fireEvent.change(screen.getByLabelText("Farcaster FID"), { target: { value: "42" } });
+    const fields = { ...challenge(), provider: "farcaster" as const, providerId: "42", ownerAddress: "0x" + "1".repeat(40) };
+    fetcher.mockResolvedValueOnce({ ok: true, json: async () => ({ challenge: { ...fields, message: identityLinkMessage(fields) } }) });
+    let finish!: (signature: string) => void;
+    jest.mocked(signSocialOwner).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: "Verify and link" }));
+    await waitFor(() => expect(signSocialOwner).toHaveBeenCalledTimes(1));
+    if (reason === "wallet change") view.rerender(<KeeperIdentityPanel address="another-wallet" identities={[]} onChanged={jest.fn()} />);
+    else view.unmount();
+    await act(async () => { finish("synthetic-owner-signature"); });
+    expect(signKeeperIdentity).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.filter(([, args]) => args?.body && JSON.parse(args.body).operation === "complete")).toHaveLength(0);
+  });
+
+  test.each([null, { ...IDENTITY, walletAddress: "another-wallet" }, { ...IDENTITY, providerId: "456" }])("invalid completion %j never claims verified ownership", async (identity) => {
+    const changed = jest.fn();
+    render(<KeeperIdentityPanel address={ADDRESS} identities={[]} onChanged={changed} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Verify and link" })).toBeEnabled());
+    fetcher.mockResolvedValueOnce({ ok: true, json: async () => ({ challenge: challenge() }) });
+    fetcher.mockResolvedValueOnce({ ok: true, json: async () => ({ identity }) });
+    fireEvent.click(screen.getByRole("button", { name: "Verify and link" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("status")).not.toHaveTextContent("ownership verified");
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   test("malicious or wallet-mismatched challenge cannot reach either wallet", async () => {
     render(<KeeperIdentityPanel address={ADDRESS} identities={[]} onChanged={jest.fn()} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Verify and link" })).toBeEnabled());
@@ -117,5 +148,13 @@ describe("keeper verified social interface", () => {
     fireEvent.click(screen.getByRole("button", { name: "Unlink github" }));
     await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
     expect(jest.mocked(signKeeperIdentity).mock.calls[0][0].action).toBe("unlink");
+  });
+
+  test("GitHub sign-in remains actionable without a provider session", async () => {
+    fetcher.mockResolvedValueOnce({ ok: true, json: async () => ({ github: null, providers: { github: true, farcaster: false, lens: false } }) });
+    render(<KeeperIdentityPanel address={ADDRESS} identities={[]} onChanged={jest.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with GitHub" }));
+    expect(signIn).toHaveBeenCalledWith("github", { callbackUrl: "/keepers" });
+    expect(screen.getByRole("button", { name: "Verify and link" })).toBeDisabled();
   });
 });

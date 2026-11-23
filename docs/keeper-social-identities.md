@@ -22,6 +22,9 @@ keeper/delegation behavior remain compatible.
 4. Inspect and sign the human-readable request, then confirm it in Freighter.
    The server verifies both proofs before storing a link. Declining a prompt
    cancels the operation without automatic retries or completion submission.
+   Changing the keeper account or leaving the page between prompts stops the
+   remaining prompts. The client validates the completion response before
+   displaying a successful verification.
 5. Use **Unlink github/farcaster/lens** to remove a link with a new keeper-signed
    unlink request. Unlink does not require the former social account or provider
    to remain available.
@@ -139,7 +142,8 @@ npm test -- --runInBand --runTestsByPath \
   'app/api/auth/[...nextauth]/route.test.ts' \
   app/keepers/page.test.tsx \
   src/lib/auth/__tests__/IdentityManager.test.ts \
-  src/lib/auth/__tests__/AuthPipeline.test.ts
+  src/lib/auth/__tests__/AuthPipeline.test.ts \
+  app/__tests__/wallet.test.ts
 npm run lint
 npm run build
 ```

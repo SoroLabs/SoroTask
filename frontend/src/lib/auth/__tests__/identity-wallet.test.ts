@@ -49,4 +49,15 @@ describe("keeper wallet message signing", () => {
       expect(request).toHaveBeenCalledTimes(3);
     } finally { Reflect.deleteProperty(window, "ethereum"); }
   });
+
+  test("missing owner wallets and malformed Freighter signatures cannot produce proofs", async () => {
+    expect(await signSocialOwner(challenge)).toBeUndefined();
+    await expect(signSocialOwner({ ...challenge, ownerAddress: "0x" + "1".repeat(40) })).rejects.toThrow("Ethereum-compatible wallet");
+    jest.mocked(getAddress).mockResolvedValueOnce({ address: "other" });
+    await expect(signKeeperIdentity(challenge)).rejects.toThrow("same keeper account");
+    jest.mocked(signMessage).mockResolvedValueOnce({ signedMessage: Buffer.alloc(1), signerAddress: ADDRESS });
+    await expect(signKeeperIdentity(challenge)).rejects.toThrow("invalid signature");
+    jest.mocked(signMessage).mockResolvedValueOnce({ signedMessage: "malformed", signerAddress: ADDRESS });
+    await expect(signKeeperIdentity(challenge)).rejects.toThrow("invalid signature");
+  });
 });

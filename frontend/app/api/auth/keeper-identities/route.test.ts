@@ -77,6 +77,18 @@ describe("keeper identity API boundary", () => {
     expect(await unavailable.json()).toEqual({ error: { code: "identity_not_configured" } });
   });
 
+  test("unknown operations and malformed signature inputs return stable errors", async () => {
+    for (const body of [{ operation: "unexpected" }, { operation: "complete", nonce: 123, walletSignature: "bad" },
+      { operation: "complete", nonce: "a".repeat(64), walletSignature: "x".repeat(101) },
+      { operation: "complete", nonce: "a".repeat(64), walletSignature: "bad", ownerSignature: 123 }]) {
+      const result = await POST(post(body));
+      expect(result.status).toBe(400);
+      expect(await result.json()).toEqual({ error: { code: "invalid_request" } });
+    }
+    process.env.AUTH_URL = "invalid-url";
+    expect((await GET(new Request(ORIGIN))).status).toBe(503);
+  });
+
   test.each(["ftp://localhost:3000", "https://user:password@keeper.example", "http://keeper.example"])("unsafe canonical origin %s cannot configure linking", async (origin) => {
     process.env.AUTH_URL = origin;
     const result = await GET(new Request(`${ORIGIN}/api/auth/keeper-identities`));

@@ -44,24 +44,32 @@ export function KeeperIdentityPanel({ address, identities, onChanged }: { addres
   const [github, setGithub] = useState<{ id: string; username: string } | null>(null);
   const [available, setAvailable] = useState({ github: true, farcaster: false, lens: false });
   const wallet = useRef(address);
+  const active = useRef(true);
+  const submitting = useRef(false);
   wallet.current = address;
 
   useEffect(() => {
+    active.current = true;
     const controller = new AbortController();
     fetch(ENDPOINT, { cache: "no-store", signal: controller.signal }).then(async (response) => {
       if (!response.ok) return;
       const data = await response.json();
+      if (controller.signal.aborted) return;
       const profile = data.github;
       setGithub(profile && typeof profile.id === "string" && /^\d{1,20}$/.test(profile.id)
         && typeof profile.username === "string" && /^[a-zA-Z0-9_.-]{1,100}$/.test(profile.username) ? profile : null);
       if (data.providers) setAvailable({ github: data.providers.github === true, farcaster: data.providers.farcaster === true, lens: data.providers.lens === true });
     }).catch(() => undefined);
-    return () => controller.abort();
+    return () => { active.current = false; controller.abort(); };
   }, []);
 
   const complete = async (action: "link" | "unlink", selected: SocialProvider) => {
-    if (!address || busy) return;
+    if (!address || submitting.current) return;
     const expected = address;
+    const ensureCurrentWallet = () => {
+      if (!active.current || wallet.current !== expected) throw new Error("Wallet account changed. Start again.");
+    };
+    submitting.current = true;
     setBusy(true); setError(null); setNotice(null);
     try {
       const data = await requestJson({ operation: "challenge", provider: selected, identifier, walletAddress: address, action });
@@ -71,18 +79,26 @@ export function KeeperIdentityPanel({ address, identities, onChanged }: { addres
       }
       if (action === "link" && (selected === "github" ? challenge.providerId !== github?.id
         : challenge.providerId !== identifier.toLowerCase())) throw new Error("The signing request does not match the selected profile. Start again.");
-      if (wallet.current !== expected || challenge.walletAddress !== expected) throw new Error("Wallet account changed. Start again.");
+      ensureCurrentWallet();
       setNotice(challenge.ownerAddress ? "Confirm the social owner signature, then the Stellar keeper signature." : "Confirm the profile link request in Freighter.");
       const ownerSignature = await signSocialOwner(challenge);
+      ensureCurrentWallet();
+      if (Date.now() >= challenge.expiresAt) throw new Error("The signing request expired. Start a new request.");
       const walletSignature = await signKeeperIdentity(challenge);
-      if (wallet.current !== expected) throw new Error("Wallet account changed. Start again.");
-      await requestJson({ operation: "complete", nonce: challenge.nonce, walletSignature, ownerSignature });
+      ensureCurrentWallet();
+      const completed = await requestJson({ operation: "complete", nonce: challenge.nonce, walletSignature, ownerSignature });
+      ensureCurrentWallet();
+      if (action === "link" ? !isVerifiedSocialIdentity(completed.identity, expected)
+        || completed.identity.provider !== selected || completed.identity.providerId !== challenge.providerId
+        : completed.identity !== null) throw new Error("The identity service returned an invalid verification result. Refresh and try again.");
       setNotice(action === "link" ? "Profile ownership verified and linked." : "Profile unlinked.");
       onChanged();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Identity verification failed.");
-      setNotice(null);
-    } finally { setBusy(false); }
+      if (active.current) {
+        setError(cause instanceof Error ? cause.message : "Identity verification failed.");
+        setNotice(null);
+      }
+    } finally { submitting.current = false; if (active.current) setBusy(false); }
   };
 
   return (

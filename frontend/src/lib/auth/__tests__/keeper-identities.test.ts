@@ -199,6 +199,48 @@ describe("verified keeper identity linking", () => {
     await expect(resolveSocialProfile("lens", "0x" + "1".repeat(40), SESSION, { fetch: fetcher as typeof fetch })).rejects.toMatchObject({ code: "provider_unavailable" });
   });
 
+  test("missing provider configuration and malformed social accounts never verify", async () => {
+    const { fetcher } = setup();
+    await expect(resolveSocialProfile("farcaster", "42", SESSION, { fetch: fetcher as typeof fetch })).rejects.toMatchObject({ code: "provider_not_configured" });
+    await expect(resolveSocialProfile("lens", "not-an-address", SESSION, { fetch: fetcher as typeof fetch })).rejects.toMatchObject({ code: "invalid_profile" });
+    for (const data of [{}, { users: [null] }, { users: [{ fid: 42, username: "unexpected/name", custody_address: OWNER }] }]) {
+      fetcher.mockResolvedValueOnce(new Response(JSON.stringify(data)));
+      await expect(resolveSocialProfile("farcaster", "42", SESSION, { fetch: fetcher as typeof fetch, neynarApiKey: "synthetic-key" })).rejects.toMatchObject({ code: "profile_not_found" });
+    }
+    for (const data of [{ errors: [{ message: "private-error" }] }, { data: { account: { address: "0x" + "2".repeat(40), owner: OWNER, username: { localName: "fixture" } } } }]) {
+      fetcher.mockResolvedValueOnce(new Response(JSON.stringify(data)));
+      await expect(resolveSocialProfile("lens", "0x" + "1".repeat(40), SESSION, { fetch: fetcher as typeof fetch })).rejects.toMatchObject({ code: "profile_not_found" });
+    }
+    for (const response of [new Response("", { status: 503 }), new Response(null), new Response("{}", { headers: { "content-length": "65537" } })]) {
+      fetcher.mockResolvedValueOnce(response);
+      await expect(resolveSocialProfile("lens", "0x" + "1".repeat(40), SESSION, { fetch: fetcher as typeof fetch })).rejects.toMatchObject({ code: "provider_unavailable" });
+    }
+  });
+
+  test("unavailable unlink targets and malformed completion requests do not mutate identities", async () => {
+    const { service, wallet } = setup();
+    await expect(service.challenge({ action: "unlink", provider: "github", identifier: "", walletAddress: wallet.publicKey() }, SESSION)).rejects.toMatchObject({ code: "identity_not_linked" });
+    await expect(service.challenge({ provider: "github", identifier: "", walletAddress: "invalid" }, SESSION)).rejects.toMatchObject({ code: "invalid_wallet" });
+    await expect(service.complete({ nonce: "bad", walletSignature: "bad" }, SESSION)).rejects.toMatchObject({ code: "invalid_challenge" });
+    const challenge = await service.challenge({ provider: "farcaster", identifier: "42", walletAddress: wallet.publicKey() }, SESSION);
+    await expect(service.complete({ nonce: challenge.nonce, walletSignature: signature(wallet, challenge) }, SESSION)).rejects.toMatchObject({ code: "invalid_owner_signature" });
+  });
+
+  test("a crashed writer lock stays fail-closed and oversized state is preserved", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "keeper-identity-lock-"));
+    try {
+      const lock = path.join(directory, "identity.lock");
+      await writeFile(lock, "synthetic-crash");
+      await expect(new FileIdentityStore(directory).transaction((state) => state.links)).rejects.toMatchObject({ code: "storage_busy" });
+      expect(await readFile(lock, "utf8")).toBe("synthetic-crash");
+      await rm(lock);
+      const file = path.join(directory, "identities.json");
+      await writeFile(file, " ".repeat(4 * 1024 * 1024 + 1));
+      await expect(new FileIdentityStore(directory).transaction((state) => state.links)).rejects.toMatchObject({ code: "storage_invalid" });
+      expect((await stat(file)).size).toBe(4 * 1024 * 1024 + 1);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   test("JSON requests enforce byte limits without trusting Content-Length", async () => {
     const request = (body: string) => new Request(ORIGIN, { method: "POST", body });
     expect(await readIdentityRequest(request('{"operation":"challenge"}'))).toEqual({ operation: "challenge" });
@@ -227,6 +269,12 @@ describe("verified keeper identity linking", () => {
     expect(verifyStellarIdentitySignature("not-a-wallet", message, "bad")).toBe(false);
     expect(verifySocialOwnerSignature(OWNER, message, ownerSignature(message))).toBe(true);
     expect(verifySocialOwnerSignature(OWNER, message, "0xdeadbeef")).toBe(false);
+    const valid = ownerSignature(message);
+    expect(verifySocialOwnerSignature(OWNER, message, valid.slice(0, -2) + "ff")).toBe(false);
+    const parsed = secp256k1.Signature.fromCompact(valid.slice(2, 130));
+    const highS = new secp256k1.Signature(parsed.r, secp256k1.CURVE.n - parsed.s);
+    expect(verifySocialOwnerSignature(OWNER, message, "0x" + highS.toCompactHex() + valid.slice(-2))).toBe(false);
+    expect(verifyStellarIdentitySignature(wallet.publicKey(), message, "A".repeat(86))).toBe(false);
   });
 
   test("Stellar verification accepts the published SEP-53 ASCII test vector", () => {
