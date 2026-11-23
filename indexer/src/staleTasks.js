@@ -111,17 +111,24 @@ async function cleanupTask(db, row, classification, options) {
     return "would_archive_delete";
   }
 
-  await run(
-    db,
-    "INSERT INTO archived_tasks (task_id, task_json, cleanup_reasons_json) VALUES (?, ?, ?)",
-    [row.task_id, JSON.stringify(row), reasonsJson],
-  );
-  await run(db, "DELETE FROM tasks WHERE task_id = ?", [row.task_id]);
-  await run(
-    db,
-    "INSERT INTO stale_cleanup_logs (task_id, action, reasons_json, dry_run) VALUES (?, ?, ?, ?)",
-    [row.task_id, "archived_deleted", reasonsJson, 0],
-  );
+  await run(db, "BEGIN IMMEDIATE");
+  try {
+    await run(
+      db,
+      "INSERT INTO archived_tasks (task_id, task_json, cleanup_reasons_json) VALUES (?, ?, ?)",
+      [row.task_id, JSON.stringify(row), reasonsJson],
+    );
+    await run(db, "DELETE FROM tasks WHERE task_id = ?", [row.task_id]);
+    await run(
+      db,
+      "INSERT INTO stale_cleanup_logs (task_id, action, reasons_json, dry_run) VALUES (?, ?, ?, ?)",
+      [row.task_id, "archived_deleted", reasonsJson, 0],
+    );
+    await run(db, "COMMIT");
+  } catch (err) {
+    await run(db, "ROLLBACK").catch(() => {});
+    throw err;
+  }
 
   return "archived_deleted";
 }
