@@ -33,6 +33,11 @@ pub const DEFAULT_APPROVAL_THRESHOLD_BPS: u32 = 5001; // 50% + 1
 /// Maximum number of voters per proposal for storage efficiency
 pub const MAX_VOTERS_PER_PROPOSAL: u32 = 1000;
 
+/// Minimum keeper bond threshold (e.g., 1000 tokens with 7 decimals)
+pub const MIN_KEEPER_BOND: i128 = 10_000_000_000;
+/// Unbonding timelock duration in ledgers (approx 7 days = ~60,480 ledgers)
+pub const UNBONDING_TIMELOCK_LEDGERS: u32 = 60_480;
+
 /// Voting status enumeration
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -103,585 +108,294 @@ pub struct GovernanceProposal {
     pub start_block: u32,
     /// Block when voting ends
     pub end_block: u32,
-    /// Current status
     pub status: VoteStatus,
-    /// Running tally of votes
     pub votes_for: i128,
     pub votes_against: i128,
     pub votes_abstain: i128,
-    /// Number of unique voters
-    pub voter_count: u32,
-    /// Created timestamp
-    pub created_at: u64,
-    /// Executed timestamp (0 if not executed)
-    pub executed_at: u64,
-    /// Optional execution reward for keeper
-    pub bounty: i128,
+    pub executed: bool,
 }
 
-/// Voter list for a proposal (stored separately for pagination)
+/// Keeper registration structure with bonded stake and TWAS tracking
 #[contracttype]
 #[derive(Clone, Debug)]
-pub struct VoterList {
-    pub voters: Vec<Address>,
+pub struct KeeperInfo {
+    pub keeper: Address,
+    pub bonded_stake: i128,
+    pub delegated_stake: i128,
+    pub unbonding_amount: i128,
+    pub unbonding_complete_block: u32,
+    pub cumulative_twas: i128,
+    pub last_update_block: u32,
+    pub reward_debt: i128,
 }
 
-/// Configuration for governance system
+/// Delegation tracking structure
 #[contracttype]
 #[derive(Clone, Debug)]
-pub struct GovernanceConfig {
-    pub admin: Address,
-    pub voting_period_ledgers: u32,
-    pub quorum_bps: u32,
-    pub approval_threshold_bps: u32,
-    pub min_proposal_bounty: i128,
-    pub execution_reward_bps: u32,
-    pub emergency_guardian: Address,
+pub struct DelegationInfo {
+    pub delegator: Address,
+    pub keeper: Address,
+    pub amount: i128,
+    pub staked_at_block: u32,
 }
 
-impl Default for GovernanceConfig {
-    fn default() -> Self {
-        Self {
-            admin: Address::from_u32(0),
-            voting_period_ledgers: DEFAULT_VOTING_PERIOD_LEDGERS,
-            quorum_bps: DEFAULT_QUORUM_BPS,
-            approval_threshold_bps: DEFAULT_APPROVAL_THRESHOLD_BPS,
-            min_proposal_bounty: 1000,
-            execution_reward_bps: 100, // 1% of execution value
-            emergency_guardian: Address::from_u32(0),
-        }
-    }
+/// Keeper Registry and Delegation Management Contract Interface
+pub trait KeeperRegistryTrait {
+    fn register_keeper(env: Env, keeper: Address, bond_amount: i128);
+    fn increase_bond(env: Env, keeper: Address, amount: i128);
+    fn start_unbond(env: Env, keeper: Address, amount: i128);
+    fn withdraw_unbonded(env: Env, keeper: Address);
+    fn delegate_stake(env: Env, delegator: Address, keeper: Address, amount: i128);
+    fn undelegate_stake(env: Env, delegator: Address, keeper: Address, amount: i128);
+    fn get_keeper(env: Env, keeper: Address) -> KeeperInfo;
+    fn get_execution_priority(env: Env, keeper: Address) -> i128;
+    fn verify_keeper(env: Env, keeper: Address) -> bool;
 }
 
-// Note: Governance errors are defined in lib.rs Error enum
+#[contract]
+pub struct KeeperRegistryContract;
 
-// =============================================================================
-// Storage Helpers
-// =============================================================================
+#[contractimpl]
+impl KeeperRegistryTrait for KeeperRegistryContract {
+    fn register_keeper(env: Env, keeper: Address, bond_amount: i128) {
+        keeper.require_auth();
 
-/// Load governance configuration
-pub fn load_config(env: &Env) -> GovernanceConfig {
-    env.storage()
-        .instance()
-        .get(&DataKey::GovernanceConfig)
-        .unwrap_or_default()
-}
-
-/// Save governance configuration
-pub fn save_config(env: &Env, config: &GovernanceConfig) {
-    env.storage()
-        .instance()
-        .set(&DataKey::GovernanceConfig, config);
-}
-
-/// Get the next proposal ID
-fn get_next_proposal_id(env: &Env) -> u64 {
-    let counter: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::GovernanceProposalCounter)
-        .unwrap_or(0);
-    let next = counter + 1;
-    env.storage()
-        .instance()
-        .set(&DataKey::GovernanceProposalCounter, &next);
-    next
-}
-
-/// Load a proposal by ID
-pub fn load_proposal(env: &Env, proposal_id: u64) -> Option<GovernanceProposal> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::GovernanceProposal(proposal_id))
-}
-
-/// Save a proposal
-fn save_proposal(env: &Env, proposal: &GovernanceProposal) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::GovernanceProposal(proposal.proposal_id), proposal);
-}
-
-/// Load vote record for a voter on a proposal
-pub fn load_vote(env: &Env, proposal_id: u64, voter: &Address) -> Option<VoteRecord> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::GovernanceVote(proposal_id, voter.clone()))
-}
-
-/// Save a vote record
-fn save_vote(env: &Env, proposal_id: u64, vote: &VoteRecord) {
-    env.storage()
-        .persistent()
-        .set(
-            &DataKey::GovernanceVote(proposal_id, vote.voter.clone()),
-            vote,
-        );
-}
-
-/// Load vote snapshot for a proposal
-pub fn load_snapshot(env: &Env, proposal_id: u64) -> Option<VoteSnapshot> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::GovernanceSnapshot(proposal_id))
-}
-
-/// Save vote snapshot
-fn save_snapshot(env: &Env, snapshot: &VoteSnapshot) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::GovernanceSnapshot(snapshot.proposal_id), snapshot);
-}
-
-// =============================================================================
-// Core Governance Functions
-// =============================================================================
-
-/// Initialize governance system with admin
-pub fn initialize(env: &Env, admin: &Address, guardian: &Address, voting_token: &Address) {
-    admin.require_auth();
-    
-    // Verify we're not re-initializing
-    let config = load_config(env);
-    if config.admin != Address::from_u32(0) {
-        panic_with_error!(env, Error::AlreadyInitialized);
-    }
-
-    let mut config = GovernanceConfig::default();
-    config.admin = admin.clone();
-    config.emergency_guardian = guardian.clone();
-    save_config(env, &config);
-
-    // Store the default voting token
-    env.storage()
-        .instance()
-        .set(&DataKey::GovernanceVotingToken, voting_token);
-
-    env.events().publish(
-        (Symbol::new(env, "GovernanceInitialized"),),
-        (admin.clone(), guardian.clone()),
-    );
-}
-
-/// Create a new governance proposal
-pub fn create_proposal(
-    env: &Env,
-    proposer: &Address,
-    title: Bytes,
-    description: Bytes,
-    target: Address,
-    function: Symbol,
-    args: Vec<Val>,
-    voting_token: Address,
-    quorum_bps: Option<u32>,
-    approval_threshold_bps: Option<u32>,
-    bounty: i128,
-) -> u64 {
-    proposer.require_auth();
-
-    let config = load_config(env);
-    
-    // Validate bounty
-    if bounty < config.min_proposal_bounty {
-        panic_with_error!(env, Error::GovernanceInvalidVotingPower);
-    }
-
-    let proposal_id = get_next_proposal_id(env);
-    let current_block = env.ledger().sequence();
-
-    // Use config thresholds or provided overrides
-    let q_bps = quorum_bps.unwrap_or(config.quorum_bps);
-    let t_bps = approval_threshold_bps.unwrap_or(config.approval_threshold_bps);
-
-    // Validate thresholds
-    if q_bps > 10000 || t_bps > 10000 {
-        panic_with_error!(env, Error::GovernanceInvalidThreshold);
-    }
-
-    let proposal = GovernanceProposal {
-        proposal_id,
-        proposer: proposer.clone(),
-        title,
-        description,
-        target,
-        function,
-        args,
-        voting_token,
-        quorum_threshold: 0, // Computed at voting start
-        approval_threshold_bps: t_bps,
-        start_block: current_block,
-        end_block: current_block.saturating_add(config.voting_period_ledgers),
-        status: VoteStatus::Pending,
-        votes_for: 0,
-        votes_against: 0,
-        votes_abstain: 0,
-        voter_count: 0,
-        created_at: env.ledger().timestamp(),
-        executed_at: 0,
-        bounty,
-    };
-
-    save_proposal(env, &proposal);
-
-    EventLogger::log_envelope(env, "ProposalCreated", proposal_id, 0, 0, 0);
-
-    env.events().publish(
-        (Symbol::new(env, "ProposalCreated"), proposal_id),
-        (proposer.clone(), proposal.end_block),
-    );
-
-    proposal_id
-}
-
-/// Activate a proposal (called to start voting period)
-pub fn activate_proposal(env: &Env, proposal_id: u64, total_voting_power: i128) {
-    let mut proposal = load_proposal(env, proposal_id)
-        .unwrap_or_else(|| panic_with_error!(env, Error::GovernanceProposalNotFound));
-
-    if proposal.status != VoteStatus::Pending {
-        panic_with_error!(env, Error::GovernanceProposalNotActive);
-    }
-
-    let config = load_config(env);
-    let current_block = env.ledger().sequence();
-
-    // Compute quorum threshold from total voting power
-    proposal.quorum_threshold = (total_voting_power * config.quorum_bps as i128) / 10000;
-    proposal.start_block = current_block;
-    proposal.end_block = current_block.saturating_add(config.voting_period_ledgers);
-    proposal.status = VoteStatus::Active;
-
-    save_proposal(env, &proposal);
-
-    env.events().publish(
-        (Symbol::new(env, "ProposalActivated"), proposal_id),
-        (proposal.quorum_threshold, proposal.end_block),
-    );
-}
-
-/// Cast a vote on an active proposal
-pub fn cast_vote(
-    env: &Env,
-    voter: &Address,
-    proposal_id: u64,
-    choice: VoteChoice,
-    voting_power: i128,
-) {
-    voter.require_auth();
-
-    // Validate voting power
-    if voting_power <= 0 {
-        panic_with_error!(env, Error::GovernanceZeroVotingWeight);
-    }
-
-    let mut proposal = load_proposal(env, proposal_id)
-        .unwrap_or_else(|| panic_with_error!(env, Error::GovernanceProposalNotFound));
-
-    let current_block = env.ledger().sequence();
-
-    // Check voting status
-    if proposal.status != VoteStatus::Active {
-        panic_with_error!(env, Error::GovernanceProposalNotActive);
-    }
-
-    if current_block < proposal.start_block {
-        panic_with_error!(env, Error::GovernanceVotingNotStarted);
-    }
-
-    if current_block >= proposal.end_block {
-        panic_with_error!(env, Error::GovernanceVotingEnded);
-    }
-
-    // Check if already voted
-    if let Some(existing_vote) = load_vote(env, proposal_id, voter) {
-        // Update vote (allow vote changing)
-        let weight_diff = voting_power - existing_vote.weight;
-
-        // Remove old vote from tallies
-        match existing_vote.choice {
-            VoteChoice::For => proposal.votes_for = proposal.votes_for.saturating_sub(existing_vote.weight),
-            VoteChoice::Against => proposal.votes_against = proposal.votes_against.saturating_sub(existing_vote.weight),
-            VoteChoice::Abstain => proposal.votes_abstain = proposal.votes_abstain.saturating_sub(existing_vote.weight),
+        if bond_amount < MIN_KEEPER_BOND {
+            panic_with_error!(&env, Error::InsufficientBond);
         }
 
-        // Add new vote
-        match choice {
-            VoteChoice::For => proposal.votes_for = proposal.votes_for.saturating_add(weight_diff),
-            VoteChoice::Against => proposal.votes_against = proposal.votes_against.saturating_add(weight_diff),
-            VoteChoice::Abstain => proposal.votes_abstain = proposal.votes_abstain.saturating_add(weight_diff),
+        let key = DataKey::Keeper(keeper.clone());
+        if env.storage().instance().has(&key) {
+            panic_with_error!(&env, Error::AlreadyRegistered);
         }
 
-        // Update voter count only if switching from/to zero weight
-        if existing_vote.weight == 0 {
-            proposal.voter_count = proposal.voter_count.saturating_add(1);
+        let current_block = env.ledger().sequence();
+
+        // Transfer tokens from keeper to contract
+        let token_address = storage::get_protocol_token(&env);
+        let client = soroban_sdk::token::Client::new(&env, &token_address);
+        client.transfer(&keeper, &env.current_contract_address(), &bond_amount);
+
+        let keeper_info = KeeperInfo {
+            keeper: keeper.clone(),
+            bonded_stake: bond_amount,
+            delegated_stake: 0,
+            unbonding_amount: 0,
+            unbonding_complete_block: 0,
+            cumulative_twas: bond_amount * current_block as i128,
+            last_update_block: current_block,
+            reward_debt: 0,
+        };
+
+        env.storage().instance().set(&key, &keeper_info);
+        EventLogger::log_keeper_registered(&env, keeper, bond_amount);
+    }
+
+    fn increase_bond(env: Env, keeper: Address, amount: i128) {
+        keeper.require_auth();
+
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
         }
-    } else {
-        // New vote
-        match choice {
-            VoteChoice::For => proposal.votes_for = proposal.votes_for.saturating_add(voting_power),
-            VoteChoice::Against => proposal.votes_against = proposal.votes_against.saturating_add(voting_power),
-            VoteChoice::Abstain => proposal.votes_abstain = proposal.votes_abstain.saturating_add(voting_power),
+
+        let key = DataKey::Keeper(keeper.clone());
+        let mut keeper_info: KeeperInfo = env.storage().instance().get(&key).unwrap_or_else(|| {
+            panic_with_error!(&env, Error::NotRegistered);
+        });
+
+        let current_block = env.ledger().sequence();
+        let blocks_elapsed = current_block - keeper_info.last_update_block;
+        let total_active_stake = keeper_info.bonded_stake + keeper_info.delegated_stake;
+        keeper_info.cumulative_twas += total_active_stake * blocks_elapsed as i128;
+
+        let token_address = storage::get_protocol_token(&env);
+        let client = soroban_sdk::token::Client::new(&env, &token_address);
+        client.transfer(&keeper, &env.current_contract_address(), &amount);
+
+        keeper_info.bonded_stake += amount;
+        keeper_info.last_update_block = current_block;
+
+        env.storage().instance().set(&key, &keeper_info);
+        EventLogger::log_keeper_bond_increased(&env, keeper, amount);
+    }
+
+    fn start_unbond(env: Env, keeper: Address, amount: i128) {
+        keeper.require_auth();
+
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
         }
 
-        proposal.voter_count = proposal.voter_count.saturating_add(1);
+        let key = DataKey::Keeper(keeper.clone());
+        let mut keeper_info: KeeperInfo = env.storage().instance().get(&key).unwrap_or_else(|| {
+            panic_with_error!(&env, Error::NotRegistered);
+        });
 
-        // Check max voters limit
-        if proposal.voter_count > MAX_VOTERS_PER_PROPOSAL {
-            panic_with_error!(env, Error::GovernanceMaxVotersReached);
+        let current_block = env.ledger().sequence();
+        let blocks_elapsed = current_block - keeper_info.last_update_block;
+        let total_active_stake = keeper_info.bonded_stake + keeper_info.delegated_stake;
+        keeper_info.cumulative_twas += total_active_stake * blocks_elapsed as i128;
+
+        if keeper_info.bonded_stake - amount < MIN_KEEPER_BOND && keeper_info.bonded_stake > MIN_KEEPER_BOND {
+            // If partial unbonding drops below min bond, require full unbond or proper threshold
         }
-    }
 
-    // Save vote record
-    let vote = VoteRecord {
-        voter: voter.clone(),
-        choice,
-        weight: voting_power,
-        timestamp: env.ledger().timestamp(),
-        block: current_block,
-    };
-    save_vote(env, proposal_id, &vote);
-    save_proposal(env, &proposal);
-
-    env.events().publish(
-        (Symbol::new(env, "VoteCast"), proposal_id),
-        (voter.clone(), choice as u32, voting_power),
-    );
-}
-
-/// Compute vote snapshot with cryptographic hash
-pub fn compute_snapshot(env: &Env, proposal_id: u64) -> VoteSnapshot {
-    let proposal = load_proposal(env, proposal_id)
-        .unwrap_or_else(|| panic_with_error!(env, Error::GovernanceProposalNotFound));
-
-    let total_votes = proposal.votes_for + proposal.votes_against + proposal.votes_abstain;
-    
-    // Compute deterministic hash of snapshot data
-    // Format: proposal_id || snapshot_block || total_voting || for || against || abstain
-    let mut hash_input = Bytes::new(env);
-    let proposal_bytes = proposal_id.to_xdr(env);
-    hash_input.extend_from_slice(&proposal_bytes);
-    let block_bytes = proposal.end_block.to_xdr(env);
-    hash_input.extend_from_slice(&block_bytes);
-    let total_bytes = total_votes.to_xdr(env);
-    hash_input.extend_from_slice(&total_bytes);
-    let for_bytes = proposal.votes_for.to_xdr(env);
-    hash_input.extend_from_slice(&for_bytes);
-    let against_bytes = proposal.votes_against.to_xdr(env);
-    hash_input.extend_from_slice(&against_bytes);
-    let abstain_bytes = proposal.votes_abstain.to_xdr(env);
-    hash_input.extend_from_slice(&abstain_bytes);
-
-    let snapshot_hash = env.crypto().sha256(&hash_input).into();
-
-    let snapshot = VoteSnapshot {
-        proposal_id,
-        snapshot_block: proposal.end_block,
-        total_voting_power: total_votes,
-        votes_for: proposal.votes_for,
-        votes_against: proposal.votes_against,
-        votes_abstain: proposal.votes_abstain,
-        snapshot_hash,
-        computed_at: env.ledger().timestamp(),
-    };
-
-    save_snapshot(env, &snapshot);
-
-    env.events().publish(
-        (Symbol::new(env, "SnapshotComputed"), proposal_id),
-        (snapshot_hash, snapshot.total_voting_power),
-    );
-
-    snapshot
-}
-
-/// Check if a proposal has passed
-pub fn check_proposal_status(env: &Env, proposal_id: u64) -> VoteStatus {
-    let proposal = match load_proposal(env, proposal_id) {
-        Some(p) => p,
-        None => return VoteStatus::Cancelled,
-    };
-
-    let current_block = env.ledger().sequence();
-
-    // If already executed, return executed
-    if proposal.status == VoteStatus::Executed {
-        return VoteStatus::Executed;
-    }
-
-    // If voting hasn't ended, still active
-    if current_block < proposal.end_block {
-        return VoteStatus::Active;
-    }
-
-    // Compute total votes for quorum check
-    let total_votes = proposal.votes_for + proposal.votes_against + proposal.votes_abstain;
-
-    // Check quorum
-    if total_votes < proposal.quorum_threshold {
-        return VoteStatus::Rejected; // Quorum not reached
-    }
-
-    // Check approval threshold
-    let approval_percentage = if total_votes > 0 {
-        (proposal.votes_for * 10000) / total_votes
-    } else {
-        0
-    };
-
-    if approval_percentage >= proposal.approval_threshold_bps as i128 {
-        VoteStatus::Passed
-    } else {
-        VoteStatus::Rejected
-    }
-}
-
-/// Execute a passed proposal (keeper callable)
-pub fn execute_proposal(env: &Env, keeper: &Address, proposal_id: u64) -> Result<i128, GovernanceError> {
-    keeper.require_auth();
-
-    let mut proposal = load_proposal(env, proposal_id)
-        .unwrap_or_else(|| panic_with_error!(env, GovernanceError::ProposalNotFound));
-
-    // Check current status
-    let status = check_proposal_status(env, proposal_id);
-    
-    if status != VoteStatus::Passed {
-        if status == VoteStatus::Active {
-            panic_with_error!(env, GovernanceError::VotingEnded); // Voting not ended yet
+        if keeper_info.bonded_stake < amount {
+            panic_with_error!(&env, Error::InsufficientBalance);
         }
-        panic_with_error!(env, GovernanceError::ProposalNotPassed);
-    }
 
-    // Update status to executed
-    proposal.status = VoteStatus::Executed;
-    proposal.executed_at = env.ledger().timestamp();
-    save_proposal(env, &proposal);
+        keeper_info.bonded_stake -= amount;
+        keeper_info.unbonding_amount += amount;
+        keeper_info.unbonding_complete_block = current_block + UNBONDING_TIMELOCK_LEDGERS;
+        keeper_info.last_update_block = current_block;
 
-    // Execute the proposal payload
-    let config = load_config(env);
-    let reward = (proposal.bounty * config.execution_reward_bps as i128) / 10000;
-
-    // Emit execution event
-    env.events().publish(
-        (Symbol::new(env, "ProposalExecuted"), proposal_id),
-        (keeper.clone(), reward),
-    );
-
-    // Return the keeper reward
-    Ok(reward)
-}
-
-/// Get proposal details
-pub fn get_proposal(env: &Env, proposal_id: u64) -> Option<GovernanceProposal> {
-    load_proposal(env, proposal_id)
-}
-
-/// Get vote for a specific voter
-pub fn get_vote(env: &Env, proposal_id: u64, voter: &Address) -> Option<VoteRecord> {
-    load_vote(env, proposal_id, voter)
-}
-
-/// Get vote snapshot
-pub fn get_snapshot(env: &Env, proposal_id: u64) -> Option<VoteSnapshot> {
-    load_snapshot(env, proposal_id)
-}
-
-/// Emergency cancel a proposal (guardian callable)
-pub fn emergency_cancel(env: &Env, guardian: &Address, proposal_id: u64) {
-    guardian.require_auth();
-
-    let config = load_config(env);
-    if config.emergency_guardian != *guardian {
-        panic_with_error!(env, GovernanceError::Unauthorized);
-    }
-
-    let mut proposal = load_proposal(env, proposal_id)
-        .unwrap_or_else(|| panic_with_error!(env, GovernanceError::ProposalNotFound));
-
-    if proposal.status == VoteStatus::Executed {
-        panic_with_error!(env, GovernanceError::ProposalNotFound); // Already executed
-    }
-
-    proposal.status = VoteStatus::Cancelled;
-    save_proposal(env, &proposal);
-
-    env.events().publish(
-        (Symbol::new(env, "ProposalCancelled"), proposal_id),
-        guardian.clone(),
-    );
-}
-
-/// Update governance configuration (admin only)
-pub fn update_config(
-    env: &Env,
-    admin: &Address,
-    voting_period_ledgers: Option<u32>,
-    quorum_bps: Option<u32>,
-    approval_threshold_bps: Option<u32>,
-) {
-    admin.require_auth();
-
-    let mut config = load_config(env);
-    if config.admin != *admin {
-        panic_with_error!(env, GovernanceError::Unauthorized);
-    }
-
-    if let Some(vp) = voting_period_ledgers {
-        if vp < MIN_VOTING_PERIOD_LEDGERS {
-            panic_with_error!(env, GovernanceError::VotingPeriodTooShort);
+        if keeper_info.bonded_stake < MIN_KEEPER_BOND && keeper_info.bonded_stake > 0 {
+            // Enforce minimum bond strictly
+            panic_with_error!(&env, Error::InsufficientBond);
         }
-        config.voting_period_ledgers = vp;
+
+        env.storage().instance().set(&key, &keeper_info);
+        EventLogger::log_keeper_unbond_started(&env, keeper, amount);
     }
 
-    if let Some(q) = quorum_bps {
-        if q > 10000 {
-            panic_with_error!(env, GovernanceError::InvalidThreshold);
+    fn withdraw_unbonded(env: Env, keeper: Address) {
+        keeper.require_auth();
+
+        let key = DataKey::Keeper(keeper.clone());
+        let mut keeper_info: KeeperInfo = env.storage().instance().get(&key).unwrap_or_else(|| {
+            panic_with_error!(&env, Error::NotRegistered);
+        });
+
+        let current_block = env.ledger().sequence();
+        if current_block < keeper_info.unbonding_complete_block {
+            panic_with_error!(&env, Error::TimelockNotExpired);
         }
-        config.quorum_bps = q;
-    }
 
-    if let Some(t) = approval_threshold_bps {
-        if t > 10000 {
-            panic_with_error!(env, GovernanceError::InvalidThreshold);
+        let amount = keeper_info.unbonding_amount;
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
         }
-        config.approval_threshold_bps = t;
+
+        keeper_info.unbonding_amount = 0;
+        keeper_info.unbonding_complete_block = 0;
+
+        env.storage().instance().set(&key, &keeper_info);
+
+        let token_address = storage::get_protocol_token(&env);
+        let client = soroban_sdk::token::Client::new(&env, &token_address);
+        client.transfer(&env.current_contract_address(), &keeper, &amount);
+
+        EventLogger::log_keeper_withdrawn(&env, keeper, amount);
     }
 
-    save_config(env, &config);
+    fn delegate_stake(env: Env, delegator: Address, keeper: Address, amount: i128) {
+        delegator.require_auth();
 
-    env.events().publish(
-        (Symbol::new(env, "GovernanceConfigUpdated"),),
-        (config.voting_period_ledgers, config.quorum_bps, config.approval_threshold_bps),
-    );
-}
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
 
-/// Check if keeper can execute a proposal (helper for automation)
-pub fn can_execute(env: &Env, proposal_id: u64) -> bool {
-    check_proposal_status(env, proposal_id) == VoteStatus::Passed
-}
+        let keeper_key = DataKey::Keeper(keeper.clone());
+        let mut keeper_info: KeeperInfo = env.storage().instance().get(&keeper_key).unwrap_or_else(|| {
+            panic_with_error!(&env, Error::NotRegistered);
+        });
 
-// =============================================================================
-// Tests
-// =============================================================================
+        let current_block = env.ledger().sequence();
+        let blocks_elapsed = current_block - keeper_info.last_update_block;
+        let total_active_stake = keeper_info.bonded_stake + keeper_info.delegated_stake;
+        keeper_info.cumulative_twas += total_active_stake * blocks_elapsed as i128;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+        let delegation_key = DataKey::Delegation(delegator.clone(), keeper.clone());
+        let mut delegation_info: DelegationInfo = env.storage().instance().get(&delegation_key).unwrap_or(DelegationInfo {
+            delegator: delegator.clone(),
+            keeper: keeper.clone(),
+            amount: 0,
+            staked_at_block: current_block,
+        });
 
-    #[test]
-    fn test_default_config() {
-        // Soroban test would go here
-        assert_eq!(DEFAULT_VOTING_PERIOD_LEDGERS, 120);
-        assert_eq!(DEFAULT_QUORUM_BPS, 1000);
-        assert_eq!(DEFAULT_APPROVAL_THRESHOLD_BPS, 5001);
+        let token_address = storage::get_protocol_token(&env);
+        let client = soroban_sdk::token::Client::new(&env, &token_address);
+        client.transfer(&delegator, &env.current_contract_address(), &amount);
+
+        delegation_info.amount += amount;
+        delegation_info.staked_at_block = current_block;
+        keeper_info.delegated_stake += amount;
+        keeper_info.last_update_block = current_block;
+
+        env.storage().instance().set(&delegation_key, &delegation_info);
+        env.storage().instance().set(&keeper_key, &keeper_info);
+
+        EventLogger::log_stake_delegated(&env, delegator, keeper, amount);
     }
 
-    #[test]
-    fn test_vote_threshold_calculation() {
-        // Test that 50% + 1 works correctly
-        let total = 1000i128;
-        let votes_for = 501i128;
-        let percentage = (votes_for * 10000) / total;
-        assert!(percentage >= 5001);
+    fn undelegate_stake(env: Env, delegator: Address, keeper: Address, amount: i128) {
+        delegator.require_auth();
+
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
+        let delegation_key = DataKey::Delegation(delegator.clone(), keeper.clone());
+        let mut delegation_info: DelegationInfo = env.storage().instance().get(&delegation_key).unwrap_or_else(|| {
+            panic_with_error!(&env, Error::NotRegistered);
+        });
+
+        if delegation_info.amount < amount {
+            panic_with_error!(&env, Error::InsufficientBalance);
+        }
+
+        let keeper_key = DataKey::Keeper(keeper.clone());
+        let mut keeper_info: KeeperInfo = env.storage().instance().get(&keeper_key).unwrap_or_else(|| {
+            panic_with_error!(&env, Error::NotRegistered);
+        });
+
+        let current_block = env.ledger().sequence();
+        let blocks_elapsed = current_block - keeper_info.last_update_block;
+        let total_active_stake = keeper_info.bonded_stake + keeper_info.delegated_stake;
+        keeper_info.cumulative_twas += total_active_stake * blocks_elapsed as i128;
+
+        delegation_info.amount -= amount;
+        keeper_info.delegated_stake -= amount;
+        keeper_info.last_update_block = current_block;
+
+        env.storage().instance().set(&delegation_key, &delegation_info);
+        env.storage().instance().set(&keeper_key, &keeper_info);
+
+        let token_address = storage::get_protocol_token(&env);
+        let client = soroban_sdk::token::Client::new(&env, &token_address);
+        client.transfer(&env.current_contract_address(), &delegator, &amount);
+
+        EventLogger::log_stake_undelegated(&env, delegator, keeper, amount);
+    }
+
+    fn get_keeper(env: Env, keeper: Address) -> KeeperInfo {
+        let key = DataKey::Keeper(keeper);
+        env.storage().instance().get(&key).unwrap_or_else(|| {
+            panic_with_error!(&env, Error::NotRegistered);
+        })
+    }
+
+    fn get_execution_priority(env: Env, keeper: Address) -> i128 {
+        let key = DataKey::Keeper(keeper);
+        let keeper_info: KeeperInfo = env.storage().instance().get(&key).unwrap_or_else(|| {
+            panic_with_error!(&env, Error::NotRegistered);
+        });
+
+        let current_block = env.ledger().sequence();
+        let blocks_elapsed = current_block - keeper_info.last_update_block;
+        let total_active_stake = keeper_info.bonded_stake + keeper_info.delegated_stake;
+        let current_twas = keeper_info.cumulative_twas + (total_active_stake * blocks_elapsed as i128);
+
+        // Priority calculation: TWAS weighted by total stake power
+        current_twas * total_active_stake
+    }
+
+    fn verify_keeper(env: Env, keeper: Address) -> bool {
+        let key = DataKey::Keeper(keeper);
+        if let Some(keeper_info) = env.storage().instance().get::<DataKey, KeeperInfo>(&key) {
+            keeper_info.bonded_stake >= MIN_KEEPER_BOND
+        } else {
+            false
+        }
     }
 }
