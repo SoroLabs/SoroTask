@@ -383,7 +383,9 @@ class ConsulConfigService {
 let globalActiveConfig = null;
 
 function loadConfig() {
-  const signerType = (process.env.SIGNER_TYPE || 'local').toLowerCase();
+  const signerType = (
+    process.env.SIGNER_TYPE || process.env.KMS_PROVIDER || 'local'
+  ).toLowerCase();
 
   const required = [
     'SOROBAN_RPC_URL',
@@ -535,6 +537,13 @@ function loadConfig() {
     vaultKeyName: process.env.VAULT_KEY_NAME || null,
     vaultNamespace: process.env.VAULTNAMESPACE || null,
     kmsAuditLogEnabled: parseBoolean(process.env.KMS_AUDIT_LOG_ENABLED, true),
+    kmsProvider: process.env.KMS_PROVIDER
+      || (signerType.startsWith('aws-kms') ? 'aws-kms'
+        : (signerType.startsWith('gcp-kms') ? 'gcp-kms' : null)),
+    kmsKeyIds: parseList(process.env.KMS_KEY_IDS),
+    kmsSignLatencyBudgetMs: parseInteger(process.env.KMS_SIGN_LATENCY_BUDGET_MS, 50),
+    kmsSignTimeoutMs: parseInteger(process.env.KMS_SIGN_TIMEOUT_MS, 3000),
+    kmsEnforceLatencyBudget: parseBoolean(process.env.KMS_ENFORCE_LATENCY_BUDGET, false),
     profitabilityGate: {
       enabled: parseBoolean(process.env.PROFITABILITY_GATE_ENABLED, false),
       minNetProfitStroops: parseInteger(process.env.PROFITABILITY_MIN_NET_PROFIT_STROOPS, 0),
