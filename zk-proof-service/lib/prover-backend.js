@@ -40,6 +40,11 @@ const KNOWN_BACKENDS = Object.freeze(['cpu', 'rapidsnark', 'cuda', 'metal', 'aut
 const GPU_BACKENDS = Object.freeze(['cuda', 'metal']);
 const RAPIDSNARK_BINARY = 'rapidsnark';
 
+// Verified-availability check for the native prover: a PATH hit or a configured
+// path only counts if the binary actually responds to --version. Otherwise the
+// selection layer would mark a broken binary as "accelerated".
+const RAPIDSNARK_PROBE_TIMEOUT_MS = 3000;
+
 /**
  * Safe existence check for a binary on PATH (e.g. nvidia-smi). Never throws.
  * @param {string} binary

@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 
 const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
+const DEFAULT_MAX_MEMORY_ENTRIES = Number(process.env.ZK_PROOF_CACHE_MAX_ENTRIES) || 10000;
 
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -29,6 +30,7 @@ function createProofCacheKey(circuitId, publicInputs, witness, circuitArtifactHa
 class ProofCache {
   constructor(options = {}) {
     this.ttlSeconds = options.ttlSeconds ?? (Number(process.env.ZK_PROOF_CACHE_TTL_SECONDS) || DEFAULT_TTL_SECONDS);
+    this.maxMemoryEntries = options.maxMemoryEntries ?? DEFAULT_MAX_MEMORY_ENTRIES;
     this.redis = options.redis ?? null;
     this.memory = new Map();
     if (!this.redis && options.redisUrl) {
@@ -38,15 +40,31 @@ class ProofCache {
     }
   }
 
+  _evictIfNeeded() {
+    // Drop expired entries first, then oldest (Map preserves insertion order).
+    if (this.memory.size < this.maxMemoryEntries) return;
+    const now = Date.now();
+    for (const [key, entry] of this.memory) {
+      if (entry.expiresAt <= now) this.memory.delete(key);
+    }
+    while (this.memory.size >= this.maxMemoryEntries) {
+      const oldestKey = this.memory.keys().next().value;
+      this.memory.delete(oldestKey);
+    }
+  }
+
   async get(key) {
-    const value = this.redis ? await this.redis.get(key) : this.memory.get(key);
-    if (!value) return null;
-    if (this.redis) return JSON.parse(value);
-    if (value.expiresAt <= Date.now()) {
+    if (this.redis) {
+      const value = await this.redis.get(key);
+      return value ? JSON.parse(value) : null;
+    }
+    const entry = this.memory.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
       this.memory.delete(key);
       return null;
     }
-    return value.proof;
+    return entry.proof;
   }
 
   async set(key, proof) {
@@ -54,6 +72,8 @@ class ProofCache {
       await this.redis.set(key, JSON.stringify(proof), 'EX', this.ttlSeconds);
       return;
     }
+    if (this.memory.has(key)) this.memory.delete(key);
+    this._evictIfNeeded();
     this.memory.set(key, { proof, expiresAt: Date.now() + this.ttlSeconds * 1000 });
   }
 

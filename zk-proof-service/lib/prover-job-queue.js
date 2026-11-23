@@ -3,10 +3,12 @@
 const os = require('os');
 
 const CPU_CONCURRENCY = Math.max(1, os.cpus().length - 1);
+const DEFAULT_MAX_LOCAL_QUEUE = Number(process.env.ZK_PROVER_MAX_QUEUE) || 1000;
 
 class ProverJobQueue {
   constructor(options = {}) {
     this.concurrency = options.concurrency ?? CPU_CONCURRENCY;
+    this.maxQueueLength = options.maxQueueLength ?? DEFAULT_MAX_LOCAL_QUEUE;
     this.processJob = options.processJob;
     this.onProgress = options.onProgress ?? (() => {});
     this.onComplete = options.onComplete ?? (() => {});
@@ -41,6 +43,19 @@ class ProverJobQueue {
     }
   }
 
+  /**
+   * Current backlog metrics, used for autoscaling signals (e.g. KEDA via
+   * Prometheus gauges) and admission control.
+   */
+  stats() {
+    return {
+      pending: this.localQueue.length,
+      active: this.localActive,
+      concurrency: this.concurrency,
+      maxQueueLength: this.maxQueueLength,
+    };
+  }
+
   async add(id, data, options = {}) {
     // #1210 — job prioritization: lower `priority` value = more urgent
     // (BullMQ semantics, 0 is the default). Time-sensitive tasks (e.g. health
@@ -59,6 +74,13 @@ class ProverJobQueue {
         },
       );
       return;
+    }
+
+    // Admission control: refuse rather than exhaust memory under bursts.
+    if (this.localQueue.length >= this.maxQueueLength) {
+      const error = new Error('Prover queue is full');
+      error.code = 'QUEUE_FULL';
+      throw error;
     }
 
     this._insertLocal({ id, data, priority });

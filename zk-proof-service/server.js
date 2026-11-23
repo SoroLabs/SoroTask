@@ -36,6 +36,10 @@ const SERVICE_VERSION = '1.0.0';
 // Queue-depth safety threshold: when the number of in-flight proof requests
 // exceeds this, /health reports 503 so an orchestrator can shed load / scale.
 const DEFAULT_QUEUE_DEPTH_THRESHOLD = 50;
+// KEDA autoscaling bounds for the proof worker pool (BE-FINAL-09).
+const KEDA_MIN_WORKERS = Number(process.env.ZK_KEDA_MIN_WORKERS) || 2;
+const KEDA_MAX_WORKERS = Number(process.env.ZK_KEDA_MAX_WORKERS) || 20;
+const DEFAULT_MEMORY_LIMIT_MB = Number(process.env.ZK_MEMORY_LIMIT_MB) || 2048;
 
 const problem = (res, status, title, detail, errors) => res.status(status).type('application/problem+json').json({
   type: `https://sorotask.com/problems/${status}`,
@@ -59,6 +63,43 @@ function createApp(zkService, options = {}) {
   // In-flight proof requests -- the real concurrency signal / "queue depth"
   // for this service (there is no separate backlog queue; see lib/metrics.js).
   let inFlight = 0;
+  // Pending proof queue length exposed for KEDA scaling decisions.
+  const scalingState = { minWorkers: KEDA_MIN_WORKERS, maxWorkers: KEDA_MAX_WORKERS, desiredWorkers: KEDA_MIN_WORKERS };
+
+  // Memory guard: reject new proof work when RSS exceeds the configured limit.
+  function assertMemoryHeadroom() {
+    const rssMb = process.memoryUsage().rss / (1024 * 1024);
+    if (rssMb > DEFAULT_MEMORY_LIMIT_MB) {
+      const err = new Error('Prover memory limit exceeded; shedding load');
+      err.code = 'PROVER_MEMORY_LIMIT';
+      err.status = 503;
+      throw err;
+    }
+  }
+
+  // Recompute the desired worker count from the pending queue depth (KEDA signal).
+  function computeDesiredWorkers() {
+    const pool = typeof zkService?.getWorkerPoolStatus === 'function'
+      ? zkService.getWorkerPoolStatus()
+      : { queueDepth: inFlight };
+    const pending = Math.max(pool.queueDepth || 0, inFlight);
+    const perWorker = Math.max(1, Math.ceil(pending / scalingState.minWorkers));
+    const desired = Math.min(scalingState.maxWorkers, Math.max(scalingState.minWorkers, perWorker));
+    scalingState.desiredWorkers = desired;
+    return desired;
+  }
+
+  // KEDA external-scaler endpoint: exposes pending queue length and target replicas.
+  app.get('/keda/scale', authenticate, (_req, res) => {
+    const desired = computeDesiredWorkers();
+    res.json({
+      pendingJobs: inFlight,
+      minWorkers: scalingState.minWorkers,
+      maxWorkers: scalingState.maxWorkers,
+      desiredWorkers: desired,
+      memoryLimitMb: DEFAULT_MEMORY_LIMIT_MB,
+    });
+  });
 
   const wasmSandboxPool = options.wasmSandboxPool ?? {
     poolSize: Number(process.env.WASM_SANDBOX_POOL_SIZE) || 4,
@@ -229,6 +270,7 @@ function createApp(zkService, options = {}) {
 
     let { taskId, circuitId, taskCondition, clientData } = req.body;
     let witnessBuffer = null;
+    try { assertMemoryHeadroom(); } catch (e) { return sendError(res, 503, 'PROVER_MEMORY_LIMIT', e.message); }
 
     // Handle ECIES Encrypted Witness Transport if encryptedWitness is provided
     if (clientData.encryptedWitness) {

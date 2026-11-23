@@ -13,7 +13,7 @@
     "prepare": "husky || true",
     "check:conflict-markers": "./scripts/check-conflict-markers.sh",
     "bundle:audit": "tsx scripts/bundle-audit.ts",
-    "build": "npm run build --workspaces --if-present",
+    "build": "node init && npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present"
   },
@@ -23,12 +23,5 @@
     "lint-staged": "^17.5.1",
     "prettier": "^3.9.10",
     "tsx": "npm:tsx@latest"
-  },
-  "workspaces": [
-    "frontend",
-    "keeper",
-    "indexer",
-    "zk-proof-service",
-    "backend-abi-registry"
-  ]
+  }
 }

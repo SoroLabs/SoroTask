@@ -24,8 +24,8 @@ spec:
     name: {{ include "sorotask-keeper.fullname" . }}
   pollingInterval: {{ .Values.keda.pollingInterval }}
   cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
-  minReplicaCount: {{ .Values.keda.minReplicaCount }}
-  maxReplicaCount: {{ .Values.keda.maxReplicaCount }}
+  minReplicaCount: {{ .Values.keda.minReplicaCount | default 2 }}
+  maxReplicaCount: {{ .Values.keda.maxReplicaCount | default 20 }}
   advanced:
     restoreToOriginalReplicaCount: false
     horizontalPodAutoscalerConfig:
@@ -48,6 +48,7 @@ spec:
         address: {{ .Values.keda.redis.address | quote }}
         listName: {{ .Values.keda.redis.listName | quote }}
         listLength: {{ .Values.keda.redis.targetListLength | quote }}
+        activationListLength: {{ .Values.keda.redis.activationListLength | default 1 | quote }}
       authenticationRef:
         name: {{ include "sorotask-keeper.fullname" . }}-redis-auth
     - type: prometheus
