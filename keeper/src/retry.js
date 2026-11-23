@@ -193,109 +193,123 @@ const DEFAULT_OPTIONS = {
 /**
  * Generic async retry wrapper with classification-driven behavior.
  *
+ * Hardened for chaos conditions: every failure path is funneled through
+ * the promise chain (no stray rejections), callback errors are isolated so
+ * a faulty observer cannot corrupt retry state, and the loop guarantees a
+ * structured terminal result.
+ *
  * @param {Function} fn
  * @param {Object} options
  * @returns {Promise<Object>}
  */
 async function withRetry(fn, options = {}) {
   const opts = { ...DEFAULT_OPTIONS, ...options };
+  const maxRetries = Math.max(0, Number(opts.maxRetries) || 0);
   let lastError;
   let attempt = 0;
 
-  while (attempt <= opts.maxRetries) {
+  const safeInvoke = (cb, ...args) => {
+    if (typeof cb !== "function") return;
     try {
-      const result = await fn();
+      cb(...args);
+    } catch (_observerError) {
+      // Observer failures must never alter retry control flow.
+    }
+  };
+
+  const buildFailure = (error, classification, context, maxRetriesExceeded) => ({
+    success: false,
+    error,
+    attempts: attempt + 1,
+    retries: attempt,
+    classification,
+    context,
+    maxRetriesExceeded,
+  });
+
+  while (attempt <= maxRetries) {
+    let outcome;
+    try {
+      outcome = { ok: true, value: await fn() };
+    } catch (error) {
+      outcome = { ok: false, error };
+    }
+
+    if (outcome.ok) {
       return {
         success: true,
-        result,
+        result: outcome.value,
         attempts: attempt + 1,
         retries: attempt,
       };
-    } catch (error) {
-      lastError = error;
-      const classification = classifyError(error);
-      const context = {
+    }
+
+    lastError = outcome.error;
+    const error = lastError;
+    let classification;
+    let context;
+    try {
+      classification = classifyError(error);
+      context = {
         ...toLogPayload(error, { classification }),
         code: extractErrorCode(error),
         classification,
         message: error?.message || String(error),
       };
-
-      if (classification === ErrorClassification.DUPLICATE) {
-        if (opts.onDuplicate) {
-          opts.onDuplicate(context);
-        }
-        return {
-          success: true,
-          result: null,
-          attempts: attempt + 1,
-          retries: attempt,
-          duplicate: true,
-          classification,
-        };
-      }
-
-      if (classification === ErrorClassification.NON_RETRYABLE) {
-        throw {
-          success: false,
-          error,
-          attempts: attempt + 1,
-          retries: attempt,
-          classification,
-          context,
-          maxRetriesExceeded: false,
-        };
-      }
-
-      if (
-        classification === ErrorClassification.UNKNOWN &&
-        !opts.retryUnknown
-      ) {
-        throw {
-          success: false,
-          error,
-          attempts: attempt + 1,
-          retries: attempt,
-          classification,
-          context,
-          maxRetriesExceeded: false,
-        };
-      }
-
-      if (attempt >= opts.maxRetries) {
-        if (opts.onMaxRetries) {
-          opts.onMaxRetries(error, attempt + 1, context);
-        }
-        throw {
-          success: false,
-          error,
-          attempts: attempt + 1,
-          retries: attempt,
-          classification,
-          context,
-          maxRetriesExceeded: true,
-        };
-      }
-
-      const delay = calculateDelay(attempt, opts.baseDelayMs, opts.maxDelayMs);
-      if (opts.onRetry) {
-        opts.onRetry(error, attempt + 1, delay, context);
-      }
-      await sleep(delay);
-      attempt++;
+    } catch (_classifyError) {
+      classification = ErrorClassification.UNKNOWN;
+      context = {
+        code: null,
+        classification,
+        message: String(error),
+      };
     }
+
+    if (classification === ErrorClassification.DUPLICATE) {
+      safeInvoke(opts.onDuplicate, context);
+      return {
+        success: true,
+        result: null,
+        attempts: attempt + 1,
+        retries: attempt,
+        duplicate: true,
+        classification,
+      };
+    }
+
+    if (classification === ErrorClassification.NON_RETRYABLE) {
+      throw buildFailure(error, classification, context, false);
+    }
+
+    if (
+      classification === ErrorClassification.UNKNOWN &&
+      !opts.retryUnknown
+    ) {
+      throw buildFailure(error, classification, context, false);
+    }
+
+    if (attempt >= maxRetries) {
+      safeInvoke(opts.onMaxRetries, error, attempt + 1, context);
+      throw buildFailure(error, classification, context, true);
+    }
+
+    const delay = calculateDelay(attempt, opts.baseDelayMs, opts.maxDelayMs);
+    safeInvoke(opts.onRetry, error, attempt + 1, delay, context);
+    await sleep(delay);
+    attempt++;
   }
 
+  const finalClassification = classifyError(lastError);
   throw {
     success: false,
     error: lastError,
     attempts: attempt + 1,
     retries: attempt,
-    classification: classifyError(lastError),
+    classification: finalClassification,
     maxRetriesExceeded: true,
     context: {
       code: extractErrorCode(lastError),
-      classification: classifyError(lastError),
+      classification: finalClassification,
       message: lastError?.message || String(lastError),
     },
   };

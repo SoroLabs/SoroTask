@@ -3,6 +3,7 @@
 /**
  * Chaos Testing Script for SoroTask Keeper
  * Command-line tool for running chaos tests and generating reports.
+ * Includes automated chaos injection, network partition simulation, and leader termination.
  */
 
 const { ChaosTestHarness } = require('../src/chaosTestHarness');
@@ -116,6 +117,36 @@ const availableScenarios = [
       durationMs: 10000,
     },
   },
+  {
+    id: 'packet_drop',
+    name: 'Packet Drop (50%)',
+    description: 'Drop 50% of RPC packets to simulate lossy network links',
+    config: {
+      packetDropRate: 0.5,
+      durationMs: 15000,
+    },
+  },
+  {
+    id: 'latency_spike_10s',
+    name: '10s RPC Latency Spike',
+    description: 'Inject 10-second latency spikes on RPC calls',
+    config: {
+      latencyMs: 10000,
+      latencyJitterMs: 500,
+      latencyProbability: 0.5,
+      durationMs: 30000,
+    },
+  },
+  {
+    id: 'leader_kill',
+    name: 'Random Leader Termination',
+    description: 'Randomly terminate leader node during the run and verify re-election',
+    config: {
+      killLeaderNode: true,
+      electionTimeoutMs: 3000,
+      durationMs: 15000,
+    },
+  },
 ];
 
 // Help function
@@ -134,6 +165,7 @@ function showHelp() {
   console.log('\nExamples:');
   console.log('  node scripts/chaos-test.js run');
   console.log('  node scripts/chaos-test.js run --scenario=latency,ratelimit');
+  console.log('  node scripts/chaos-test.js run --scenario=packet_drop,leader_kill');
   console.log('  node scripts/chaos-test.js run --duration=10000 --output=json --file=report.json');
   console.log('  node scripts/chaos-test.js list');
   console.log('  node scripts/chaos-test.js single latency');
@@ -215,6 +247,9 @@ async function runTests(options) {
   });
   
   // Run tests
+  process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection captured by chaos harness:', reason);
+  });
   const results = await harness.runAllScenarios();
   
   // Generate report
