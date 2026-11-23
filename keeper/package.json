@@ -4,8 +4,8 @@
   "description": "SoroTask Keeper - Production-grade task execution service for Soroban smart contracts",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js | pino-pretty",
+    "start": "node init && node index.js",
+    "dev": "node init && node index.js | pino-pretty",
     "dry-run": "node index.js --dry-run",
     "mock-rpc": "node mock-rpc.js",
     "test": "jest",

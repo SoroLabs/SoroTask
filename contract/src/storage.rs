@@ -4,6 +4,8 @@ use soroban_sdk::{Address, Bytes, BytesN, Env, Symbol, Val, Vec};
 use crate::DataKey;
 use crate::TaskConfig;
 
+pub const LEDGER_HASH_RING_SIZE: u32 = 10_000;
+
 /// Current on-chain storage schema version (incremented on breaking layout changes).
 pub const STORAGE_SCHEMA_VERSION: u32 = 3;
 
@@ -558,4 +560,87 @@ pub fn booster_sponsors(env: &Env, task_id: u64) -> Vec<Address> {
         .persistent()
         .get(&BoosterKey::Sponsors(task_id))
         .unwrap_or_else(|| Vec::new(env))
+}
+
+/// -----------------------------------------------------------------------------
+/// Cross-ledger state snapshot ring buffer (SC-FINAL-42).
+/// -----------------------------------------------------------------------------
+
+/// Storage keys for the rolling historical state-root ring buffer.
+#[derive(Clone, Debug)]
+#[soroban_sdk::contracttype]
+pub enum SnapshotKey {
+    /// Root hash recorded for a given ring slot.
+    Root(u32),
+    /// Ledger sequence stored in a given ring slot.
+    Ledger(u32),
+    /// Monotonic write cursor (next slot index).
+    Cursor,
+}
+
+/// Record a state root for the current ledger into the circular buffer.
+/// Overwrites the oldest slot once `LEDGER_HASH_RING_SIZE` entries exist,
+/// pruning expired snapshots automatically.
+pub fn record_state_snapshot(env: &Env, root: &BytesN<32>) {
+    let persistent = env.storage().persistent();
+    let cursor: u32 = persistent.get(&SnapshotKey::Cursor).unwrap_or(0);
+    let slot = cursor % LEDGER_HASH_RING_SIZE;
+    persistent.set(&SnapshotKey::Root(slot), root);
+    persistent.set(&SnapshotKey::Ledger(slot), &env.ledger().sequence());
+    persistent.set(&SnapshotKey::Cursor, &cursor.wrapping_add(1));
+}
+
+/// Return the recorded state root for `ledger`, if it is still retained
+/// within the ring buffer window. Lookup scans slots, bounded by ring size.
+pub fn historical_state_root(env: &Env, ledger: u32) -> Option<BytesN<32>> {
+    let persistent = env.storage().persistent();
+    let cursor: u32 = persistent.get(&SnapshotKey::Cursor).unwrap_or(0);
+    if cursor == 0 {
+        return None;
+    }
+    let filled = if cursor < LEDGER_HASH_RING_SIZE {
+        cursor
+    } else {
+        LEDGER_HASH_RING_SIZE
+    };
+    let mut i = 0u32;
+    while i < filled {
+        if let Some(stored) = persistent.get::<SnapshotKey, u32>(&SnapshotKey::Ledger(i)) {
+            if stored == ledger {
+                return persistent.get(&SnapshotKey::Root(i));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Verify a Merkle inclusion proof of `leaf` against the snapshot recorded
+/// for `ledger`. `proof` is a list of sibling hashes from leaf to root.
+pub fn verify_snapshot_inclusion(
+    env: &Env,
+    ledger: u32,
+    leaf: &BytesN<32>,
+    index: u32,
+    proof: &Vec<BytesN<32>>,
+) -> bool {
+    let root = match historical_state_root(env, ledger) {
+        Some(r) => r,
+        None => return false,
+    };
+    let mut acc: BytesN<32> = leaf.clone();
+    let mut idx = index;
+    for sibling in proof.iter() {
+        let mut buf = Bytes::new(env);
+        if idx % 2 == 0 {
+            buf.append(&Bytes::from_array(env, &acc.to_array()));
+            buf.append(&Bytes::from_array(env, &sibling.to_array()));
+        } else {
+            buf.append(&Bytes::from_array(env, &sibling.to_array()));
+            buf.append(&Bytes::from_array(env, &acc.to_array()));
+        }
+        acc = env.crypto().sha256(&buf).into();
+        idx /= 2;
+    }
+    acc == root
 }

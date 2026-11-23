@@ -151,18 +151,29 @@ fn verify_merkle_proof(
     root: &BytesN<32>,
     proof: &MerkleProof,
 ) -> bool {
-    // Simplified verification - in production, implement full Merkle tree verification
-    // by hashing the leaf with each proof element along the path
-    
-    // For now, we verify the proof structure is valid
-    if proof.proof.len() == 0 && *root == proof.leaf {
-        return true;
+    if proof.proof.len() > MERKLE_TREE_DEPTH {
+        return false;
     }
-    
-    // Placeholder: implement full Merkle verification here
-    // Each step: hash = sha256(left || right) or sha256(right || left) depending on path
-    
-    true
+
+    let mut current: BytesN<32> = proof.leaf.clone();
+    let mut index = proof.leaf_index;
+    let mut i = 0;
+    while i < proof.proof.len() {
+        let sibling = proof.proof.get(i).unwrap();
+        let mut data = Bytes::new(env);
+        if index & 1 == 0 {
+            data.append(&Bytes::from_slice(env, &current.to_array()));
+            data.append(&Bytes::from_slice(env, &sibling.to_array()));
+        } else {
+            data.append(&Bytes::from_slice(env, &sibling.to_array()));
+            data.append(&Bytes::from_slice(env, &current.to_array()));
+        }
+        current = env.crypto().sha256(&data).to_bytes();
+        index >>= 1;
+        i += 1;
+    }
+
+    current == *root
 }
 
 /// Opens a new multi-party Merkle-enabled state channel.
