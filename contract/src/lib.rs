@@ -52,6 +52,9 @@ pub use gas_refund::{
     get_task_dust, get_gas_consumption_record, update_gas_price_config, estimate_refund,
 };
 pub use storage::{ExecutionLog, TaskMeta, TaskPayload, TaskStats};
+pub use task::{
+    permit_digest, PermitRegistration, SignatureScheme, PERMIT_DOMAIN,
+};
 pub use upgrade::{UpgradeProposal, UPGRADE_TIMELOCK_SECONDS};
 pub use governance::{
     GovernanceConfig, GovernanceProposal, VoteChoice, VoteRecord, VoteSnapshot, VoteStatus,
@@ -255,6 +258,12 @@ pub enum Error {
     // Congestion surcharge errors (SC-PROD-29)
     InvalidSurchargeConfig = 960,
     InvalidInclusionFee = 961,
+    // Gasless permit registration errors (SC-FINAL-35)
+    InvalidPermitSignature = 970,
+    PermitExpired = 971,
+    InvalidPermitNonce = 972,
+    UnsupportedSignatureScheme = 973,
+    Secp256k1KeyNotLinked = 974,
 }
 
 #[contracttype]
@@ -1245,6 +1254,10 @@ pub enum DataKey {
     /// Existence marker keyed by `task_fingerprint(creator, target, function, args, interval)`,
     /// used to reject duplicate registrations. See `register`/`cancel_task`.
     TaskFingerprint(BytesN<32>),
+    /// Next expected sequential permit nonce for a creator (SC-FINAL-35).
+    PermitNonce(Address),
+    /// SHA-256 commitment of the SEC1 secp256k1 public key linked to a creator.
+    PermitSecp256k1Key(Address),
     Portfolio(u64),
     PortfolioTasks(u64),
     PortfolioCounter,
@@ -3094,30 +3107,38 @@ impl SoroTaskContract {
     /// - IDs reset on contract upgrade - counter is persistent across upgrades
     /// - Counter value equals number of live tasks - cancelled tasks leave gaps
     /// - IDs are stable across contract re-deployments - fresh deployment resets counter to 0
-    pub fn register(env: Env, mut config: TaskConfig) -> u64 {
-        enter_security_guard(&env);
+    pub fn register(env: Env, config: TaskConfig) -> u64 {
+        Self::register_inner(&env, config, true)
+    }
 
-        // Ensure the creator has authorized the registration
-        config.creator.require_auth();
+    /// Shared registration path for direct creator calls and verified permits.
+    /// Both flows get byte-for-byte identical validation, escrow, storage and
+    /// event behavior; only the authority source differs.
+    fn register_inner(env: &Env, mut config: TaskConfig, require_creator_auth: bool) -> u64 {
+        enter_security_guard(env);
+
+        if require_creator_auth {
+            config.creator.require_auth();
+        }
 
         // Validate the task interval (panics before counter increment, so no ID is wasted)
         if config.interval == 0 {
-            panic_with_error!(&env, Error::InvalidInterval);
+            panic_with_error!(env, Error::InvalidInterval);
         }
 
-        if config.gas_balance > 0 && config.gas_balance < get_min_bounty(&env) {
-            panic_with_error!(&env, Error::BountyBelowMinimum);
+        if config.gas_balance > 0 && config.gas_balance < get_min_bounty(env) {
+            panic_with_error!(env, Error::BountyBelowMinimum);
         }
 
         // Validate payload arguments before storage
-        if let Err(e) = Self::validate_args(&env, &config.args) {
-            panic_with_error!(&env, e);
+        if let Err(e) = Self::validate_args(env, &config.args) {
+            panic_with_error!(env, e);
         }
 
         // Reject an exact duplicate of an existing task from the same creator
         // (same target, function, args, and interval) before allocating an ID.
         let fingerprint = task_fingerprint(
-            &env,
+            env,
             &config.creator,
             &config.target,
             &config.function,
@@ -3126,7 +3147,7 @@ impl SoroTaskContract {
         );
         let fingerprint_key = DataKey::TaskFingerprint(fingerprint.clone());
         if env.storage().persistent().has(&fingerprint_key) {
-            panic_with_error!(&env, Error::DuplicateTask);
+            panic_with_error!(env, Error::DuplicateTask);
         }
         env.storage().persistent().set(&fingerprint_key, &true);
 
@@ -3140,7 +3161,7 @@ impl SoroTaskContract {
         // `blocked_by` at registration time would bypass those checks entirely
         // (e.g. a self-reference or a cycle among not-yet-existing task IDs), so
         // it is ignored here (Issue #776).
-        config.blocked_by = Vec::new(&env);
+        config.blocked_by = Vec::new(env);
 
         // Allocate next sequential ID:
         // 1. Fetch current counter (defaults to 0 if first registration)
@@ -3155,24 +3176,24 @@ impl SoroTaskContract {
 
         // Consistency check: Ensure the new ID doesn't already have a task stored.
         // This guards against counter corruption or storage inconsistencies.
-        if task_exists(&env, counter) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
+        if task_exists(env, counter) {
+            panic_with_error!(env, Error::AlreadyInitialized);
         }
 
         env.storage().persistent().set(&DataKey::Counter, &counter);
 
-        save_task(&env, counter, &config);
+        save_task(env, counter, &config);
 
         // Lock initial gas balance as escrow and transfer tokens if token is initialized
         if config.gas_balance > 0 {
-            gas::EscrowManager::lock_escrow(&env, counter, config.gas_balance);
+            gas::EscrowManager::lock_escrow(env, counter, config.gas_balance);
             // Transfer tokens from creator to contract if token is initialized
             if let Some(token_address) = env
                 .storage()
                 .instance()
                 .get::<DataKey, Address>(&DataKey::Token)
             {
-                let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+                let token_client = soroban_sdk::token::Client::new(env, &token_address);
                 token_client.transfer(
                     &config.creator,
                     &env.current_contract_address(),
@@ -3191,19 +3212,19 @@ impl SoroTaskContract {
         );
 
         // Add to the active task index for efficient monitoring.
-        add_active_task_id(&env, counter);
+        add_active_task_id(env, counter);
 
         // Emit TaskRegistered event with ID and creator address
         env.events().publish(
             (
-                Symbol::new(&env, "TaskRegistered"),
-                Symbol::new(&env, "v1"),
+                Symbol::new(env, "TaskRegistered"),
+                Symbol::new(env, "v1"),
                 counter,
             ),
             config.creator.clone(),
         );
 
-        exit_security_guard(&env);
+        exit_security_guard(env);
         counter
     }
 
@@ -10968,67 +10989,24 @@ impl SoroTaskContract {
     // Off-Chain Signed Permit Execution (ERC-2612 Style) (Issue #890)
     // ============================================================================
 
-    /// Gasless task registration using Ed25519 off-chain signed permit.
+    /// Registers a task from an off-chain signed [`PermitRegistration`].
+    ///
+    /// Anyone may submit the transaction (typically a dApp relayer), but the
+    /// creator's signature is cryptographically checked against their address
+    /// and a strictly increasing per-creator nonce is consumed. The task is
+    /// then created through the same internal path as `register`, so validation,
+    /// escrow, counter handling, status and active-task indexing are identical.
     pub fn register_with_permit(
         env: Env,
+        permit: PermitRegistration,
         signature: BytesN<64>,
-        task_config: TaskConfig,
-        deadline: u64,
-        public_key: BytesN<32>,
+        recovery_id: u32,
     ) -> u64 {
-        enter_security_guard(&env);
+        task::verify_permit_signature(&env, &permit, &signature, recovery_id);
+        task::consume_permit_nonce(&env, &permit.creator, permit.nonce);
 
-        if env.ledger().timestamp() > deadline {
-            panic_with_error!(&env, Error::OracleTimeout);
-        }
-
-        let mut payload = Bytes::new(&env);
-        payload.append(&task_config.creator.clone().to_xdr(&env));
-        payload.append(&task_config.target.clone().to_xdr(&env));
-        payload.append(&task_config.function.clone().to_xdr(&env));
-        payload.append(&task_config.interval.to_xdr(&env));
-        payload.append(&deadline.to_xdr(&env));
-
-        env.crypto()
-            .ed25519_verify(&public_key, &payload, &signature);
-
-        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
-        let task_id = counter + 1;
-
-        if task_config.interval == 0 {
-            panic_with_error!(&env, Error::InvalidInterval);
-        }
-
-        let fp = task_fingerprint(
-            &env,
-            &task_config.creator,
-            &task_config.target,
-            &task_config.function,
-            &task_config.args,
-            task_config.interval as u64,
-        );
-        let fp_key = DataKey::TaskFingerprint(fp);
-        if env.storage().persistent().has(&fp_key) {
-            panic_with_error!(&env, Error::DuplicateTask);
-        }
-        env.storage().persistent().set(&fp_key, &task_id);
-
-        save_task(&env, task_id, &task_config);
-        env.storage().persistent().set(
-            &DataKey::TaskStatus(task_id),
-            &TaskExecutionStatus {
-                outcome: ExecutionOutcome::NeverRun,
-                completed_at: 0,
-                run_count: 0,
-            },
-        );
-        env.storage().instance().set(&DataKey::Counter, &task_id);
-
-        let mut active_tasks = get_active_task_ids(&env);
-        active_tasks.push_back(task_id);
-        env.storage()
-            .instance()
-            .set(&DataKey::ActiveTasks, &active_tasks);
+        let config = task::permit_to_task_config(&env, &permit);
+        let task_id = Self::register_inner(&env, config, false);
 
         env.events().publish(
             (
@@ -11036,11 +11014,42 @@ impl SoroTaskContract {
                 Symbol::new(&env, "v1"),
                 task_id,
             ),
-            task_config.creator.clone(),
+            (permit.creator.clone(), permit.scheme, permit.nonce),
         );
-
-        exit_security_guard(&env);
         task_id
+    }
+
+    /// One-time creator-authorized binding for secp256k1 permit signing keys.
+    pub fn link_permit_secp256k1_key(
+        env: Env,
+        creator: Address,
+        public_key: BytesN<65>,
+    ) -> BytesN<32> {
+        let commitment = task::link_secp256k1_key(&env, &creator, &public_key);
+        env.events().publish(
+            (
+                Symbol::new(&env, "PermitKeyLinked"),
+                Symbol::new(&env, "secp256k1"),
+                creator,
+            ),
+            commitment.clone(),
+        );
+        commitment
+    }
+
+    /// Returns the next expected sequential permit nonce for `creator`.
+    pub fn get_permit_nonce(env: Env, creator: Address) -> u64 {
+        task::get_permit_nonce(&env, &creator)
+    }
+
+    /// Returns the SHA-256 commitment of a linked secp256k1 public key.
+    pub fn get_permit_secp256k1_key(env: Env, creator: Address) -> Option<BytesN<32>> {
+        task::get_secp256k1_key(&env, &creator)
+    }
+
+    /// Returns the canonical digest a relayer must sign for `permit`.
+    pub fn get_permit_digest(env: Env, permit: PermitRegistration) -> BytesN<32> {
+        task::permit_digest(&env, &permit)
     }
 
     // ============================================================================
@@ -16026,3 +16035,6 @@ mod test_state_channel;
 
 #[cfg(test)]
 mod test_booster;
+
+#[cfg(test)]
+mod test_permit_registration;
