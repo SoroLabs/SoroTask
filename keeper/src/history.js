@@ -1324,8 +1324,9 @@ class ParquetExporter {
   }
 }
 
-module.exports = {
-  HistoryManager,
-  PostgresPartitionManager,
-  ParquetExporter,
-};
+// HistoryManager stays the default export (as before #1465) so existing
+// `require('./history')` callers keep working; the other classes are named.
+module.exports = HistoryManager;
+module.exports.HistoryManager = HistoryManager;
+module.exports.PostgresPartitionManager = PostgresPartitionManager;
+module.exports.ParquetExporter = ParquetExporter;
