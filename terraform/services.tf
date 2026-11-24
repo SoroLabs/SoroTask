@@ -292,12 +292,12 @@ resource "aws_iam_role_policy" "keeper_deployer" {
       {
         Sid    = "ReadRolloutState"
         Effect = "Allow"
+        # Only the calls the rollout makes (deploy.yml: describe-listeners,
+        # describe-target-health). These ELBv2 Describe* actions do not
+        # support resource-level permissions, so "*" is required.
         Action = [
           "elasticloadbalancing:DescribeListeners",
           "elasticloadbalancing:DescribeTargetHealth",
-          "elasticloadbalancing:DescribeTargetGroups",
-          "cloudwatch:DescribeAlarms",
-          "cloudwatch:GetMetricData",
         ]
         Resource = "*"
       },
