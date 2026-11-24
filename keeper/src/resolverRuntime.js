@@ -2,12 +2,17 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { Worker } = require('worker_threads');
 const { createLogger } = require('./logger');
 
 const DEFAULT_TIMEOUT_MS = 250;
+const DEFAULT_WASM_TIMEOUT_MS = 2_000;
 const DEFAULT_MAX_SOURCE_BYTES = 64 * 1024;
 const DEFAULT_MAX_INPUT_BYTES = 32 * 1024;
 const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024;
+const DEFAULT_MAX_WASM_FUEL = 1_000_000;
+const MAX_WASM_MEMORY_BYTES = 32 * 1024 * 1024;
+const MAX_WASM_MEMORY_PAGES = MAX_WASM_MEMORY_BYTES / 65536;
 
 const FORBIDDEN_SOURCE_PATTERNS = [
   /\brequire\s*\(/,
@@ -40,6 +45,97 @@ function parseInteger(value, fallback) {
 
 function byteLength(value) {
   return Buffer.byteLength(String(value), 'utf8');
+}
+
+function readVarUint(bytes, offset, end) {
+  let value = 0;
+  let shift = 0;
+  let bytesRead = 0;
+
+  while (offset + bytesRead < end && bytesRead < 5) {
+    const byte = bytes[offset + bytesRead];
+    value |= (byte & 0x7f) << shift;
+    bytesRead += 1;
+    if ((byte & 0x80) === 0) {
+      return { value: value >>> 0, bytesRead };
+    }
+    shift += 7;
+  }
+
+  throw new ResolverRuntimeError('WASM binary contains an invalid length', 'INVALID_WASM');
+}
+
+function validateWasmMemory(bytes) {
+  if (
+    bytes.length < 8
+    || bytes.readUInt32LE(0) !== 0x6d736100
+    || bytes.readUInt32LE(4) !== 1
+  ) {
+    throw new ResolverRuntimeError('WASM binary has an invalid header', 'INVALID_WASM');
+  }
+
+  let offset = 8;
+  let memoryCount = 0;
+  while (offset < bytes.length) {
+    const sectionId = bytes[offset++];
+    const sectionLength = readVarUint(bytes, offset, bytes.length);
+    offset += sectionLength.bytesRead;
+    const sectionEnd = offset + sectionLength.value;
+    if (sectionEnd > bytes.length) {
+      throw new ResolverRuntimeError('WASM section exceeds binary length', 'INVALID_WASM');
+    }
+
+    if (sectionId === 5) {
+      const count = readVarUint(bytes, offset, sectionEnd);
+      offset += count.bytesRead;
+      memoryCount += count.value;
+      if (memoryCount > 1) {
+        throw new ResolverRuntimeError(
+          'WASM resolver may declare at most one linear memory',
+          'WASM_MEMORY_LIMIT_EXCEEDED',
+          { maxMemoryBytes: MAX_WASM_MEMORY_BYTES },
+        );
+      }
+
+      for (let index = 0; index < count.value; index += 1) {
+        if (offset >= sectionEnd) {
+          throw new ResolverRuntimeError('WASM memory section is truncated', 'INVALID_WASM');
+        }
+        const flags = bytes[offset++];
+        if (flags !== 1 && flags !== 0) {
+          throw new ResolverRuntimeError(
+            'WASM memory type is unsupported by the sandbox',
+            'WASM_MEMORY_LIMIT_EXCEEDED',
+          );
+        }
+
+        const initial = readVarUint(bytes, offset, sectionEnd);
+        offset += initial.bytesRead;
+        if (flags !== 1) {
+          throw new ResolverRuntimeError(
+            'WASM memory must declare a maximum no greater than 32 MB',
+            'WASM_MEMORY_LIMIT_EXCEEDED',
+            { maxMemoryBytes: MAX_WASM_MEMORY_BYTES },
+          );
+        }
+
+        const maximum = readVarUint(bytes, offset, sectionEnd);
+        offset += maximum.bytesRead;
+        if (initial.value > MAX_WASM_MEMORY_PAGES || maximum.value > MAX_WASM_MEMORY_PAGES) {
+          throw new ResolverRuntimeError(
+            'WASM memory exceeds the 32 MB sandbox limit',
+            'WASM_MEMORY_LIMIT_EXCEEDED',
+            { maxMemoryBytes: MAX_WASM_MEMORY_BYTES },
+          );
+        }
+      }
+
+      if (offset !== sectionEnd) {
+        throw new ResolverRuntimeError('WASM memory section is malformed', 'INVALID_WASM');
+      }
+    }
+    offset = sectionEnd;
+  }
 }
 
 function cloneJson(value, label, maxBytes) {
@@ -147,9 +243,11 @@ class ResolverRuntime {
   constructor(options = {}) {
     this.logger = options.logger || createLogger('resolver-runtime');
     this.defaultTimeoutMs = parseInteger(options.defaultTimeoutMs, DEFAULT_TIMEOUT_MS);
+    this.defaultWasmTimeoutMs = parseInteger(options.defaultWasmTimeoutMs, DEFAULT_WASM_TIMEOUT_MS);
     this.maxSourceBytes = parseInteger(options.maxSourceBytes, DEFAULT_MAX_SOURCE_BYTES);
     this.maxInputBytes = parseInteger(options.maxInputBytes, DEFAULT_MAX_INPUT_BYTES);
     this.maxOutputBytes = parseInteger(options.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES);
+    this.maxFuel = parseInteger(options.maxFuel, DEFAULT_MAX_WASM_FUEL);
     this.baseDir = path.resolve(options.baseDir || process.cwd());
     this.definitions = new Map();
     this.scriptCache = new Map();
@@ -227,10 +325,14 @@ class ResolverRuntime {
       ...definition,
       runtime: runtime === 'js' ? 'javascript' : runtime,
       entry: definition.entry || 'resolve',
-      timeoutMs: parseInteger(definition.timeoutMs, this.defaultTimeoutMs),
+      timeoutMs: parseInteger(
+        definition.timeoutMs,
+        runtime === 'wasm' ? this.defaultWasmTimeoutMs : this.defaultTimeoutMs,
+      ),
       maxInputBytes: parseInteger(definition.maxInputBytes, this.maxInputBytes),
       maxOutputBytes: parseInteger(definition.maxOutputBytes, this.maxOutputBytes),
       maxSourceBytes: parseInteger(definition.maxSourceBytes, this.maxSourceBytes),
+      maxFuel: parseInteger(definition.maxFuel, this.maxFuel),
     };
 
     if (normalized.runtime === 'javascript') {
@@ -238,6 +340,9 @@ class ResolverRuntime {
       normalized.sourceHash = crypto.createHash('sha256').update(normalized.source).digest('hex');
       validateJavaScriptSource(normalized.source, normalized.maxSourceBytes);
     } else {
+      if (normalized.maxFuel <= 0) {
+        throw new ResolverRuntimeError('WASM fuel limit must be positive', 'INVALID_FUEL_LIMIT', { id });
+      }
       normalized.wasmBytes = this.loadWasmBytes(normalized);
     }
 
@@ -268,14 +373,34 @@ class ResolverRuntime {
 
   loadWasmBytes(definition) {
     if (definition.bytesBase64) {
-      return Buffer.from(definition.bytesBase64, 'base64');
+      const bytes = Buffer.from(definition.bytesBase64, 'base64');
+      if (bytes.length > definition.maxSourceBytes) {
+        throw new ResolverRuntimeError(
+          `WASM resolver exceeds ${definition.maxSourceBytes} bytes`,
+          'SOURCE_TOO_LARGE',
+          { maxSourceBytes: definition.maxSourceBytes },
+        );
+      }
+      validateWasmMemory(bytes);
+      return bytes;
     }
 
     if (!definition.path) {
       throw new ResolverRuntimeError('WASM resolver requires bytesBase64 or path', 'INVALID_SOURCE');
     }
 
-    return fs.readFileSync(this.resolveSafePath(definition.path));
+    const wasmPath = this.resolveSafePath(definition.path);
+    const stat = fs.statSync(wasmPath);
+    if (stat.size > definition.maxSourceBytes) {
+      throw new ResolverRuntimeError(
+        `WASM resolver exceeds ${definition.maxSourceBytes} bytes`,
+        'SOURCE_TOO_LARGE',
+        { maxSourceBytes: definition.maxSourceBytes },
+      );
+    }
+    const bytes = fs.readFileSync(wasmPath);
+    validateWasmMemory(bytes);
+    return bytes;
   }
 
   resolveSafePath(candidate) {
@@ -365,19 +490,88 @@ class ResolverRuntime {
       ? input.wasmArgs.map((value) => Number(value))
       : [];
 
-    const module = await WebAssembly.compile(definition.wasmBytes);
-    const instance = await WebAssembly.instantiate(module, {});
-    const exported = instance.exports[definition.entry];
-
-    if (typeof exported !== 'function') {
-      throw new ResolverRuntimeError(
-        `WASM resolver "${id}" does not export "${definition.entry}"`,
-        'INVALID_EXPORT',
-        { id, entry: definition.entry },
-      );
+    if (wasmArgs.some((value) => !Number.isFinite(value))) {
+      throw new ResolverRuntimeError('WASM arguments must be finite numbers', 'INVALID_INPUT', { id });
     }
 
-    return normalizeResolverResult(exported(...wasmArgs));
+    const worker = new Worker(path.join(__dirname, 'resolverWasmWorker.js'), {
+      workerData: {
+        bytesBase64: definition.wasmBytes.toString('base64'),
+        entry: definition.entry,
+        args: wasmArgs,
+        maxFuel: definition.maxFuel,
+      },
+      resourceLimits: {
+        maxOldGenerationSizeMb: 32,
+        maxYoungGenerationSizeMb: 8,
+      },
+    });
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error, result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        worker.removeAllListeners();
+        worker.terminate().catch((terminateError) => {
+          this.logger.warn('Failed to terminate WASM resolver worker', {
+            resolverId: id,
+            error: terminateError.message,
+          });
+        });
+        if (error) reject(error);
+        else {
+          try {
+            resolve(normalizeResolverResult(result));
+          } catch (normalizeError) {
+            reject(normalizeError);
+          }
+        }
+      };
+
+      const timeoutId = setTimeout(() => {
+        finish(new ResolverRuntimeError(
+          `WASM resolver "${id}" exceeded ${definition.timeoutMs}ms`,
+          'TIMEOUT',
+          { id, timeoutMs: definition.timeoutMs },
+        ));
+      }, definition.timeoutMs);
+
+      worker.on('message', (message) => {
+        if (message.type === 'fuel-exhausted') {
+          finish(new ResolverRuntimeError(
+            `WASM resolver "${id}" exhausted its fuel budget`,
+            'FUEL_EXHAUSTED',
+            { id, maxFuel: definition.maxFuel },
+          ));
+        } else if (message.type === 'result') {
+          finish(null, message.result);
+        } else if (message.type === 'error') {
+          finish(new ResolverRuntimeError(message.message, message.code || 'WASM_EXECUTION_FAILED', {
+            id,
+          }));
+        }
+      });
+
+      worker.on('error', (error) => {
+        finish(new ResolverRuntimeError(
+          `WASM resolver "${id}" worker failed: ${error.message}`,
+          'WASM_WORKER_FAILED',
+          { id },
+        ));
+      });
+
+      worker.on('exit', (code) => {
+        if (!settled) {
+          finish(new ResolverRuntimeError(
+            `WASM resolver "${id}" worker exited unexpectedly`,
+            'WASM_WORKER_FAILED',
+            { id, exitCode: code },
+          ));
+        }
+      });
+    });
   }
 
   withTimeout(promise, timeoutMs, id) {
@@ -400,4 +594,7 @@ module.exports = {
   ResolverRuntime,
   ResolverRuntimeError,
   normalizeResolverResult,
+  DEFAULT_MAX_WASM_FUEL,
+  DEFAULT_WASM_TIMEOUT_MS,
+  MAX_WASM_MEMORY_BYTES,
 };
