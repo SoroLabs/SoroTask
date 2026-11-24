@@ -52,7 +52,7 @@ impl FixedPoint128 {
         let product = numerator
             .checked_mul(multiplier)
             .ok_or(MathError::Overflow)?;
-        Ok(product / divisor)
+        product.checked_div(divisor).ok_or(MathError::Overflow)
     }
 
     /// Ceiling division: `ceil(numerator * multiplier / divisor)`.
@@ -66,11 +66,11 @@ impl FixedPoint128 {
         let product = numerator
             .checked_mul(multiplier)
             .ok_or(MathError::Overflow)?;
-        let q = product / divisor;
-        let r = product % divisor;
+        let q = product.checked_div(divisor).ok_or(MathError::Overflow)?;
+        let r = product.checked_rem(divisor).ok_or(MathError::Overflow)?;
         if r == 0 {
             Ok(q)
-        } else if product > 0 {
+        } else if (product > 0) == (divisor > 0) {
             q.checked_add(1).ok_or(MathError::Overflow)
         } else {
             Ok(q)
@@ -85,24 +85,50 @@ impl FixedPoint128 {
         let product = numerator
             .checked_mul(multiplier)
             .ok_or(MathError::Overflow)?;
-        Ok(product / divisor)
+        let q = product.checked_div(divisor).ok_or(MathError::Overflow)?;
+        let r = product.checked_rem(divisor).ok_or(MathError::Overflow)?;
+        if r != 0 && ((product > 0) != (divisor > 0)) {
+            q.checked_sub(1).ok_or(MathError::Underflow)
+        } else {
+            Ok(q)
+        }
     }
 }
 
 /// Split an execution fee into protocol (ceil) and keeper (remainder) portions.
-/// Guarantees `protocol + keeper == total` with zero dust.
+/// Guarantees `protocol + keeper == total` with zero dust, and avoids
+/// intermediate overflow for valid `protocol_fee_bps <= 10_000`.
 pub fn split_execution_fee(total: i128, protocol_fee_bps: u32) -> Result<(i128, i128), MathError> {
     if total <= 0 {
         return Ok((0, 0));
     }
+    if protocol_fee_bps == 0 {
+        return Ok((0, total));
+    }
+    if protocol_fee_bps > 10_000 {
+        return Err(MathError::Underflow);
+    }
     let bps = protocol_fee_bps as i128;
-    let protocol = FixedPoint128::div_ceil(total, bps, 10_000)?;
+    let q = total / 10_000;
+    let r = total % 10_000;
+    let rem_ceil = if r == 0 {
+        0
+    } else {
+        (r * bps + 9_999) / 10_000
+    };
+    let protocol = q * bps + rem_ceil;
     let keeper = total.checked_sub(protocol).ok_or(MathError::Underflow)?;
     Ok((protocol, keeper))
 }
 
 /// Yield accrual: `principal * rate_bps / 10_000` using floor (favor protocol).
 pub fn accrue_yield_floor(principal: i128, rate_bps: u32) -> Result<i128, MathError> {
+    if principal >= 0 && rate_bps <= 10_000 {
+        let bps = rate_bps as i128;
+        let q = principal / 10_000;
+        let r = principal % 10_000;
+        return Ok(q * bps + (r * bps) / 10_000);
+    }
     FixedPoint128::div_floor(principal, rate_bps as i128, 10_000)
 }
 

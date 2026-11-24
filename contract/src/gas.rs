@@ -139,7 +139,7 @@ impl GasMeter {
 
         if interval <= MIN_INTERVAL {
             // Maximum multiplier for minimum interval
-            configured_base * MAX_BASE_FEE_MULTIPLIER
+            configured_base.saturating_mul(MAX_BASE_FEE_MULTIPLIER)
         } else if interval >= MAX_INTERVAL {
             // Minimum base fee for maximum interval
             configured_base
@@ -151,7 +151,7 @@ impl GasMeter {
             let multiplier = MAX_BASE_FEE_MULTIPLIER
                 - (MAX_BASE_FEE_MULTIPLIER - 1) * interval_position as i128
                     / interval_range as i128;
-            configured_base * multiplier
+            configured_base.saturating_mul(multiplier)
         }
     }
 
@@ -185,7 +185,9 @@ impl GasMeter {
 
             // Combined tip: base * congestion_factor * gas_price_factor / 10000
             // At 50% congestion and base gas price: tip = base * 100 * 100 / 10000 = base
-            base * congestion_factor * gas_price_factor / 10_000
+            base.saturating_mul(congestion_factor)
+                .saturating_mul(gas_price_factor)
+                / 10_000
         } else {
             0
         }
@@ -229,8 +231,8 @@ impl GasMeter {
         let cpu_consumed = self.consumed_cpu(env) as i128;
         let mem_consumed = self.consumed_mem(env) as i128;
 
-        let cpu_cost = cpu_consumed * self.cpu_rate / 1000; // Rate per 1000 instructions
-        let mem_cost = mem_consumed * self.mem_rate / 1024; // Rate per KB
+        let cpu_cost = cpu_consumed.saturating_mul(self.cpu_rate) / 1000; // Rate per 1000 instructions
+        let mem_cost = mem_consumed.saturating_mul(self.mem_rate) / 1024; // Rate per KB
 
         self.base_fee
             .saturating_add(cpu_cost)
@@ -245,8 +247,8 @@ impl GasMeter {
     pub fn fee_breakdown(&self, env: &Env) -> FeeBreakdown {
         let cpu_consumed = self.consumed_cpu(env) as i128;
         let mem_consumed = self.consumed_mem(env) as i128;
-        let cpu_cost = cpu_consumed * self.cpu_rate / 1000;
-        let mem_cost = mem_consumed * self.mem_rate / 1024;
+        let cpu_cost = cpu_consumed.saturating_mul(self.cpu_rate) / 1000;
+        let mem_cost = mem_consumed.saturating_mul(self.mem_rate) / 1024;
 
         FeeBreakdown {
             base_fee: self.base_fee,

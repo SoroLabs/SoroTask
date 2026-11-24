@@ -3105,6 +3105,10 @@ impl SoroTaskContract {
             panic_with_error!(&env, Error::InvalidInterval);
         }
 
+        if config.gas_balance < 0 {
+            panic_with_error!(&env, Error::InvalidBounty);
+        }
+
         if config.gas_balance > 0 && config.gas_balance < get_min_bounty(&env) {
             panic_with_error!(&env, Error::BountyBelowMinimum);
         }
@@ -3486,15 +3490,17 @@ impl SoroTaskContract {
                 } else {
                     last_price - new_price
                 };
-                let volatility_bps = ((diff as u128 * 10_000) / last_price as u128) as u32;
+                let volatility_bps =
+                    u32::try_from((diff as u128 * 10_000) / last_price as u128).unwrap_or(u32::MAX);
                 if volatility_bps > max_volatility {
                     env.storage()
                         .instance()
                         .set(&DataKey::VolatilityCircuitBreakerTripped, &true);
                     let current_time = env.ledger().timestamp();
-                    env.storage()
-                        .instance()
-                        .set(&DataKey::VolatilityUnpauseTimelock, &(current_time + 3_600));
+                    env.storage().instance().set(
+                        &DataKey::VolatilityUnpauseTimelock,
+                        &current_time.saturating_add(3_600),
+                    );
                     crate::events::EventLogger::log_oracle_volatility_breach(
                         &env,
                         last_price,
@@ -5520,7 +5526,7 @@ impl SoroTaskContract {
         }
 
         // ── 5. Check interval ─────────────────────────────────────────────
-        if env.ledger().timestamp() < config.last_run + config.interval as u64 {
+        if env.ledger().timestamp() < config.last_run.saturating_add(config.interval as u64) {
             trace_steps.push_back(events::ExecutionStepRecord {
                 step: ExecutionStep::CheckInterval,
                 result: StepResult::Skipped,
@@ -6236,11 +6242,17 @@ impl SoroTaskContract {
 
     /// Calculates discounted fee based on cumulative user executions (Issue #826)
     pub fn calculate_discounted_fee(fee: i128, count: u64) -> i128 {
-        match Self::get_user_discount_tier(count) {
-            2 => fee * 75 / 100, // 25% discount
-            1 => fee * 90 / 100, // 10% discount
-            _ => fee,            // 0% discount
+        if fee <= 0 {
+            return 0;
         }
+        let pct = match Self::get_user_discount_tier(count) {
+            2 => 75, // 25% discount
+            1 => 90, // 10% discount
+            _ => return fee,
+        };
+        (fee / 100)
+            .saturating_mul(pct)
+            .saturating_add((fee % 100) * pct / 100)
     }
 
     /// Internal helper to record user execution count and trigger tier progression events (Issue #826)
@@ -6299,7 +6311,12 @@ impl SoroTaskContract {
 
         // Verify loan repayment + fee condition
         let fee_bps: i128 = 30; // 0.3% flash loan fee
-        let repayment_required = loan_amount + (loan_amount * fee_bps / 10000);
+        let flash_fee = (loan_amount / 10_000)
+            .saturating_mul(fee_bps)
+            .saturating_add((loan_amount % 10_000) * fee_bps / 10_000);
+        let repayment_required = loan_amount
+            .checked_add(flash_fee)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::FlashSwapFailed));
         if repayment_required <= 0 {
             panic_with_error!(&env, Error::FlashSwapFailed);
         }
@@ -6341,9 +6358,11 @@ impl SoroTaskContract {
         let elapsed = now.saturating_sub(config.last_run);
         // Annual inflation adjustment: base * (1 + (elapsed * cpi_rate_bps) / (31_536_000 * 10_000))
         let base_bounty = FIXED_EXECUTION_FEE;
-        let inflation_delta =
-            (base_bounty * elapsed as i128 * cpi_rate_bps as i128) / (31_536_000 * 10_000);
-        base_bounty + inflation_delta
+        let inflation_delta = base_bounty
+            .saturating_mul(elapsed as i128)
+            .saturating_mul(cpi_rate_bps as i128)
+            / (31_536_000 * 10_000);
+        base_bounty.saturating_add(inflation_delta)
     }
 
     /// Checks if escrow balance satisfies 6-month projected execution cost with inflation adjustment.
@@ -6363,10 +6382,12 @@ impl SoroTaskContract {
         let six_months_seconds: u64 = 15_768_000; // 182.5 days
         let expected_runs = six_months_seconds / interval;
         let base_bounty = FIXED_EXECUTION_FEE;
-        let inflation_delta = (base_bounty * six_months_seconds as i128 * cpi_rate_bps as i128)
+        let inflation_delta = base_bounty
+            .saturating_mul(six_months_seconds as i128)
+            .saturating_mul(cpi_rate_bps as i128)
             / (31_536_000 * 10_000);
-        let adjusted_fee = base_bounty + inflation_delta;
-        let required_escrow = expected_runs as i128 * adjusted_fee;
+        let adjusted_fee = base_bounty.saturating_add(inflation_delta);
+        let required_escrow = (expected_runs as i128).saturating_mul(adjusted_fee);
 
         let is_healthy = config.gas_balance >= required_escrow;
         if !is_healthy {
@@ -7295,6 +7316,15 @@ impl SoroTaskContract {
             panic_with_error!(env, Error::Unauthorized);
         }
 
+        if amount <= 0 {
+            panic_with_error!(env, Error::InvalidBounty);
+        }
+
+        let new_balance = config
+            .gas_balance
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_with_error!(env, Error::InvalidBounty));
+
         let token_address: Address = env
             .storage()
             .instance()
@@ -7307,7 +7337,7 @@ impl SoroTaskContract {
         invest_task_gas(env, task_id, &config, amount);
 
         // Update balance
-        config.gas_balance += amount;
+        config.gas_balance = new_balance;
         save_task(env, task_id, &config);
 
         // Update escrow
@@ -7386,6 +7416,10 @@ impl SoroTaskContract {
 
         // Ensure only creator can withdraw
         config.creator.require_auth();
+
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidBounty);
+        }
 
         // Check against escrow, not just gas_balance
         let escrowed = gas::EscrowManager::get_escrow(&env, task_id);
@@ -9524,7 +9558,7 @@ impl SoroTaskContract {
         env.storage()
             .persistent()
             .set(&DataKey::StakingMetrics(staker.clone()), &staking_metrics);
-        staking_balance.amount += amount;
+        staking_balance.amount = staking_balance.amount.saturating_add(amount);
         staking_balance.last_stake_timestamp = now;
 
         env.storage()
@@ -9540,7 +9574,7 @@ impl SoroTaskContract {
                 address: staker.clone(),
                 voting_power: 0,
             });
-        voting_power_data.voting_power += amount;
+        voting_power_data.voting_power = voting_power_data.voting_power.saturating_add(amount);
         env.storage().persistent().set(
             &DataKey::GovernanceVotingPower(staker.clone()),
             &voting_power_data,
@@ -9548,7 +9582,7 @@ impl SoroTaskContract {
 
         // Update staking pool
         let mut updated_pool = pool.clone();
-        updated_pool.total_staked += amount;
+        updated_pool.total_staked = updated_pool.total_staked.saturating_add(amount);
         if first_stake {
             updated_pool.stakers_count += 1;
         }
@@ -10651,9 +10685,13 @@ impl SoroTaskContract {
         {
             if dyn_bounty.enabled && dyn_bounty.interval > 0 {
                 let progress_bps = ((time_elapsed as u128 * dyn_bounty.growth_rate_bps as u128)
-                    / dyn_bounty.interval as u128) as u32;
-                let multiplier_bps = (10_000 + progress_bps).min(dyn_bounty.max_multiplier_bps);
-                return ((base_fee as u128 * multiplier_bps as u128) / 10_000) as i128;
+                    / dyn_bounty.interval as u128)
+                    .min(dyn_bounty.max_multiplier_bps as u128) as u32;
+                let multiplier_bps = 10_000u32
+                    .saturating_add(progress_bps)
+                    .min(dyn_bounty.max_multiplier_bps);
+                return ((base_fee as u128).saturating_mul(multiplier_bps as u128) / 10_000)
+                    as i128;
             }
         }
 
@@ -10661,7 +10699,11 @@ impl SoroTaskContract {
             let overdue = time_elapsed - task.interval as u64;
             let bonus_bps =
                 (((overdue as u128 * 10_000) / task.interval as u128).min(20_000)) as u32;
-            return base_fee + ((base_fee * bonus_bps as i128) / 10_000);
+            return base_fee.saturating_add(
+                (base_fee / 10_000)
+                    .saturating_mul(bonus_bps as i128)
+                    .saturating_add((base_fee % 10_000) * bonus_bps as i128 / 10_000),
+            );
         }
 
         base_fee
@@ -10695,14 +10737,23 @@ impl SoroTaskContract {
             panic_with_error!(&env, Error::InvalidSlippage);
         }
 
-        let flash_fee = (params.amount_borrow * params.flash_fee_bps as i128) / 10_000;
-        let total_repay = params.amount_borrow + flash_fee;
+        let bps = params.flash_fee_bps as i128;
+        let flash_fee = (params.amount_borrow / 10_000)
+            .saturating_mul(bps)
+            .saturating_add((params.amount_borrow % 10_000) * bps / 10_000);
+        let total_repay = params
+            .amount_borrow
+            .checked_add(flash_fee)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InvalidPayload));
 
         // Execute target task context internally
         Self::execute_internal(&env, &keeper, task_id, true);
 
         // Arbitrage yield calculation
-        let gross_yield = (params.amount_borrow * 11_000) / 10_000;
+        let gross_yield = (params.amount_borrow / 10_000)
+            .checked_mul(11_000)
+            .and_then(|base| base.checked_add((params.amount_borrow % 10_000) * 11_000 / 10_000))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InvalidPayload));
         let net_profit = gross_yield - total_repay;
 
         if net_profit < params.min_profit {
