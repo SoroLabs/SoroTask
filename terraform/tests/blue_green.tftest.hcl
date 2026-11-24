@@ -14,7 +14,7 @@ variables {
   cloudflare_api_token       = "test-token"
   cloudflare_zone_id         = "test-zone"
   origin_hostname            = "lb.example.com"
-  db_password                = "test-password"
+  db_password                = "test-password" # checkov:skip=CKV_SECRET_6: dummy value for mocked-provider plan tests
   keeper_api_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/test"
 }
 
