@@ -426,7 +426,10 @@ describe('Chaos Testing - Network and RPC Faults', () => {
  * Chaos Test Runner Script
  * Can be run independently from command line
  */
-if (require.main === module) {
+// Jest sets require.main to the test file itself, so also check that we are
+// not inside a Jest worker; otherwise this CLI runner starts the full default
+// chaos suite during `npm test` and keeps the process alive.
+if (require.main === module && !process.env.JEST_WORKER_ID) {
   (async () => {
     const harness = new ChaosTestHarness();
     
