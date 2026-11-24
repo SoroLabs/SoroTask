@@ -337,6 +337,17 @@ pub struct KeeperBond {
     pub is_slashed: bool,
 }
 
+/// Registry view for a bonded keeper and its community backing.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct KeeperRegistration {
+    pub keeper: Address,
+    pub bonded_amount: i128,
+    pub delegated_amount: i128,
+    pub registered_at: u64,
+    pub active: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
@@ -419,6 +430,8 @@ const MAX_LOCKUP_DURATION_SECONDS: u64 = 365 * 24 * 60 * 60;
 
 /// Minimum stake a keeper must bond to claim restricted tasks (Issue #1043), in token units.
 const MIN_KEEPER_STAKE: i128 = 500;
+const KEEPER_UNBONDING_PERIOD: u64 = 7 * 24 * 60 * 60;
+const KEEPER_PRIORITY_MAX_AGE: u64 = 365 * 24 * 60 * 60;
 /// Maximum time without a heartbeat or execution before a keeper is challengeable.
 pub const KEEPER_INACTIVITY_WINDOW: u64 = 86_400;
 
@@ -1365,6 +1378,9 @@ pub enum DataKey {
     VrfCommit(u64),
     /// Keeper economic bond storage (Issue #1043)
     KeeperBond(Address),
+    KeeperRegistration(Address),
+    KeeperUnbondRequestedAt(Address),
+    DelegationUnbondRequest(Address),
     KeeperLastActive(Address),
     KeeperInactivityStrikes(Address),
     KeeperSlashCount(Address),
@@ -4967,7 +4983,7 @@ impl SoroTaskContract {
             }
 
             if keeper_fee > 0 {
-                let routed = Self::try_pay_keeper_via_router(
+                let routed = get_keeper_total_delegated(env, keeper) == 0 && Self::try_pay_keeper_via_router(
                     env,
                     keeper,
                     keeper_fee,
@@ -4975,7 +4991,7 @@ impl SoroTaskContract {
                     &token_client,
                 );
                 if !routed {
-                    token_client.transfer(&env.current_contract_address(), keeper, &keeper_fee);
+                    Self::pay_keeper_reward(env, keeper, keeper_fee, &token_client);
                 }
             }
             assert_balance_invariant(env);
@@ -6072,7 +6088,7 @@ impl SoroTaskContract {
                 // Transfer keeper fee (always >= 0), auto-routed through the
                 // keeper's preferred DEX router/payout token if configured.
                 if keeper_fee > 0 {
-                    let routed = Self::try_pay_keeper_via_router(
+                    let routed = get_keeper_total_delegated(env, keeper) == 0 && Self::try_pay_keeper_via_router(
                         env,
                         keeper,
                         keeper_fee,
@@ -6080,7 +6096,7 @@ impl SoroTaskContract {
                         &token_client,
                     );
                     if !routed {
-                        token_client.transfer(&env.current_contract_address(), keeper, &keeper_fee);
+                        Self::pay_keeper_reward(env, keeper, keeper_fee, &token_client);
                     }
                 }
                 assert_balance_invariant(env);
@@ -6736,6 +6752,11 @@ impl SoroTaskContract {
             .set(&DataKey::DelegationPool(delegator.clone()), &pool);
 
         update_keeper_total_delegated(&env, &keeper, amount);
+        if let Some(mut registration) = env.storage().persistent()
+            .get::<DataKey, KeeperRegistration>(&DataKey::KeeperRegistration(keeper.clone())) {
+            registration.delegated_amount = get_keeper_total_delegated(&env, &keeper);
+            env.storage().persistent().set(&DataKey::KeeperRegistration(keeper.clone()), &registration);
+        }
 
         events::EventLogger::log_delegation_pool_event(
             &env,
@@ -6767,6 +6788,12 @@ impl SoroTaskContract {
         if pool.amount < amount {
             panic_with_error!(&env, Error::InsufficientDelegation);
         }
+        let request: (i128, u64) = env.storage().persistent()
+            .get(&DataKey::DelegationUnbondRequest(delegator.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::ChallengeWindowActive));
+        if request.0 != amount || env.ledger().timestamp().saturating_sub(request.1) < KEEPER_UNBONDING_PERIOD {
+            panic_with_error!(&env, Error::ChallengeWindowActive);
+        }
 
         let keeper = pool.keeper.clone();
         pool.amount -= amount;
@@ -6781,6 +6808,12 @@ impl SoroTaskContract {
             .set(&DataKey::DelegationPool(delegator.clone()), &pool);
 
         update_keeper_total_delegated(&env, &keeper, -amount);
+        if let Some(mut registration) = env.storage().persistent()
+            .get::<DataKey, KeeperRegistration>(&DataKey::KeeperRegistration(keeper.clone())) {
+            registration.delegated_amount = get_keeper_total_delegated(&env, &keeper);
+            env.storage().persistent().set(&DataKey::KeeperRegistration(keeper.clone()), &registration);
+        }
+        env.storage().persistent().remove(&DataKey::DelegationUnbondRequest(delegator.clone()));
         sub_total_keeper_stakes(&env, amount);
 
         let token_address: Address = env
@@ -6802,6 +6835,20 @@ impl SoroTaskContract {
         );
 
         exit_security_guard(&env);
+    }
+
+    /// Starts the seven day cooldown before delegated tokens can be withdrawn.
+    pub fn request_undelegate_stake(env: Env, delegator: Address, amount: i128) {
+        delegator.require_auth();
+        if amount <= 0 { panic_with_error!(&env, Error::InsufficientBalance); }
+        let pool: DelegationPool = env.storage().persistent()
+            .get(&DataKey::DelegationPool(delegator.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InsufficientDelegation));
+        if pool.amount < amount { panic_with_error!(&env, Error::InsufficientDelegation); }
+        env.storage().persistent().set(
+            &DataKey::DelegationUnbondRequest(delegator),
+            &(amount, env.ledger().timestamp()),
+        );
     }
 
     /// Sets the commission rate for a keeper operator.
@@ -6877,6 +6924,12 @@ impl SoroTaskContract {
         bond.is_slashed = true;
         sub_total_keeper_stakes(&env, penalty);
         env.storage().persistent().set(&DataKey::KeeperBond(keeper.clone()), &bond);
+        if let Some(mut registration) = env.storage().persistent()
+            .get::<DataKey, KeeperRegistration>(&DataKey::KeeperRegistration(keeper.clone())) {
+            registration.bonded_amount = bond.bonded_amount;
+            registration.active = false;
+            env.storage().persistent().set(&DataKey::KeeperRegistration(keeper.clone()), &registration);
+        }
         let strikes: u32 = env.storage().persistent().get(&DataKey::KeeperInactivityStrikes(keeper.clone())).unwrap_or(0);
         env.storage().persistent().set(&DataKey::KeeperInactivityStrikes(keeper.clone()), &strikes.saturating_add(1));
 
@@ -6948,6 +7001,18 @@ impl SoroTaskContract {
         env.storage()
             .persistent()
             .set(&DataKey::KeeperBond(keeper.clone()), &bond);
+        let delegated_amount = get_keeper_total_delegated(&env, &keeper);
+        env.storage().persistent().set(
+            &DataKey::KeeperRegistration(keeper.clone()),
+            &KeeperRegistration {
+                keeper: keeper.clone(),
+                bonded_amount,
+                delegated_amount,
+                registered_at: bond.bonded_at,
+                active: true,
+            },
+        );
+        env.storage().persistent().remove(&DataKey::KeeperUnbondRequestedAt(keeper.clone()));
         env.storage().persistent().set(
             &DataKey::KeeperLastActive(keeper.clone()),
             &env.ledger().timestamp(),
@@ -6966,6 +7031,17 @@ impl SoroTaskContract {
     }
 
     /// Unbonds a keeper's stake, returning tokens if not slashed.
+    pub fn request_keeper_unbond(env: Env, keeper: Address) {
+        keeper.require_auth();
+        if !env.storage().persistent().has(&DataKey::KeeperBond(keeper.clone())) {
+            panic_with_error!(&env, Error::KeeperNotBonded);
+        }
+        env.storage().persistent().set(
+            &DataKey::KeeperUnbondRequestedAt(keeper),
+            &env.ledger().timestamp(),
+        );
+    }
+
     pub fn unbond_keeper_stake(env: Env, keeper: Address) {
         enter_security_guard(&env);
         keeper.require_auth();
@@ -6988,6 +7064,12 @@ impl SoroTaskContract {
         if bond.is_slashed {
             panic_with_error!(&env, Error::KeeperSlashed);
         }
+        let requested_at: u64 = env.storage().persistent()
+            .get(&DataKey::KeeperUnbondRequestedAt(keeper.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::ChallengeWindowActive));
+        if env.ledger().timestamp().saturating_sub(requested_at) < KEEPER_UNBONDING_PERIOD {
+            panic_with_error!(&env, Error::ChallengeWindowActive);
+        }
 
         let token_address: Address = env
             .storage()
@@ -7002,15 +7084,11 @@ impl SoroTaskContract {
             &bond.bonded_amount,
         );
 
-        token_client.transfer(
-            &env.current_contract_address(),
-            &keeper,
-            &bond.bonded_amount,
-        );
-
         env.storage()
             .persistent()
             .remove(&DataKey::KeeperBond(keeper.clone()));
+        env.storage().persistent().remove(&DataKey::KeeperRegistration(keeper.clone()));
+        env.storage().persistent().remove(&DataKey::KeeperUnbondRequestedAt(keeper.clone()));
 
         env.events().publish(
             (
@@ -7040,6 +7118,36 @@ impl SoroTaskContract {
     /// Returns the keeper's bond status.
     pub fn get_keeper_bond(env: Env, keeper: Address) -> Option<KeeperBond> {
         env.storage().persistent().get(&DataKey::KeeperBond(keeper))
+    }
+
+    pub fn get_keeper_registration(env: Env, keeper: Address) -> Option<KeeperRegistration> {
+        env.storage().persistent().get(&DataKey::KeeperRegistration(keeper))
+    }
+
+    /// Delegation and bond weighted by tenure, capped at one year, for keeper selection.
+    pub fn get_keeper_priority_score(env: Env, keeper: Address) -> i128 {
+        let Some(registration) = env.storage().persistent()
+            .get::<DataKey, KeeperRegistration>(&DataKey::KeeperRegistration(keeper)) else { return 0; };
+        if !registration.active { return 0; }
+        let now = env.ledger().timestamp();
+        let bond_age = now.saturating_sub(registration.registered_at).min(KEEPER_PRIORITY_MAX_AGE);
+        let mut score = registration.bonded_amount.saturating_mul(
+            10_000 + bond_age as i128 * 10_000 / KEEPER_PRIORITY_MAX_AGE as i128,
+        ) / 10_000;
+        let delegators = get_keeper_delegators(&env, &registration.keeper);
+        let mut index = 0;
+        while index < delegators.len() {
+            let delegator = delegators.get(index).unwrap();
+            if let Some(pool) = get_delegation_pool(&env, &delegator) {
+                if pool.is_active && pool.keeper == registration.keeper && pool.amount > 0 {
+                    let age = now.saturating_sub(pool.created_at).min(KEEPER_PRIORITY_MAX_AGE);
+                    let multiplier = 10_000 + age as i128 * 10_000 / KEEPER_PRIORITY_MAX_AGE as i128;
+                    score = score.saturating_add(pool.amount.saturating_mul(multiplier) / 10_000);
+                }
+            }
+            index += 1;
+        }
+        score
     }
 
     /// Slashes a keeper's stake and redistributes according to Issue #1043:
@@ -7802,6 +7910,41 @@ impl SoroTaskContract {
     /// - `swap(token_in, token_out, amount_in, min_amount_out, from, to) -> i128`
     ///   pulling `amount_in` of `token_in` from `from` (via the prior
     ///   `approve`) and sending the swap output to `to`.
+    fn pay_keeper_reward(
+        env: &Env,
+        keeper: &Address,
+        amount: i128,
+        token_client: &soroban_sdk::token::Client,
+    ) {
+        let delegators = get_keeper_delegators(env, keeper);
+        let total = get_keeper_total_delegated(env, keeper);
+        if total <= 0 || delegators.is_empty() {
+            token_client.transfer(&env.current_contract_address(), keeper, &amount);
+            return;
+        }
+        let commission = get_keeper_commission(env, keeper).min(10_000) as i128;
+        let delegator_pool = amount.saturating_mul(10_000 - commission) / 10_000;
+        let mut distributed = 0i128;
+        let mut index = 0;
+        while index < delegators.len() {
+            let delegator = delegators.get(index).unwrap();
+            if let Some(pool) = get_delegation_pool(env, &delegator) {
+                if pool.is_active && pool.keeper == keeper.clone() && pool.amount > 0 {
+                    let share = delegator_pool.saturating_mul(pool.amount) / total;
+                    if share > 0 {
+                        token_client.transfer(&env.current_contract_address(), &delegator, &share);
+                        distributed = distributed.saturating_add(share);
+                    }
+                }
+            }
+            index += 1;
+        }
+        let keeper_share = amount.saturating_sub(distributed);
+        if keeper_share > 0 {
+            token_client.transfer(&env.current_contract_address(), keeper, &keeper_share);
+        }
+    }
+
     fn try_pay_keeper_via_router(
         env: &Env,
         keeper: &Address,
@@ -10917,7 +11060,28 @@ impl SoroTaskContract {
             | ((hash_arr[1] as u32) << 16)
             | ((hash_arr[2] as u32) << 8)
             | hash_arr[3] as u32;
-        keepers.get(index_seed % keepers.len()).unwrap()
+        let mut total_weight: i128 = 0;
+        let mut i = 0;
+        while i < keepers.len() {
+            let candidate = keepers.get(i).unwrap();
+            total_weight = total_weight.saturating_add(Self::get_keeper_priority_score(env.clone(), candidate));
+            i += 1;
+        }
+        if total_weight <= 0 {
+            return keepers.get(index_seed % keepers.len()).unwrap();
+        }
+        let mut pick = (index_seed as i128) % total_weight;
+        i = 0;
+        while i < keepers.len() {
+            let candidate = keepers.get(i).unwrap();
+            let weight = Self::get_keeper_priority_score(env.clone(), candidate);
+            if weight > 0 {
+                if pick < weight { return candidate; }
+                pick -= weight;
+            }
+            i += 1;
+        }
+        keepers.get(0).unwrap()
     }
 
     fn vrf_signature_payload(env: &Env, request_id: u64, task_id: u64) -> Bytes {
