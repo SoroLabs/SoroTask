@@ -1266,6 +1266,7 @@ pub enum DataKey {
     VrfRequestCounter,
     VrfRequests(u64),
     VrfResponses(u64),
+    TaskVrfRequest(u64),
     VrfKeeperAssignment(u64),
     VrfAssignmentExclusiveUntil(u64),
     OracleConfig(OracleProvider),
@@ -3599,6 +3600,9 @@ impl SoroTaskContract {
         env.storage()
             .persistent()
             .set(&DataKey::VrfRequests(request_counter), &vrf_request);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TaskVrfRequest(task_id), &request_counter);
 
         // Emit VrfRequestCreated event
         env.events().publish(
@@ -3700,6 +3704,9 @@ impl SoroTaskContract {
         env.storage()
             .persistent()
             .set(&DataKey::VrfRequests(request_counter), &request);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TaskVrfRequest(task_id), &request_counter);
 
         let assignment = VrfKeeperAssignment {
             task_id,
@@ -4181,6 +4188,18 @@ impl SoroTaskContract {
             .persistent()
             .set(&DataKey::VrfRequests(request_id), &vrf_request);
 
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, u64>(&DataKey::TaskVrfRequest(vrf_request.task_id))
+            == Some(request_id)
+        {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::TaskVrfRequest(vrf_request.task_id));
+        }
+        Self::clear_vrf_commit_for_request(&env, vrf_request.task_id, request_id);
+
         if let Some(assignment) = env
             .storage()
             .persistent()
@@ -4310,6 +4329,8 @@ impl SoroTaskContract {
             .persistent()
             .set(&DataKey::VrfResponses(request_id), &vrf_response);
 
+        Self::clear_vrf_commit_for_request(&env, vrf_request.task_id, request_id);
+
         Self::fulfill_vrf_keeper_assignment_internal(
             &env,
             vrf_request.task_id,
@@ -4328,6 +4349,20 @@ impl SoroTaskContract {
         );
 
         exit_security_guard(&env);
+    }
+
+    fn clear_vrf_commit_for_request(env: &Env, task_id: u64, request_id: u64) {
+        if let Some(commit) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, VrfCommit>(&DataKey::VrfCommit(task_id))
+        {
+            if commit.request_id == request_id {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::VrfCommit(task_id));
+            }
+        }
     }
 
     fn resume_task_internal(env: &Env, task_id: u64, skip_auth: bool) {
@@ -5646,33 +5681,18 @@ impl SoroTaskContract {
 
         // ── 8. VRF condition gate ─────────────────────────────────────────
         let vrf_passed = {
-            let mut vrf_response_found = false;
-
-            if env.storage().instance().has(&DataKey::VrfRequestCounter) {
-                let request_counter: u64 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::VrfRequestCounter)
-                    .unwrap();
-                for i in 1..=request_counter {
-                    if let Some(vrf_request) = env
-                        .storage()
+            // A response is only stored after a request has been fulfilled.
+            let vrf_response = env
+                .storage()
+                .persistent()
+                .get::<DataKey, u64>(&DataKey::TaskVrfRequest(task_id))
+                .and_then(|request_id| {
+                    env.storage()
                         .persistent()
-                        .get::<DataKey, VrfRequest>(&DataKey::VrfRequests(i))
-                    {
-                        if vrf_request.task_id == task_id
-                            && vrf_request.status == VrfRequestStatus::Fulfilled
-                        {
-                            if env.storage().persistent().has(&DataKey::VrfResponses(i)) {
-                                vrf_response_found = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
+                        .get::<DataKey, VrfResponse>(&DataKey::VrfResponses(request_id))
+                });
 
-            vrf_response_found || resolver_passed
+            vrf_response.is_some() || resolver_passed
         };
         if vrf_passed {
             trace_steps.push_back(events::ExecutionStepRecord {
@@ -15528,6 +15548,49 @@ pub(crate) mod tests {
 
         let winner = client.select_keeper_via_lottery(&42u64, &keepers);
         assert!(winner == keeper1 || winner == keeper2);
+    }
+
+    #[test]
+    fn test_execute_vrf_gate_uses_task_index_after_100k_requests() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let target = env.register(MockTarget, ());
+        let task_id = client.register(&base_config(&env, target));
+        let request_id = 100_000;
+
+        env.as_contract(&id, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::VrfRequestCounter, &request_id);
+            env.storage()
+                .persistent()
+                .set(&DataKey::TaskVrfRequest(task_id), &request_id);
+            env.storage().persistent().set(
+                &DataKey::VrfRequests(request_id),
+                &VrfRequest {
+                    request_id,
+                    task_id,
+                    requester: Address::generate(&env),
+                    callback_function: Symbol::new(&env, "ping"),
+                    callback_args: Vec::new(&env),
+                    status: VrfRequestStatus::Fulfilled,
+                    created_at: 0,
+                },
+            );
+            env.storage().persistent().set(
+                &DataKey::VrfResponses(request_id),
+                &VrfResponse {
+                    request_id,
+                    random_number: 42,
+                    proof: Bytes::new(&env),
+                    fulfilled_at: 0,
+                },
+            );
+        });
+
+        set_timestamp(&env, 3_600);
+        client.execute(&Address::generate(&env), &task_id);
+        assert_eq!(client.get_task(&task_id).unwrap().last_run, 3_600);
     }
 
     #[test]
