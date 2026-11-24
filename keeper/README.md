@@ -52,6 +52,10 @@ MAX_CONCURRENT_READS=10
 # Maximum number of concurrent task executions (default: 3)
 MAX_CONCURRENT_EXECUTIONS=3
 
+# Opt in to adaptive PID concurrency (default: false)
+# See docs/DYNAMIC_CONCURRENCY_GOVERNOR.md
+KEEPER_ADAPTIVE_CONCURRENCY=true
+
 # Maximum task ID to check (default: 100) - or use TASK_IDS for specific tasks
 MAX_TASK_ID=100
 
