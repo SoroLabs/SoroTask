@@ -244,6 +244,79 @@ describe('logger tracing', () => {
     });
   });
 
+  describe('childWithTrace bindings', () => {
+    const TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+    const TRACE_ID = '4bf92f3577b34da6a3ce929d0e0e4736';
+    const SPAN_ID = '00f067aa0ba902b7';
+
+    // createLogger() and the traced logger it returns each implement
+    // childWithTrace; run every case against both.
+    const roots = {
+      createLogger: () => loggerModule.createLogger('tracing-test'),
+      tracedLogger: () => loggerModule.createLogger('tracing-test').childWithTrace({}),
+    };
+
+    describe.each(Object.keys(roots))('%s', (rootName) => {
+      const root = () => roots[rootName]();
+
+      test('a traceparent string binds W3C ids', () => {
+        expect(root().childWithTrace(TRACEPARENT).raw.bindings()).toMatchObject({
+          module: 'tracing-test',
+          traceparent: TRACEPARENT,
+          trace_id: TRACE_ID,
+          span_id: SPAN_ID,
+          correlationId: TRACE_ID,
+        });
+      });
+
+      test('a plain string binds a correlation id', () => {
+        expect(root().childWithTrace('cycle-9').raw.bindings()).toMatchObject({
+          correlationId: 'cycle-9',
+          trace_id: 'cycle-9',
+        });
+      });
+
+      test('an object context is normalised to snake_case fields', () => {
+        const bindings = root().childWithTrace({
+          traceparent: TRACEPARENT,
+          txHash: 'abc',
+          rpcCall: 'getEvents',
+        }).raw.bindings();
+        expect(bindings).toMatchObject({
+          trace_id: TRACE_ID,
+          span_id: SPAN_ID,
+          tx_hash: 'abc',
+          rpc_call: 'getEvents',
+        });
+      });
+
+      test('explicit snake_case fields win over derived ones', () => {
+        const bindings = root().childWithTrace({
+          traceparent: TRACEPARENT,
+          trace_id: 'mine',
+          span_id: 'my-span',
+          txHash: 'camel',
+          tx_hash: 'snake',
+          rpcCall: 'camel',
+          rpc_call: 'snake',
+        }).raw.bindings();
+        expect(bindings).toMatchObject({ trace_id: 'mine', span_id: 'my-span', tx_hash: 'snake', rpc_call: 'snake' });
+      });
+
+      test('traceId is copied, an invalid traceparent is ignored', () => {
+        const bindings = root().childWithTrace({ traceparent: 'not-a-traceparent', traceId: 'tid' }).raw.bindings();
+        expect(bindings.trace_id).toBe('tid');
+        expect(bindings.span_id).toBeUndefined();
+      });
+
+      test('no context binds nothing extra', () => {
+        const bindings = root().childWithTrace().raw.bindings();
+        expect(bindings.module).toBe('tracing-test');
+        expect(bindings.trace_id).toBeUndefined();
+      });
+    });
+  });
+
   describe('exporters', () => {
     test('ConsoleExporter prints OTLP-shaped logs for ended spans only', () => {
       const out = jest.spyOn(console, 'log').mockImplementation(() => {});
