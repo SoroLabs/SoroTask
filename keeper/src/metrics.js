@@ -763,6 +763,10 @@ class MetricsServer {
     this.redisClient = options.redisClient || null;
     this.workerPool = options.workerPool || null;
     this.tmpPath = options.tmpPath || '/tmp';
+    // Populated by setWebhookHandler(); initialised here so routing an
+    // unknown path before a webhook handler is registered does not throw.
+    this.webhookHandler = null;
+    this.webhookPaths = new Set();
     this.redisLatencyThresholdMs = options.redisLatencyThresholdMs
       || parseInt(process.env.REDIS_LATENCY_THRESHOLD_MS || '250', 10);
     this.drainStateProvider = typeof options.drainStateProvider === 'function'
