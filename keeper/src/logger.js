@@ -497,7 +497,7 @@ function fmtLogRecord(record) {
 function structured(level, record) {
   if (!DEFAULT_OPTIONS.enabled) return;
   const levelRank = LOG_LEVELS[level];
-  if (levelRank < LOG_LEVELS[DEFAULT_OPTIONS.level]) return;
+  if (levelRank > LOG_LEVELS[DEFAULT_OPTIONS.level]) return;
   const formatted = formatRecord(level, record);
   DEFAULT_OPTIONS.exporter.exportLog(fmtLogRecord(formatted));
   return formatted;
