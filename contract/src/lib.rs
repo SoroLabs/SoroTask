@@ -12108,6 +12108,14 @@ pub(crate) mod tests {
         let config = client.get_proxy_config().unwrap();
         assert_eq!(config.admin, new_admin.clone());
         assert_eq!(client.get_proxy_admin(), Some(new_admin));
+
+        let result = client.try_transfer_proxy_admin(&admin, &Address::generate(&env));
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::Unauthorized as u32
+            )))
+        );
     }
 
     #[test]
