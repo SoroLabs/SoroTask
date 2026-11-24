@@ -4,15 +4,18 @@ const EventEmitter = require('events');
 const { Server: SocketIOServer } = require('socket.io');
 const { io: createSocketClient } = require('socket.io-client');
 const { createLogger } = require('./logger');
+const { GossipSubNetworkV2 } = require('./p2p-gossip-v2');
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10000;
 const DEFAULT_STALE_PEER_MS = 45000;
 const DEFAULT_AUTH_WINDOW_MS = 30000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 const DEFAULT_TASK_LOCK_TTL_MS = 60000;
+const DEFAULT_MAX_SEEN_NONCES = 100000;
 const DEFAULT_P2P_TOPICS = {
   discovery: 'sorotask.keeper.discovery.v1',
   taskLocks: 'sorotask.keeper.task-locks.v1',
+  taskClaims: 'sorotask.keeper.task-claims.v2',
   bids: 'sorotask.keeper.bids.v1',
 };
 
@@ -27,6 +30,19 @@ function parsePeerList(value) {
     .split(',')
     .map((peer) => peer.trim())
     .filter(Boolean);
+}
+
+function parseLibp2pBootstrapPeers(value) {
+  const peers = parsePeerList(value);
+  const invalid = peers.filter((peer) => (
+    !peer.startsWith('/') || !/\/p2p\/[^/]+$/.test(peer)
+  ));
+  if (invalid.length > 0) {
+    throw new Error(
+      `libp2p bootstrap peers must be multiaddresses ending in /p2p/<peer-id>: ${invalid.join(', ')}`,
+    );
+  }
+  return peers;
 }
 
 function stableStringify(value) {
@@ -101,7 +117,11 @@ function verifySignedEnvelope(envelope, secret, options = {}) {
   }
 
   if (seenNonces) {
-    seenNonces.add(envelope.nonce);
+    if (seenNonces instanceof Map) {
+      seenNonces.set(envelope.nonce, now);
+    } else {
+      seenNonces.add(envelope.nonce);
+    }
   }
   return { ok: true };
 }
@@ -178,6 +198,9 @@ async function createDefaultLibp2pNode(options = {}) {
       { noise },
       { yamux },
       { bootstrap },
+      { kadDHT },
+      { identify },
+      { ping },
       { gossipsub },
     ] = await Promise.all([
       import('libp2p'),
@@ -186,12 +209,15 @@ async function createDefaultLibp2pNode(options = {}) {
       import('@chainsafe/libp2p-noise'),
       import('@chainsafe/libp2p-yamux'),
       import('@libp2p/bootstrap'),
+      import('@libp2p/kad-dht'),
+      import('@libp2p/identify'),
+      import('@libp2p/ping'),
       import('@chainsafe/libp2p-gossipsub'),
     ]);
 
     const listenPort = Number.isFinite(options.listenPort) ? options.listenPort : 0;
     const listenHost = options.listenHost || '0.0.0.0';
-    const bootstrapPeers = parsePeerList(options.bootstrapPeers);
+    const bootstrapPeers = parseLibp2pBootstrapPeers(options.bootstrapPeers);
 
     return createLibp2p({
       addresses: {
@@ -202,14 +228,22 @@ async function createDefaultLibp2pNode(options = {}) {
       streamMuxers: [yamux()],
       peerDiscovery: bootstrapPeers.length > 0 ? [bootstrap({ list: bootstrapPeers })] : [],
       services: {
+        dht: kadDHT(),
+        identify: identify(),
+        ping: ping(),
         pubsub: gossipsub({
           allowPublishToZeroTopicPeers: true,
+          D: 6,
+          Dlo: 4,
+          Dhi: 12,
+          Dout: 2,
+          heartbeatInterval: 100,
         }),
       },
     });
   } catch (error) {
     const wrapped = new Error(
-      `Unable to initialize libp2p transport. Install libp2p, @libp2p/tcp, @libp2p/websockets, @chainsafe/libp2p-noise, @chainsafe/libp2p-yamux, @libp2p/bootstrap, and @chainsafe/libp2p-gossipsub or provide libp2pNodeFactory. ${error.message}`,
+      `Unable to initialize libp2p transport. Install libp2p, @libp2p/tcp, @libp2p/websockets, @chainsafe/libp2p-noise, @chainsafe/libp2p-yamux, @libp2p/bootstrap, @libp2p/kad-dht, @libp2p/identify, @libp2p/ping, and @chainsafe/libp2p-gossipsub or provide libp2pNodeFactory. ${error.message}`,
     );
     wrapped.cause = error;
     throw wrapped;
@@ -227,9 +261,11 @@ class KeeperP2PNetwork extends EventEmitter {
     this.listenPort = Number.isFinite(options.listenPort) ? options.listenPort : 0;
     this.sharedSecret = options.sharedSecret || null;
     this.bootstrapPeers = parsePeerList(options.bootstrapPeers);
+    this.libp2pBootstrapPeers = parsePeerList(options.libp2pBootstrapPeers);
     this.heartbeatIntervalMs = options.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.stalePeerMs = options.stalePeerMs || DEFAULT_STALE_PEER_MS;
     this.authWindowMs = options.authWindowMs || DEFAULT_AUTH_WINDOW_MS;
+    this.maxSeenNonces = options.maxSeenNonces || DEFAULT_MAX_SEEN_NONCES;
     this.connectTimeoutMs = options.connectTimeoutMs || DEFAULT_CONNECT_TIMEOUT_MS;
     this.transport = options.transport || 'socketio';
     this.taskLockTtlMs = options.taskLockTtlMs || DEFAULT_TASK_LOCK_TTL_MS;
@@ -250,15 +286,19 @@ class KeeperP2PNetwork extends EventEmitter {
     this.io = null;
     this.libp2pStarted = false;
     this.libp2pMessageListenerRegistered = false;
+    this.libp2pPeerConnectHandler = null;
+    this.libp2pSubscriptionChangeHandler = null;
+    this.discoveryBroadcastTimer = null;
     this.started = false;
     this.peers = new Map();
     this.sockets = new Map();
     this.taskLocks = new Map();
-    this.seenNonces = new Set();
+    this.seenNonces = new Map();
     this.heartbeatTimer = null;
     this.pruneTimer = null;
     // Issue #841: active bid auction state — keyed by taskId
     this.activeBids = new Map();
+    this.gossipV2 = new GossipSubNetworkV2(this, options.gossipV2);
   }
 
   async start() {
@@ -269,32 +309,47 @@ class KeeperP2PNetwork extends EventEmitter {
       throw new Error('P2P_SHARED_SECRET is required when P2P networking is enabled');
     }
 
-    if (this.shouldStartSocketTransport()) {
-      await this.startSocketTransport();
-    }
+    try {
+      if (this.shouldStartSocketTransport()) {
+        await this.startSocketTransport();
+      }
 
-    if (this.shouldStartLibp2pTransport()) {
-      await this.startLibp2pTransport();
-    }
+      if (this.shouldStartLibp2pTransport()) {
+        await this.startLibp2pTransport();
+      }
 
-    this.started = true;
-    if (this.shouldStartSocketTransport()) {
-      this.bootstrapPeers.forEach((peerUrl) => this.connect(peerUrl));
+      this.started = true;
+      this.gossipV2.start();
+      if (this.shouldStartSocketTransport()) {
+        this.bootstrapPeers.forEach((peerUrl) => this.connect(peerUrl));
+      }
+      this.broadcastHeartbeat();
+      this.heartbeatTimer = setInterval(() => this.broadcastHeartbeat(), this.heartbeatIntervalMs);
+      this.pruneTimer = setInterval(() => this.pruneStalePeers(), Math.min(this.stalePeerMs, 10000));
+      if (typeof this.heartbeatTimer.unref === 'function') {
+        this.heartbeatTimer.unref();
+      }
+      if (typeof this.pruneTimer.unref === 'function') {
+        this.pruneTimer.unref();
+      }
+      this.logger.info('P2P keeper network started', {
+        nodeId: this.nodeId,
+        publicUrl: this.publicUrl,
+        bootstrapPeers: this.bootstrapPeers.length,
+        libp2pBootstrapPeers: this.libp2pBootstrapPeers.length,
+      });
+      return this.getStateSnapshot();
+    } catch (error) {
+      try {
+        await this.stop();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          'P2P network startup failed and transport cleanup was incomplete',
+        );
+      }
+      throw error;
     }
-    this.heartbeatTimer = setInterval(() => this.broadcastHeartbeat(), this.heartbeatIntervalMs);
-    this.pruneTimer = setInterval(() => this.pruneStalePeers(), Math.min(this.stalePeerMs, 10000));
-    if (typeof this.heartbeatTimer.unref === 'function') {
-      this.heartbeatTimer.unref();
-    }
-    if (typeof this.pruneTimer.unref === 'function') {
-      this.pruneTimer.unref();
-    }
-    this.logger.info('P2P keeper network started', {
-      nodeId: this.nodeId,
-      publicUrl: this.publicUrl,
-      bootstrapPeers: this.bootstrapPeers.length,
-    });
-    return this.getStateSnapshot();
   }
 
   shouldStartSocketTransport() {
@@ -341,7 +396,7 @@ class KeeperP2PNetwork extends EventEmitter {
         nodeId: this.nodeId,
         listenHost: this.listenHost,
         listenPort: this.listenPort,
-        bootstrapPeers: this.bootstrapPeers,
+        bootstrapPeers: this.libp2pBootstrapPeers,
         topics: this.topics,
       });
     }
@@ -359,7 +414,24 @@ class KeeperP2PNetwork extends EventEmitter {
 
     this.subscribeLibp2pTopic(this.topics.discovery);
     this.subscribeLibp2pTopic(this.topics.taskLocks);
+    this.subscribeLibp2pTopic(this.topics.taskClaims);
     this.subscribeLibp2pTopic(this.topics.bids);
+    if (typeof this.libp2pNode.addEventListener === 'function') {
+      this.libp2pPeerConnectHandler = () => this.scheduleDiscoveryBroadcast();
+      this.libp2pNode.addEventListener('peer:connect', this.libp2pPeerConnectHandler);
+    }
+    const pubsub = this.libp2pNode.services && this.libp2pNode.services.pubsub;
+    if (pubsub && typeof pubsub.addEventListener === 'function') {
+      this.libp2pSubscriptionChangeHandler = (event) => {
+        const subscriptions = event.detail?.subscriptions || [];
+        if (subscriptions.some((subscription) => (
+          subscription.topic === this.topics.discovery && subscription.subscribe
+        ))) {
+          this.scheduleDiscoveryBroadcast();
+        }
+      };
+      pubsub.addEventListener('subscription-change', this.libp2pSubscriptionChangeHandler);
+    }
     this.libp2pStarted = true;
     this.broadcastLibp2pDiscovery();
   }
@@ -417,6 +489,7 @@ class KeeperP2PNetwork extends EventEmitter {
     socket.on('keeper:heartbeat', (envelope) => this.handleEnvelope(socket, envelope));
     socket.on('keeper:peers', (envelope) => this.handleEnvelope(socket, envelope));
     socket.on('keeper:task-lock', (envelope) => this.handleTaskLockEnvelope(envelope));
+    socket.on('keeper:task-claim', (envelope) => this.handleTaskClaimEnvelope(envelope));
     // Issue #841: receive incoming fee bids from peer keepers
     socket.on('keeper:bid', (envelope) => {
       const verification = this.verify(envelope);
@@ -515,6 +588,10 @@ class KeeperP2PNetwork extends EventEmitter {
       this.handleTaskLockEnvelope(envelope);
       return;
     }
+    if (topic === this.topics.taskClaims) {
+      this.handleTaskClaimEnvelope(envelope);
+      return;
+    }
     if (topic === this.topics.bids) {
       const verification = this.verify(envelope);
       if (verification.ok) {
@@ -569,6 +646,22 @@ class KeeperP2PNetwork extends EventEmitter {
     this.emit('task-lock:claimed', lock);
   }
 
+  handleTaskClaimEnvelope(envelope) {
+    if (!envelope || envelope.type !== 'task_claim') {
+      this.logger.warn('Rejected invalid task claim envelope', { reason: 'invalid_message_type' });
+      this.emit('security:rejected', { reason: 'invalid_message_type' });
+      return false;
+    }
+    const verification = this.verify(envelope);
+    if (!verification.ok) {
+      this.logger.warn('Rejected invalid task claim envelope', { reason: verification.reason });
+      this.emit('security:rejected', { reason: verification.reason });
+      return false;
+    }
+    this.emit('task-claim', envelope);
+    return true;
+  }
+
   rejectSocket(socket, reason) {
     this.logger.warn('Rejected P2P message', { reason });
     this.emit('security:rejected', { reason });
@@ -585,9 +678,22 @@ class KeeperP2PNetwork extends EventEmitter {
   }
 
   verify(envelope) {
+    const now = Date.now();
+    let oldestNonce = this.seenNonces.entries().next().value;
+    while (oldestNonce && now - oldestNonce[1] > this.authWindowMs) {
+      this.seenNonces.delete(oldestNonce[0]);
+      oldestNonce = this.seenNonces.entries().next().value;
+    }
+    if (
+      this.seenNonces.size >= this.maxSeenNonces
+      && !this.seenNonces.has(envelope?.nonce)
+    ) {
+      return { ok: false, reason: 'replay_cache_full' };
+    }
     return verifySignedEnvelope(envelope, this.sharedSecret, {
       seenNonces: this.seenNonces,
       authWindowMs: this.authWindowMs,
+      now,
     });
   }
 
@@ -673,6 +779,19 @@ class KeeperP2PNetwork extends EventEmitter {
     this.publishLibp2p(this.topics.discovery, envelope);
   }
 
+  scheduleDiscoveryBroadcast() {
+    clearTimeout(this.discoveryBroadcastTimer);
+    this.discoveryBroadcastTimer = setTimeout(() => {
+      this.discoveryBroadcastTimer = null;
+      if (this.started && this.libp2pStarted) {
+        this.broadcastHeartbeat();
+      }
+    }, 100);
+    if (typeof this.discoveryBroadcastTimer.unref === 'function') {
+      this.discoveryBroadcastTimer.unref();
+    }
+  }
+
   publishEnvelope(topic, socketEvent, envelope) {
     this.publishLibp2p(topic, envelope);
     if (this.io) {
@@ -692,7 +811,16 @@ class KeeperP2PNetwork extends EventEmitter {
     }
 
     const encoded = Buffer.from(JSON.stringify(envelope));
-    pubsub.publish(topic, encoded);
+    const publishResult = pubsub.publish(topic, encoded);
+    if (publishResult && typeof publishResult.catch === 'function') {
+      publishResult.catch((error) => {
+        this.logger.warn('Failed to publish P2P gossip message', {
+          topic,
+          error: error.message,
+        });
+        this.emit('peer:error', { topic, error });
+      });
+    }
     return true;
   }
 
@@ -770,8 +898,10 @@ class KeeperP2PNetwork extends EventEmitter {
       peerCount: this.peers.size,
       healthyPeerCount: peers.length,
       libp2pStarted: this.libp2pStarted,
+      dhtStarted: Boolean(this.libp2pStarted && this.libp2pNode?.services?.dht),
       transport: this.transport,
       taskLockCount: this.taskLocks.size,
+      gossipV2: this.gossipV2.getNetworkState(),
       peers: peers.map((peer) => ({
         nodeId: peer.nodeId,
         url: peer.url,
@@ -787,6 +917,9 @@ class KeeperP2PNetwork extends EventEmitter {
     clearInterval(this.pruneTimer);
     this.heartbeatTimer = null;
     this.pruneTimer = null;
+    clearTimeout(this.discoveryBroadcastTimer);
+    this.discoveryBroadcastTimer = null;
+    this.gossipV2.stop();
 
     this.sockets.forEach((socket) => socket.disconnect());
     this.sockets.clear();
@@ -800,17 +933,47 @@ class KeeperP2PNetwork extends EventEmitter {
       this.httpServer = null;
     }
     if (this.libp2pNode && typeof this.libp2pNode.stop === 'function') {
+      if (
+        this.libp2pPeerConnectHandler
+        && typeof this.libp2pNode.removeEventListener === 'function'
+      ) {
+        this.libp2pNode.removeEventListener('peer:connect', this.libp2pPeerConnectHandler);
+      }
+      const pubsub = this.libp2pNode.services && this.libp2pNode.services.pubsub;
+      if (
+        this.libp2pSubscriptionChangeHandler
+        && pubsub
+        && typeof pubsub.removeEventListener === 'function'
+      ) {
+        pubsub.removeEventListener('subscription-change', this.libp2pSubscriptionChangeHandler);
+      }
       await this.libp2pNode.stop();
     }
 
     this.libp2pStarted = false;
     this.libp2pMessageListenerRegistered = false;
+    this.libp2pPeerConnectHandler = null;
+    this.libp2pSubscriptionChangeHandler = null;
     this.started = false;
     this.logger.info('P2P keeper network stopped', { nodeId: this.nodeId });
   }
 
   broadcastTaskClaimIntent(taskId) {
     return this.broadcastTaskLock(taskId);
+  }
+
+  broadcastTaskClaim(payload) {
+    if (!this.enabled || !this.started) {
+      return null;
+    }
+    const envelope = this.sign('task_claim', payload);
+    this.handleTaskClaimEnvelope(envelope);
+    this.publishEnvelope(this.topics.taskClaims, 'keeper:task-claim', envelope);
+    return envelope;
+  }
+
+  claimTask(taskId) {
+    return this.gossipV2.claimTask(taskId);
   }
 
   broadcastTaskLock(taskId, metadata = {}) {
@@ -1037,6 +1200,7 @@ module.exports = {
   assignTasksByRendezvous,
   createDefaultLibp2pNode,
   createSignedEnvelope,
+  parseLibp2pBootstrapPeers,
   parsePeerList,
   verifySignedEnvelope,
 };

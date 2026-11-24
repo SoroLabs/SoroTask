@@ -503,6 +503,7 @@ function loadConfig() {
       listenPort: parseInteger(process.env.P2P_LISTEN_PORT, 0),
       sharedSecret: process.env.P2P_SHARED_SECRET || null,
       bootstrapPeers: parseList(process.env.P2P_BOOTSTRAP_PEERS),
+      libp2pBootstrapPeers: parseList(process.env.P2P_LIBP2P_BOOTSTRAP_PEERS),
       heartbeatIntervalMs: parseInteger(process.env.P2P_HEARTBEAT_INTERVAL_MS, 10000),
       stalePeerMs: parseInteger(process.env.P2P_STALE_PEER_MS, 45000),
       authWindowMs: parseInteger(process.env.P2P_AUTH_WINDOW_MS, 30000),

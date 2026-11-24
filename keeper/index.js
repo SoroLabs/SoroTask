@@ -828,6 +828,40 @@ async function main() {
     return filterTasksByHashRing(taskIds, hashRing, selfNodeId);
   };
 
+  const claimTasksForExecution = async (tasks) => {
+    if (!p2pNetwork.enabled || !p2pNetwork.started) {
+      return tasks;
+    }
+
+    const getTaskId = (task) => (task && typeof task === "object" ? task.taskId : task);
+    const claims = await Promise.all(tasks.map((task) => p2pNetwork.claimTask(getTaskId(task))));
+
+    return tasks.filter((task, index) => {
+      const claim = claims[index];
+      const taskId = getTaskId(task);
+      if (claim.claimed || claim.reason === "network_not_started") {
+        p2pNetwork.broadcastTaskLock(taskId, {
+          correlationId: task?.context?.pollCorrelationId || task?.correlationId || null,
+        });
+        return true;
+      }
+      if (claim.reason === "claim_not_propagated") {
+        logger.warn("P2P task claim was not recorded; falling back to local execution", {
+          taskId,
+        });
+        p2pNetwork.broadcastTaskLock(taskId, {
+          correlationId: task?.context?.pollCorrelationId || task?.correlationId || null,
+        });
+        return true;
+      }
+      logger.info("Skipping task claimed by another keeper", {
+        taskId,
+        owner: claim.winner,
+      });
+      return false;
+    });
+  };
+
   // Polling loop
   const pollingIntervalMs = config.pollIntervalMs;
   logger.info("Starting polling loop", {
@@ -959,13 +993,8 @@ async function main() {
           taskId: d.taskId,
           context: { pollCorrelationId: d.correlationId }
         }));
-        tasksToEnqueue.forEach((task) => {
-          p2pNetwork.broadcastTaskLock(task.taskId, {
-            correlationId: task.context.pollCorrelationId,
-          });
-        });
-        
-        await queue.enqueue(tasksToEnqueue, executeTask);
+        const claimedTasks = await claimTasksForExecution(tasksToEnqueue);
+        await queue.enqueue(claimedTasks, executeTask);
       } else {
         logger.info("No tasks due for execution");
       }
@@ -1047,13 +1076,8 @@ async function main() {
           includeContext: true,
       });
       if (dueTaskIds.length > 0) {
-        dueTaskIds.forEach((task) => {
-          const taskId = typeof task === "object" ? task.taskId : task;
-          p2pNetwork.broadcastTaskLock(taskId, {
-            correlationId: typeof task === "object" ? task.correlationId : null,
-          });
-        });
-        await queue.enqueue(dueTaskIds, executeTask);
+        const claimedTasks = await claimTasksForExecution(dueTaskIds);
+        await queue.enqueue(claimedTasks, executeTask);
       }
     } catch (error) {
       logger.error('Error in initial poll', { error: error.message });
