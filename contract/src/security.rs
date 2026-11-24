@@ -12,9 +12,9 @@
 //! - Cross-contract callback topology tracking
 //! - Multi-call batch support without false positives
 
-use soroban_sdk::{Address, Env, Symbol, Vec, panic_with_error};
+use soroban_sdk::{panic_with_error, Address, Env, Symbol, Vec};
 
-use crate::{DataKey, Error, CallFrame, CallGraph};
+use crate::{CallFrame, CallGraph, DataKey, Error};
 
 const REENTRANCY_GUARD_BIT: u32 = 1;
 
@@ -275,10 +275,12 @@ impl<'a> ReentrancyGuard<'a> {
         is_read_only: bool,
     ) -> Result<(), Error> {
         // Check read-only reentrancy before pushing frame
-        self.call_graph.check_read_only_reentrancy(self.env, target)?;
+        self.call_graph
+            .check_read_only_reentrancy(self.env, target)?;
 
         // Push the new frame
-        self.call_graph.push_frame(self.env, target.clone(), function, is_read_only)?;
+        self.call_graph
+            .push_frame(self.env, target.clone(), function, is_read_only)?;
         self.call_graph.save(self.env);
         self.entered = true;
         Ok(())
@@ -439,13 +441,13 @@ where
 {
     // Enter cross-contract call frame with topology tracking
     let mut guard = ReentrancyGuard::for_cross_contract_call(env, target, function, is_read_only)?;
-    
+
     // Perform the actual invocation
     let result = env.invoke_contract::<R>(target, function, args);
-    
+
     // Mark state as potentially mutated (conservative assumption)
     guard.mark_state_mutated();
-    
+
     Ok(result)
 }
 
@@ -462,13 +464,13 @@ where
 {
     // Enter cross-contract call frame with topology tracking
     let mut guard = ReentrancyGuard::for_cross_contract_call(env, target, function, is_read_only)?;
-    
+
     // Perform the actual invocation - unwrap the SDK error as it's not recoverable
     let result = env.try_invoke_contract::<R, soroban_sdk::Error>(target, function, args);
-    
+
     // Mark state as potentially mutated (conservative assumption)
     guard.mark_state_mutated();
-    
+
     // Convert SDK error to contract error
     match result {
         Ok(Ok(val)) => Ok(val),

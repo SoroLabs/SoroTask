@@ -20,8 +20,8 @@
 //! - Maximum arbitrage size limits
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes,
-    BytesN, Env, Symbol, TryIntoVal, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN,
+    Env, Symbol, TryIntoVal, Vec,
 };
 
 use crate::events::EventLogger;
@@ -237,12 +237,7 @@ pub fn initialize(
 }
 
 /// Register a synthetic/underlying token pair (SC-PROD-33 Easy)
-pub fn register_token_pair(
-    env: &Env,
-    synthetic: Address,
-    underlying: Address,
-    target_peg: i128,
-) {
+pub fn register_token_pair(env: &Env, synthetic: Address, underlying: Address, target_peg: i128) {
     let config = load_config(env);
     if config.admin == Address::from_u32(0) {
         panic_with_error!(env, Error::NotInitialized);
@@ -272,7 +267,7 @@ pub fn register_token_pair(
 /// Get current prices from oracle (SC-PROD-33 Easy)
 pub fn get_oracle_prices(env: &Env, synthetic: &Address, underlying: &Address) -> PriceData {
     let config = load_config(env);
-    
+
     if config.oracle == Address::from_u32(0) {
         panic_with_error!(env, ArbitrageError::OracleNotConfigured);
     }
@@ -297,16 +292,19 @@ pub fn get_oracle_prices(env: &Env, synthetic: &Address, underlying: &Address) -
 }
 
 /// Check price spread and deviation (SC-PROD-33 Easy)
-pub fn check_price_spread(env: &Env, synthetic: &Address, underlying: &Address) -> (bool, i128, i128) {
+pub fn check_price_spread(
+    env: &Env,
+    synthetic: &Address,
+    underlying: &Address,
+) -> (bool, i128, i128) {
     let pair = load_token_pair(env, synthetic)
         .unwrap_or_else(|| panic_with_error!(env, ArbitrageError::InvalidTokenPair));
-    
+
     let prices = get_oracle_prices(env, synthetic, underlying);
-    
+
     // Calculate spread: (synthetic_price - underlying_price) / underlying_price
     let spread_bps = if prices.underlying_price > 0 {
-        ((prices.synthetic_price - prices.underlying_price) * 10000)
-            / prices.underlying_price
+        ((prices.synthetic_price - prices.underlying_price) * 10000) / prices.underlying_price
     } else {
         0
     };
@@ -318,23 +316,19 @@ pub fn check_price_spread(env: &Env, synthetic: &Address, underlying: &Address) 
 }
 
 /// Calculate minimum profitable volume (SC-PROD-33 Medium)
-pub fn calculate_min_profitable_volume(
-    env: &Env,
-    synthetic: &Address,
-    pool_size: i128,
-) -> i128 {
+pub fn calculate_min_profitable_volume(env: &Env, synthetic: &Address, pool_size: i128) -> i128 {
     let config = load_config(env);
 
     // Maximum arbitrage size based on pool percentage
     let max_size = (pool_size * config.max_arbitrage_pct_bps as i128) / 10000;
-    
+
     // Calculate minimum volume needed to cover fixed costs and meet profit threshold
     // Assuming ~5000 ops per arbitrage at ~0.1 operations per 100 instructions = 500 ops
     const ESTIMATED_GAS_COST: i128 = 500; // stroops
     const FIXED_OVERHEAD: i128 = 1000; // stroops
-    
+
     let min_profit = (ESTIMATED_GAS_COST + FIXED_OVERHEAD) * config.min_profit_bps as i128 / 100;
-    
+
     // At min_profit_bps (e.g., 1%), volume = min_profit / profit_bps
     let min_volume = if config.min_profit_bps > 0 {
         min_profit * 10000 / config.min_profit_bps as i128
@@ -363,7 +357,7 @@ pub fn execute_arbitrage(
     keeper.require_auth();
 
     let config = load_config(env);
-    
+
     if config.is_paused {
         panic_with_error!(env, Error::TaskPaused);
     }
@@ -371,7 +365,7 @@ pub fn execute_arbitrage(
     // Verify token pair exists
     let pair = load_token_pair(env, synthetic)
         .unwrap_or_else(|| panic_with_error!(env, ArbitrageError::InvalidTokenPair));
-    
+
     if !pair.is_active {
         panic_with_error!(env, ArbitrageError::InvalidTokenPair);
     }
@@ -397,7 +391,7 @@ pub fn execute_arbitrage(
     // Flash-mint synthetic tokens (in production, this calls the token contract)
     // For simulation, we assume flash mint succeeds
     let synthetic_minted = amount;
-    
+
     // Calculate flash loan fee
     let flash_fee = (synthetic_minted * FLASH_LOAN_FEE_BPS as i128) / 10000;
 
@@ -415,7 +409,7 @@ pub fn execute_arbitrage(
     // Burn synthetic tokens (restores peg)
     // In production, burn the minted amount + fee
     let synthetic_to_burn = synthetic_minted; // Burn full minted amount
-    
+
     // Calculate profit: underlying_received - synthetic_minted - flash_fee
     let gross_profit = underlying_received - synthetic_minted;
     let net_profit = gross_profit - flash_fee;
@@ -448,7 +442,7 @@ pub fn execute_arbitrage(
         executed_at: env.ledger().timestamp(),
         success: true,
     };
-    
+
     env.storage()
         .persistent()
         .set(&DataKey::ArbitrageRecord(record_id), &record);
@@ -514,7 +508,11 @@ pub fn update_config(
 
     env.events().publish(
         (Symbol::new(env, "ArbitrageConfigUpdated"),),
-        (config.max_deviation_bps, config.min_profit_bps, config.max_arbitrage_pct_bps),
+        (
+            config.max_deviation_bps,
+            config.min_profit_bps,
+            config.max_arbitrage_pct_bps,
+        ),
     );
 }
 
@@ -530,10 +528,8 @@ pub fn set_arbitrage_paused(env: &Env, admin: &Address, paused: bool) {
     config.is_paused = paused;
     save_config(env, &config);
 
-    env.events().publish(
-        (Symbol::new(env, "ArbitragePaused"),),
-        paused,
-    );
+    env.events()
+        .publish((Symbol::new(env, "ArbitragePaused"),), paused);
 }
 
 /// Get arbitrage history
@@ -556,14 +552,21 @@ pub fn get_recent_arbitrages(env: &Env, limit: u32) -> Vec<u64> {
 
 /// Simulate price update for testing
 #[cfg(test)]
-pub fn simulate_price_update(env: &Env, synthetic: &Address, synthetic_price: i128, underlying_price: i128) {
+pub fn simulate_price_update(
+    env: &Env,
+    synthetic: &Address,
+    synthetic_price: i128,
+    underlying_price: i128,
+) {
     // In test mode, store simulated prices
-    env.storage()
-        .persistent()
-        .set(&DataKey::SimulatedSyntheticPrice(synthetic.clone()), &synthetic_price);
-    env.storage()
-        .persistent()
-        .set(&DataKey::SimulatedUnderlyingPrice(synthetic.clone()), &underlying_price);
+    env.storage().persistent().set(
+        &DataKey::SimulatedSyntheticPrice(synthetic.clone()),
+        &synthetic_price,
+    );
+    env.storage().persistent().set(
+        &DataKey::SimulatedUnderlyingPrice(synthetic.clone()),
+        &underlying_price,
+    );
 }
 
 // =============================================================================
@@ -595,7 +598,7 @@ mod tests {
     fn test_spread_calculation() {
         let synthetic_price = 100_5000; // $1.005
         let underlying_price = 100_0000; // $1.00
-        
+
         let spread_bps = ((synthetic_price - underlying_price) * 10000) / underlying_price;
         assert_eq!(spread_bps, 50);
     }
@@ -605,13 +608,13 @@ mod tests {
         let synthetic_minted = 10000i128;
         let underlying_received = 10050i128; // 0.5% profit before fee
         let flash_fee = 10i128; // 0.1%
-        
+
         let gross_profit = underlying_received - synthetic_minted;
         let net_profit = gross_profit - flash_fee;
-        
+
         assert_eq!(gross_profit, 50);
         assert_eq!(net_profit, 40);
-        
+
         let profit_bps = net_profit * 10000 / synthetic_minted;
         assert!(profit_bps >= 100); // >= 1%
     }
