@@ -1413,7 +1413,7 @@ class StressBenchmarkHarness {
         getStatistics: () => ({ total: 0, pending: 0, overdue: 0 }),
         shutdown: async () => {},
       },
-    );
+    });
 
     // Ensure high throughput limiter on dedicated benchmark queue
     if (!this.queue) {
