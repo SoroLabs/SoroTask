@@ -255,6 +255,14 @@ pub enum Error {
     // Congestion surcharge errors (SC-PROD-29)
     InvalidSurchargeConfig = 960,
     InvalidInclusionFee = 961,
+    // Sybil-resistant keeper slashing engine errors (SC-FINAL-15)
+    KeeperAlreadyRegistered = 970,
+    KeeperNotRegistered = 971,
+    InvalidMisbehaviorProof = 972,
+    ProofAlreadySubmitted = 973,
+    PriorityWindowNotExpired = 974,
+    MissedExecutionAlreadySlashed = 975,
+    InvalidSlashingConfig = 976,
 }
 
 #[contracttype]
@@ -1499,6 +1507,20 @@ pub enum DataKey {
     /// Simulated prices for testing
     SimulatedSyntheticPrice(Address),
     SimulatedUnderlyingPrice(Address),
+
+    // ========== SC-FINAL-15: Sybil-Resistant Keeper Slashing Engine ==========
+    /// Keeper slashing engine parameters
+    KeeperSlashingConfig,
+    /// Active bonded stake account per keeper
+    KeeperStakeAccount(Address),
+    /// Aggregate active bonded stake across all keepers
+    TotalActiveKeeperBonds,
+    /// Aggregate slashed stake burned/locked into the insurance vault
+    TotalSlashedBurned,
+    /// Deduplication key for missed execution slashing: (task_id, priority_window_end)
+    MissedExecutionSlashed(u64, u64),
+    /// Replay protection for verified double-execution proofs
+    DoubleExecProofUsed(BytesN<32>),
 }
 
 /// Call frame representing a single entry in the call stack
@@ -7066,6 +7088,138 @@ impl SoroTaskContract {
         );
 
         exit_security_guard(&env);
+    }
+
+    // ============================================================================
+    // SC-FINAL-15: Sybil-Resistant Keeper Slashing Engine with Proof-of-Misbehavior
+    // ============================================================================
+
+    /// Configures keeper slashing engine parameters (admin only).
+    pub fn configure_keeper_slashing(
+        env: Env,
+        admin: Address,
+        min_keeper_bond: i128,
+        base_missed_penalty_bps: u32,
+        escalation_bps: u32,
+        max_missed_penalty_bps: u32,
+        missed_whistleblower_bps: u32,
+    ) -> governance::SlashingConfig {
+        enter_security_guard(&env);
+        let config = governance::configure_slashing(
+            &env,
+            &admin,
+            min_keeper_bond,
+            base_missed_penalty_bps,
+            escalation_bps,
+            max_missed_penalty_bps,
+            missed_whistleblower_bps,
+        );
+        exit_security_guard(&env);
+        config
+    }
+
+    /// Returns the active keeper slashing engine configuration.
+    pub fn get_keeper_slashing_config(env: Env) -> governance::SlashingConfig {
+        governance::load_slashing_config(&env)
+    }
+
+    /// Registers a keeper with a minimum bonded stake and Ed25519 public key.
+    pub fn register_bonded_keeper(
+        env: Env,
+        keeper: Address,
+        public_key: BytesN<32>,
+        amount: i128,
+    ) -> governance::KeeperStakeAccount {
+        enter_security_guard(&env);
+        let account = governance::register_bonded_keeper(&env, &keeper, public_key, amount);
+        exit_security_guard(&env);
+        account
+    }
+
+    /// Tops up a registered keeper's active bonded stake.
+    pub fn top_up_keeper_bond(
+        env: Env,
+        keeper: Address,
+        amount: i128,
+    ) -> governance::KeeperStakeAccount {
+        enter_security_guard(&env);
+        let account = governance::top_up_keeper_bond(&env, &keeper, amount);
+        exit_security_guard(&env);
+        account
+    }
+
+    /// Withdraws excess bonded stake while strictly enforcing minimum bonded balance constraints.
+    pub fn withdraw_keeper_bond(
+        env: Env,
+        keeper: Address,
+        amount: i128,
+    ) -> governance::KeeperStakeAccount {
+        enter_security_guard(&env);
+        let account = governance::withdraw_keeper_bond(&env, &keeper, amount);
+        exit_security_guard(&env);
+        account
+    }
+
+    /// Returns a keeper's active bonded stake account.
+    pub fn get_keeper_stake_account(
+        env: Env,
+        keeper: Address,
+    ) -> Option<governance::KeeperStakeAccount> {
+        governance::load_keeper_stake_account(&env, &keeper)
+    }
+
+    /// Returns total active bonded stakes across all registered keepers.
+    pub fn get_total_active_keeper_bonds(env: Env) -> i128 {
+        escrow_pool::get_total_active_keeper_bonds(&env)
+    }
+
+    /// Returns total slashed keeper stake burned/locked into the insurance vault.
+    pub fn get_total_slashed_burned(env: Env) -> i128 {
+        escrow_pool::get_total_slashed_burned(&env)
+    }
+
+    /// Deterministically calculates the automated missed execution penalty for a keeper.
+    pub fn calculate_missed_execution_penalty(
+        env: Env,
+        keeper: Address,
+        missed_windows: u32,
+    ) -> i128 {
+        governance::calculate_missed_execution_penalty(&env, &keeper, missed_windows)
+    }
+
+    /// Deterministically slashes a keeper for skipping a priority execution window.
+    pub fn slash_missed_execution(
+        env: Env,
+        whistleblower: Address,
+        keeper: Address,
+        task_id: u64,
+        priority_window_end: u64,
+        missed_windows: u32,
+    ) -> governance::SlashReceipt {
+        enter_security_guard(&env);
+        let receipt = governance::slash_missed_execution(
+            &env,
+            &whistleblower,
+            &keeper,
+            task_id,
+            priority_window_end,
+            missed_windows,
+        );
+        exit_security_guard(&env);
+        receipt
+    }
+
+    /// Verifies a cryptographic Ed25519 double-execution proof and triggers instant 50% stake
+    /// slashing/burning (routed to insurance vault) with the remaining 50% paid as bounty to whistleblower.
+    pub fn submit_double_execution_proof(
+        env: Env,
+        whistleblower: Address,
+        proof: governance::DoubleExecutionProof,
+    ) -> governance::SlashReceipt {
+        enter_security_guard(&env);
+        let receipt = governance::submit_double_execution_proof(&env, &whistleblower, &proof);
+        exit_security_guard(&env);
+        receipt
     }
 
     /// Returns the delegation pool entry for a delegator.

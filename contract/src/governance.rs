@@ -661,6 +661,590 @@ pub fn can_execute(env: &Env, proposal_id: u64) -> bool {
 }
 
 // =============================================================================
+// SC-FINAL-15: Sybil-Resistant Keeper Slashing Engine with Proof-of-Misbehavior
+// =============================================================================
+
+/// Default minimum bonded stake required for keeper registration.
+pub const DEFAULT_MIN_KEEPER_BOND: i128 = 500;
+/// Default base penalty for a missed execution window (5% = 500 bps).
+pub const DEFAULT_BASE_MISSED_PENALTY_BPS: u32 = 500;
+/// Default escalation per consecutive missed execution (2.5% = 250 bps).
+pub const DEFAULT_MISSED_ESCALATION_BPS: u32 = 250;
+/// Default cap on missed execution penalty per offense (50% = 5000 bps).
+pub const DEFAULT_MAX_MISSED_PENALTY_BPS: u32 = 5000;
+/// Default whistleblower share for missed execution reports (20% = 2000 bps; 80% to insurance vault).
+pub const DEFAULT_MISSED_WHISTLEBLOWER_BPS: u32 = 2000;
+/// Double-execution whistleblower share (50% = 5000 bps; remaining 50% burned & routed to insurance vault).
+pub const DOUBLE_EXEC_WHISTLEBLOWER_BPS: u32 = 5000;
+
+/// Domain separator for canonical keeper execution attestation signing.
+pub const DOUBLE_EXEC_DOMAIN_SEPARATOR: &[u8] = b"SOROTASK_EXEC_V1";
+
+/// Configurable parameters for the keeper slashing engine.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SlashingConfig {
+    pub min_keeper_bond: i128,
+    pub base_missed_penalty_bps: u32,
+    pub escalation_bps: u32,
+    pub max_missed_penalty_bps: u32,
+    pub missed_whistleblower_bps: u32,
+}
+
+impl Default for SlashingConfig {
+    fn default() -> Self {
+        Self {
+            min_keeper_bond: DEFAULT_MIN_KEEPER_BOND,
+            base_missed_penalty_bps: DEFAULT_BASE_MISSED_PENALTY_BPS,
+            escalation_bps: DEFAULT_MISSED_ESCALATION_BPS,
+            max_missed_penalty_bps: DEFAULT_MAX_MISSED_PENALTY_BPS,
+            missed_whistleblower_bps: DEFAULT_MISSED_WHISTLEBLOWER_BPS,
+        }
+    }
+}
+
+/// Active bonded stake account for a registered keeper.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeeperStakeAccount {
+    pub keeper: Address,
+    /// Registered Ed25519 public key used to verify cryptographic misbehavior proofs.
+    pub public_key: BytesN<32>,
+    /// Current active bonded stake.
+    pub active_bond: i128,
+    /// Minimum bonded stake required to remain active.
+    pub min_required_bond: i128,
+    /// Total missed execution windows recorded.
+    pub missed_executions: u32,
+    /// Consecutive missed execution windows (drives penalty escalation).
+    pub consecutive_misses: u32,
+    /// Cumulative stake slashed from this keeper.
+    pub total_slashed: i128,
+    /// Whether the keeper currently satisfies bonded balance constraints and is active.
+    pub is_active: bool,
+    /// Whether the keeper has been slashed for provable misbehavior.
+    pub is_slashed: bool,
+    pub registered_at: u64,
+    pub last_activity_at: u64,
+}
+
+/// Cryptographic proof of double-execution (equivocation) by a keeper on the same
+/// `(task_id, execution_window)` with two distinct payload hashes signed by the keeper's Ed25519 key.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoubleExecutionProof {
+    pub keeper: Address,
+    pub task_id: u64,
+    pub execution_window: u64,
+    pub payload_hash_a: BytesN<32>,
+    pub signature_a: BytesN<64>,
+    pub payload_hash_b: BytesN<32>,
+    pub signature_b: BytesN<64>,
+}
+
+/// Deterministic receipt returned after a slashing event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SlashReceipt {
+    pub keeper: Address,
+    pub whistleblower: Address,
+    pub slashed_amount: i128,
+    pub insurance_vault_amount: i128,
+    pub whistleblower_bounty: i128,
+    pub burned_amount: i128,
+    pub remaining_bond: i128,
+    pub keeper_still_active: bool,
+}
+
+/// Load slashing configuration (with defaults).
+pub fn load_slashing_config(env: &Env) -> SlashingConfig {
+    env.storage()
+        .instance()
+        .get(&DataKey::KeeperSlashingConfig)
+        .unwrap_or_default()
+}
+
+/// Save slashing configuration.
+pub fn save_slashing_config(env: &Env, config: &SlashingConfig) {
+    env.storage()
+        .instance()
+        .set(&DataKey::KeeperSlashingConfig, config);
+}
+
+/// Configure slashing engine parameters (admin only).
+pub fn configure_slashing(
+    env: &Env,
+    admin: &Address,
+    min_keeper_bond: i128,
+    base_missed_penalty_bps: u32,
+    escalation_bps: u32,
+    max_missed_penalty_bps: u32,
+    missed_whistleblower_bps: u32,
+) -> SlashingConfig {
+    admin.require_auth();
+
+    let gov_config = load_config(env);
+    if gov_config.admin != Address::from_u32(0) && gov_config.admin != *admin {
+        panic_with_error!(env, Error::Unauthorized);
+    }
+
+    if min_keeper_bond <= 0
+        || base_missed_penalty_bps == 0
+        || max_missed_penalty_bps > 10_000
+        || base_missed_penalty_bps > max_missed_penalty_bps
+        || missed_whistleblower_bps > 10_000
+    {
+        panic_with_error!(env, Error::InvalidSlashingConfig);
+    }
+
+    let config = SlashingConfig {
+        min_keeper_bond,
+        base_missed_penalty_bps,
+        escalation_bps,
+        max_missed_penalty_bps,
+        missed_whistleblower_bps,
+    };
+    save_slashing_config(env, &config);
+
+    env.events().publish(
+        (Symbol::new(env, "SlashingConfigUpdated"),),
+        (
+            min_keeper_bond,
+            base_missed_penalty_bps,
+            escalation_bps,
+            max_missed_penalty_bps,
+        ),
+    );
+
+    config
+}
+
+/// Load a keeper's active bonded stake account.
+pub fn load_keeper_stake_account(env: &Env, keeper: &Address) -> Option<KeeperStakeAccount> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::KeeperStakeAccount(keeper.clone()))
+}
+
+/// Save a keeper's active bonded stake account.
+fn save_keeper_stake_account(env: &Env, account: &KeeperStakeAccount) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::KeeperStakeAccount(account.keeper.clone()), account);
+}
+
+/// Register a keeper with a minimum bonded stake and Ed25519 public key (SC-FINAL-15 Easy).
+pub fn register_bonded_keeper(
+    env: &Env,
+    keeper: &Address,
+    public_key: BytesN<32>,
+    amount: i128,
+) -> KeeperStakeAccount {
+    keeper.require_auth();
+
+    if load_keeper_stake_account(env, keeper).is_some() {
+        panic_with_error!(env, Error::KeeperAlreadyRegistered);
+    }
+
+    let config = load_slashing_config(env);
+    crate::escrow_pool::enforce_bonded_balance_constraint(env, amount, config.min_keeper_bond);
+
+    // Transfer bonded stake tokens into contract escrow if token is configured
+    if let Some(token_address) = env
+        .storage()
+        .instance()
+        .get::<DataKey, Address>(&DataKey::Token)
+    {
+        let token_client = soroban_sdk::token::Client::new(env, &token_address);
+        token_client.transfer(keeper, &env.current_contract_address(), &amount);
+    }
+
+    crate::escrow_pool::record_keeper_bond_deposit(env, amount);
+    let total_stakes: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TotalKeeperStakes)
+        .unwrap_or(0);
+    env.storage().instance().set(
+        &DataKey::TotalKeeperStakes,
+        &total_stakes.saturating_add(amount),
+    );
+
+    let now = env.ledger().timestamp();
+    let account = KeeperStakeAccount {
+        keeper: keeper.clone(),
+        public_key,
+        active_bond: amount,
+        min_required_bond: config.min_keeper_bond,
+        missed_executions: 0,
+        consecutive_misses: 0,
+        total_slashed: 0,
+        is_active: true,
+        is_slashed: false,
+        registered_at: now,
+        last_activity_at: now,
+    };
+
+    save_keeper_stake_account(env, &account);
+
+    env.events().publish(
+        (Symbol::new(env, "KeeperRegisteredBonded"),),
+        (keeper.clone(), amount),
+    );
+
+    account
+}
+
+/// Top up a registered keeper's active bonded stake (and reactivate if balance constraint is restored).
+pub fn top_up_keeper_bond(env: &Env, keeper: &Address, amount: i128) -> KeeperStakeAccount {
+    keeper.require_auth();
+
+    if amount <= 0 {
+        panic_with_error!(env, Error::KeeperBondInsufficient);
+    }
+
+    let mut account = load_keeper_stake_account(env, keeper)
+        .unwrap_or_else(|| panic_with_error!(env, Error::KeeperNotRegistered));
+
+    if let Some(token_address) = env
+        .storage()
+        .instance()
+        .get::<DataKey, Address>(&DataKey::Token)
+    {
+        let token_client = soroban_sdk::token::Client::new(env, &token_address);
+        token_client.transfer(keeper, &env.current_contract_address(), &amount);
+    }
+
+    crate::escrow_pool::record_keeper_bond_deposit(env, amount);
+    let total_stakes: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TotalKeeperStakes)
+        .unwrap_or(0);
+    env.storage().instance().set(
+        &DataKey::TotalKeeperStakes,
+        &total_stakes.saturating_add(amount),
+    );
+
+    account.active_bond = account.active_bond.saturating_add(amount);
+    account.last_activity_at = env.ledger().timestamp();
+
+    let config = load_slashing_config(env);
+    account.min_required_bond = config.min_keeper_bond;
+    if account.active_bond >= config.min_keeper_bond {
+        account.is_active = true;
+        account.is_slashed = false;
+    }
+
+    save_keeper_stake_account(env, &account);
+
+    env.events().publish(
+        (Symbol::new(env, "KeeperBondToppedUp"),),
+        (keeper.clone(), amount, account.active_bond),
+    );
+
+    account
+}
+
+/// Withdraw excess bonded stake while strictly enforcing minimum bonded balance constraints.
+/// Full withdrawal (leaving 0) is allowed only if the keeper is not slashed, deactivating the keeper.
+pub fn withdraw_keeper_bond(env: &Env, keeper: &Address, amount: i128) -> KeeperStakeAccount {
+    keeper.require_auth();
+
+    if amount <= 0 {
+        panic_with_error!(env, Error::KeeperBondInsufficient);
+    }
+
+    let mut account = load_keeper_stake_account(env, keeper)
+        .unwrap_or_else(|| panic_with_error!(env, Error::KeeperNotRegistered));
+
+    if account.is_slashed {
+        panic_with_error!(env, Error::KeeperSlashed);
+    }
+
+    if amount > account.active_bond {
+        panic_with_error!(env, Error::KeeperBondInsufficient);
+    }
+
+    let remaining = account.active_bond.saturating_sub(amount);
+    let config = load_slashing_config(env);
+
+    // Strictly enforce bonded balance constraint: either remain >= min_keeper_bond or fully exit (0)
+    if remaining > 0 && remaining < config.min_keeper_bond {
+        panic_with_error!(env, Error::KeeperBondInsufficient);
+    }
+
+    crate::escrow_pool::record_keeper_bond_release(env, amount);
+    let total_stakes: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TotalKeeperStakes)
+        .unwrap_or(0);
+    env.storage().instance().set(
+        &DataKey::TotalKeeperStakes,
+        &total_stakes.saturating_sub(amount),
+    );
+
+    if let Some(token_address) = env
+        .storage()
+        .instance()
+        .get::<DataKey, Address>(&DataKey::Token)
+    {
+        let token_client = soroban_sdk::token::Client::new(env, &token_address);
+        token_client.transfer(&env.current_contract_address(), keeper, &amount);
+    }
+
+    account.active_bond = remaining;
+    account.is_active = remaining >= config.min_keeper_bond;
+    account.last_activity_at = env.ledger().timestamp();
+
+    save_keeper_stake_account(env, &account);
+
+    env.events().publish(
+        (Symbol::new(env, "KeeperBondWithdrawn"),),
+        (keeper.clone(), amount, remaining),
+    );
+
+    account
+}
+
+/// Deterministically calculates the automated missed execution penalty for a keeper (SC-FINAL-15 Medium).
+///
+/// Formula:
+/// `effective_bps = min(base_missed_penalty_bps + (consecutive_misses + missed_windows - 1) * escalation_bps, max_missed_penalty_bps)`
+/// `penalty = active_bond * effective_bps / 10_000`
+pub fn calculate_missed_execution_penalty(
+    env: &Env,
+    keeper: &Address,
+    missed_windows: u32,
+) -> i128 {
+    if missed_windows == 0 {
+        return 0;
+    }
+
+    let account = load_keeper_stake_account(env, keeper)
+        .unwrap_or_else(|| panic_with_error!(env, Error::KeeperNotRegistered));
+
+    if account.active_bond <= 0 {
+        return 0;
+    }
+
+    let config = load_slashing_config(env);
+    let escalation_steps = account
+        .consecutive_misses
+        .saturating_add(missed_windows.saturating_sub(1));
+    let raw_bps = config
+        .base_missed_penalty_bps
+        .saturating_add(escalation_steps.saturating_mul(config.escalation_bps));
+    let effective_bps = raw_bps.min(config.max_missed_penalty_bps) as i128;
+
+    account.active_bond.saturating_mul(effective_bps) / 10_000
+}
+
+/// Slashes a keeper deterministically for skipping a priority execution window (SC-FINAL-15 Medium).
+pub fn slash_missed_execution(
+    env: &Env,
+    whistleblower: &Address,
+    keeper: &Address,
+    task_id: u64,
+    priority_window_end: u64,
+    missed_windows: u32,
+) -> SlashReceipt {
+    whistleblower.require_auth();
+
+    if missed_windows == 0 {
+        panic_with_error!(env, Error::InvalidMisbehaviorProof);
+    }
+
+    if env.ledger().timestamp() <= priority_window_end {
+        panic_with_error!(env, Error::PriorityWindowNotExpired);
+    }
+
+    let slash_key = DataKey::MissedExecutionSlashed(task_id, priority_window_end);
+    if env.storage().persistent().has(&slash_key) {
+        panic_with_error!(env, Error::MissedExecutionAlreadySlashed);
+    }
+
+    let mut account = load_keeper_stake_account(env, keeper)
+        .unwrap_or_else(|| panic_with_error!(env, Error::KeeperNotRegistered));
+
+    if account.active_bond <= 0 {
+        panic_with_error!(env, Error::KeeperBondInsufficient);
+    }
+
+    let penalty = calculate_missed_execution_penalty(env, keeper, missed_windows);
+    let config = load_slashing_config(env);
+
+    let split = crate::escrow_pool::distribute_slashed_stake(
+        env,
+        penalty,
+        whistleblower,
+        config.missed_whistleblower_bps,
+        false,
+    );
+
+    account.active_bond = account.active_bond.saturating_sub(penalty);
+    account.missed_executions = account.missed_executions.saturating_add(missed_windows);
+    account.consecutive_misses = account.consecutive_misses.saturating_add(missed_windows);
+    account.total_slashed = account.total_slashed.saturating_add(penalty);
+    account.last_activity_at = env.ledger().timestamp();
+
+    if account.active_bond < config.min_keeper_bond {
+        account.is_active = false;
+    }
+
+    save_keeper_stake_account(env, &account);
+    env.storage().persistent().set(&slash_key, &true);
+
+    let slash_count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::KeeperSlashCount(keeper.clone()))
+        .unwrap_or(0);
+    env.storage().persistent().set(
+        &DataKey::KeeperSlashCount(keeper.clone()),
+        &slash_count.saturating_add(1),
+    );
+
+    env.events().publish(
+        (Symbol::new(env, "KeeperMissedExecSlashed"), task_id),
+        (
+            keeper.clone(),
+            whistleblower.clone(),
+            penalty,
+            account.active_bond,
+        ),
+    );
+
+    SlashReceipt {
+        keeper: keeper.clone(),
+        whistleblower: whistleblower.clone(),
+        slashed_amount: penalty,
+        insurance_vault_amount: split.insurance_vault_amount,
+        whistleblower_bounty: split.whistleblower_bounty,
+        burned_amount: split.burned_amount,
+        remaining_bond: account.active_bond,
+        keeper_still_active: account.is_active,
+    }
+}
+
+/// Builds the canonical signing message for a keeper execution attestation:
+/// `DOUBLE_EXEC_DOMAIN_SEPARATOR || task_id (BE) || execution_window (BE) || payload_hash (32 bytes)`
+pub fn build_double_exec_message(
+    env: &Env,
+    task_id: u64,
+    execution_window: u64,
+    payload_hash: &BytesN<32>,
+) -> Bytes {
+    let mut msg = Bytes::from_slice(env, DOUBLE_EXEC_DOMAIN_SEPARATOR);
+    msg.append(&Bytes::from_slice(env, &task_id.to_be_bytes()));
+    msg.append(&Bytes::from_slice(env, &execution_window.to_be_bytes()));
+    msg.append(&Bytes::from_slice(env, &payload_hash.to_array()));
+    msg
+}
+
+/// Verifies a cryptographic double-execution (equivocation) proof using Ed25519 signatures
+/// and triggers instant 50% stake slashing/burning (routed to insurance vault) with the
+/// remaining 50% paid immediately as a bounty to the whistleblower (SC-FINAL-15 Advanced).
+pub fn submit_double_execution_proof(
+    env: &Env,
+    whistleblower: &Address,
+    proof: &DoubleExecutionProof,
+) -> SlashReceipt {
+    whistleblower.require_auth();
+
+    // Conflicting execution payloads must be distinct
+    if proof.payload_hash_a == proof.payload_hash_b {
+        panic_with_error!(env, Error::InvalidMisbehaviorProof);
+    }
+
+    // Compute unique proof digest for replay protection (order-independent over the two hashes)
+    let mut proof_preimage = Bytes::new(env);
+    proof_preimage.append(&Bytes::from_slice(env, &proof.task_id.to_be_bytes()));
+    proof_preimage.append(&Bytes::from_slice(env, &proof.execution_window.to_be_bytes()));
+    if proof.payload_hash_a.to_array() < proof.payload_hash_b.to_array() {
+        proof_preimage.append(&Bytes::from_slice(env, &proof.payload_hash_a.to_array()));
+        proof_preimage.append(&Bytes::from_slice(env, &proof.payload_hash_b.to_array()));
+    } else {
+        proof_preimage.append(&Bytes::from_slice(env, &proof.payload_hash_b.to_array()));
+        proof_preimage.append(&Bytes::from_slice(env, &proof.payload_hash_a.to_array()));
+    }
+    let proof_digest: BytesN<32> = env.crypto().sha256(&proof_preimage).into();
+
+    let replay_key = DataKey::DoubleExecProofUsed(proof_digest);
+    if env.storage().persistent().has(&replay_key) {
+        panic_with_error!(env, Error::ProofAlreadySubmitted);
+    }
+
+    let mut account = load_keeper_stake_account(env, &proof.keeper)
+        .unwrap_or_else(|| panic_with_error!(env, Error::KeeperNotRegistered));
+
+    if account.active_bond <= 0 {
+        panic_with_error!(env, Error::KeeperBondInsufficient);
+    }
+
+    // Cryptographically verify both conflicting Ed25519 signatures against the keeper's registered key
+    let msg_a = build_double_exec_message(env, proof.task_id, proof.execution_window, &proof.payload_hash_a);
+    let msg_b = build_double_exec_message(env, proof.task_id, proof.execution_window, &proof.payload_hash_b);
+    env.crypto()
+        .ed25519_verify(&account.public_key, &msg_a, &proof.signature_a);
+    env.crypto()
+        .ed25519_verify(&account.public_key, &msg_b, &proof.signature_b);
+
+    // Instant confiscation of active bonded stake:
+    // 50% slashed & burned (routed to insurance vault), remaining 50% paid as bounty to whistleblower.
+    let slashed_amount = account.active_bond;
+    let split = crate::escrow_pool::distribute_slashed_stake(
+        env,
+        slashed_amount,
+        whistleblower,
+        DOUBLE_EXEC_WHISTLEBLOWER_BPS,
+        true,
+    );
+
+    account.active_bond = 0;
+    account.total_slashed = account.total_slashed.saturating_add(slashed_amount);
+    account.is_active = false;
+    account.is_slashed = true;
+    account.last_activity_at = env.ledger().timestamp();
+
+    save_keeper_stake_account(env, &account);
+    env.storage().persistent().set(&replay_key, &true);
+
+    let slash_count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::KeeperSlashCount(proof.keeper.clone()))
+        .unwrap_or(0);
+    env.storage().persistent().set(
+        &DataKey::KeeperSlashCount(proof.keeper.clone()),
+        &slash_count.saturating_add(1),
+    );
+
+    env.events().publish(
+        (Symbol::new(env, "KeeperDoubleExecSlashed"), proof.task_id),
+        (
+            proof.keeper.clone(),
+            whistleblower.clone(),
+            slashed_amount,
+            split.burned_amount,
+            split.whistleblower_bounty,
+        ),
+    );
+
+    SlashReceipt {
+        keeper: proof.keeper.clone(),
+        whistleblower: whistleblower.clone(),
+        slashed_amount,
+        insurance_vault_amount: split.insurance_vault_amount,
+        whistleblower_bounty: split.whistleblower_bounty,
+        burned_amount: split.burned_amount,
+        remaining_bond: 0,
+        keeper_still_active: false,
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -683,5 +1267,104 @@ mod tests {
         let votes_for = 501i128;
         let percentage = (votes_for * 10000) / total;
         assert!(percentage >= 5001);
+    }
+
+    #[test]
+    fn test_slashing_engine_bond_and_missed_execution() {
+        use soroban_sdk::testutils::{Address as _, Ledger};
+        use crate::{SoroTaskContract, SoroTaskContractClient};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+        let contract_id = env.register(SoroTaskContract, ());
+        let client = SoroTaskContractClient::new(&env, &contract_id);
+
+        let keeper = Address::generate(&env);
+        let whistleblower = Address::generate(&env);
+        let pub_key = BytesN::from_array(&env, &[7u8; 32]);
+
+        // Register bonded keeper with 1000 stake (>= 500 minimum)
+        let account = client.register_bonded_keeper(&keeper, &pub_key, &1_000);
+        assert_eq!(account.active_bond, 1_000);
+        assert!(account.is_active);
+        assert_eq!(client.get_total_active_keeper_bonds(), 1_000);
+
+        // Automated missed execution penalty: 5% base = 50 for 1 window
+        let penalty = client.calculate_missed_execution_penalty(&keeper, &1);
+        assert_eq!(penalty, 50);
+
+        // Advance past priority window end (1_000) and slash
+        env.ledger().with_mut(|li| li.timestamp = 1_100);
+        let receipt = client.slash_missed_execution(&whistleblower, &keeper, &42, &1_000, &1);
+        assert_eq!(receipt.slashed_amount, 50);
+        assert_eq!(receipt.whistleblower_bounty, 10); // 20%
+        assert_eq!(receipt.insurance_vault_amount, 40); // 80%
+        assert_eq!(receipt.remaining_bond, 950);
+        assert!(receipt.keeper_still_active);
+        assert_eq!(client.get_total_active_keeper_bonds(), 950);
+    }
+
+    #[test]
+    fn test_double_execution_ed25519_proof_slashing() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use soroban_sdk::testutils::Address as _;
+        use crate::{SoroTaskContract, SoroTaskContractClient};
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoroTaskContract, ());
+        let client = SoroTaskContractClient::new(&env, &contract_id);
+
+        let keeper = Address::generate(&env);
+        let whistleblower = Address::generate(&env);
+
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let pub_key = BytesN::from_array(&env, &verifying_key.to_bytes());
+
+        client.register_bonded_keeper(&keeper, &pub_key, &2_000);
+
+        let task_id = 99u64;
+        let execution_window = 500u64;
+        let payload_hash_a = BytesN::from_array(&env, &[1u8; 32]);
+        let payload_hash_b = BytesN::from_array(&env, &[2u8; 32]);
+
+        let mut raw_msg_a = [0u8; 64];
+        raw_msg_a[..16].copy_from_slice(DOUBLE_EXEC_DOMAIN_SEPARATOR);
+        raw_msg_a[16..24].copy_from_slice(&task_id.to_be_bytes());
+        raw_msg_a[24..32].copy_from_slice(&execution_window.to_be_bytes());
+        raw_msg_a[32..64].copy_from_slice(&payload_hash_a.to_array());
+
+        let mut raw_msg_b = [0u8; 64];
+        raw_msg_b[..16].copy_from_slice(DOUBLE_EXEC_DOMAIN_SEPARATOR);
+        raw_msg_b[16..24].copy_from_slice(&task_id.to_be_bytes());
+        raw_msg_b[24..32].copy_from_slice(&execution_window.to_be_bytes());
+        raw_msg_b[32..64].copy_from_slice(&payload_hash_b.to_array());
+
+        let sig_a = BytesN::from_array(&env, &signing_key.sign(&raw_msg_a).to_bytes());
+        let sig_b = BytesN::from_array(&env, &signing_key.sign(&raw_msg_b).to_bytes());
+
+        let proof = DoubleExecutionProof {
+            keeper: keeper.clone(),
+            task_id,
+            execution_window,
+            payload_hash_a,
+            signature_a: sig_a,
+            payload_hash_b,
+            signature_b: sig_b,
+        };
+
+        let receipt = client.submit_double_execution_proof(&whistleblower, &proof);
+        assert_eq!(receipt.slashed_amount, 2_000);
+        assert_eq!(receipt.burned_amount, 1_000);
+        assert_eq!(receipt.insurance_vault_amount, 1_000);
+        assert_eq!(receipt.whistleblower_bounty, 1_000);
+        assert_eq!(receipt.remaining_bond, 0);
+        assert!(!receipt.keeper_still_active);
+        assert_eq!(client.get_total_active_keeper_bonds(), 0);
+        assert_eq!(client.get_total_slashed_burned(), 1_000);
     }
 }
