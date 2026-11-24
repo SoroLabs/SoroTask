@@ -4,6 +4,7 @@ const path = require('path');
 const vm = require('vm');
 const { Worker } = require('worker_threads');
 const { createLogger } = require('./logger');
+const { decodeWasmBase64 } = require('./resolverWasmBytes');
 
 const DEFAULT_TIMEOUT_MS = 250;
 const DEFAULT_WASM_TIMEOUT_MS = 2_000;
@@ -373,7 +374,7 @@ class ResolverRuntime {
 
   loadWasmBytes(definition) {
     if (definition.bytesBase64) {
-      const bytes = Buffer.from(definition.bytesBase64, 'base64');
+      const bytes = decodeWasmBase64(definition.bytesBase64);
       if (bytes.length > definition.maxSourceBytes) {
         throw new ResolverRuntimeError(
           `WASM resolver exceeds ${definition.maxSourceBytes} bytes`,
@@ -496,7 +497,7 @@ class ResolverRuntime {
 
     const worker = new Worker(path.join(__dirname, 'resolverWasmWorker.js'), {
       workerData: {
-        bytesBase64: definition.wasmBytes.toString('base64'),
+        bytes: Uint8Array.from(definition.wasmBytes),
         entry: definition.entry,
         args: wasmArgs,
         maxFuel: definition.maxFuel,

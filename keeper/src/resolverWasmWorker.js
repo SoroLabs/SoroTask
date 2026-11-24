@@ -4,7 +4,7 @@ const { parentPort, workerData } = require('worker_threads');
 const metering = require('wasm-metering');
 
 async function run() {
-  const wasmBytes = Buffer.from(workerData.bytesBase64, 'base64');
+  const wasmBytes = Buffer.from(workerData.bytes);
   const module = await WebAssembly.compile(wasmBytes);
   const imports = WebAssembly.Module.imports(module);
   if (imports.length > 0) {
