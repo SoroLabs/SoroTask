@@ -10,6 +10,7 @@ const LIMITS = {
   MAX_ARGS_LENGTH: 20, // Max number of arguments passed to a contract
   MAX_STRING_LENGTH: 1024, // Max length for any string argument
   MAX_FUNCTION_NAME_LEN: 64, // Max length of the Soroban contract function name
+  STALE_TASK_THRESHOLD_MS: 365 * 24 * 60 * 60 * 1000, // ~1 year of lapsed interval
 };
 
 /**
@@ -76,15 +77,97 @@ function validateTaskPayload(taskConfig, args = [], options = {}) {
   } else if (args.length > LIMITS.MAX_ARGS_LENGTH) {
     errors.push(`args array cannot exceed ${LIMITS.MAX_ARGS_LENGTH} elements.`);
   } else {
-    // Deep check for extreme string lengths within arguments
-    const argString = JSON.stringify(args);
-    if (argString.includes('":"') || argString.includes('","')) {
-      // Simple heuristic: if the array contains massive strings, flag it
-      // A full recursive traversal can be added here if highly nested objects are allowed.
+    for (const arg of args) {
+      if (typeof arg === "string" && arg.length > LIMITS.MAX_STRING_LENGTH) {
+        errors.push(
+          `args string elements cannot exceed ${LIMITS.MAX_STRING_LENGTH} characters.`,
+        );
+        break;
+      }
     }
   }
 
   return { isValid: errors.length === 0, errors };
+}
+
+/**
+ * Determines whether a task is permanently inactive and should be retired.
+ * A task is stale when its target contract no longer exists (destroyed) or
+ * its interval has lapsed for longer than STALE_TASK_THRESHOLD_MS.
+ *
+ * @param {Object} task - { lastExecutedAt: number(ms), targetExists: boolean, intervalMs: number }
+ * @param {number} [now=Date.now()]
+ * @returns {{ stale: boolean, reason: string|null }}
+ */
+function isTaskStale(task, now = Date.now()) {
+  if (!task || typeof task !== "object") {
+    return { stale: false, reason: null };
+  }
+  if (task.targetExists === false) {
+    return { stale: true, reason: "target_destroyed" };
+  }
+  const last = Number(task.lastExecutedAt);
+  if (Number.isFinite(last) && now - last > LIMITS.STALE_TASK_THRESHOLD_MS) {
+    return { stale: true, reason: "interval_lapsed" };
+  }
+  return { stale: false, reason: null };
+}
+
+/**
+ * Retires stale tasks: triggers on-chain cancellation (which refunds the
+ * creator's escrow) and records the refund, archiving each task once the
+ * cancellation is confirmed. Failures are isolated per task so one bad
+ * record cannot block the purge of the rest.
+ *
+ * @param {Array<Object>} tasks - Candidate tasks with { id, creator, escrowAmount, ...stale fields }
+ * @param {Object} deps - { cancelTask(taskId) => Promise<{ok, refunded}>, archiveTask(task) => Promise<void> }
+ * @param {Object} [options] - { now, dryRun }
+ * @returns {Promise<{ retired: Array, failed: Array, refunds: Array, totalRefunded: number, skipped: number }>}
+ */
+async function purgeStaleTasks(tasks, deps = {}, options = {}) {
+  const { cancelTask, archiveTask } = deps;
+  if (typeof cancelTask !== "function" || typeof archiveTask !== "function") {
+    throw new TypeError("purgeStaleTasks requires cancelTask and archiveTask functions.");
+  }
+  const now = options.now ?? Date.now();
+  const dryRun = Boolean(options.dryRun);
+  const retired = [];
+  const failed = [];
+  const refunds = [];
+  let skipped = 0;
+  let totalRefunded = 0;
+
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    const verdict = isTaskStale(task, now);
+    if (!verdict.stale) {
+      skipped++;
+      continue;
+    }
+    if (dryRun) {
+      retired.push({ id: task.id, reason: verdict.reason, dryRun: true });
+      continue;
+    }
+    try {
+      const result = await cancelTask(task.id);
+      if (!result || result.ok !== true) {
+        failed.push({ id: task.id, error: (result && result.error) || "cancel_failed" });
+        continue;
+      }
+      const refunded = Number(result.refunded ?? task.escrowAmount ?? 0);
+      if (!Number.isFinite(refunded) || refunded < 0) {
+        failed.push({ id: task.id, error: "invalid_refund_amount" });
+        continue;
+      }
+      refunds.push({ taskId: task.id, creator: task.creator, amount: refunded });
+      totalRefunded += refunded;
+      await archiveTask({ ...task, reason: verdict.reason, retiredAt: now, refunded });
+      retired.push({ id: task.id, reason: verdict.reason, refunded });
+    } catch (err) {
+      failed.push({ id: task.id, error: err && err.message ? err.message : String(err) });
+    }
+  }
+
+  return { retired, failed, refunds, totalRefunded, skipped };
 }
 
 /**
@@ -128,5 +211,7 @@ module.exports = {
   validateContractBytecode,
   BytecodeScanner,
   validateZkTrigger,
+  isTaskStale,
+  purgeStaleTasks,
   LIMITS,
 };

@@ -14,6 +14,7 @@ const { createRateLimiter } = require('./rateLimiter');
 const { traceContextMiddleware } = require('../../scripts/traceContext');
 const { requestSpanMiddleware, getTrace } = require('./otel');
 const { openApiSpec } = require('./openapi');
+const { createStaleTaskRouter } = require('./staleTasks');
 
 const DEFAULT_PORT = 4000;
 
@@ -206,6 +207,10 @@ function registerRestRoutes(app, deps = dbHelpers) {
       return res.status(500).json({ error: err.message });
     }
   });
+
+  // BE-FINAL-26: stale task lifecycle auditor. Admin-only: exposes dry-run
+  // reports and manual purge triggers for tasks whose intervals have lapsed.
+  app.use('/api/stale-tasks', requireRole(ROLES.ADMIN), createStaleTaskRouter(deps));
 
   return app;
 }
