@@ -1,7 +1,8 @@
 import { renderHook, act } from '@testing-library/react';
-import useFormValidation from './useFormValidation';
+import useFormValidation, { createFormConfigFromAbi } from './useFormValidation';
 import { taskCreationFormConfig } from './formConfigs';
 import { EXAMPLE_CONTRACT_ADDRESS } from './schemas/taskCreationSchema';
+import type { AbiFunction } from '../../../src/lib/abi-form';
 
 const waitForValidation = () => new Promise(resolve => setTimeout(resolve, 600));
 
@@ -168,6 +169,71 @@ describe('useFormValidation', () => {
         dueDate: ''
       });
       expect(result.current.formState.isSubmitted).toBe(true);
+    });
+  });
+
+  describe('ABI Dynamic Form Generation & Accessibility', () => {
+    const swapAbiFn: AbiFunction = {
+      name: 'swap',
+      inputs: [
+        { name: 'token', type: 'symbol' },
+        { name: 'amount_in', type: 'u64' },
+        {
+          name: 'route',
+          type: 'vec',
+          specType: { type: 'vec', elementType: 'address' }
+        }
+      ],
+      outputs: []
+    };
+
+    it('should auto-generate form fields and validate live from AbiFunction', async () => {
+      const abiConfig = createFormConfigFromAbi(swapAbiFn);
+      const { result } = renderHook(() => useFormValidation(abiConfig));
+
+      expect(Object.keys(result.current.formState.values)).toEqual([
+        'token',
+        'amount_in',
+        'route'
+      ]);
+
+      await act(async () => {
+        result.current.handleChange('amount_in', '-50');
+        result.current.handleBlur('amount_in');
+      });
+
+      expect(result.current.formState.errors.amount_in.length).toBeGreaterThan(0);
+      expect(result.current.formState.isValid).toBe(false);
+
+      const a11y = result.current.getFieldA11yProps('amount_in');
+      expect(a11y['aria-invalid']).toBe(true);
+      expect(a11y['aria-required']).toBe(true);
+      expect(a11y['aria-describedby']).toBe('amount_in-error');
+    });
+
+    it('should re-initialize form fields when dynamic ABI config changes', () => {
+      const firstConfig = createFormConfigFromAbi(swapAbiFn);
+      const secondFn: AbiFunction = {
+        name: 'pause',
+        inputs: [{ name: 'reason', type: 'string' }],
+        outputs: []
+      };
+      const secondConfig = createFormConfigFromAbi(secondFn);
+
+      const { result, rerender } = renderHook(
+        ({ cfg }) => useFormValidation(cfg),
+        { initialProps: { cfg: firstConfig } }
+      );
+
+      expect(Object.keys(result.current.formState.values)).toEqual([
+        'token',
+        'amount_in',
+        'route'
+      ]);
+
+      rerender({ cfg: secondConfig });
+
+      expect(Object.keys(result.current.formState.values)).toEqual(['reason']);
     });
   });
 });
