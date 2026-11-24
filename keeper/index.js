@@ -89,6 +89,10 @@ async function main() {
   });
   const apiGateway = new ApiGateway({
     logger: createLogger("api-gateway"),
+    enabled: config.apiGatewayEnabled,
+    requireRedis: config.apiGatewayEnabled,
+    projects: config.apiGatewayProjects,
+    redis: getRedisClient(),
     defaultCapacity: config.apiGatewayDefaultCapacity,
     defaultRefillPerSecond: config.apiGatewayDefaultRefillPerSecond,
     defaultBillingUnits: config.apiGatewayDefaultBillingUnits,

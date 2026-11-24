@@ -27,6 +27,17 @@ function parseList(value) {
     .filter(Boolean);
 }
 
+function parseJsonEnv(value, name, fallback) {
+  if (value == null || value === '') {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    throw new Error(`${name} must be valid JSON: ${error.message}`);
+  }
+}
+
 const VALID_LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
 
 /**
@@ -551,6 +562,11 @@ function loadConfig() {
     realtimeStreamEnabled: parseBoolean(process.env.REALTIME_STREAM_ENABLED, false),
     realtimeStreamNamespace: process.env.REALTIME_STREAM_NAMESPACE || 'sorotask',
     apiGatewayEnabled: parseBoolean(process.env.API_GATEWAY_ENABLED, false),
+    apiGatewayProjects: parseJsonEnv(
+      process.env.API_GATEWAY_PROJECTS,
+      'API_GATEWAY_PROJECTS',
+      {},
+    ),
     apiGatewayDefaultCapacity: parseInteger(process.env.API_GATEWAY_DEFAULT_CAPACITY, 100),
     apiGatewayDefaultRefillPerSecond: parseInteger(process.env.API_GATEWAY_DEFAULT_REFILL_PER_SECOND, 10),
     apiGatewayDefaultBillingUnits: parseInteger(process.env.API_GATEWAY_DEFAULT_BILLING_UNITS, 1),
