@@ -1,0 +1,21 @@
+{{- if and .Values.blueGreen.enabled .Values.blueGreen.targetGroupArn }}
+{{- if not (has .Values.blueGreen.color (list "blue" "green")) }}
+{{- fail "blueGreen.color must be blue or green" }}
+{{- end }}
+# Registers this release's pods (IP mode) into its color's ALB target group.
+# Terminating pods are deregistered immediately and drained for the target
+# group's deregistration delay, so in-flight requests are not cut off.
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: {{ include "sorotask-keeper.fullname" . }}
+  labels:
+    {{- include "sorotask-keeper.labels" . | nindent 4 }}
+    sorotask.io/deployment-color: {{ .Values.blueGreen.color | quote }}
+spec:
+  serviceRef:
+    name: {{ include "sorotask-keeper.fullname" . }}
+    port: {{ .Values.service.port }}
+  targetGroupARN: {{ .Values.blueGreen.targetGroupArn | quote }}
+  targetType: ip
+{{- end }}

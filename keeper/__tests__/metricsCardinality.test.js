@@ -27,6 +27,8 @@ const BOUNDED_LABELS = new Set([
   'shard_index',
   'version',
   'node_env',
+  // blue | green | none, normalized in MetricsServer (Issue #1657).
+  'deployment_color',
 ]);
 
 /** Label names that are unbounded by nature — one series per value, forever. */

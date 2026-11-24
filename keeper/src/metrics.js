@@ -710,6 +710,14 @@ class Metrics {
   }
 }
 
+const DEPLOYMENT_COLORS = new Set(['blue', 'green']);
+
+/** Keep the deployment_color label bounded: blue | green | none. */
+function normalizeDeploymentColor(value) {
+  const color = String(value || '').trim().toLowerCase();
+  return DEPLOYMENT_COLORS.has(color) ? color : 'none';
+}
+
 function createDefaultGasMonitor() {
   return {
     getLowGasCount: () => 0,
@@ -757,6 +765,12 @@ class MetricsServer {
     this.tmpPath = options.tmpPath || '/tmp';
     this.redisLatencyThresholdMs = options.redisLatencyThresholdMs
       || parseInt(process.env.REDIS_LATENCY_THRESHOLD_MS || '250', 10);
+    this.drainStateProvider = typeof options.drainStateProvider === 'function'
+      ? options.drainStateProvider
+      : null;
+    this.deploymentColor = normalizeDeploymentColor(
+      options.deploymentColor || process.env.DEPLOYMENT_COLOR,
+    );
     this.register = new promClient.Registry();
 
     // Instantiate IndicatorRegistry for SLO observability.
@@ -831,12 +845,45 @@ class MetricsServer {
     this.reconciliationEngine = engine;
   }
 
-  setReadinessProviders({ redisClient, workerPool } = {}) {
+  setReadinessProviders({ redisClient, workerPool, drainStateProvider } = {}) {
     if (redisClient) this.redisClient = redisClient;
     if (workerPool) this.workerPool = workerPool;
+    if (typeof drainStateProvider === 'function') this.drainStateProvider = drainStateProvider;
+  }
+
+  /**
+   * True once the keeper has received SIGTERM and is draining in-flight work.
+   * Readiness fails immediately so the load balancer (blue/green target
+   * group) stops sending new requests while existing ones complete.
+   */
+  isDraining() {
+    try {
+      return Boolean(this.drainStateProvider && this.drainStateProvider());
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  /**
+   * Count every HTTP response by status class and deployment color. The
+   * blue/green canary controller reads the 5xx share of this counter for the
+   * candidate color to decide whether to continue or roll back.
+   */
+  recordHttpResponse(statusCode) {
+    if (!this.promHttpResponses) return;
+    const code = Number(statusCode) || 0;
+    const status = code >= 100 && code < 600 ? `${Math.floor(code / 100)}xx` : 'unknown';
+    this.promHttpResponses.inc({ status, deployment_color: this.deploymentColor });
   }
 
   initPrometheusMetrics() {
+    this.promHttpResponses = new promClient.Counter({
+      name: 'keeper_http_responses_total',
+      help: 'HTTP responses served by the keeper, by status class and blue/green deployment color',
+      labelNames: ['status', 'deployment_color'],
+      registers: [this.register],
+    });
+
     this.promTasksChecked = new promClient.Counter({
       name: 'keeper_tasks_checked_total',
       help: 'Total number of tasks checked for execution eligibility',
@@ -1506,6 +1553,7 @@ class MetricsServer {
     }
 
     this.server = http.createServer(async (req, res) => {
+      res.once('finish', () => this.recordHttpResponse(res.statusCode));
       const protect = (handler) => () => requireAdminAuth(req, res, handler);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1766,6 +1814,11 @@ class MetricsServer {
   }
 
   async handleReadiness(res) {
+    if (this.isDraining()) {
+      res.writeHead(503, { 'Content-Type': 'application/json', Connection: 'close' });
+      res.end(JSON.stringify({ status: 'draining', checks: { shutdown: { healthy: false, reason: 'draining' } } }));
+      return;
+    }
     const checks = {
       redis: await this.checkRedis(),
       workers: this.checkWorkers(),
@@ -2328,4 +2381,4 @@ class MetricsServer {
   }
 }
 
-module.exports = { Metrics, MetricsServer, SampleBuffer, IndicatorRegistry, DynamicTraceSampler };
+module.exports = { Metrics, MetricsServer, SampleBuffer, IndicatorRegistry, DynamicTraceSampler, normalizeDeploymentColor };

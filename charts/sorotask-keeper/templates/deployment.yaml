@@ -18,6 +18,9 @@ spec:
     metadata:
       labels:
         {{- include "sorotask-keeper.selectorLabels" . | nindent 8 }}
+        {{- if .Values.blueGreen.enabled }}
+        sorotask.io/deployment-color: {{ .Values.blueGreen.color | quote }}
+        {{- end }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
@@ -39,6 +42,8 @@ spec:
               value: {{ .Values.service.port | quote }}
             - name: SHUTDOWN_DRAIN_TIMEOUT_MS
               value: {{ .Values.drain.timeoutMs | quote }}
+            - name: DEPLOYMENT_COLOR
+              value: {{ ternary .Values.blueGreen.color "none" .Values.blueGreen.enabled | quote }}
             - name: SOROBAN_RPC_URL
               valueFrom:
                 secretKeyRef:
