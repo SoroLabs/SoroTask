@@ -12,7 +12,7 @@ import { truncateAddress } from "@/app/lib/wallet";
 
 export function WalletButton() {
   const wallet = useWalletOptional();
-  const { status, session, errorCode, isLoading, openConnectModal, connect } = wallet;
+  const { status, session, errorCode, isLoading, openConnectModal } = wallet;
 
   if (status === "idle" || status === "restoring") {
     return (
@@ -79,10 +79,12 @@ export function WalletButton() {
   if (status === "error") {
     const errorLabel =
       errorCode === "NOT_INSTALLED"
-        ? "Freighter not installed"
+        ? "Wallet not installed"
         : errorCode === "WRONG_NETWORK"
           ? "Wrong network"
-          : "Connection failed";
+          : errorCode === "HARDWARE_ERROR"
+            ? "Hardware wallet error"
+            : "Connection failed";
 
     return (
       <button
@@ -104,10 +106,7 @@ export function WalletButton() {
       type="button"
       id="connect-wallet-btn"
       data-testid="connect-wallet-button"
-      onClick={() => {
-        openConnectModal();
-        void connect();
-      }}
+      onClick={openConnectModal}
       disabled={isLoading}
       aria-label="Connect your Stellar wallet"
       className="rounded-md bg-neutral-100 px-4 py-2 font-medium text-neutral-900 transition-colors hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"

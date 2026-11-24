@@ -41,6 +41,7 @@ type LedgerUsbDevice = {
   serialNumber?: string;
   vendorId?: number;
   open: () => Promise<void>;
+  close?: () => Promise<void>;
   selectConfiguration: (configurationValue: number) => Promise<void>;
   claimInterface: (interfaceNumber: number) => Promise<void>;
   selectAlternateInterface?: (alternateInterface: number) => Promise<void>;
@@ -58,6 +59,12 @@ type LedgerUsb = {
   requestDevice: (options: {
     filters: Array<{ vendorId: number }>;
   }) => Promise<LedgerUsbDevice>;
+  /**
+   * Devices the user has already granted this origin access to. Unlike
+   * `requestDevice`, this does not show a browser picker, so it is safe to call
+   * during a silent session restore.
+   */
+  getDevices?: () => Promise<LedgerUsbDevice[]>;
 };
 
 type WebUsbNavigator = Navigator & {
@@ -157,6 +164,8 @@ const LEDGER_APP_CLA = 0x11;
 const LEDGER_INS_GET_ADDRESS = 0x01;
 /** INS_SIGN_TX — signs a transaction envelope (on-device confirmation). */
 const LEDGER_INS_SIGN_TX = 0x02;
+/** INS_SIGN_HASH — signs a 32-byte transaction hash in hash-signing mode. */
+const LEDGER_INS_SIGN_HASH = 0x03;
 
 /** Ledger's USB framing uses 64-byte packets with a 5-byte header. */
 const LEDGER_PACKET_SIZE = 64;
@@ -563,7 +572,13 @@ export class LedgerStellarBridge {
 
     const readAll = (async () => {
       for (const packet of framePackets(apdu)) {
-        await transferOut.call(this.device, LEDGER_EP_OUT, packet);
+        // The packet is a fixed-size Uint8Array backed by a plain ArrayBuffer;
+        // the cast narrows TS 7's ArrayBufferLike generic to BufferSource.
+        await transferOut.call(
+          this.device,
+          LEDGER_EP_OUT,
+          packet as unknown as BufferSource,
+        );
       }
 
       // The response carries its own header packet, so its length is not known
@@ -694,10 +709,96 @@ export class LedgerStellarBridge {
     };
   }
 
+  /**
+   * Sign a raw 32-byte transaction hash.
+   *
+   * Some Soroban flows only have the prepared hash available (for example when
+   * the envelope was assembled elsewhere). This uses the Stellar app's
+   * hash-signing instruction, with P2 = 0x02 flagging hash mode so the device
+   * never mistakes the payload for an envelope.
+   */
+  async signHash(
+    hash: Uint8Array | string,
+    options: LedgerExchangeOptions = {},
+  ): Promise<LedgerSignatureResult> {
+    const hashBytes = normalizeHash(hash);
+    const path = options.path ?? buildStellarPath();
+    const timeoutMs = options.timeoutMs ?? DEFAULT_LEDGER_TIMEOUT_MS;
+    const pathBytes = encodeDerivationPath(path);
+
+    options.onPrompt?.(
+      "Approve the transaction hash on your Ledger — compare it with the hash shown in SoroTask.",
+    );
+
+    const apdu = buildApdu(
+      LEDGER_APP_CLA,
+      LEDGER_INS_SIGN_HASH,
+      0x00,
+      0x02,
+      concatBytes([
+        new Uint8Array([pathBytes.length / 4]),
+        pathBytes,
+        hashBytes,
+      ]),
+    );
+
+    const response = await this.exchange(apdu, timeoutMs);
+    assertDeviceReady(response.statusWord, "Signing the hash on the Ledger");
+
+    if (response.data.length < 96) {
+      throw new HardwareWalletConnectionError(
+        "device_unavailable",
+        "Ledger returned a truncated signature.",
+        true,
+      );
+    }
+    return {
+      signature: response.data.slice(0, 64),
+      publicKey: response.data.slice(64, 96),
+      path,
+    };
+  }
+
   /** Human-readable device name for the UI. */
   describe(): string {
     return this.productName;
   }
+
+  /**
+   * Release the USB interface. Safe to call more than once; failures are
+   * swallowed because the device may already be unplugged.
+   */
+  async close(): Promise<void> {
+    try {
+      await this.device.close?.();
+    } catch {
+      // The device may already have been removed or reclaimed.
+    }
+  }
+}
+
+/**
+ * Accept a hash as raw bytes, a `0x`-prefixed hex string, or plain hex.
+ * Rejects anything that is not exactly 32 bytes (a Stellar transaction hash).
+ */
+export function normalizeHash(hash: Uint8Array | string): Uint8Array {
+  if (typeof hash === "string") {
+    const hex = hash.startsWith("0x") ? hash.slice(2) : hash;
+    if (hex.length !== 64 || /[^0-9a-fA-F]/u.test(hex)) {
+      throw new Error("Expected a 32-byte hex-encoded transaction hash");
+    }
+    const bytes = new Uint8Array(32);
+    for (let i = 0; i < 32; i += 1) {
+      bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
+  }
+  if (hash.length !== 32) {
+    throw new Error(
+      `Expected a 32-byte transaction hash, received ${hash.length}`,
+    );
+  }
+  return hash;
 }
 
 /** Base64-encode bytes without relying on Node's Buffer. */
@@ -757,6 +858,18 @@ export async function claimLedgerDevice(): Promise<LedgerUsbDevice> {
     );
   }
 
+  await prepareLedgerDevice(device);
+  return device;
+}
+
+/**
+ * Open, configure and claim an already-selected Ledger device.
+ *
+ * Shared by the explicit picker flow (`claimLedgerDevice`) and silent
+ * reconnection (`reconnectLedgerDevice`) so both claim the interface the same
+ * way exactly once.
+ */
+async function prepareLedgerDevice(device: LedgerUsbDevice): Promise<void> {
   try {
     if (!device.opened) {
       await device.open();
@@ -782,8 +895,6 @@ export async function claimLedgerDevice(): Promise<LedgerUsbDevice> {
       error,
     );
   }
-
-  return device;
 }
 
 /**
@@ -793,5 +904,39 @@ export async function claimLedgerDevice(): Promise<LedgerUsbDevice> {
  */
 export async function openLedgerDevice(): Promise<LedgerStellarBridge> {
   const device = await claimLedgerDevice();
+  return new LedgerStellarBridge(device, device.productName || "Ledger device");
+}
+
+/**
+ * Silently re-open a Ledger the user already authorised for this origin.
+ *
+ * Session restore runs without a user gesture, so it cannot call
+ * `requestDevice`. `getDevices()` only returns devices with existing
+ * permission, which makes it safe to call on mount. Returns null when the
+ * browser cannot enumerate devices, no device is connected, or the interface
+ * is still claimed by another tab/app.
+ */
+export async function reconnectLedgerDevice(): Promise<LedgerStellarBridge | null> {
+  const usb = getWebUsb();
+  if (!usb?.getDevices) return null;
+
+  let devices: LedgerUsbDevice[];
+  try {
+    devices = await usb.getDevices();
+  } catch {
+    return null;
+  }
+
+  const device =
+    devices.find((candidate) => candidate.vendorId === LEDGER_VENDOR_ID) ??
+    devices[0];
+  if (!device) return null;
+
+  try {
+    await prepareLedgerDevice(device);
+  } catch {
+    return null;
+  }
+
   return new LedgerStellarBridge(device, device.productName || "Ledger device");
 }

@@ -6,8 +6,10 @@
  * Provides wallet session state to the entire app via React context.
  * Handles:
  *  - Session restore on mount (silent re-hydration)
- *  - Connect / disconnect actions
+ *  - Connect / switch / disconnect actions for Freighter, xBull, Albedo,
+ *    LOBSTR and Ledger hardware wallets
  *  - Live account and network change detection via WatchWalletChanges
+ *  - Transaction signing routed through the active provider (Ledger uses APDU)
  *  - Typed error states surfaced to consumers
  */
 
@@ -16,6 +18,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -27,12 +30,31 @@ import {
   restoreWalletSession,
   connectWalletWith,
   disconnectWallet,
+  signTransactionWith,
+  saveWalletSession,
   watchWalletChanges,
+  EXPECTED_NETWORK_PASSPHRASE,
   WalletConnectionError,
   type WalletSession,
   type WalletError,
   type SupportedWallet,
+  type BrowserWalletId,
+  type WalletProviderMeta,
+  WALLET_PROVIDERS_META,
 } from "@/app/lib/wallet";
+import type {
+  WalletSignOptions,
+  WalletSignResult,
+} from "@/app/lib/wallet-provider";
+import {
+  buildStellarPath,
+  bytesToBase64,
+  encodeSignatureForRpc,
+  HardwareWalletConnectionError,
+  openLedgerDevice,
+  reconnectLedgerDevice,
+  type LedgerStellarBridge,
+} from "@/app/lib/hardwareWallet";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,10 +63,22 @@ import {
 export type ConnectionStatus =
   | "idle" // initial state, not yet checked
   | "restoring" // silently re-hydrating session on mount
-  | "connecting" // user clicked Connect, waiting for Freighter popup
+  | "connecting" // user clicked Connect, waiting for the wallet popup/device
   | "connected" // wallet is connected and session is valid
   | "disconnected" // explicitly disconnected or session lost
   | "error"; // connection attempt failed
+
+export interface ConnectOptions {
+  /** BIP-44 path for Ledger. Defaults to m/44'/148'/0'. */
+  derivationPath?: string;
+}
+
+export interface WalletSignRequest extends WalletSignOptions {
+  /** Override the wallet used for this signing request. */
+  walletId?: SupportedWallet;
+  /** BIP-44 path for Ledger signing. */
+  derivationPath?: string;
+}
 
 export interface TrackedTransaction {
   id: string;
@@ -84,6 +118,14 @@ export type WalletContextValue = {
   status: ConnectionStatus;
   /** Connected wallet session (address + network), or null */
   session: WalletSession | null;
+  /** Provider that owns the current session */
+  activeWallet: SupportedWallet | null;
+  /** BIP-44 path for the active Ledger account, when applicable */
+  derivationPath: string | null;
+  /** Device prompt text mirrored from a hardware wallet */
+  devicePrompt: string | null;
+  /** Static metadata for the five supported wallets */
+  walletProviders: readonly WalletProviderMeta[];
   /** Last error code if status === 'error' */
   errorCode: WalletError | null;
   /** Human-readable error message */
@@ -102,14 +144,29 @@ export type WalletContextValue = {
   openConnectModal: () => void;
   /** Close the wallet connection modal */
   closeConnectModal: () => void;
-  /** Trigger wallet connection (shows Freighter popup) */
+  /** Trigger the default (Freighter) wallet connection */
   connect: () => Promise<void>;
   /** Connect to a specific wallet */
-  connectWith: (walletId: SupportedWallet) => Promise<void>;
+  connectWith: (
+    walletId: SupportedWallet,
+    options?: ConnectOptions,
+  ) => Promise<void>;
+  /** Switch to another wallet, tearing down the previous provider */
+  switchWallet: (
+    walletId: SupportedWallet,
+    options?: ConnectOptions,
+  ) => Promise<void>;
+  /** Sign a transaction through the active provider */
+  signTransaction: (
+    xdr: string,
+    options?: WalletSignRequest,
+  ) => Promise<WalletSignResult>;
   /** Switch the active wallet account instantly */
   switchAccount: (address: string) => void;
   /** Manually add a connected account to portfolio tracker */
-  addConnectedAccount: (account: Partial<AccountPortfolioItem> & { address: string }) => void;
+  addConnectedAccount: (
+    account: Partial<AccountPortfolioItem> & { address: string },
+  ) => void;
   /** Remove an account from connected list */
   removeConnectedAccount: (address: string) => void;
   /** Clear session state */
@@ -163,6 +220,35 @@ function createClientMountStore(): ClientMountStore {
   };
 }
 
+function defaultNetwork(): WalletSession["network"] {
+  return {
+    network: "FUTURENET",
+    networkUrl: "https://horizon-futurenet.stellar.org",
+    networkPassphrase: EXPECTED_NETWORK_PASSPHRASE,
+    sorobanRpcUrl: "https://rpc-futurenet.stellar.org",
+  };
+}
+
+/**
+ * Attach a raw Ledger signature to an already-built envelope. The Stellar SDK
+ * is imported lazily so the wallet context stays light for users who never
+ * touch a hardware wallet.
+ */
+async function attachLedgerSignature(
+  envelopeXdr: string,
+  address: string,
+  signature: Uint8Array,
+  networkPassphrase: string,
+): Promise<string> {
+  const { TransactionBuilder } = await import("@stellar/stellar-sdk");
+  const transaction = TransactionBuilder.fromXDR(
+    envelopeXdr,
+    networkPassphrase,
+  );
+  transaction.addSignature(address, encodeSignatureForRpc(signature));
+  return transaction.toXDR();
+}
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
@@ -176,10 +262,17 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   );
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [session, setSession] = useState<WalletSession | null>(null);
+  const [activeWallet, setActiveWallet] = useState<SupportedWallet | null>(
+    null,
+  );
+  const [derivationPath, setDerivationPath] = useState<string | null>(null);
+  const [devicePrompt, setDevicePrompt] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<WalletError | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
-  const [connectedAccounts, setConnectedAccounts] = useState<AccountPortfolioItem[]>(() => {
+  const [connectedAccounts, setConnectedAccounts] = useState<
+    AccountPortfolioItem[]
+  >(() => {
     if (typeof window !== "undefined") {
       try {
         const stored = localStorage.getItem("sorotask_connected_accounts");
@@ -193,6 +286,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   >([]);
   const pendingTransactionsRef = useRef<TrackedTransaction[]>([]);
   pendingTransactionsRef.current = pendingTransactions;
+
+  // Keep a ref to the watcher cleanup so we can stop it on unmount or switch
+  const stopWatcherRef = useRef<(() => void) | null>(null);
+  // The active Ledger bridge owns an open USB handle, so it lives in a ref.
+  const ledgerBridgeRef = useRef<LedgerStellarBridge | null>(null);
 
   // Automatically detect stuck transactions (> 30 seconds pending)
   useEffect(() => {
@@ -222,9 +320,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const openConnectModal = useCallback(() => setIsConnectModalOpen(true), []);
   const closeConnectModal = useCallback(() => setIsConnectModalOpen(false), []);
 
-  // Keep a ref to the watcher cleanup so we can stop it on unmount or disconnect
-  const stopWatcherRef = useRef<(() => void) | null>(null);
-
   // Sync connected accounts with session
   useEffect(() => {
     if (session?.address) {
@@ -236,7 +331,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         } else {
           const newItem: AccountPortfolioItem = {
             address: session.address,
-            walletType: "freighter",
+            walletType: session.providerId ?? "freighter",
             balanceXlm: 2450.5,
             gasEscrowXlm: 120.0,
             pendingYieldXlm: 14.85,
@@ -246,21 +341,32 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           updated = [...prev, newItem];
         }
         try {
-          localStorage.setItem("sorotask_connected_accounts", JSON.stringify(updated));
+          localStorage.setItem(
+            "sorotask_connected_accounts",
+            JSON.stringify(updated),
+          );
         } catch {}
         return updated;
       });
     }
-  }, [session?.address]);
+  }, [session?.address, session?.providerId]);
 
-  const activeAccount = session?.address || (connectedAccounts.length > 0 ? connectedAccounts[0].address : null);
+  const activeAccount =
+    session?.address ||
+    (connectedAccounts.length > 0 ? connectedAccounts[0].address : null);
 
-  const aggregatePortfolio = React.useMemo<PortfolioAggregate>(() => {
+  const aggregatePortfolio = useMemo<PortfolioAggregate>(() => {
     return connectedAccounts.reduce(
       (acc, curr) => ({
-        totalBalanceXlm: Number((acc.totalBalanceXlm + (curr.balanceXlm || 0)).toFixed(4)),
-        totalGasEscrowXlm: Number((acc.totalGasEscrowXlm + (curr.gasEscrowXlm || 0)).toFixed(4)),
-        totalPendingYieldXlm: Number((acc.totalPendingYieldXlm + (curr.pendingYieldXlm || 0)).toFixed(4)),
+        totalBalanceXlm: Number(
+          (acc.totalBalanceXlm + (curr.balanceXlm || 0)).toFixed(4),
+        ),
+        totalGasEscrowXlm: Number(
+          (acc.totalGasEscrowXlm + (curr.gasEscrowXlm || 0)).toFixed(4),
+        ),
+        totalPendingYieldXlm: Number(
+          (acc.totalPendingYieldXlm + (curr.pendingYieldXlm || 0)).toFixed(4),
+        ),
         totalActiveTasks: acc.totalActiveTasks + (curr.activeTaskCount || 0),
         accountCount: acc.accountCount + 1,
       }),
@@ -270,99 +376,150 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         totalPendingYieldXlm: 0,
         totalActiveTasks: 0,
         accountCount: 0,
-      }
+      },
     );
   }, [connectedAccounts]);
 
-  const switchAccount = useCallback((address: string) => {
-    const target = connectedAccounts.find((a) => a.address === address);
-    if (!target) return;
+  const switchAccount = useCallback(
+    (address: string) => {
+      const target = connectedAccounts.find((a) => a.address === address);
+      if (!target) return;
 
-    setSession((prev) => {
-      if (!prev) {
-        return {
-          address,
-          network: {
-            network: "TESTNET",
-            networkUrl: "https://soroban-testnet.stellar.org",
-            networkPassphrase: "Test SDF Network ; September 2015",
-          },
+      setSession((prev) => {
+        if (!prev) {
+          return {
+            address,
+            network: defaultNetwork(),
+          };
+        }
+        return { ...prev, address };
+      });
+      setStatus("connected");
+    },
+    [connectedAccounts],
+  );
+
+  const addConnectedAccount = useCallback(
+    (account: Partial<AccountPortfolioItem> & { address: string }) => {
+      setConnectedAccounts((prev) => {
+        if (prev.some((a) => a.address === account.address)) return prev;
+        const newItem: AccountPortfolioItem = {
+          address: account.address,
+          label: account.label,
+          walletType: account.walletType || "manual",
+          balanceXlm: account.balanceXlm ?? 1000.0,
+          gasEscrowXlm: account.gasEscrowXlm ?? 50.0,
+          pendingYieldXlm: account.pendingYieldXlm ?? 5.25,
+          activeTaskCount: account.activeTaskCount ?? 1,
+          connectedAt: Date.now(),
         };
+        const updated = [...prev, newItem];
+        try {
+          localStorage.setItem(
+            "sorotask_connected_accounts",
+            JSON.stringify(updated),
+          );
+        } catch {}
+        return updated;
+      });
+    },
+    [],
+  );
+
+  const removeConnectedAccount = useCallback(
+    (address: string) => {
+      setConnectedAccounts((prev) => {
+        const updated = prev.filter((a) => a.address !== address);
+        try {
+          localStorage.setItem(
+            "sorotask_connected_accounts",
+            JSON.stringify(updated),
+          );
+        } catch {}
+        return updated;
+      });
+      if (session?.address === address) {
+        setSession(null);
+        setActiveWallet(null);
+        setDerivationPath(null);
+        setStatus("disconnected");
       }
-      return { ...prev, address };
-    });
-    setStatus("connected");
-  }, [connectedAccounts]);
-
-  const addConnectedAccount = useCallback((account: Partial<AccountPortfolioItem> & { address: string }) => {
-    setConnectedAccounts((prev) => {
-      if (prev.some((a) => a.address === account.address)) return prev;
-      const newItem: AccountPortfolioItem = {
-        address: account.address,
-        label: account.label,
-        walletType: account.walletType || "manual",
-        balanceXlm: account.balanceXlm ?? 1000.0,
-        gasEscrowXlm: account.gasEscrowXlm ?? 50.0,
-        pendingYieldXlm: account.pendingYieldXlm ?? 5.25,
-        activeTaskCount: account.activeTaskCount ?? 1,
-        connectedAt: Date.now(),
-      };
-      const updated = [...prev, newItem];
-      try {
-        localStorage.setItem("sorotask_connected_accounts", JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
-  }, []);
-
-  const removeConnectedAccount = useCallback((address: string) => {
-    setConnectedAccounts((prev) => {
-      const updated = prev.filter((a) => a.address !== address);
-      try {
-        localStorage.setItem("sorotask_connected_accounts", JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
-    if (session?.address === address) {
-      setSession(null);
-      setStatus("disconnected");
-    }
-  }, [session?.address]);
+    },
+    [session?.address],
+  );
 
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
 
-  const startWatcher = useCallback((initialSession: WalletSession) => {
-    // Stop any existing watcher first
+  /** Stop the current account watcher, if any. */
+  const stopWatcher = useCallback(() => {
     stopWatcherRef.current?.();
-
-    const stop = watchWalletChanges((updatedSession) => {
-      if (!updatedSession) {
-        // Wallet was disconnected externally (e.g. user locked Freighter)
-        setSession(null);
-        setStatus("disconnected");
-        stopWatcherRef.current?.();
-        stopWatcherRef.current = null;
-        return;
-      }
-      // Address or network changed — update session
-      setSession((prev) =>
-        prev?.address === updatedSession.address &&
-        prev?.network.networkPassphrase ===
-          updatedSession.network.networkPassphrase
-          ? prev
-          : updatedSession,
-      );
-    });
-
-    stopWatcherRef.current = stop;
-    setSession(initialSession);
-    setStatus("connected");
+    stopWatcherRef.current = null;
   }, []);
 
+  /** Close the Ledger USB bridge so switching providers never leaks a handle. */
+  const closeLedgerBridge = useCallback(() => {
+    const bridge = ledgerBridgeRef.current;
+    ledgerBridgeRef.current = null;
+    setDevicePrompt(null);
+    if (bridge) {
+      void bridge.close();
+    }
+  }, []);
+
+  const startWatcher = useCallback(
+    (initialSession: WalletSession, walletId: SupportedWallet) => {
+      // Stop any existing watcher first so provider switches never leave a
+      // stale listener attached to the previous wallet.
+      stopWatcher();
+
+      const normalised: WalletSession = {
+        ...initialSession,
+        providerId: walletId,
+      };
+
+      // Only Freighter exposes a reliable account-change watcher. Other
+      // wallets manage their own lifecycle and are refreshed on reconnect.
+      if (walletId === "freighter") {
+        stopWatcherRef.current = watchWalletChanges((updatedSession) => {
+          if (!updatedSession) {
+            // Wallet was disconnected externally (e.g. user locked Freighter)
+            setSession(null);
+            setActiveWallet(null);
+            setDerivationPath(null);
+            setStatus("disconnected");
+            stopWatcher();
+            return;
+          }
+          const nextSession: WalletSession = {
+            ...updatedSession,
+            providerId: "freighter",
+          };
+          setSession((prev) =>
+            prev?.address === nextSession.address &&
+            prev?.network.networkPassphrase ===
+              nextSession.network.networkPassphrase
+              ? prev
+              : nextSession,
+          );
+          saveWalletSession(nextSession, "freighter");
+        });
+      }
+
+      setSession(normalised);
+      setActiveWallet(walletId);
+      setDerivationPath(initialSession.derivationPath ?? null);
+      setStatus("connected");
+    },
+    [stopWatcher],
+  );
+
   const setError = useCallback((err: unknown) => {
-    if (err instanceof WalletConnectionError) {
+    if (err instanceof HardwareWalletConnectionError) {
+      setErrorCode("HARDWARE_ERROR");
+      setErrorMessage(err.message);
+    } else if (err instanceof WalletConnectionError) {
       setErrorCode(err.code);
       setErrorMessage(err.message);
     } else if (err instanceof Error) {
@@ -373,6 +530,22 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setErrorMessage("An unexpected error occurred.");
     }
     setStatus("error");
+  }, []);
+
+  const setSigningError = useCallback((err: unknown) => {
+    if (err instanceof HardwareWalletConnectionError) {
+      setErrorCode("HARDWARE_ERROR");
+      setErrorMessage(err.message);
+    } else if (err instanceof WalletConnectionError) {
+      setErrorCode(err.code);
+      setErrorMessage(err.message);
+    } else if (err instanceof Error) {
+      setErrorCode("UNKNOWN");
+      setErrorMessage(err.message);
+    } else {
+      setErrorCode("UNKNOWN");
+      setErrorMessage("An unexpected error occurred while signing.");
+    }
   }, []);
 
   // -------------------------------------------------------------------------
@@ -396,21 +569,41 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         (typeof restoreSession === "function" ? await restoreSession() : null);
       if (cancelled) return;
 
-      if (existing) {
-        startWatcher(existing);
-      } else {
+      if (!existing) {
         setStatus("disconnected");
+        return;
       }
+
+      const providerId = existing.providerId ?? "freighter";
+
+      // Ledger cannot prompt for a device during mount, but devices the user
+      // already authorised can be re-opened silently via getDevices().
+      if (providerId === "ledger") {
+        try {
+          const bridge = await reconnectLedgerDevice();
+          if (cancelled) {
+            await bridge?.close();
+            return;
+          }
+          ledgerBridgeRef.current = bridge;
+        } catch {
+          // Session metadata is still restored; signing asks for a reconnect.
+        }
+      }
+
+      startWatcher(existing, providerId);
     }
 
     restore();
 
     return () => {
       cancelled = true;
-      stopWatcherRef.current?.();
-      stopWatcherRef.current = null;
+      stopWatcher();
+      const bridge = ledgerBridgeRef.current;
+      ledgerBridgeRef.current = null;
+      if (bridge) void bridge.close();
     };
-  }, [isClientMounted, startWatcher]);
+  }, [isClientMounted, startWatcher, stopWatcher]);
 
   // -------------------------------------------------------------------------
   // Actions
@@ -421,39 +614,147 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setStatus("connecting");
     setErrorCode(null);
     setErrorMessage(null);
+    stopWatcher();
+    closeLedgerBridge();
 
     try {
       const newSession = await connectWallet();
-      startWatcher(newSession);
+      const normalised: WalletSession = {
+        ...newSession,
+        providerId: "freighter",
+      };
+      saveWalletSession(normalised, "freighter");
+      startWatcher(normalised, "freighter");
     } catch (err) {
       setError(err);
     }
-  }, [startWatcher, setError]);
+  }, [closeLedgerBridge, startWatcher, stopWatcher, setError]);
 
   const connectWith = useCallback(
-    async (walletId: SupportedWallet) => {
+    async (walletId: SupportedWallet, options: ConnectOptions = {}) => {
       setIsConnectModalOpen(true);
       setStatus("connecting");
       setErrorCode(null);
       setErrorMessage(null);
+      setDevicePrompt(null);
+      // Tear down the previous provider before connecting the new one.
+      stopWatcher();
+      closeLedgerBridge();
 
       try {
-        const newSession =
-          typeof connectWalletWith === "function"
-            ? await connectWalletWith(walletId)
-            : await connectWallet();
-        startWatcher(newSession);
+        if (walletId === "ledger") {
+          const path = options.derivationPath ?? buildStellarPath(0);
+          setDevicePrompt(
+            "Select your Ledger and open the Stellar app, then confirm the address on the device.",
+          );
+          const bridge = await openLedgerDevice();
+          const derived = await bridge.getAddress({
+            path: path as never,
+            onPrompt: setDevicePrompt,
+          });
+          const newSession: WalletSession = {
+            address: derived.address,
+            network: defaultNetwork(),
+            providerId: "ledger",
+            derivationPath: path,
+          };
+          ledgerBridgeRef.current = bridge;
+          saveWalletSession(newSession, "ledger", path);
+          setDevicePrompt(null);
+          startWatcher(newSession, "ledger");
+          return;
+        }
+
+        const newSession = await connectWalletWith(walletId);
+        saveWalletSession(newSession, walletId);
+        startWatcher(newSession, walletId);
       } catch (err) {
+        closeLedgerBridge();
         setError(err);
       }
     },
-    [startWatcher, setError],
+    [closeLedgerBridge, startWatcher, stopWatcher, setError],
+  );
+
+  const switchWallet = connectWith;
+
+  const signTransaction = useCallback(
+    async (
+      xdr: string,
+      options: WalletSignRequest = {},
+    ): Promise<WalletSignResult> => {
+      const walletId = options.walletId ?? activeWallet;
+      if (!walletId) {
+        throw new WalletConnectionError(
+          "UNKNOWN",
+          "Connect a wallet before signing a transaction.",
+        );
+      }
+
+      try {
+        if (walletId === "ledger") {
+          let bridge = ledgerBridgeRef.current;
+          if (!bridge) {
+            setDevicePrompt(
+              "Reconnect your Ledger and open the Stellar app to sign this transaction.",
+            );
+            bridge = await reconnectLedgerDevice();
+            if (!bridge) {
+              throw new HardwareWalletConnectionError(
+                "device_unavailable",
+                "Ledger is not connected. Reconnect the device and open the Stellar app.",
+                true,
+              );
+            }
+            ledgerBridgeRef.current = bridge;
+          }
+
+          const path =
+            options.derivationPath ?? derivationPath ?? buildStellarPath(0);
+          const passphrase =
+            options.networkPassphrase ??
+            session?.network.networkPassphrase ??
+            EXPECTED_NETWORK_PASSPHRASE;
+          const result = await bridge.signTransaction(xdr, {
+            path: path as never,
+            networkPassphrase: passphrase,
+            onPrompt: setDevicePrompt,
+          });
+          setDevicePrompt(null);
+          const signedTxXdr = await attachLedgerSignature(
+            xdr,
+            session?.address ?? "",
+            result.signature,
+            passphrase,
+          );
+          return {
+            signedTxXdr,
+            signature: encodeSignatureForRpc(result.signature),
+            publicKey: bytesToBase64(result.publicKey),
+          };
+        }
+
+        return await signTransactionWith(walletId as BrowserWalletId, xdr, {
+          networkPassphrase:
+            options.networkPassphrase ??
+            session?.network.networkPassphrase ??
+            EXPECTED_NETWORK_PASSPHRASE,
+          address: options.address ?? session?.address,
+        });
+      } catch (err) {
+        setSigningError(err);
+        throw err;
+      }
+    },
+    [activeWallet, derivationPath, session, setSigningError],
   );
 
   const disconnect = useCallback(() => {
-    stopWatcherRef.current?.();
-    stopWatcherRef.current = null;
+    stopWatcher();
+    closeLedgerBridge();
     setSession(null);
+    setActiveWallet(null);
+    setDerivationPath(null);
     setErrorCode(null);
     setErrorMessage(null);
     setStatus("disconnected");
@@ -462,7 +763,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     } else if (typeof window !== "undefined") {
       localStorage.setItem("sorotask_wallet_disconnected", "true");
     }
-  }, []);
+  }, [closeLedgerBridge, stopWatcher]);
 
   const clearError = useCallback(() => {
     setErrorCode(null);
@@ -559,35 +860,70 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   // Render
   // -------------------------------------------------------------------------
 
+  const value = useMemo<WalletContextValue>(
+    () => ({
+      status,
+      session,
+      activeWallet,
+      derivationPath,
+      devicePrompt,
+      walletProviders: WALLET_PROVIDERS_META,
+      errorCode,
+      errorMessage,
+      isLoading,
+      isConnectModalOpen,
+      connectedAccounts,
+      activeAccount,
+      aggregatePortfolio,
+      openConnectModal,
+      closeConnectModal,
+      connect,
+      connectWith,
+      switchWallet,
+      signTransaction,
+      switchAccount,
+      addConnectedAccount,
+      removeConnectedAccount,
+      disconnect,
+      clearError,
+      pendingTransactions,
+      trackTransaction,
+      speedUpTransaction,
+      dismissTransaction,
+    }),
+    [
+      status,
+      session,
+      activeWallet,
+      derivationPath,
+      devicePrompt,
+      errorCode,
+      errorMessage,
+      isLoading,
+      isConnectModalOpen,
+      connectedAccounts,
+      activeAccount,
+      aggregatePortfolio,
+      openConnectModal,
+      closeConnectModal,
+      connect,
+      connectWith,
+      switchWallet,
+      signTransaction,
+      switchAccount,
+      addConnectedAccount,
+      removeConnectedAccount,
+      disconnect,
+      clearError,
+      pendingTransactions,
+      trackTransaction,
+      speedUpTransaction,
+      dismissTransaction,
+    ],
+  );
+
   return (
-    <WalletContext.Provider
-      value={{
-        status,
-        session,
-        errorCode,
-        errorMessage,
-        isLoading,
-        isConnectModalOpen,
-        connectedAccounts,
-        activeAccount,
-        aggregatePortfolio,
-        openConnectModal,
-        closeConnectModal,
-        connect,
-        connectWith,
-        switchAccount,
-        addConnectedAccount,
-        removeConnectedAccount,
-        disconnect,
-        clearError,
-        pendingTransactions,
-        trackTransaction,
-        speedUpTransaction,
-        dismissTransaction,
-      }}
-    >
-      {children}
-    </WalletContext.Provider>
+    <WalletContext.Provider value={value}>{children}</WalletContext.Provider>
   );
 }
 
@@ -604,6 +940,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 const DEFAULT_WALLET_CONTEXT: WalletContextValue = {
   status: "disconnected",
   session: null,
+  activeWallet: null,
+  derivationPath: null,
+  devicePrompt: null,
+  walletProviders: WALLET_PROVIDERS_META,
   errorCode: null,
   errorMessage: null,
   isLoading: false,
@@ -621,6 +961,13 @@ const DEFAULT_WALLET_CONTEXT: WalletContextValue = {
   closeConnectModal: () => {},
   connect: async () => {},
   connectWith: async () => {},
+  switchWallet: async () => {},
+  signTransaction: async () => {
+    throw new WalletConnectionError(
+      "UNKNOWN",
+      "Connect a wallet before signing a transaction.",
+    );
+  },
   switchAccount: () => {},
   addConnectedAccount: () => {},
   removeConnectedAccount: () => {},

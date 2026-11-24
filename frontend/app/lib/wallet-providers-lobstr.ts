@@ -5,7 +5,11 @@
  * Lobstr is a mobile/web wallet that supports Stellar operations.
  */
 
-import type { WalletProvider } from "./wallet-provider";
+import type {
+  WalletProvider,
+  WalletSignOptions,
+  WalletSignResult,
+} from "./wallet-provider";
 import { WalletProviderError } from "./wallet-provider";
 
 export class LobstrWalletProvider implements WalletProvider {
@@ -30,7 +34,7 @@ export class LobstrWalletProvider implements WalletProvider {
       throw new WalletProviderError(
         "lobstr",
         "NOT_INSTALLED",
-        "LOBSTR wallet is not available. Please install the LOBSTR wallet extension or visit lobstr.co."
+        "LOBSTR wallet is not available. Please install the LOBSTR wallet extension or visit lobstr.co.",
       );
     }
 
@@ -46,7 +50,7 @@ export class LobstrWalletProvider implements WalletProvider {
           throw new WalletProviderError(
             "lobstr",
             "USER_REJECTED",
-            "User rejected the connection request."
+            "User rejected the connection request.",
           );
         }
 
@@ -62,14 +66,14 @@ export class LobstrWalletProvider implements WalletProvider {
       throw new WalletProviderError(
         "lobstr",
         "CONNECTION_FAILED",
-        "LOBSTR Signer not properly initialized."
+        "LOBSTR Signer not properly initialized.",
       );
     } catch (err) {
       if (err instanceof WalletProviderError) throw err;
       throw new WalletProviderError(
         "lobstr",
         "CONNECTION_FAILED",
-        `Failed to connect to LOBSTR: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to connect to LOBSTR: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -80,5 +84,57 @@ export class LobstrWalletProvider implements WalletProvider {
 
   watchChanges(cb: (address: string | null) => void): () => void {
     return () => {};
+  }
+
+  async signTransaction(
+    xdr: string,
+    options: WalletSignOptions = {},
+  ): Promise<WalletSignResult> {
+    const signer = (window as any).LobstrSigner || (window as any).lobstr;
+    if (!signer) {
+      throw new WalletProviderError(
+        "lobstr",
+        "NOT_INSTALLED",
+        "LOBSTR is not available to sign this transaction.",
+      );
+    }
+
+    try {
+      const sign =
+        signer.signTransaction?.bind(signer) ?? signer.sign?.bind(signer);
+      if (!sign) {
+        throw new WalletProviderError(
+          "lobstr",
+          "SIGN_FAILED",
+          "LOBSTR does not expose a transaction signing method.",
+        );
+      }
+      const result = await sign(xdr, {
+        network: "futurenet",
+        publicKey: options.address,
+        networkPassphrase: options.networkPassphrase,
+      });
+      const signedTxXdr =
+        result?.signedTxXdr ??
+        result?.signedXDR ??
+        result?.signedXdr ??
+        result?.signed_xdr ??
+        (typeof result === "string" ? result : undefined);
+      if (!signedTxXdr) {
+        throw new WalletProviderError(
+          "lobstr",
+          "SIGN_FAILED",
+          "LOBSTR did not return a signed transaction.",
+        );
+      }
+      return { signedTxXdr, signature: result?.signature };
+    } catch (err) {
+      if (err instanceof WalletProviderError) throw err;
+      throw new WalletProviderError(
+        "lobstr",
+        "SIGN_FAILED",
+        `LOBSTR signing failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }
