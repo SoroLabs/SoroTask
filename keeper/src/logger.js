@@ -8,6 +8,7 @@
  * - NDJSON output in production conforming 100% to structured JSON schema
  */
 
+const crypto = require('crypto');
 const pino = require('pino');
 const { extractOrCreateTraceContext, parseTraceParent } = require('../../scripts/traceContext');
 const { AuditLogger, getAuditLogger } = require('./auditLogger');
@@ -307,6 +308,11 @@ let _currentTraceId = null;
 let _currentSpanId = null;
 let _correlationId = null;
 
+/** Random lowercase hex string of `length` characters (W3C trace/span ids). */
+function randomHex(length) {
+  return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length);
+}
+
 function createTraceId() {
   return randomHex(32);
 }
@@ -474,6 +480,18 @@ function formatRecord(level, record) {
     }
   });
   return base;
+}
+
+/**
+ * Final shaping of a structured record before export: censor top-level
+ * sensitive fields the same way the pino base logger redacts them.
+ */
+function fmtLogRecord(record) {
+  const out = { ...record };
+  for (const field of SENSITIVE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(out, field)) out[field] = '[Redacted]';
+  }
+  return out;
 }
 
 function structured(level, record) {
