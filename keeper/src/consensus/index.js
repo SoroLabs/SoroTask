@@ -9,6 +9,14 @@ const Proposer = require('./proposer');
 const ConsensusLedger = require('./ledger');
 const ConsensusExecutor = require('./executor-wrapper');
 const ConsensusNetworkAdapter = require('./network-adapter');
+const ByzantineDetector = require('./byzantineDetector');
+const {
+  DETECTION_TYPES,
+  DETECTION_SEVERITY,
+  DETECTION_POLICY,
+  verifyEvidence,
+  generateSigningKeyPair,
+} = require('./byzantineDetector');
 const {
   MESSAGE_TYPES,
   createMessage,
@@ -28,6 +36,14 @@ module.exports = {
   ConsensusLedger,
   ConsensusExecutor,
   ConsensusNetworkAdapter,
+  ByzantineDetector,
+
+  // Byzantine fault detection (issue #1658)
+  DETECTION_TYPES,
+  DETECTION_SEVERITY,
+  DETECTION_POLICY,
+  verifyEvidence,
+  generateSigningKeyPair,
 
   // Message utilities
   MESSAGE_TYPES,
