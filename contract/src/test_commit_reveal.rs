@@ -119,6 +119,7 @@ fn test_commit_reveal_happy_path() {
     client.commit_execution(&keeper, &task_id, &hash, &bond);
     assert_eq!(read_stake(&env, &id, &keeper), 100);
 
+    advance_ledger(&env, 2);
     client.reveal_execution(&keeper, &task_id, &secret, &block_target);
 
     // Bond refunded after successful reveal
@@ -131,6 +132,32 @@ fn test_commit_reveal_happy_path() {
             .get(&DataKey::ExecutionCommitment(task_id))
     });
     assert!(stored.is_none(), "commitment must be cleared after reveal");
+}
+
+/// A keeper cannot reveal until the committed target ledger is finalized.
+#[test]
+fn test_reveal_waits_for_target_finalization() {
+    let (env, id) = setup();
+    let client = SoroTaskContractClient::new(&env, &id);
+
+    let target = env.register(Target, ());
+    let task_id = client.register(&base_config(&env, target));
+    let keeper = Address::generate(&env);
+    let bond = MIN_COMMIT_BOND;
+    seed_stake(&env, &id, &keeper, bond + 10);
+
+    let secret = Bytes::from_slice(&env, b"delayed_secret");
+    let block_target = env.ledger().sequence() + 1;
+    let hash = compute_commitment_hash(&env, &keeper, task_id, &secret, block_target);
+    client.commit_execution(&keeper, &task_id, &hash, &bond);
+
+    assert!(client
+        .try_reveal_execution(&keeper, &task_id, &secret, &block_target)
+        .is_err());
+    assert!(client.try_execute(&keeper, &task_id).is_err());
+
+    advance_ledger(&env, 2);
+    client.reveal_execution(&keeper, &task_id, &secret, &block_target);
 }
 
 /// Third-party address attempting to reveal the legitimate keeper's commitment is rejected.
@@ -269,10 +296,11 @@ fn test_reveal_wrong_secret_fails() {
 
     let secret = Bytes::from_slice(&env, b"correct");
     let wrong = Bytes::from_slice(&env, b"WRONG");
-    let block_target: u32 = env.ledger().sequence();
+    let block_target: u32 = env.ledger().sequence() + 1;
     let hash = compute_commitment_hash(&env, &keeper, task_id, &secret, block_target);
     client.commit_execution(&keeper, &task_id, &hash, &bond);
 
+    advance_ledger(&env, 2);
     let res = client.try_reveal_execution(&keeper, &task_id, &wrong, &block_target);
     assert!(res.is_err(), "wrong secret must be rejected");
 }

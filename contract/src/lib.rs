@@ -204,6 +204,9 @@ pub enum Error {
     CommitmentMismatch = 802,
     RevealWindowExpired = 803,
     CommitmentNotFound = 804,
+    RevealTooEarly = 805,
+    InvalidBatchSize = 806,
+    InvalidRevealBlock = 807,
     // State channel off-chain settlement engine errors (Issue #1185)
     ChannelNotFound = 810,
     ChannelNotActive = 811,
@@ -524,8 +527,8 @@ pub struct TaskDependency {
 }
 
 /// Encrypted parameter payload for privacy-preserving task execution.
-/// The ciphertext is encrypted with the contract's public key and can
-/// only be decrypted in-memory during execution.
+/// The contract stores the ciphertext; encryption and threshold key release
+/// are handled by the external protocol identified by `encryption_scheme`.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct EncryptedPayload {
@@ -1499,6 +1502,12 @@ pub enum DataKey {
     /// Simulated prices for testing
     SimulatedSyntheticPrice(Address),
     SimulatedUnderlyingPrice(Address),
+    /// Circular slot for the latest hash-only mempool commitment records.
+    MempoolCommitmentSlot(u32),
+    /// Next ring-buffer slot to be written.
+    MempoolCommitmentHead,
+    /// Number of initialized commitment slots, capped at ring capacity.
+    MempoolCommitmentCount,
 }
 
 /// Call frame representing a single entry in the call stack
@@ -2170,28 +2179,6 @@ fn set_encrypted_payload(env: &Env, task_id: u64, payload: &EncryptedPayload) {
     env.storage()
         .persistent()
         .set(&DataKey::EncryptedPayload(task_id), payload);
-}
-
-fn decrypt_payload(_env: &Env, payload: &EncryptedPayload) -> Result<Bytes, Error> {
-    // In a production implementation, this would use homomorphic encryption
-    // or ZK proofs to decrypt the payload in-memory without exposing the
-    // plaintext on-chain. For now, we validate that the payload has the
-    // expected structure and return the ciphertext as a placeholder.
-    // The actual decryption would happen off-chain or in a trusted execution
-    // environment, with the decrypted result verified via ZK proof.
-    if payload.ciphertext.len() == 0 {
-        return Err(Error::DecryptionFailed);
-    }
-    if payload.public_key.len() != 32 {
-        return Err(Error::DecryptionFailed);
-    }
-    if payload.nonce.len() != 24 {
-        return Err(Error::DecryptionFailed);
-    }
-
-    // Placeholder: return the ciphertext as-is. In a real implementation,
-    // this would decrypt using the contract's private key or a ZK verifier.
-    Ok(payload.ciphertext.clone())
 }
 
 // ============================================================================
@@ -6193,6 +6180,7 @@ impl SoroTaskContract {
             if commitment.keeper != keeper {
                 panic_with_error!(&env, Error::Unauthorized);
             }
+            panic_with_error!(&env, Error::CommitmentRequired);
         }
         let _guard = security::ReentrancyGuard::new(&env);
         Self::execute_internal(&env, &keeper, task_id, false);
@@ -6632,10 +6620,9 @@ impl SoroTaskContract {
     // Issue #833: Encrypted On-Chain State Parameters
     // ============================================================================
 
-    /// Stores encrypted parameter payloads for a task.
-    /// The payload is encrypted with the contract's public key and can
-    /// only be decrypted in-memory during execution.
-    /// Only callable by the task creator.
+    /// Stores ciphertext for a task. Threshold key management and decryption
+    /// are provided by the external protocol; the contract does not decrypt it.
+    /// Only callable by the task creator, and immutable while committed.
     pub fn set_encrypted_params(env: Env, task_id: u64, payload: EncryptedPayload) {
         enter_security_guard(&env);
 
@@ -6646,6 +6633,14 @@ impl SoroTaskContract {
             .get(&task_key)
             .expect("Task not found");
         config.creator.require_auth();
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::ExecutionCommitment(task_id))
+        {
+            panic_with_error!(&env, Error::CommitmentAlreadyExists);
+        }
 
         env.storage()
             .persistent()
@@ -11624,34 +11619,30 @@ impl SoroTaskContract {
 
     // ─── Commit-Reveal Anti-Frontrunning Protocol (SC-HARD-07) ──────────────
 
-    /// Phase 1 – Commit. Keeper posts a hash commitment before executing.
-    /// `bond_amount` is debited from `DataKey::KeeperStake(keeper)`.
-    pub fn commit_execution(
-        env: Env,
-        keeper: Address,
+    fn commit_execution_inner(
+        env: &Env,
+        keeper: &Address,
         task_id: u64,
-        commitment_hash: BytesN<32>,
+        commitment_hash: &BytesN<32>,
         bond_amount: i128,
     ) {
-        keeper.require_auth();
-
         if bond_amount < MIN_COMMIT_BOND {
-            panic_with_error!(&env, Error::InsufficientBalance);
+            panic_with_error!(env, Error::InsufficientBalance);
         }
 
         let commitment_key = DataKey::ExecutionCommitment(task_id);
         if env.storage().persistent().has(&commitment_key) {
-            panic_with_error!(&env, Error::CommitmentAlreadyExists);
+            panic_with_error!(env, Error::CommitmentAlreadyExists);
         }
 
         if !env.storage().persistent().has(&DataKey::Task(task_id)) {
-            panic_with_error!(&env, Error::TaskNotFound);
+            panic_with_error!(env, Error::TaskNotFound);
         }
 
         let stake_key = DataKey::KeeperStake(keeper.clone());
         let current_stake: i128 = env.storage().persistent().get(&stake_key).unwrap_or(0i128);
         if current_stake < bond_amount {
-            panic_with_error!(&env, Error::InsufficientBalance);
+            panic_with_error!(env, Error::InsufficientBalance);
         }
         env.storage()
             .persistent()
@@ -11670,17 +11661,76 @@ impl SoroTaskContract {
             .persistent()
             .extend_ttl(&commitment_key, 100, 100);
 
+        crate::mempool::record_commitment(
+            env,
+            &crate::mempool::MempoolCommitmentRecord {
+                task_id,
+                keeper: keeper.clone(),
+                commitment_hash: commitment_hash.clone(),
+                commit_ledger,
+            },
+        );
+
         env.events().publish(
             (
-                Symbol::new(&env, "ExecutionCommitted"),
-                Symbol::new(&env, "v1"),
+                Symbol::new(env, "ExecutionCommitted"),
+                Symbol::new(env, "v1"),
                 task_id,
             ),
-            (keeper, commitment_hash, commit_ledger),
+            (keeper.clone(), commitment_hash.clone(), commit_ledger),
         );
     }
 
-    /// Phase 2 – Reveal. Verifies the preimage, refunds bond, and executes.
+    /// Phase 1 – Commit. Keeper posts a hash commitment before executing.
+    /// For a task with encrypted parameters, the hash must include that
+    /// ciphertext using `mempool::compute_encrypted_commitment_hash`.
+    /// `bond_amount` is debited from `DataKey::KeeperStake(keeper)`.
+    pub fn commit_execution(
+        env: Env,
+        keeper: Address,
+        task_id: u64,
+        commitment_hash: BytesN<32>,
+        bond_amount: i128,
+    ) {
+        keeper.require_auth();
+        Self::commit_execution_inner(&env, &keeper, task_id, &commitment_hash, bond_amount);
+    }
+
+    /// Commit several task orderings atomically. Any invalid item reverts the
+    /// entire batch; the maximum batch length bounds storage and execution cost.
+    pub fn commit_execution_batch(
+        env: Env,
+        keeper: Address,
+        commitments: Vec<crate::mempool::BatchExecutionCommitment>,
+    ) {
+        keeper.require_auth();
+        let len = commitments.len();
+        if len == 0 || len > crate::mempool::MAX_BATCH_COMMITS {
+            panic_with_error!(&env, Error::InvalidBatchSize);
+        }
+
+        for index in 0..len {
+            let item = commitments.get(index).unwrap();
+            Self::commit_execution_inner(
+                &env,
+                &keeper,
+                item.task_id,
+                &item.commitment_hash,
+                item.bond_amount,
+            );
+        }
+    }
+
+    /// Return recent hash-only commitments, newest first (maximum 64).
+    pub fn get_recent_mempool_commitments(
+        env: Env,
+        limit: u32,
+    ) -> Vec<crate::mempool::MempoolCommitmentRecord> {
+        crate::mempool::recent_commitments(&env, limit)
+    }
+
+    /// Phase 2 – Reveal. Verifies the preimage after its target ledger is
+    /// finalized, refunds the bond, and executes.
     pub fn reveal_execution(
         env: Env,
         keeper: Address,
@@ -11702,6 +11752,15 @@ impl SoroTaskContract {
         }
 
         let current_ledger = env.ledger().sequence();
+        if !crate::mempool::is_reveal_delay_elapsed(current_ledger, commitment.commit_ledger) {
+            panic_with_error!(&env, Error::RevealTooEarly);
+        }
+        if block_target <= commitment.commit_ledger {
+            panic_with_error!(&env, Error::InvalidRevealBlock);
+        }
+        if !crate::mempool::is_ordering_finalized(current_ledger, block_target) {
+            panic_with_error!(&env, Error::RevealTooEarly);
+        }
         if !crate::mempool::is_within_reveal_window(
             current_ledger,
             commitment.commit_ledger,
@@ -11710,14 +11769,26 @@ impl SoroTaskContract {
             panic_with_error!(&env, Error::RevealWindowExpired);
         }
 
-        let valid = crate::mempool::verify_commitment(
-            &env,
-            &keeper,
-            task_id,
-            &secret,
-            block_target,
-            &commitment.commitment_hash,
-        );
+        let valid = if let Some(payload) = get_encrypted_payload(&env, task_id) {
+            crate::mempool::verify_encrypted_commitment(
+                &env,
+                &keeper,
+                task_id,
+                &secret,
+                block_target,
+                &payload.ciphertext,
+                &commitment.commitment_hash,
+            )
+        } else {
+            crate::mempool::verify_commitment(
+                &env,
+                &keeper,
+                task_id,
+                &secret,
+                block_target,
+                &commitment.commitment_hash,
+            )
+        };
         if !valid {
             panic_with_error!(&env, Error::CommitmentMismatch);
         }
