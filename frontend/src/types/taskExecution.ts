@@ -118,6 +118,7 @@ export enum ExecutionStepType {
   CallTarget = 13,
   PayKeeper = 14,
   UpdateState = 15,
+  CheckOracleFreshness = 16,
 }
 
 export const EXECUTION_STEP_LABELS: Record<ExecutionStepType, string> = {
@@ -136,6 +137,7 @@ export const EXECUTION_STEP_LABELS: Record<ExecutionStepType, string> = {
   [ExecutionStepType.CallTarget]: 'Call Target Contract',
   [ExecutionStepType.PayKeeper]: 'Pay Keeper Fee',
   [ExecutionStepType.UpdateState]: 'Update Task State',
+  [ExecutionStepType.CheckOracleFreshness]: 'Check Oracle Data Freshness',
 };
 
 export const EXECUTION_STEP_ICONS: Record<ExecutionStepType, string> = {
@@ -154,6 +156,7 @@ export const EXECUTION_STEP_ICONS: Record<ExecutionStepType, string> = {
   [ExecutionStepType.CallTarget]: '🎯',
   [ExecutionStepType.PayKeeper]: '💸',
   [ExecutionStepType.UpdateState]: '💾',
+  [ExecutionStepType.CheckOracleFreshness]: '📈',
 };
 
 export type StepResultType = 'Passed' | 'Failed' | 'Skipped';
@@ -162,11 +165,15 @@ export interface ExecutionStepRecord {
   step: ExecutionStepType;
   result: StepResultType;
   detail: number;
+  timestampMicros?: string;
+  durationMicros?: string;
+  returnData?: string;
 }
 
 export interface ExecutionTrace {
   task_id: string;
   keeper: string;
+  /** Unix ledger timestamp in seconds; the contract does not store microseconds. */
   timestamp: string;
   steps: ExecutionStepRecord[];
   final_outcome: 'Success' | 'Failed' | 'Skipped' | 'NeverRun';
@@ -253,6 +260,28 @@ export function getErrorDetailMessage(step: ExecutionStepType, detail: number): 
     },
   };
   return errorMap[step]?.[detail] ?? null;
+}
+
+export function getStepRemediation(step: ExecutionStepType): string {
+  const remediation: Record<ExecutionStepType, string> = {
+    [ExecutionStepType.ValidateAuth]: 'Verify the keeper authorization and required signer configuration.',
+    [ExecutionStepType.LoadTask]: 'Confirm the task exists and has not expired or been removed.',
+    [ExecutionStepType.CheckActive]: 'Resume the task or check whether it was paused by a safety guard.',
+    [ExecutionStepType.CheckWhitelist]: 'Add the executing keeper to the task allowlist or use an authorized keeper.',
+    [ExecutionStepType.CheckInterval]: 'Wait until the task execution interval has elapsed.',
+    [ExecutionStepType.CheckDependencies]: 'Resolve the upstream task dependency, then retry.',
+    [ExecutionStepType.EvaluateResolver]: 'Check resolver inputs, external data, and configured thresholds.',
+    [ExecutionStepType.CheckVrfCondition]: 'Verify the VRF request was fulfilled and its proof is valid.',
+    [ExecutionStepType.CheckZkCondition]: 'Check the ZK proof, verification key, and replay/nullifier state.',
+    [ExecutionStepType.CalculateFee]: 'Review the task fee configuration and available gas budget.',
+    [ExecutionStepType.CheckBalance]: 'Fund the task with enough gas balance before retrying.',
+    [ExecutionStepType.ExecuteYield]: 'Inspect the configured yield strategy and its protocol balances.',
+    [ExecutionStepType.CallTarget]: 'Verify the target contract, function arguments, authorization, and target state.',
+    [ExecutionStepType.PayKeeper]: 'Review keeper payout configuration and the contract token balance.',
+    [ExecutionStepType.UpdateState]: 'Inspect the task storage state and retry after confirming it is consistent.',
+    [ExecutionStepType.CheckOracleFreshness]: 'Refresh the oracle feed or increase its allowed freshness window.',
+  };
+  return remediation[step];
 }
 
 /**
