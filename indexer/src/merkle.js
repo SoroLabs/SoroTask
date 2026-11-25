@@ -58,10 +58,9 @@ function canonicalizeAuditEvent(event) {
   const normalize = (value) => {
     if (Array.isArray(value)) return value.map(normalize);
     if (value && typeof value === "object" && !(value instanceof Date)) {
-      return Object.keys(value).sort().reduce((result, key) => {
-        result[key] = normalize(value[key]);
-        return result;
-      }, {});
+      return Object.fromEntries(
+        Object.keys(value).sort().map((key) => [key, normalize(value[key])]),
+      );
     }
     if (value instanceof Date) return value.toISOString();
     return value;
