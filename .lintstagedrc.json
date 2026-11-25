@@ -1,7 +1,7 @@
 {
-  "**/*.{js,jsx,ts,tsx}": ["eslint --fix", "prettier --write"],
-  "**/*.{json,md,yml,yaml}": ["prettier --write"]
-
+  "frontend/**/*.{js,jsx,ts,tsx}": [
+    "eslint --fix --config frontend/eslint.config.mjs",
+    "prettier --write"
+  ],
+  "frontend/**/*.{json,md,yml,yaml}": ["prettier --write"]
 }
-
-

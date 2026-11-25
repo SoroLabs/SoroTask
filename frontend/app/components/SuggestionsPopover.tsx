@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { MentionableEntity } from '../../types/mentions';
+import { MentionableEntity } from '../types/mentions';
 
 interface SuggestionsPopoverProps {
   suggestions: MentionableEntity[];

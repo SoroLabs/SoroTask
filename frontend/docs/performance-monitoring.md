@@ -45,6 +45,10 @@ The current implementation is intentionally lightweight and production-friendly:
 - Rising `task_mutation` often points to async workflow delays, optimistic update gaps, or expensive post-mutation rerenders.
 - Rising `media_render` usually means image payloads, decoding, or above-the-fold media density are too expensive.
 
+## Main-thread jank profiling
+
+For long-task detection, frame-drop monitoring, and interaction latency wrapping, see [jank-profiler.md](./jank-profiler.md). Jank reports are emitted on `sorotask:jank-report` and buffered on `window.__SOROTASK_JANK_REPORTS__`.
+
 ## Contributor workflow
 
 1. Run the frontend and interact with the task board.

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import Link from "next/link";
 
 interface Props {
   error: Error & { digest?: string };
@@ -9,10 +10,18 @@ interface Props {
 
 export default function GlobalError({ error, reset }: Props) {
   useEffect(() => {
-    // Same pattern as ErrorBoundary — log locally, no sensitive data sent out
+    // Log to console
     console.error("[GlobalError]", {
       message: error.message,
       digest: error.digest,
+    });
+
+    // Report to Sentry
+    Sentry.captureSentryException(error, {
+      tags: {
+        type: "global_error",
+        ...(error.digest && { digest: error.digest }),
+      },
     });
   }, [error]);
 
@@ -41,12 +50,12 @@ export default function GlobalError({ error, reset }: Props) {
           >
             Try again
           </button>
-          <a
+          <Link
             href="/"
             className="px-4 py-2 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-sm font-medium transition-colors"
           >
             Go home
-          </a>
+          </Link>
         </div>
       </div>
     </div>

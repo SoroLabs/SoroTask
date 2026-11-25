@@ -205,6 +205,68 @@ class ExecutionIdempotencyGuard {
       locks: { ...this.state.locks },
     };
   }
+
+  /**
+   * Start a background heartbeat that extends the Redlock lease every
+   * `intervalMs` milliseconds to keep the distributed lock alive while a
+   * transaction is being submitted.
+   *
+   * @param {string|number} taskId
+   * @param {string}        token    - Redlock token returned by acquireRedlock()
+   * @param {object}        manager  - RedlockManager instance
+   * @param {number}        [intervalMs=30000]  - how often to bump the lease
+   * @param {number}        [ttlMs=60000]       - new TTL set on each bump
+   * @returns {function} stopHeartbeat – call this to cancel the timer
+   */
+  startHeartbeat(taskId, token, manager, intervalMs = 30000, ttlMs = 60000) {
+    const interval = setInterval(async () => {
+      try {
+        const extended = await manager.extend(taskId, token, ttlMs);
+        if (!extended) {
+          this.logger.warn("Heartbeat could not extend Redlock lease — lock may have expired", { taskId });
+          clearInterval(interval);
+        } else {
+          this.logger.debug("Heartbeat extended Redlock lease", { taskId, ttlMs });
+        }
+      } catch (err) {
+        this.logger.error("Heartbeat error extending lock", { taskId, error: err.message });
+      }
+    }, intervalMs);
+
+    return () => {
+      clearInterval(interval);
+      this.logger.debug("Heartbeat stopped", { taskId });
+    };
+  }
+
+  /**
+   * Confirm transaction inclusion: stops the heartbeat, releases the
+   * distributed Redlock immediately, and marks the local lock as completed.
+   *
+   * @param {string|number} taskId
+   * @param {string}        token    - Redlock token
+   * @param {object}        manager  - RedlockManager instance
+   * @param {function}      stopHeartbeat - returned by startHeartbeat()
+   * @param {object}        [details={}]  - { txHash, ledger, ... }
+   */
+  async confirmTransactionInclusion(taskId, token, manager, stopHeartbeat, details = {}) {
+    if (typeof stopHeartbeat === "function") {
+      stopHeartbeat();
+    }
+
+    try {
+      await manager.release(taskId, token);
+      this.logger.info("Redlock released on transaction confirmation", { taskId, txHash: details.txHash });
+    } catch (err) {
+      this.logger.error("Failed to release Redlock on confirmation", { taskId, error: err.message });
+    }
+
+    return this.markCompleted(taskId, {
+      status: "confirmed",
+      txHash: details.txHash || null,
+      ...details,
+    });
+  }
 }
 
 module.exports = { ExecutionIdempotencyGuard };

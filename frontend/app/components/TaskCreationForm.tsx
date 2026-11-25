@@ -1,14 +1,19 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import useFormValidation from '../utils/formValidation/useFormValidation';
 import { taskCreationFormConfig, fieldLabels } from '../utils/formValidation/formConfigs';
 import FormField from './form/FormField';
 import FormSubmitButton from './form/FormSubmitButton';
 import FormErrorSummary from './form/FormErrorSummary';
 import DateInput from './DateInput';
+import type { TaskConfigGenerated } from '@/src/lib/ai/openai-client';
 
-const TaskCreationForm: React.FC = () => {
+interface TaskCreationFormProps {
+  initialConfig?: TaskConfigGenerated | null;
+}
+
+const TaskCreationForm: React.FC<TaskCreationFormProps> = ({ initialConfig }) => {
   const {
     formState,
     handleChange,
@@ -18,6 +23,24 @@ const TaskCreationForm: React.FC = () => {
     getFieldState,
     hasErrors
   } = useFormValidation(taskCreationFormConfig);
+
+  // Populate form with AI-generated config
+  useEffect(() => {
+    if (initialConfig) {
+      if (initialConfig.contractAddress) {
+        handleChange('contractAddress', initialConfig.contractAddress);
+      }
+      if (initialConfig.functionName) {
+        handleChange('functionName', initialConfig.functionName);
+      }
+      if (initialConfig.interval) {
+        handleChange('interval', String(initialConfig.interval));
+      }
+      if (initialConfig.gasBalance) {
+        handleChange('gasBalance', String(initialConfig.gasBalance));
+      }
+    }
+  }, [initialConfig, handleChange]);
 
   const handleDateChange = (value: string, parsedDate?: Date) => {
     handleChange('dueDate', value);
@@ -79,6 +102,7 @@ const TaskCreationForm: React.FC = () => {
           required={true}
           placeholder="3600"
           type="number"
+          preserveInput
           min="60"
           fieldState={getFieldState('interval')}
           onChange={(value) => handleChange('interval', value)}
@@ -92,6 +116,7 @@ const TaskCreationForm: React.FC = () => {
           required={true}
           placeholder="10"
           type="number"
+          preserveInput
           min="0.1"
           max="10000"
           step="0.1"

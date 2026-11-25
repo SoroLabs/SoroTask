@@ -135,16 +135,15 @@ describe("GracefulShutdownManager", () => {
       expect(snapshot.completed.taskIds).toContain("task-1");
     });
 
-    test("should track in-flight task duration in snapshot", () => {
+    test("should track in-flight task duration in snapshot", async () => {
       shutdownManager.trackTask("task-1");
+      const initialSnapshot = shutdownManager.getStateSnapshot();
 
-      return new Promise((resolve) => {
-        setTimeout(() => {
-          const snapshot = shutdownManager.getStateSnapshot();
-          expect(snapshot.durationMs).toBeGreaterThanOrEqual(50);
-          resolve();
-        }, 50);
-      });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+
+      const snapshot = shutdownManager.getStateSnapshot();
+      expect(snapshot.durationMs).toBeGreaterThan(initialSnapshot.durationMs);
+      expect(snapshot.inFlight.count).toBe(1);
     });
   });
 
@@ -282,7 +281,8 @@ describe("GracefulShutdownManager", () => {
       const cleanup = jest.fn(
         () =>
           new Promise((resolve) => {
-            setTimeout(resolve, 10000); // Never resolves within timeout
+            const timeout = setTimeout(resolve, 10000); // Never resolves within timeout
+            timeout.unref?.();
           })
       );
 
@@ -355,6 +355,35 @@ describe("GracefulShutdownManager", () => {
 
       expect(removeListenerSpy).toHaveBeenCalled();
       removeListenerSpy.mockRestore();
+    });
+  });
+
+  describe("Lock Handling", () => {
+    test("should track and untrack locks", () => {
+      shutdownManager.trackLock("task-100", "token-abc");
+      expect(shutdownManager.activeLocks.has("task-100")).toBe(true);
+      shutdownManager.untrackLock("task-100");
+      expect(shutdownManager.activeLocks.has("task-100")).toBe(false);
+    });
+
+    test("should untrack lock automatically on completeTask or failTask", () => {
+      shutdownManager.trackTask("task-101");
+      shutdownManager.trackLock("task-101", "token-def");
+      shutdownManager.completeTask("task-101");
+      expect(shutdownManager.activeLocks.has("task-101")).toBe(false);
+
+      shutdownManager.trackTask("task-102");
+      shutdownManager.trackLock("task-102", "token-ghi");
+      shutdownManager.failTask("task-102", new Error("test"));
+      expect(shutdownManager.activeLocks.has("task-102")).toBe(false);
+    });
+
+    test("should release held locks cleanly on shutdown", async () => {
+      const releaseFn = jest.fn().mockResolvedValue(true);
+      shutdownManager.trackLock("task-103", "token-jkl", { releaseFn });
+      await shutdownManager._releaseHeldLocks();
+      expect(releaseFn).toHaveBeenCalledWith("task-103", "token-jkl");
+      expect(shutdownManager.activeLocks.size).toBe(0);
     });
   });
 });

@@ -1,0 +1,124 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "वॉलेट कनेक्ट करें",
+    "close": "बंद करें",
+    "cancel": "रद्द करें",
+    "save": "सहेजें",
+    "edit": "संपादित करें",
+    "delete": "हटाएँ",
+    "loading": "लोड हो रहा है...",
+    "error": "त्रुटि",
+    "success": "सफलता",
+    "warning": "चेतावनी",
+    "no_data": "कोई डेटा उपलब्ध नहीं है"
+  },
+  "calendar": {
+    "title": "कार्य शेड्यूल कैलेंडर",
+    "today": "आज",
+    "previous_month": "पिछला महीना",
+    "next_month": "अगला महीना",
+    "timezone": "समय क्षेत्र",
+    "legend": {
+      "today": "आज",
+      "task_with_deadline": "समय-सीमा वाला कार्य",
+      "multiple_tasks": "एक ही तारीख पर कई कार्य",
+      "past_deadline": "समय-सीमा बीत गई"
+    },
+    "selected_date_title": "{date} के कार्य",
+    "no_tasks_scheduled": "कोई कार्य निर्धारित नहीं है",
+    "schedule_calendar": "शेड्यूल कैलेंडर"
+  },
+  "calendar_day": {
+    "more_button": "{count} और",
+    "tasks_label": "{count} कार्य"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "{count} कार्य निर्धारित",
+    "click_task_to_view": "विवरण देखने के लिए कार्य पर क्लिक करें"
+  },
+  "task_detail": {
+    "title": "कार्य विवरण",
+    "status": "स्थिति",
+    "contract_address": "कॉन्ट्रैक्ट पता",
+    "description": "विवरण",
+    "schedule_settings": "शेड्यूल सेटिंग",
+    "execution_interval": "निष्पादन अंतराल",
+    "gas_balance": "गैस बैलेंस",
+    "next_execution": "अगला निष्पादन",
+    "deadline": "समय-सीमा",
+    "due_date": "देय तारीख",
+    "time_until_deadline": "समय-सीमा तक का समय",
+    "due_today": "आज देय है!",
+    "overdue_by": "{days} दिन की देरी",
+    "days_remaining": "{days} दिन शेष",
+    "created": "बनाया गया",
+    "timezone_label": "समय क्षेत्र",
+    "tags": "टैग",
+    "edit_task": "कार्य संपादित करें",
+    "view_logs": "लॉग देखें",
+    "status_pending": "लंबित",
+    "status_active": "सक्रिय",
+    "status_completed": "पूरा हुआ",
+    "status_failed": "विफल",
+    "status_paused": "रोका गया"
+  },
+  "forms": {
+    "create_automation_task": "ऑटोमेशन कार्य बनाएँ",
+    "your_tasks": "आपके कार्य",
+    "target_contract_address": "लक्ष्य कॉन्ट्रैक्ट पता",
+    "contract_placeholder": "C...",
+    "function_name": "फ़ंक्शन का नाम",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "अंतराल (सेकंड)",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "गैस बैलेंस (XLM)",
+    "gas_balance_placeholder": "10",
+    "register_task": "कार्य पंजीकृत करें",
+    "no_tasks_registered_yet": "अभी तक कोई कार्य पंजीकृत नहीं है।"
+  },
+  "execution_logs": {
+    "title": "निष्पादन लॉग",
+    "task_id": "कार्य आईडी",
+    "target": "लक्ष्य",
+    "keeper": "कीपर",
+    "status": "स्थिति",
+    "timestamp": "समय-चिह्न",
+    "status_success": "सफल",
+    "mins_ago": "{mins} मिनट पहले"
+  },
+  "formatting": {
+    "hours_short": "घंटे",
+    "seconds_short": "सेकंड",
+    "interval_display": "{hours} घंटे ({seconds} सेकंड)",
+    "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "कनेक्शन की स्थिति",
+    "online": "ऑनलाइन",
+    "offline": "ऑफ़लाइन",
+    "resyncing": "फिर से सिंक हो रहा है",
+    "sync_failed": "सिंक विफल हुआ",
+    "queued_actions": "{count, plural, =0 {कोई कार्रवाई कतार में नहीं है} one {# कार्रवाई कतार में है} other {# कार्रवाइयाँ कतार में हैं}}",
+    "replaying": "{count, plural, one {कतार में रखी # कार्रवाई फिर से चलाई जा रही है} other {कतार में रखी # कार्रवाइयाँ फिर से चलाई जा रही हैं}}",
+    "still_queued": "{count, plural, one {# कार्रवाई अभी भी कतार में है} other {# कार्रवाइयाँ अभी भी कतार में हैं}}",
+    "browse_cached": "आप कैश की गई सामग्री देख सकते हैं। बदलाव कतार में रखे जाएँगे।",
+    "will_run_when_back": "ऑनलाइन वापस आने पर चलाया जाएगा।",
+    "retry": "फिर से कोशिश करें",
+    "read_only_notice": "आप केवल-पढ़ने के मोड में हैं। बदलाव ऑनलाइन वापस आने पर भेजे जाएँगे।"
+  },
+  "theme": {
+    "label": "थीम",
+    "light": "लाइट",
+    "dark": "डार्क",
+    "oled": "उच्च-कंट्रास्ट OLED",
+    "system": "सिस्टम",
+    "change": "थीम: {mode}। बदलने के लिए क्लिक करें।",
+    "resolving_to": "फ़िलहाल {resolved} पर सेट हो रहा है।"
+  },
+  "language": {
+    "label": "भाषा चुनें",
+    "loading": "भाषा लोड हो रही है...",
+    "available": "{count, plural, =0 {कोई भाषा उपलब्ध नहीं} one {# भाषा} other {# भाषाएँ}}"
+  }
+}

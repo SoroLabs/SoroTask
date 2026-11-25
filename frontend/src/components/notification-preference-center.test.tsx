@@ -89,3 +89,62 @@ describe("NotificationPreferenceCenter", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("NotificationPreferenceCenter · external channels (issue #1263)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    class MockNotification {
+      static get permission() {
+        return "granted";
+      }
+      static requestPermission = async () => "granted";
+    }
+    Object.defineProperty(window, "Notification", {
+      configurable: true,
+      writable: true,
+      value: MockNotification,
+    });
+  });
+
+  it("configures a webhook endpoint, sends a test ping, and saves granular routing", async () => {
+    const fetchMock = jest.fn(async () => ({ ok: true, status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    render(<NotificationPreferenceCenter />);
+
+    const urlInput = await screen.findByLabelText("Webhook endpoint URL");
+    fireEvent.change(urlInput, {
+      target: { value: "https://hooks.example.com/abc" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Send test ping" }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Test ping delivered/i)).toBeInTheDocument(),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://hooks.example.com/abc",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    // Granular routing: route task-failed through the webhook only.
+    fireEvent.click(
+      screen.getByLabelText("Route Task failed via Webhook"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save preferences" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Preferences saved successfully"),
+      ).toBeInTheDocument(),
+    );
+
+    const stored = JSON.parse(
+      window.localStorage.getItem(NOTIFICATION_PREFERENCES_STORAGE_KEY) ?? "{}",
+    );
+    expect(stored.categoryChannels.taskFailed).toEqual(["webhook"]);
+    expect(stored.externalEndpoints.webhook.url).toBe(
+      "https://hooks.example.com/abc",
+    );
+  });
+});

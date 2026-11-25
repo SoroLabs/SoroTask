@@ -43,7 +43,11 @@ export type FormFieldConfig<T = any> = {
   required?: boolean;
   disabled?: boolean;
   placeholder?: string;
-  type?: 'text' | 'number' | 'email' | 'password' | 'textarea';
+  type?: 'text' | 'number' | 'email' | 'password' | 'textarea' | 'checkbox';
+  min?: number;
+  max?: number;
+  step?: string;
+  rows?: number;
 };
 
 export type FormConfig<T extends Record<string, any> = Record<string, any>> = {

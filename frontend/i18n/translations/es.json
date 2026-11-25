@@ -9,28 +9,28 @@
     "delete": "Eliminar",
     "loading": "Cargando...",
     "error": "Error",
-    "success": "Éxito",
+    "success": "\u00c9xito",
     "warning": "Advertencia",
     "no_data": "Sin datos disponibles"
   },
   "calendar": {
-    "title": "Calendario de Programación de Tareas",
+    "title": "Calendario de Programaci\u00f3n de Tareas",
     "today": "Hoy",
     "previous_month": "Mes anterior",
-    "next_month": "Próximo mes",
+    "next_month": "Pr\u00f3ximo mes",
     "timezone": "Zona horaria",
     "legend": {
       "today": "Hoy",
-      "task_with_deadline": "Tarea con fecha límite",
-      "multiple_tasks": "Múltiples tareas en la misma fecha",
-      "past_deadline": "Fecha límite vencida"
+      "task_with_deadline": "Tarea con fecha l\u00edmite",
+      "multiple_tasks": "M\u00faltiples tareas en la misma fecha",
+      "past_deadline": "Fecha l\u00edmite vencida"
     },
     "selected_date_title": "Tareas en {date}",
     "no_tasks_scheduled": "Ninguna tarea programada",
-    "schedule_calendar": "Calendario de Programación"
+    "schedule_calendar": "Calendario de Programaci\u00f3n"
   },
   "calendar_day": {
-    "more_button": "+{count} más",
+    "more_button": "+{count} m\u00e1s",
     "tasks_label": "{count} tarea{plural}"
   },
   "dense_popover": {
@@ -40,18 +40,18 @@
   "task_detail": {
     "title": "Detalles de la Tarea",
     "status": "Estado",
-    "contract_address": "Dirección del Contrato",
-    "description": "Descripción",
-    "schedule_settings": "Configuración de Programación",
-    "execution_interval": "Intervalo de Ejecución",
+    "contract_address": "Direcci\u00f3n del Contrato",
+    "description": "Descripci\u00f3n",
+    "schedule_settings": "Configuraci\u00f3n de Programaci\u00f3n",
+    "execution_interval": "Intervalo de Ejecuci\u00f3n",
     "gas_balance": "Saldo de Gas",
-    "next_execution": "Próxima Ejecución",
-    "deadline": "Fecha Límite",
+    "next_execution": "Pr\u00f3xima Ejecuci\u00f3n",
+    "deadline": "Fecha L\u00edmite",
     "due_date": "Fecha de Vencimiento",
-    "time_until_deadline": "Tiempo hasta la Fecha Límite",
-    "due_today": "¡Vence Hoy!",
-    "overdue_by": "Vencido por {days} día{plural}",
-    "days_remaining": "{days} día{plural} restante{plural}",
+    "time_until_deadline": "Tiempo hasta la Fecha L\u00edmite",
+    "due_today": "\u00a1Vence Hoy!",
+    "overdue_by": "Vencido por {days} d\u00eda{plural}",
+    "days_remaining": "{days} d\u00eda{plural} restante{plural}",
     "created": "Creado",
     "timezone_label": "Zona Horaria",
     "tags": "Etiquetas",
@@ -64,27 +64,27 @@
     "status_paused": "Pausado"
   },
   "forms": {
-    "create_automation_task": "Crear Tarea de Automatización",
+    "create_automation_task": "Crear Tarea de Automatizaci\u00f3n",
     "your_tasks": "Mis Tareas",
-    "target_contract_address": "Dirección del Contrato Objetivo",
+    "target_contract_address": "Direcci\u00f3n del Contrato Objetivo",
     "contract_placeholder": "C...",
-    "function_name": "Nombre de Función",
+    "function_name": "Nombre de Funci\u00f3n",
     "function_placeholder": "harvest_yield",
     "interval_seconds": "Intervalo (segundos)",
     "interval_placeholder": "3600",
     "gas_balance_xlm": "Saldo de Gas (XLM)",
     "gas_balance_placeholder": "10",
     "register_task": "Registrar Tarea",
-    "no_tasks_registered_yet": "Ninguna tarea registrada aún."
+    "no_tasks_registered_yet": "Ninguna tarea registrada a\u00fan."
   },
   "execution_logs": {
-    "title": "Registros de Ejecución",
+    "title": "Registros de Ejecuci\u00f3n",
     "task_id": "ID de Tarea",
     "target": "Objetivo",
-    "keeper": "Guardián",
+    "keeper": "Guardi\u00e1n",
     "status": "Estado",
     "timestamp": "Marca de Tiempo",
-    "status_success": "Éxito",
+    "status_success": "\u00c9xito",
     "mins_ago": "hace {mins} minutos"
   },
   "formatting": {
@@ -92,5 +92,33 @@
     "seconds_short": "s",
     "interval_display": "{hours}h ({seconds} segundos)",
     "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "Estado de conexi\u00f3n",
+    "online": "En l\u00ednea",
+    "offline": "Sin conexi\u00f3n",
+    "resyncing": "Sincronizando",
+    "sync_failed": "Error de sincronizaci\u00f3n",
+    "queued_actions": "{count, plural, =0 {Sin acciones en cola} one {# acci\u00f3n en cola} other {# acciones en cola}}",
+    "replaying": "{count, plural, one {Reproduciendo una acci\u00f3n en cola} other {Reproduciendo # acciones en cola}}",
+    "still_queued": "{count, plural, one {# acci\u00f3n a\u00fan en cola} other {# acciones a\u00fan en cola}}",
+    "browse_cached": "Puedes seguir explorando el contenido en cach\u00e9. Los cambios se pondr\u00e1n en cola.",
+    "will_run_when_back": "se ejecutar\u00e1n cuando vuelvas a estar en l\u00ednea.",
+    "retry": "Reintentar",
+    "read_only_notice": "Est\u00e1s en modo de solo lectura. Lo que escribas se enviar\u00e1 cuando vuelvas a estar en l\u00ednea."
+  },
+  "theme": {
+    "label": "Tema",
+    "light": "Claro",
+    "dark": "Oscuro",
+    "oled": "OLED de alto contraste",
+    "system": "Sistema",
+    "change": "Tema: {mode}. Haz clic para cambiar.",
+    "resolving_to": "Resolviendo actualmente a {resolved}."
+  },
+  "language": {
+    "label": "Seleccionar idioma",
+    "loading": "Cargando idioma...",
+    "available": "{count, plural, =0 {No hay idiomas} one {# idioma} other {# idiomas}}"
   }
 }

@@ -81,6 +81,9 @@ function SignInContent() {
           recoverable: true
         });
         setLoading(null);
+      } else if (result?.url) {
+        // For OAuth providers, result.url contains the authorization URL
+        window.location.href = result.url;
       } else if (result?.ok) {
         router.push(callbackUrl);
         router.refresh();

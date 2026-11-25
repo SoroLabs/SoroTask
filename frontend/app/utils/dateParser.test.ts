@@ -169,30 +169,25 @@ export const runDateParserTests = () => {
   return results;
 };
 
-// Test specific date phrases
-export const testSpecificPhrases = () => {
-  const config = getDefaultDateConfig();
-  const testDate = new Date('2024-04-26'); // Friday for testing
-  
-  const phrases = [
-    'tomorrow',
-    'next Monday',
-    'in 3 days',
-    'this Friday',
-    '12/25',
-    'invalid input'
-  ];
+describe('dateParser utility functions', () => {
+  it('parses specific date phrases correctly', () => {
+    const config = getDefaultDateConfig();
+    const testDate = new Date('2024-04-26');
+    const phrases = [
+      'tomorrow',
+      'next Monday',
+      'in 3 days',
+      'this Friday',
+      '12/25',
+      'invalid input'
+    ];
 
-  console.log('\n🔍 Testing Specific Date Phrases:');
-  console.log(`Reference date: ${formatDateForDisplay(testDate, config)}\n`);
-
-  phrases.forEach(phrase => {
-    const parsed = mockChrono.parseDate(phrase, testDate);
-    const confidence = getConfidenceLevel(phrase, parsed, config);
-    const ambiguous = parsed ? isAmbiguousDate(phrase, parsed, config) : false;
-    
-    console.log(`"${phrase}"`);
-    console.log(`  → ${parsed ? formatDateForDisplay(parsed, config) : 'Failed to parse'}`);
-    console.log(`  Confidence: ${confidence}, Ambiguous: ${ambiguous}\n`);
+    phrases.forEach(phrase => {
+      const parsed = mockChrono.parseDate(phrase, testDate);
+      const confidence = getConfidenceLevel(phrase, parsed, config);
+      const ambiguous = parsed ? isAmbiguousDate(phrase, parsed, config) : false;
+      expect(confidence).toBeDefined();
+      expect(typeof ambiguous).toBe('boolean');
+    });
   });
-};
+});

@@ -1,0 +1,29 @@
+# Review from the core team is required for security-sensitive paths.
+# CODEOWNERS uses last-match-wins semantics, so keep specific rules below broad ones.
+
+# CI, automation, and repository configuration
+/.github/               @SoroLabs/core-devs
+/scripts/               @SoroLabs/core-devs
+
+# Infrastructure and deployment
+/infra/                 @SoroLabs/core-devs
+/terraform/             @SoroLabs/core-devs
+/charts/                @SoroLabs/core-devs
+/monitoring/            @SoroLabs/core-devs
+
+# On-chain and proof code
+/contract/              @SoroLabs/core-devs
+/zk-proof-service/      @SoroLabs/core-devs
+/keeper/src/zk/         @SoroLabs/core-devs
+/keeper/Dockerfile      @SoroLabs/core-devs
+
+# Dependency manifests and lockfiles
+**/package.json         @SoroLabs/core-devs
+**/package-lock.json    @SoroLabs/core-devs
+/Cargo.toml             @SoroLabs/core-devs
+/Cargo.lock             @SoroLabs/core-devs
+/contract/Cargo.toml    @SoroLabs/core-devs
+/contract/Cargo.lock    @SoroLabs/core-devs
+
+# Shell scripts execute with the contributor's privileges
+**/*.sh                @SoroLabs/core-devs

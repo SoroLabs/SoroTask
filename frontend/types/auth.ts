@@ -14,7 +14,13 @@ export type Permission =
   | 'tasks:resume'
   | 'admin:users'
   | 'admin:settings'
-  | 'admin:system';
+  | 'admin:system'
+  // Team-scoped permissions (issue #1244). Separate from the `admin:*` group
+  // because they apply to a shared treasury workspace rather than the instance.
+  | 'team:manage'
+  | 'team:invite'
+  | 'team:delegate'
+  | 'audit:view';
 
 export interface User {
   id: string;

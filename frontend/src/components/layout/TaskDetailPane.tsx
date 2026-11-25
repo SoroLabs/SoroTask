@@ -1,8 +1,19 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTask } from "@/src/hooks/tasks";
 import { useLayoutStore } from "@/src/store/layoutStore";
+import {
+  CollaborativeProvider,
+  CollaborationInfo,
+  CollaborativeStatus,
+  SyncStatusMessage,
+  useCollaborative,
+} from "@/src/lib/collaborative";
+import { ExecuteTaskButton } from "@/src/components/ExecuteTaskButton";
+import { useSorobanEnvironment } from "@/src/lib/soroban/useSorobanEnvironment";
+import { getNetworkConfig } from "@/src/lib/network/config";
+import { useWalletOptional } from "@/app/context/WalletContext";
 
 // Simple icon components to avoid external dependencies
 const XMarkIcon = ({ className }: { className?: string }) => (
@@ -17,15 +28,11 @@ const ArrowLeftIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
 interface TaskDetailPaneProps {
   taskId: string;
   onClose: () => void;
   showBackButton?: boolean;
 }
-
-// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function TaskDetailPane({
   taskId,
@@ -35,22 +42,24 @@ export default function TaskDetailPane({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const { data: task, isLoading, isError } = useTask(taskId);
   const { closeDetailPane } = useLayoutStore();
+  const currentUserId = useMemo(() => {
+    if (typeof window !== "undefined" && typeof window.crypto?.randomUUID === "function") {
+      return `user-${window.crypto.randomUUID()}`;
+    }
+    return `user-${taskId}`;
+  }, [taskId]);
 
-  // Focus management: focus close button when pane opens
   useEffect(() => {
     if (closeButtonRef.current) {
       closeButtonRef.current.focus();
     }
   }, [taskId]);
 
-  // Handle invalid task: silently close pane
   useEffect(() => {
     if (isError) {
       closeDetailPane();
     }
   }, [isError, closeDetailPane]);
-
-  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div
@@ -58,7 +67,6 @@ export default function TaskDetailPane({
       aria-label="Task detail"
       className="h-full flex flex-col bg-neutral-900"
     >
-      {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-700 flex-shrink-0">
         <div className="flex items-center gap-3">
           {showBackButton && (
@@ -70,9 +78,7 @@ export default function TaskDetailPane({
               <ArrowLeftIcon className="w-5 h-5 text-neutral-300" />
             </button>
           )}
-          <h2 className="text-lg font-semibold text-neutral-100">
-            Task Details
-          </h2>
+          <h2 className="text-lg font-semibold text-neutral-100">Task Details</h2>
         </div>
         {!showBackButton && (
           <button
@@ -86,7 +92,6 @@ export default function TaskDetailPane({
         )}
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto px-6 py-6">
         {isLoading && (
           <div className="space-y-4">
@@ -102,124 +107,183 @@ export default function TaskDetailPane({
         )}
 
         {task && (
-          <div className="space-y-6">
-            {/* Task Title */}
-            <div>
-              <h3 className="text-2xl font-bold text-neutral-100 mb-2">
-                {task.title}
-              </h3>
-              <div className="flex items-center gap-2 text-sm text-neutral-400">
-                <span>ID: {task.id}</span>
-                <span>•</span>
-                <span>
-                  Created {new Date(task.createdAt).toLocaleDateString()}
-                </span>
-              </div>
-            </div>
-
-            {/* Task Description */}
-            {task.description && (
-              <div>
-                <h4 className="text-sm font-semibold text-neutral-300 mb-2 uppercase tracking-wide">
-                  Description
-                </h4>
-                <div className="prose prose-invert prose-sm max-w-none">
-                  <TaskDescriptionRenderer content={task.description} />
-                </div>
-              </div>
-            )}
-
-            {/* Task Metadata */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-neutral-800 rounded-lg p-4">
-                <div className="text-xs text-neutral-400 mb-1">Status</div>
-                <div className="text-sm font-medium text-neutral-100">
-                  {getTaskStatus(task)}
-                </div>
-              </div>
-              <div className="bg-neutral-800 rounded-lg p-4">
-                <div className="text-xs text-neutral-400 mb-1">Updated</div>
-                <div className="text-sm font-medium text-neutral-100">
-                  {new Date(task.updatedAt).toLocaleDateString()}
-                </div>
-              </div>
-            </div>
-
-            {/* Additional task fields if they exist */}
-            {(task as any).contract && (
-              <div>
-                <h4 className="text-sm font-semibold text-neutral-300 mb-2 uppercase tracking-wide">
-                  Contract Details
-                </h4>
-                <div className="space-y-2">
-                  <div className="flex justify-between py-2 border-b border-neutral-800">
-                    <span className="text-sm text-neutral-400">Contract</span>
-                    <span className="text-sm text-neutral-100 font-mono">
-                      {(task as any).contract}
-                    </span>
-                  </div>
-                  {(task as any).fn && (
-                    <div className="flex justify-between py-2 border-b border-neutral-800">
-                      <span className="text-sm text-neutral-400">Function</span>
-                      <span className="text-sm text-neutral-100 font-mono">
-                        {(task as any).fn}
-                      </span>
-                    </div>
-                  )}
-                  {(task as any).intervalSec && (
-                    <div className="flex justify-between py-2 border-b border-neutral-800">
-                      <span className="text-sm text-neutral-400">Interval</span>
-                      <span className="text-sm text-neutral-100">
-                        {(task as any).intervalSec}s
-                      </span>
-                    </div>
-                  )}
-                  {(task as any).gas !== undefined && (
-                    <div className="flex justify-between py-2 border-b border-neutral-800">
-                      <span className="text-sm text-neutral-400">Gas</span>
-                      <span className="text-sm text-neutral-100">
-                        {(task as any).gas}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
+          <CollaborativeProvider
+            taskId={task.id}
+            userId={currentUserId}
+            userName="You"
+            serverUrl={typeof window !== "undefined" ? window.location.origin : "ws://localhost:1234"}
+            task={task as any}
+            autoConnect
+          >
+            <TaskEditorContent task={task} />
+          </CollaborativeProvider>
         )}
       </div>
     </div>
   );
 }
 
-// ── Helper components ─────────────────────────────────────────────────────────
+function TaskEditorContent({ task }: { task: any }) {
+  const [title, setTitle] = useState(getTaskTitle(task));
+  const [description, setDescription] = useState(getTaskDescription(task));
+  const { state, updateField, getField, crdt, connect } = useCollaborative();
+  const { network } = useSorobanEnvironment();
+  const wallet = useWalletOptional();
+  const networkConfig = getNetworkConfig(network);
 
-function TaskDescriptionRenderer({ content }: { content: any }) {
-  // Simple renderer for Tiptap JSON content
-  // In production, use a proper Tiptap renderer with DOMPurify
-  if (!content || !content.content) {
-    return <p className="text-neutral-400">No description</p>;
-  }
+  useEffect(() => {
+    connect();
+  }, [connect]);
+
+  useEffect(() => {
+    const nextTitle = getTaskTitle(task);
+    const nextDescription = getTaskDescription(task);
+    setTitle(nextTitle);
+    setDescription(nextDescription);
+  }, [task]);
+
+  useEffect(() => {
+    if (!crdt) return;
+
+    const unsubscribe = crdt.on("operation", (event) => {
+      const operation = event.data;
+      if (!operation?.path) return;
+
+      const operationPath = operation.path as string[];
+      if (operationPath[0] === "title") {
+        setTitle(getField(["title"]) ?? "");
+      }
+      if (operationPath[0] === "description") {
+        setDescription(getField(["description"]) ?? "");
+      }
+    });
+
+    return unsubscribe;
+  }, [crdt, getField]);
+
+  const handleTitleChange = (value: string) => {
+    setTitle(value);
+    updateField(["title"], value);
+  };
+
+  const handleDescriptionChange = (value: string) => {
+    setDescription(value);
+    updateField(["description"], value);
+  };
 
   return (
-    <div className="text-neutral-300">
-      {content.content.map((node: any, idx: number) => {
-        if (node.type === "paragraph") {
-          return (
-            <p key={idx} className="mb-2">
-              {node.content?.map((child: any, childIdx: number) => {
-                if (child.type === "text") {
-                  return <span key={childIdx}>{child.text}</span>;
-                }
-                return null;
-              })}
-            </p>
-          );
-        }
-        return null;
-      })}
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-neutral-800 bg-neutral-950/70 p-4">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <CollaborativeStatus />
+            <span className="text-xs text-neutral-400">
+              {state?.connectionStatus === "connected"
+                ? "Live collaboration active"
+                : "Realtime sync is warming up"}
+            </span>
+          </div>
+          <p className="text-sm text-neutral-400">
+            Local edits stay available even when the collaborative channel is unavailable.
+          </p>
+        </div>
+        <div className="text-xs text-neutral-500">
+          {state?.errorMessage ? state.errorMessage : "Changes are shared automatically"}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 space-y-4">
+        <div>
+          <label className="mb-2 block text-sm font-semibold text-neutral-300" htmlFor="task-title">
+            Task title
+          </label>
+          <input
+            id="task-title"
+            value={title}
+            onChange={(event) => handleTitleChange(event.target.value)}
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 outline-none ring-0 focus:border-blue-500"
+            placeholder="Describe the task in a few words"
+          />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm font-semibold text-neutral-300" htmlFor="task-description">
+            Task description
+          </label>
+          <textarea
+            id="task-description"
+            value={description}
+            onChange={(event) => handleDescriptionChange(event.target.value)}
+            rows={8}
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-blue-500"
+            placeholder="Add the operational context and expected behavior"
+          />
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-950/60 p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-neutral-300">
+            Collaboration
+          </h3>
+          <CollaborationInfo />
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-lg border border-neutral-800 bg-neutral-900/70 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Status</div>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <span className="text-sm font-medium text-neutral-100">{getTaskStatus(task)}</span>
+              <ExecuteTaskButton
+                taskId={task.id}
+                contractId={networkConfig.contractId}
+                userAddress={wallet?.session?.address}
+                network={network === "mainnet" ? "public" : "testnet"}
+                rpcUrl={networkConfig.rpcUrl}
+              />
+            </div>
+          </div>
+          <div className="rounded-lg border border-neutral-800 bg-neutral-900/70 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Updated</div>
+            <div className="mt-2 text-sm font-medium text-neutral-100">
+              {task.updatedAt ? new Date(task.updatedAt).toLocaleString() : "Just now"}
+            </div>
+          </div>
+        </div>
+        <div className="space-y-2 rounded-lg border border-neutral-800 bg-neutral-900/70 p-4 text-sm text-neutral-400">
+          <div className="flex justify-between">
+            <span>Contract</span>
+            <span className="font-mono text-neutral-100">{task.contract ?? "—"}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Function</span>
+            <span className="font-mono text-neutral-100">{task.fn ?? "—"}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Interval</span>
+            <span className="text-neutral-100">{task.intervalSec ? `${task.intervalSec}s` : "—"}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Gas</span>
+            <span className="text-neutral-100">{task.gas ?? "—"}</span>
+          </div>
+        </div>
+      </div>
+
+      <SyncStatusMessage />
     </div>
   );
+}
+
+function getTaskTitle(task: any): string {
+  return task?.title ?? task?.fn ?? task?.contract ?? "Untitled task";
+}
+
+function getTaskDescription(task: any): string {
+  if (typeof task?.description === "string") return task.description;
+  if (task?.description && typeof task.description === "object") {
+    return task.description.content?.map((node: any) => node.content?.map((child: any) => child.text ?? "").join("")).join("\n") ?? "";
+  }
+  return "";
 }
 
 function getTaskStatus(task: any): string {

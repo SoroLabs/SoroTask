@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx jest *)",
+      "Read(//usr/local/lib/**)",
+      "Read(//usr/local/bin/**)",
+      "Read(//usr/**)",
+      "Bash(env)",
+      "Bash(/vscode/bin/linux-alpine/7e7950df89d455b5a378379db9ee14290772148a/node --version)",
+      "Bash(/vscode/bin/linux-alpine/7e7950df89d055b5a378379db9ee14290772148a/node --version)",
+      "Bash(/vscode/bin/linux-alpine/7e7950df89d055b5a378379db9ee14290772148a/node /workspaces/SoroTask/frontend/package-lock.json)",
+      "Read(//home/vscode/.local/bin/**)",
+      "Read(//home/vscode/**)",
+      "Bash(apk list *)",
+      "Bash(apk add *)",
+      "Bash(sudo apk add nodejs npm --no-cache)",
+      "Bash(npm install *)"
+    ]
+  }
+}

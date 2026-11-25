@@ -25,4 +25,20 @@ describe('Keeper Account Module', () => {
     // This test just verifies env is set correctly
     expect(process.env.KEEPER_SECRET).toBe('test-secret');
   });
+
+  it('should fetch secret key from Vault HTTP API', async () => {
+    const { fetchSecretFromVault } = require('../src/account');
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { data: { KEEPER_SECRET: 'SD321VALIDSSECRETKEY' } } }),
+    });
+
+    const secret = await fetchSecretFromVault('http://vault.internal:8200', 'test-token');
+    expect(secret).toBe('SD321VALIDSSECRETKEY');
+  });
+
+  it('should zero out memory references without throwing', () => {
+    const { clearSecretMemory } = require('../src/account');
+    expect(() => clearSecretMemory()).not.toThrow();
+  });
 });

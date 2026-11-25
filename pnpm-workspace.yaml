@@ -1,0 +1,6 @@
+packages:
+  - 'frontend'
+  - 'keeper'
+  - 'indexer'
+  - 'zk-proof-service'
+  - 'backend-abi-registry'

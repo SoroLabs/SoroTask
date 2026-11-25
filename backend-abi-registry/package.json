@@ -1,0 +1,12 @@
+{
+  "name": "backend-abi-registry",
+  "version": "1.0.0",
+  "description": "Automated Smart Contract ABI Registry and Parser dummy implementation",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest --coverage"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

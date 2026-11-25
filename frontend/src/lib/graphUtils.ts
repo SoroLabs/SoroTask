@@ -137,3 +137,26 @@ export function filterToNeighbourhood(
 ): TaskDependency[] {
   return deps.filter((d) => d.fromId === taskId || d.toId === taskId);
 }
+
+/** Threshold above which the graph should be virtualized / sliced for performance. */
+export const GRAPH_VIRTUALIZE_THRESHOLD = 200;
+
+/**
+ * Returns true when a graph of `nodeCount` nodes is large enough that it should
+ * be virtualized (sliced down) before being handed to ReactFlow.
+ */
+export function shouldVirtualizeGraph(nodeCount: number): boolean {
+  return nodeCount > GRAPH_VIRTUALIZE_THRESHOLD;
+}
+
+/**
+ * Truncates a label to `maxLen` characters, appending an ellipsis when cut.
+ * The ellipsis counts toward the returned length so the result never exceeds
+ * `maxLen` characters.
+ */
+export function truncateLabel(label: string, maxLen = 24): string {
+  if (maxLen <= 0) return "";
+  if (label.length <= maxLen) return label;
+  if (maxLen === 1) return "…";
+  return `${label.slice(0, maxLen - 1)}…`;
+}

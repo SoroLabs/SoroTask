@@ -1,0 +1,28 @@
+{
+  "name": "@sorotask/zk-prover",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Client-side WASM Zero-Knowledge proof generation for SoroTask, with automatic fallback to the zk-proof-service backend on memory-constrained devices.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "jest"
+  },
+  "keywords": ["zk", "zero-knowledge", "snarkjs", "wasm", "soroban"],
+  "author": "",
+  "license": "ISC",
+  "peerDependencies": {
+    "snarkjs": "^0.7.0"
+  },
+  "peerDependenciesMeta": {
+    "snarkjs": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "jest": "^30.4.2"
+  },
+  "jest": {
+    "testEnvironment": "node"
+  }
+}

@@ -92,5 +92,33 @@
     "seconds_short": "s",
     "interval_display": "{hours}h ({seconds} seconds)",
     "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "Connection status",
+    "online": "Online",
+    "offline": "Offline",
+    "resyncing": "Resyncing",
+    "sync_failed": "Sync failed",
+    "queued_actions": "{count, plural, =0 {No actions queued} one {# action queued} other {# actions queued}}",
+    "replaying": "{count, plural, one {Replaying one queued action} other {Replaying # queued actions}}",
+    "still_queued": "{count, plural, one {# action still queued} other {# actions still queued}}",
+    "browse_cached": "You can still browse cached content. Changes will be queued.",
+    "will_run_when_back": "will run when you're back online.",
+    "retry": "Retry",
+    "read_only_notice": "You are in read-only mode. Anything you write is sent when you're back online."
+  },
+  "theme": {
+    "label": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "oled": "High-contrast OLED",
+    "system": "System",
+    "change": "Theme: {mode}. Click to change.",
+    "resolving_to": "Currently resolving to {resolved}."
+  },
+  "language": {
+    "label": "Select language",
+    "loading": "Loading language...",
+    "available": "{count, plural, =0 {No languages} one {# language} other {# languages}}"
   }
 }

@@ -31,7 +31,7 @@ export function WalletGate({
   message = "Connect your Freighter wallet to continue.",
   fallback,
 }: WalletGateProps) {
-  const { status, connect, isLoading } = useWallet();
+  const { status, openConnectModal, isLoading } = useWallet();
 
   const isConnected = status === "connected";
 
@@ -55,7 +55,7 @@ export function WalletGate({
       </div>
       <p className="text-neutral-400 text-sm max-w-xs">{message}</p>
       <button
-        onClick={connect}
+        onClick={openConnectModal}
         disabled={isLoading}
         className="bg-blue-600 hover:bg-blue-500 text-white font-medium px-5 py-2.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-600/20"
       >

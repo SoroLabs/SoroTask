@@ -1,0 +1,62 @@
+name: Security Patch Bot
+
+on:
+  schedule:
+    # Run hourly so vulnerabilities are evaluated within ~1 hour of CVE publication
+    - cron: '0 * * * *'
+  repository_dispatch:
+    types: [security-alert]
+
+jobs:
+  dependabot-alerts:
+    name: Evaluate Dependabot / GHSA security alerts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      security-events: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch Dependabot alerts
+        id: alerts
+        run: |
+          ALERTS=$(gh api repos/${{ github.repository }}/dependabot/alerts --jq '.[] | select(.state == "open") | {number, severity: .security_advisory.severity, package: .security_advisory.package.name, advisory_id: .security_advisory.github_advisory_id, cve: .security_advisory.cve_ids[0]}')
+          echo "alerts<<EOF" >> $GITHUB_OUTPUT
+          echo "$ALERTS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Evaluate applicability & create patch PRs
+        run: |
+          echo "Open Dependabot alerts found:"
+          echo "${{ steps.alerts.outputs.alerts }}" | jq 'length' 2>/dev/null || true
+          # TODO: integrate with Semgrep/OSV to confirm the vulnerability
+          # applies to the active codebase before opening an automated PR.
+          # When confirmed, create a branch + PR updating the dependency and
+          # assign it to the security team for review.
+
+      - name: Run CI test suite (zero-regression guarantee)
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: keeper/package-lock.json
+      - name: Install Dependencies
+        working-directory: keeper
+        run: npm ci
+      - name: Run Keeper Tests
+        working-directory: keeper
+        run: npm test
+      - name: Run Rust Contract Tests
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Run Cargo Tests
+        run: cargo test

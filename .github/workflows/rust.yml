@@ -2,80 +2,70 @@ name: Rust Contract CI
 
 on:
   push:
-    branches: [ "main", "feat/*" ]
-    paths:
-      - 'contract/**'
-      - '.github/workflows/rust.yml'
+    branches: [ main, master ]
   pull_request:
-    branches: [ "main", "feat/*" ]
-    paths:
-      - 'contract/**'
-      - '.github/workflows/rust.yml'
-
-# This ensures all 'run' commands happen inside the Rust directory
-defaults:
-  run:
-    working-directory: ./contract
-
-env:
-  CARGO_TERM_COLOR: always
+    branches: [ main, master ]
 
 jobs:
-  validate-and-build:
-    name: Format, Lint, Test, and Build
+  contract:
+    name: Contract fmt / clippy / test
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Checkout Repository
+        uses: actions/checkout@v7
 
-      - name: Setup Modern Rust Toolchain
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown, wasm32v1-none
 
-      - name: Cache Cargo Registry & Build Artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo
+        uses: actions/cache@v6
         with:
-          # Tell the cache exactly where our Rust workspace is located
-          workspaces: "./contract -> target"
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contract/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('contract/Cargo.lock') }}
 
-      - name: Check Formatting (fmt)
-        run: cargo fmt --all -- --check
+      - name: Install Stellar CLI
+        run: |
+          mkdir -p ~/.cargo/bin
+          ARCH=$(uname -m)
+          curl -fsSL "https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-${ARCH}-unknown-linux-gnu.tar.gz" | tar -xzf - -C ~/.cargo/bin || {
+            sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+            cargo install --locked stellar-cli
+          }
+          stellar --version
 
-      - name: Run Linter (clippy) - Strict
-        # The -D warnings flag fulfills "Fail on warnings" requirement
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Check Formatting
+        run: cargo fmt --all --check
 
-      - name: Run Unit Tests (test)
+      - name: Lint (clippy, deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run Tests
         run: cargo test
 
-      - name: Build WebAssembly (build)
-        run: cargo build --target wasm32-unknown-unknown --release
-
-      - name: Run Gas Tracking (Current Branch)
+      - name: Build WASM Release
         run: |
-          chmod +x ../scripts/track_gas.sh
-          ../scripts/track_gas.sh
-          cp ../gas_report.json /tmp/pr_gas.json
-          cp ../scripts/track_gas.sh /tmp/track_gas.sh
-          cp ../scripts/compare_gas.py /tmp/compare_gas.py
+          cd contract
+          stellar contract build --locked
+          wasm_file="target/wasm32v1-none/release/soro_task_contract.wasm"
+          if [ ! -f "$wasm_file" ]; then
+            wasm_file="../target/wasm32v1-none/release/soro_task_contract.wasm"
+          fi
+          wasm_size=$(wc -c < "$wasm_file")
+          echo "Contract WASM: ${wasm_size} bytes"
+          if [ "$wasm_size" -ge 262144 ]; then
+            echo "Contract WASM exceeds the 256 KiB budget"
+            exit 1
+          fi
 
-      - name: Run Gas Tracking (Base Branch)
-        if: github.event_name == 'pull_request'
-        run: |
-          git fetch origin ${{ github.base_ref }}
-          git checkout origin/${{ github.base_ref }} || true
-          /tmp/track_gas.sh || true
-          cp ../gas_report.json /tmp/base_gas.json || echo "[]" > /tmp/base_gas.json
-          git checkout - || true
-
-      - name: Compare Gas and Post PR Comment
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          chmod +x /tmp/compare_gas.py
-          /tmp/compare_gas.py /tmp/base_gas.json /tmp/pr_gas.json > /tmp/gas_diff.md
-          gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/gas_diff.md || true
+      - name: Upload Coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          directory: contract
+          fail_ci_if_error: false

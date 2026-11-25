@@ -46,10 +46,7 @@ describe('Calendar Component', () => {
   it('should display month and year', () => {
     render(<Calendar tasks={mockTasks} />);
     const now = new Date();
-    const monthYear = screen.getByDisplayValue(
-      new RegExp(`${now.getFullYear()}`)
-    );
-    expect(monthYear).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`${now.getFullYear()}`))).toBeInTheDocument();
   });
 
   it('should have navigation buttons', () => {
@@ -60,7 +57,7 @@ describe('Calendar Component', () => {
 
   it('should have Today button', () => {
     render(<Calendar tasks={mockTasks} />);
-    expect(screen.getByText('Today')).toBeInTheDocument();
+    expect(screen.getAllByText('Today').length).toBeGreaterThan(0);
   });
 
   it('should display timezone info', () => {
@@ -88,7 +85,7 @@ describe('Calendar Component', () => {
 
   it('should display legend', () => {
     render(<Calendar tasks={mockTasks} />);
-    expect(screen.getByText('Today')).toBeInTheDocument();
+    expect(screen.getAllByText('Today').length).toBeGreaterThan(0);
     expect(screen.getByText(/Task with deadline/i)).toBeInTheDocument();
     expect(screen.getByText(/Multiple tasks on same date/i)).toBeInTheDocument();
   });

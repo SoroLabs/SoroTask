@@ -1,19 +1,148 @@
 /**
- * Timezone utility functions
+ * Timezone utility functions — standardized for UTC blockchain scheduling
  */
 
 /**
  * Get the user's current timezone
  */
 export function getUserTimezone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/**
+ * Standardize any date input to a strict UTC ISO-8601 string
+ */
+export function toUTCISOString(date: Date | string | number): string {
+  const d = date instanceof Date ? date : new Date(date);
+  if (isNaN(d.getTime())) {
+    throw new Error(`Invalid date input: ${String(date)}`);
+  }
+  return d.toISOString();
+}
+
+/**
+ * Parse a UTC ISO-8601 string or numeric timestamp safely
+ */
+export function parseUTCTimestamp(timestamp: string | number): Date {
+  const d = new Date(timestamp);
+  if (isNaN(d.getTime())) {
+    throw new Error(`Invalid UTC timestamp: ${String(timestamp)}`);
+  }
+  return d;
+}
+
+/**
+ * Format dual timestamp showing both Local time and UTC time
+ */
+export function formatDualTimestamp(
+  date: Date | string | number,
+  timezone: string = getUserTimezone(),
+  locale: string = 'en-US'
+): { local: string; utc: string; formatted: string } {
+  const d = date instanceof Date ? date : new Date(date);
+  const isValid = !isNaN(d.getTime());
+  if (!isValid) {
+    return { local: 'Invalid Date', utc: 'Invalid Date', formatted: 'Invalid Date' };
+  }
+
+  const utcStr = d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+
+  let localStr = d.toLocaleString();
+  try {
+    localStr = new Intl.DateTimeFormat(locale, {
+      timeZone: timezone,
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(d);
+  } catch {
+    localStr = d.toLocaleString(locale);
+  }
+
+  const offset = getTimezoneOffset(timezone, d);
+  const formatted = `${localStr} (${offset}) / ${utcStr}`;
+
+  return {
+    local: `${localStr} (${offset})`,
+    utc: utcStr,
+    formatted,
+  };
+}
+
+/**
+ * Detect if Daylight Savings Time (DST) is currently active for a timezone & date
+ */
+export function isDSTActive(
+  date: Date = new Date(),
+  timezone: string = getUserTimezone()
+): boolean {
+  try {
+    const jan = new Date(date.getFullYear(), 0, 1);
+    const jul = new Date(date.getFullYear(), 6, 1);
+
+    const janOffset = getOffsetMinutes(jan, timezone);
+    const julOffset = getOffsetMinutes(jul, timezone);
+
+    const currentOffset = getOffsetMinutes(date, timezone);
+    const stdOffset = Math.min(janOffset, julOffset);
+
+    return currentOffset > stdOffset;
+  } catch {
+    return false;
+  }
+}
+
+function getOffsetMinutes(date: Date, timezone: string): number {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      timeZoneName: 'longOffset',
+    });
+    const parts = formatter.formatToParts(date);
+    const tzPart = parts.find((p) => p.type === 'timeZoneName')?.value || '';
+    const match = tzPart.match(/GMT([+-]\d{2}):?(\d{2})?/);
+    if (!match) return 0;
+    const hours = parseInt(match[1], 10);
+    const minutes = match[2] ? parseInt(match[2], 10) : 0;
+    return hours * 60 + (hours < 0 ? -minutes : minutes);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Get Daylight Savings Time warning message for task scheduling
+ */
+export function getDSTWarning(
+  date: Date = new Date(),
+  timezone: string = getUserTimezone()
+): { isDST: boolean; warning: string | null } {
+  const dst = isDSTActive(date, timezone);
+  if (dst) {
+    return {
+      isDST: true,
+      warning:
+        'Daylight Savings Time is active in your selected timezone. Recurring task execution hours on-chain remain strictly fixed in UTC.',
+    };
+  }
+  return {
+    isDST: false,
+    warning: null,
+  };
 }
 
 /**
  * Get available timezones
  */
 export function getAvailableTimezones(): string[] {
-  // Common timezones for quick access
   return [
     'UTC',
     'America/New_York',
@@ -22,7 +151,10 @@ export function getAvailableTimezones(): string[] {
     'America/Los_Angeles',
     'Europe/London',
     'Europe/Paris',
-    'Europe/Tokyo',
+    'Europe/Berlin',
+    'Europe/Moscow',
+    'Asia/Dubai',
+    'Asia/Kolkata',
     'Asia/Shanghai',
     'Asia/Hong_Kong',
     'Asia/Singapore',
@@ -34,7 +166,6 @@ export function getAvailableTimezones(): string[] {
 
 /**
  * Convert date to different timezone
- * Returns a date string in the format of the target timezone
  */
 export function convertDateToTimezone(date: Date, timezone: string): string {
   try {
@@ -49,7 +180,6 @@ export function convertDateToTimezone(date: Date, timezone: string): string {
       hour12: false,
     }).format(date);
   } catch {
-    // Invalid timezone, return UTC
     return date.toISOString();
   }
 }
@@ -152,9 +282,7 @@ export function formatDateWithTimezone(
       formatOptions.minute = '2-digit';
     }
 
-    const dateStr = new Intl.DateTimeFormat(locale, formatOptions).format(
-      date
-    );
+    const dateStr = new Intl.DateTimeFormat(locale, formatOptions).format(date);
     const offsetStr = getTimezoneOffset(timezone, date);
 
     return `${dateStr} (${offsetStr})`;

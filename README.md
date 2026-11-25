@@ -2,6 +2,7 @@
 
 [![Keeper CI](https://github.com/SoroLabs/SoroTask/actions/workflows/keeper.yml/badge.svg)](https://github.com/SoroLabs/SoroTask/actions/workflows/keeper.yml)
 [![Rust Contract CI](https://github.com/SoroLabs/SoroTask/actions/workflows/rust.yml/badge.svg)](https://github.com/SoroLabs/SoroTask/actions/workflows/rust.yml)
+[![Codecov Coverage](https://codecov.io/gh/SoroLabs/SoroTask/branch/main/graph/badge.svg)](https://codecov.io/gh/SoroLabs/SoroTask)
 
 SoroTask is a decentralized automation marketplace on Soroban. It allows users to schedule recurring tasks (like yield harvesting) and incentivizes [Keepers](GLOSSARY.md#keeper) to execute them.
 

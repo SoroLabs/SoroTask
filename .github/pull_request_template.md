@@ -29,6 +29,17 @@
 
 <!-- Add before/after screenshots or short recording -->
 
+## Security Review
+
+<!-- Required for changes to workflows, dependencies, install scripts, or build configuration. -->
+
+- [ ] No changes to `.vscode/` automation files or editor auto-run settings
+- [ ] No new `preinstall`/`install`/`postinstall`/`prepare` lifecycle scripts
+- [ ] No obfuscated, encoded, or minified code, and no unexplained code appended to config files
+- [ ] No new binary, font, or executable files without maintainer approval
+- [ ] New or updated dependencies come from the public npm registry or crates.io and are reflected in the lockfile
+- [ ] No secrets, API keys, or private keys committed
+
 ## Checklist
 
 - [ ] Scope is focused and avoids unrelated changes

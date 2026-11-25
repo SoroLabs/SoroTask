@@ -5,7 +5,7 @@
  */
 
 const fs = require('fs');
-const path = require('path');
+const _path = require('path');
 const { DeadLetterQueue } = require('../src/deadLetter');
 const { ErrorClassification } = require('../src/retry');
 

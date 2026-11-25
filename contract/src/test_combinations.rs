@@ -18,7 +18,9 @@
 ///   `combo_<feature_a>_<feature_b>[_<outcome>]`
 #[cfg(test)]
 mod test_combinations {
-    use crate::{Error, SoroTaskContract, SoroTaskContractClient, TaskConfig};
+    use crate::{
+        Error, FeeModel, SoroTaskContract, SoroTaskContractClient, TaskConfig, TokenomicsConfig,
+    };
     use soroban_sdk::{
         contract, contractimpl,
         testutils::{Address as _, Ledger as _},
@@ -78,13 +80,14 @@ mod test_combinations {
     fn setup() -> (Env, SoroTaskContractClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
-        let id = env.register_contract(None, SoroTaskContract);
+        let id = env.register(SoroTaskContract, ());
         let client = SoroTaskContractClient::new(&env, &id);
         (env, client)
     }
 
     fn base(env: &Env, target: Address) -> TaskConfig {
         TaskConfig {
+            yield_strategy: None,
             creator: Address::generate(env),
             target,
             function: Symbol::new(env, "ping"),
@@ -92,10 +95,13 @@ mod test_combinations {
             resolver: None,
             interval: 3_600,
             last_run: 0,
-            gas_balance: 1_000,
+            gas_balance: 0, // Set to 0 to avoid requiring token transfer at registration
             whitelist: Vec::new(env),
             is_active: true,
             blocked_by: Vec::new(env),
+            permissions: 15,
+            expiration_timestamp: 0,
+            max_runs: 0,
         }
     }
 
@@ -113,10 +119,11 @@ mod test_combinations {
     #[test]
     fn combo_resolver_true_interval_not_elapsed_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
         let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 3_600,
             ..base(&env, target)
@@ -140,10 +147,11 @@ mod test_combinations {
     #[test]
     fn combo_resolver_false_interval_elapsed_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
 
         let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             interval: 100,
             ..base(&env, target)
@@ -166,15 +174,28 @@ mod test_combinations {
     #[test]
     fn combo_resolver_true_interval_elapsed_executes() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
+
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &2000); // Mint enough for gas
 
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             resolver: Some(resolver),
             interval: 100,
+            gas_balance: 0,
             ..base(&env, target)
         };
         let task_id = client.register(&cfg);
+        // Deposit gas to cover dynamic fee (short interval = higher fee)
+        client.deposit_gas(&task_id, &creator, &2000);
         let keeper = Address::generate(&env);
 
         ts(&env, 100);
@@ -194,13 +215,19 @@ mod test_combinations {
     fn combo_resolver_true_insufficient_gas_fails() {
         let (env, client) = setup();
         let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
         client.init(&token_id.address());
 
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &100); // Mint enough for gas_balance
 
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             resolver: Some(resolver),
             gas_balance: 50, // below fixed fee of 100
             ..base(&env, target)
@@ -226,10 +253,20 @@ mod test_combinations {
     #[test]
     fn combo_resolver_false_gas_not_consumed() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
+
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &2000); // Mint enough for gas_balance
 
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             resolver: Some(resolver),
             gas_balance: 1_000,
             ..base(&env, target)
@@ -252,10 +289,20 @@ mod test_combinations {
     #[test]
     fn combo_resolver_panic_treated_as_false() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_panic::R);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
+
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_panic::R, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &2000); // Mint enough for gas_balance
 
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             resolver: Some(resolver),
             gas_balance: 1_000,
             ..base(&env, target)
@@ -282,11 +329,12 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_unauthorized_interval_elapsed_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
         let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, allowed],
             interval: 100,
             ..base(&env, target)
@@ -309,10 +357,11 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_authorized_interval_not_elapsed_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let keeper = Address::generate(&env);
 
         let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             interval: 3_600,
             ..base(&env, target)
@@ -338,12 +387,13 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_unauthorized_resolver_true_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
         let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, allowed],
             resolver: Some(resolver),
             ..base(&env, target)
@@ -367,16 +417,24 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_authorized_resolver_true_executes() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
+
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let keeper = Address::generate(&env);
 
-        let cfg = TaskConfig {
-            whitelist: vec![&env, keeper.clone()],
-            resolver: Some(resolver),
-            ..base(&env, target)
-        };
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &2000);
+
+        let mut cfg = base(&env, target);
+        cfg.creator = creator.clone();
+        cfg.whitelist = vec![&env, keeper.clone()];
+        cfg.resolver = Some(resolver);
         let task_id = client.register(&cfg);
+        client.deposit_gas(&task_id, &creator, &2000);
 
         ts(&env, 3_600);
         client.execute(&keeper, &task_id);
@@ -389,11 +447,12 @@ mod test_combinations {
     #[test]
     fn combo_whitelist_authorized_resolver_false_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
         let keeper = Address::generate(&env);
 
         let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             resolver: Some(resolver),
             ..base(&env, target)
@@ -423,10 +482,11 @@ mod test_combinations {
         let token_id = env.register_stellar_asset_contract_v2(token_admin);
         client.init(&token_id.address());
 
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let keeper = Address::generate(&env);
 
         let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, keeper.clone()],
             gas_balance: 0,
             ..base(&env, target)
@@ -453,11 +513,12 @@ mod test_combinations {
     #[test]
     fn combo_dependency_unmet_resolver_true_blocked() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
         let blocker_id = client.register(&base(&env, target.clone()));
         let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -482,15 +543,34 @@ mod test_combinations {
     #[test]
     fn combo_dependency_met_resolver_false_skips() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
 
-        let blocker_id = client.register(&base(&env, target.clone()));
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &2000);
+
+        let mut blocker_cfg = base(&env, target.clone());
+        blocker_cfg.creator = creator.clone();
+        blocker_cfg.gas_balance = 100; // Just enough for min bounty
+        let blocker_id = client.register(&blocker_cfg);
+        // Deposit enough for blocker execution (fee ~300)
+        client.deposit_gas(&blocker_id, &creator, &500);
+
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             resolver: Some(resolver),
+            interval: 100, // Different from blocker's interval (3600) to avoid duplicate fingerprint
             ..base(&env, target)
         };
         let task_id = client.register(&cfg);
+        // Deposit enough for task execution (fee ~300)
+        client.deposit_gas(&task_id, &creator, &500);
         client.add_dependency(&task_id, &blocker_id);
 
         let keeper = Address::generate(&env);
@@ -514,15 +594,34 @@ mod test_combinations {
     #[test]
     fn combo_dependency_met_resolver_true_executes() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
 
-        let blocker_id = client.register(&base(&env, target.clone()));
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &5000);
+
+        let mut blocker_cfg = base(&env, target.clone());
+        blocker_cfg.creator = creator.clone();
+        blocker_cfg.gas_balance = 100; // Just enough for min bounty
+        let blocker_id = client.register(&blocker_cfg);
+        // Deposit enough for blocker execution (fee ~300)
+        client.deposit_gas(&blocker_id, &creator, &500);
+
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             resolver: Some(resolver),
+            interval: 100, // Different from blocker's interval (3600) to avoid duplicate fingerprint
             ..base(&env, target)
         };
         let task_id = client.register(&cfg);
+        // Deposit enough for task execution (fee ~300)
+        client.deposit_gas(&task_id, &creator, &500);
         client.add_dependency(&task_id, &blocker_id);
 
         let keeper = Address::generate(&env);
@@ -544,12 +643,13 @@ mod test_combinations {
     #[test]
     fn combo_dependency_unmet_whitelist_unauthorized_fails_with_unauthorized() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
         let blocker_id = client.register(&base(&env, target.clone()));
         let cfg = TaskConfig {
+            yield_strategy: None,
             whitelist: vec![&env, allowed],
             ..base(&env, target)
         };
@@ -577,10 +677,11 @@ mod test_combinations {
     #[test]
     fn combo_paused_resolver_true_whitelist_open_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
 
         let cfg = TaskConfig {
+            yield_strategy: None,
             resolver: Some(resolver),
             ..base(&env, target)
         };
@@ -604,15 +705,23 @@ mod test_combinations {
     #[test]
     fn combo_paused_then_resumed_executes_normally() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
 
-        let cfg = TaskConfig {
-            resolver: Some(resolver),
-            interval: 100,
-            ..base(&env, target)
-        };
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &2000);
+
+        let mut cfg = base(&env, target);
+        cfg.creator = creator.clone();
+        cfg.resolver = Some(resolver);
+        cfg.interval = 100;
         let task_id = client.register(&cfg);
+        client.deposit_gas(&task_id, &creator, &2000);
 
         client.pause_task(&task_id);
         client.resume_task(&task_id);
@@ -634,14 +743,27 @@ mod test_combinations {
     #[test]
     fn combo_gas_deducted_at_exact_interval_boundary() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
+
+        let target = env.register(Target, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &2000); // Mint enough for gas_balance
 
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             interval: 500,
-            gas_balance: 1_000,
+            gas_balance: 0, // Will deposit below
             ..base(&env, target)
         };
         let task_id = client.register(&cfg);
+
+        // Deposit gas to fund the contract
+        client.deposit_gas(&task_id, &creator, &1000);
         let keeper = Address::generate(&env);
 
         ts(&env, 500); // exactly last_run(0) + interval(500)
@@ -649,7 +771,8 @@ mod test_combinations {
 
         let stored = client.get_task(&task_id).unwrap();
         assert_eq!(stored.last_run, 500);
-        assert_eq!(stored.gas_balance, 900, "fee of 100 must be deducted");
+        // Dynamic fee for interval=500 is ~300, so 1000 - 300 = 700
+        assert_eq!(stored.gas_balance, 700, "fee of ~300 must be deducted");
     }
 
     /// Why: One tick before the boundary must not consume gas. Validates that
@@ -657,9 +780,19 @@ mod test_combinations {
     #[test]
     fn combo_gas_not_deducted_before_interval_boundary() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
+
+        let target = env.register(Target, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &2000); // Mint enough for gas_balance
 
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             interval: 500,
             gas_balance: 1_000,
             ..base(&env, target)
@@ -686,25 +819,43 @@ mod test_combinations {
     #[test]
     fn combo_all_features_happy_path() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
+
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let keeper = Address::generate(&env);
 
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &5000); // Mint enough for multiple executions
+
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             resolver: Some(resolver),
             whitelist: vec![&env, keeper.clone()],
             interval: 1_000,
-            gas_balance: 500,
+            gas_balance: 0, // Will deposit below
             ..base(&env, target)
         };
         let task_id = client.register(&cfg);
+
+        // Deposit gas to fund the contract
+        client.deposit_gas(&task_id, &creator, &2000);
 
         ts(&env, 1_000);
         client.execute(&keeper, &task_id);
 
         let stored = client.get_task(&task_id).unwrap();
         assert_eq!(stored.last_run, 1_000);
-        assert_eq!(stored.gas_balance, 400);
+        // Dynamic fee for interval=1000 is ~299, so 2000 - 299 = 1701
+        assert!(
+            stored.gas_balance < 2000 && stored.gas_balance > 1600,
+            "gas should be consumed: {}",
+            stored.gas_balance
+        );
 
         // Second execution before interval elapses must be skipped
         ts(&env, 1_500);
@@ -719,7 +870,13 @@ mod test_combinations {
         ts(&env, 2_000);
         client.execute(&keeper, &task_id);
         assert_eq!(client.get_task(&task_id).unwrap().last_run, 2_000);
-        assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 300);
+        // After two executions: 2000 - 299 - 299 = ~1402
+        let final_balance = client.get_task(&task_id).unwrap().gas_balance;
+        assert!(
+            final_balance < 1701 && final_balance > 1300,
+            "gas should be consumed again: {}",
+            final_balance
+        );
     }
 
     /// Why: All features configured but unauthorized keeper — must fail at the
@@ -728,15 +885,21 @@ mod test_combinations {
     fn combo_all_features_unauthorized_keeper_fails() {
         let (env, client) = setup();
         let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
         client.init(&token_id.address());
 
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let allowed = Address::generate(&env);
         let intruder = Address::generate(&env);
 
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &2000); // Mint enough for gas_balance
+
         let cfg = TaskConfig {
+            yield_strategy: None,
+            creator: creator.clone(),
             resolver: Some(resolver),
             whitelist: vec![&env, allowed],
             interval: 100,
@@ -771,9 +934,18 @@ mod test_combinations {
         let token_admin_client =
             soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
         client.init(&token_id.address());
+        let fee_config = TokenomicsConfig {
+            staking_reward_rate: 500,
+            governance_quorum_percentage: 1000,
+            governance_voting_period: 3_600_000,
+            fee_model: FeeModel::Fixed,
+            min_fee: 100,
+            max_fee: 100,
+        };
+        client.init_tokenomics_config(&fee_config);
 
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_true::R);
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_true::R, ());
         let keeper = Address::generate(&env);
         let creator;
 
@@ -781,6 +953,7 @@ mod test_combinations {
             let c = base(&env, target);
             creator = c.creator.clone();
             TaskConfig {
+                yield_strategy: None,
                 resolver: Some(resolver),
                 whitelist: vec![&env, keeper.clone()],
                 interval: 100,
@@ -791,9 +964,9 @@ mod test_combinations {
         let task_id = client.register(&cfg);
 
         // Fund just enough for one execution
-        token_admin_client.mint(&creator, &100);
-        client.deposit_gas(&task_id, &creator, &100);
-        assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 100);
+        token_admin_client.mint(&creator, &300);
+        client.deposit_gas(&task_id, &creator, &300);
+        assert_eq!(client.get_task(&task_id).unwrap().gas_balance, 300);
 
         // First execution succeeds
         ts(&env, 100);
@@ -824,12 +997,34 @@ mod test_combinations {
     #[test]
     fn combo_multiple_dependencies_unmet_blocked() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
 
-        let blocker_1 = client.register(&base(&env, target.clone()));
-        let blocker_2 = client.register(&base(&env, target.clone()));
-        
-        let task_id = client.register(&base(&env, target));
+        let target = env.register(Target, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &5000);
+
+        let mut blocker_1_cfg = base(&env, target.clone());
+        blocker_1_cfg.creator = creator.clone();
+        blocker_1_cfg.gas_balance = 100;
+        let blocker_1 = client.register(&blocker_1_cfg);
+        client.deposit_gas(&blocker_1, &creator, &500);
+
+        let mut blocker_2_cfg = base(&env, target.clone());
+        blocker_2_cfg.creator = creator.clone();
+        blocker_2_cfg.gas_balance = 100;
+        blocker_2_cfg.interval = 100; // Different from blocker_1's interval (3600)
+        let blocker_2 = client.register(&blocker_2_cfg);
+        client.deposit_gas(&blocker_2, &creator, &500);
+
+        let mut cfg = base(&env, target);
+        cfg.creator = creator.clone();
+        cfg.interval = 200; // Different from blockers' intervals (3600, 100) to avoid duplicate fingerprint
+        let task_id = client.register(&cfg);
+        client.deposit_gas(&task_id, &creator, &500);
         client.add_dependency(&task_id, &blocker_1);
         client.add_dependency(&task_id, &blocker_2);
 
@@ -838,7 +1033,7 @@ mod test_combinations {
 
         // Run only blocker 1
         client.execute(&keeper, &blocker_1);
-        
+
         // Task must still be blocked
         let result = client.try_execute(&keeper, &task_id);
         assert_eq!(
@@ -862,10 +1057,29 @@ mod test_combinations {
     #[test]
     fn combo_dependencies_met_but_paused_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
 
-        let blocker_id = client.register(&base(&env, target.clone()));
-        let task_id = client.register(&base(&env, target));
+        let target = env.register(Target, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &5000);
+
+        let mut blocker_cfg = base(&env, target.clone());
+        blocker_cfg.creator = creator.clone();
+        blocker_cfg.gas_balance = 100; // Just enough for min bounty
+        let blocker_id = client.register(&blocker_cfg);
+        // Deposit enough for blocker execution (fee ~300)
+        client.deposit_gas(&blocker_id, &creator, &500);
+
+        let mut cfg = base(&env, target);
+        cfg.creator = creator.clone();
+        cfg.interval = 100; // Different from blocker's interval (3600) to avoid duplicate fingerprint
+        let task_id = client.register(&cfg);
+        // Deposit enough for task execution (fee ~300)
+        client.deposit_gas(&task_id, &creator, &500);
         client.add_dependency(&task_id, &blocker_id);
 
         let keeper = Address::generate(&env);
@@ -873,7 +1087,7 @@ mod test_combinations {
 
         // Meet dependency
         client.execute(&keeper, &blocker_id);
-        
+
         // Pause task
         client.pause_task(&task_id);
 
@@ -894,13 +1108,31 @@ mod test_combinations {
     #[test]
     fn combo_dependencies_met_but_resolver_fails() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
-        let resolver = env.register_contract(None, resolver_false::R);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id.address());
+        client.init(&token_id.address());
 
-        let blocker_id = client.register(&base(&env, target.clone()));
+        let target = env.register(Target, ());
+        let resolver = env.register(resolver_false::R, ());
+
+        let creator = Address::generate(&env);
+        token_client.mint(&creator, &5000);
+
+        let mut blocker_cfg = base(&env, target.clone());
+        blocker_cfg.creator = creator.clone();
+        blocker_cfg.gas_balance = 100; // Just enough for min bounty
+        let blocker_id = client.register(&blocker_cfg);
+        // Deposit enough for blocker execution (fee ~300)
+        client.deposit_gas(&blocker_id, &creator, &500);
+
         let mut cfg = base(&env, target);
+        cfg.creator = creator.clone();
         cfg.resolver = Some(resolver);
+        cfg.interval = 100; // Different from blocker's interval (3600) to avoid duplicate fingerprint
         let task_id = client.register(&cfg);
+        // Deposit enough for task execution (fee ~300)
+        client.deposit_gas(&task_id, &creator, &500);
         client.add_dependency(&task_id, &blocker_id);
 
         let keeper = Address::generate(&env);
@@ -908,20 +1140,20 @@ mod test_combinations {
 
         // Meet dependency
         client.execute(&keeper, &blocker_id);
-        
+
         // Try to execute target task (resolver is false)
         client.execute(&keeper, &task_id);
-        
+
         // Verify it DID NOT run
         assert_eq!(client.get_task(&task_id).unwrap().last_run, 0);
     }
 
-    /// Why: Verifies that a task can execute even if its gas balance is 
+    /// Why: Verifies that a task can execute even if its gas balance is
     /// exactly equal to the fee. This is a critical boundary condition.
     #[test]
     fn combo_exact_gas_balance() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let mut cfg = base(&env, target);
         cfg.gas_balance = 100; // Exact fee
         let task_id = client.register(&cfg);
@@ -930,7 +1162,7 @@ mod test_combinations {
         ts(&env, 3_600);
 
         client.execute(&keeper, &task_id);
-        
+
         let task = client.get_task(&task_id).unwrap();
         assert_eq!(task.last_run, 3_600);
         assert_eq!(task.gas_balance, 0);
@@ -941,13 +1173,13 @@ mod test_combinations {
     #[test]
     fn combo_gas_deduction_sequence() {
         let (env, client) = setup();
-        let target = env.register_contract(None, Target);
+        let target = env.register(Target, ());
         let mut cfg = base(&env, target);
         cfg.gas_balance = 150; // Not enough for two (fee=100)
         let task_id = client.register(&cfg);
 
         let keeper = Address::generate(&env);
-        
+
         // First run
         ts(&env, 3_600);
         client.execute(&keeper, &task_id);

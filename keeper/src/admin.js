@@ -82,7 +82,7 @@ class AdminServer {
         this.logger.warn('Keeper operations paused via Admin API', { state: this.state, target: payload.target });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'paused', state: this.state }));
-      } catch (err) {
+      } catch (_err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON' }));
       }
@@ -104,7 +104,7 @@ class AdminServer {
         this.logger.info('Keeper operations resumed via Admin API', { state: this.state, target: payload.target });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'resumed', state: this.state }));
-      } catch (err) {
+      } catch (_err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON' }));
       }

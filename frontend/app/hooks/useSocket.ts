@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { wrapSocketWithTracking, trackSocketSubscription } from '@/src/lib/errors/socketTracker';
 
-const KEEPER_URL = process.env.NEXT_PUBLIC_KEEPER_URL ?? 'http://localhost:3000';
+const KEEPER_URL = process.env.NEXT_PUBLIC_KEEPER_URL ?? "http://localhost:3000";
 
 /** Exponential back-off: 1s → 2s → 4s → … capped at 30 s */
 function backoff(attempt: number): number {
@@ -84,6 +85,8 @@ export function useSocket(options: UseSocketOptions = {}) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
+  const connectRef = useRef<() => Socket>();
+
   const connect = useCallback(() => {
     const socket = io(KEEPER_URL, {
       transports: ['websocket'],
@@ -147,23 +150,29 @@ export function useSocket(options: UseSocketOptions = {}) {
     socket.on('connect_error', scheduleReconnect);
 
     socket.on('sync:tasks', (tasks: TaskSummary[]) => {
+      trackSocketSubscription('sync:tasks', { count: tasks.length });
       optionsRef.current.onTasks?.(tasks);
     });
 
     socket.on('task:updated', (update: TaskUpdate) => {
+      trackSocketSubscription('task:updated', { taskId: update.taskId });
       optionsRef.current.onTaskUpdated?.(update);
     });
 
     socket.on('sync:metrics', (metrics: KeeperMetrics) => {
+      trackSocketSubscription('sync:metrics');
       optionsRef.current.onMetrics?.(metrics);
     });
 
     socket.on('sync:health', (health: HealthStatus) => {
+      trackSocketSubscription('sync:health');
       optionsRef.current.onHealth?.(health);
     });
 
     return socket;
   }, []);
+
+  connectRef.current = connect;
 
   useEffect(() => {
     socketRef.current = connect();

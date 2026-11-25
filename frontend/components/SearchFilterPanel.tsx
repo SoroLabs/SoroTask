@@ -1,12 +1,25 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { TaskFilters, TaskStatus, TaskPriority } from '@/types/search';
+import type {
+  TaskFilters,
+  TaskStatus,
+  TaskPriority,
+  IntervalBucket,
+  GasBalanceBand,
+} from '@/types/search';
 
 interface SearchFilterPanelProps {
   filters: TaskFilters;
   onFilterChange: <K extends keyof TaskFilters>(field: K, value: TaskFilters[K]) => void;
   onClearAll: () => void;
+  /**
+   * Creator addresses to offer (#874). Derived from the loaded task set by the
+   * caller; a hardcoded list would go stale as new creators appear.
+   */
+  creatorOptions?: string[];
+  /** Target contract addresses to offer (#874). */
+  targetOptions?: string[];
 }
 
 const STATUS_OPTIONS: { value: TaskStatus; label: string; color: string }[] = [
@@ -26,6 +39,29 @@ const PRIORITY_OPTIONS: { value: TaskPriority; label: string; color: string }[] 
 const LABEL_OPTIONS = ['automation', 'defi', 'yield', 'governance', 'maintenance', 'monitoring'];
 
 const ASSIGNEE_OPTIONS = ['alice.xlm', 'bob.xlm', 'carol.xlm', 'dave.xlm'];
+
+// ── Issue #874: filter by the attributes that identify an automation ─────────
+//
+// Creator and target are supplied by the caller rather than hardcoded here —
+// they are drawn from whatever tasks are loaded, so a static list would go
+// stale the moment a new contract is targeted.
+
+const INTERVAL_OPTIONS: { value: IntervalBucket; label: string }[] = [
+  { value: 'minutes', label: 'Every few minutes' },
+  { value: 'hourly', label: 'Hourly' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'custom', label: 'Custom' },
+];
+
+// Bands, not amounts: an absolute balance is not comparable across tasks,
+// since what is healthy for a daily job is critical for a per-minute one.
+const GAS_BALANCE_OPTIONS: { value: GasBalanceBand; label: string; color: string }[] = [
+  { value: 'healthy', label: 'Healthy', color: 'text-green-400' },
+  { value: 'low', label: 'Low', color: 'text-yellow-400' },
+  { value: 'critical', label: 'Critical', color: 'text-orange-400' },
+  { value: 'empty', label: 'Empty', color: 'text-red-400' },
+];
 
 function MultiSelectDropdown<T extends string>({
   label,
@@ -129,7 +165,13 @@ function MultiSelectDropdown<T extends string>({
   );
 }
 
-export function SearchFilterPanel({ filters, onFilterChange, onClearAll }: SearchFilterPanelProps) {
+export function SearchFilterPanel({
+  filters,
+  onFilterChange,
+  onClearAll,
+  creatorOptions = [],
+  targetOptions = [],
+}: SearchFilterPanelProps) {
   const [searchValue, setSearchValue] = useState(filters.query ?? '');
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -154,6 +196,10 @@ export function SearchFilterPanel({ filters, onFilterChange, onClearAll }: Searc
 
   const hasAnyFilter =
     !!filters.query ||
+    (filters.creator?.length ?? 0) > 0 ||
+    (filters.target?.length ?? 0) > 0 ||
+    (filters.interval?.length ?? 0) > 0 ||
+    (filters.gasBalance?.length ?? 0) > 0 ||
     (filters.status?.length ?? 0) > 0 ||
     (filters.assignee?.length ?? 0) > 0 ||
     (filters.label?.length ?? 0) > 0 ||
@@ -216,6 +262,39 @@ export function SearchFilterPanel({ filters, onFilterChange, onClearAll }: Searc
           renderOption={(opt) => (
             <span className={opt.color}>{opt.label}</span>
           )}
+        />
+
+        {creatorOptions.length > 0 && (
+          <MultiSelectDropdown
+            label="Creator"
+            options={creatorOptions.map((c) => ({ value: c, label: c }))}
+            selected={filters.creator ?? []}
+            onChange={(v) => onFilterChange('creator', v.length ? v : undefined)}
+          />
+        )}
+
+        {targetOptions.length > 0 && (
+          <MultiSelectDropdown
+            label="Target"
+            options={targetOptions.map((t) => ({ value: t, label: t }))}
+            selected={filters.target ?? []}
+            onChange={(v) => onFilterChange('target', v.length ? v : undefined)}
+          />
+        )}
+
+        <MultiSelectDropdown
+          label="Interval"
+          options={INTERVAL_OPTIONS}
+          selected={filters.interval ?? []}
+          onChange={(v) => onFilterChange('interval', v.length ? v : undefined)}
+        />
+
+        <MultiSelectDropdown
+          label="Gas balance"
+          options={GAS_BALANCE_OPTIONS}
+          selected={filters.gasBalance ?? []}
+          onChange={(v) => onFilterChange('gasBalance', v.length ? v : undefined)}
+          renderOption={(opt) => <span className={opt.color}>{opt.label}</span>}
         />
 
         <MultiSelectDropdown

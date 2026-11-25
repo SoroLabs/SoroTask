@@ -72,6 +72,7 @@ It enables:
 * Conditional execution via [resolver](../GLOSSARY.md#resolver) contracts
 * [Keeper](../GLOSSARY.md#keeper) execution (whitelisted or public)
 * Atomic cross-contract calls
+* Soroban-native upgradable logic through a stable contract ID and admin-controlled WASM replacement
 
 Execution Model:
 
@@ -81,6 +82,17 @@ Keeper → SoroTask.execute()
         → Target.function(args)
 ```
 
+Upgrade Model:
+
+```text
+Proxy admin -> SoroTask.upgrade_contract()
+            -> Soroban update_current_contract_wasm()
+            -> Same contract ID and storage, new logic WASM
+```
+
+For deployment steps, invariants, and security review notes, see
+[`docs/upgradable-contract-architecture.md`](docs/upgradable-contract-architecture.md).
+
 ---
 
 # Contract Interface
@@ -89,6 +101,9 @@ Keeper → SoroTask.execute()
 
 | Method                  | Description          |
 | ----------------------- | -------------------- |
+| `init_proxy(Address, Address, u32)` | Initialize token plus upgrade admin/version |
+| `upgrade_contract(Address, BytesN<32>, u32, u32)` | Replace contract logic with an uploaded WASM hash |
+| `transfer_proxy_admin(Address, Address)` | Move upgrade authority to a new admin |
 | `register(TaskConfig)`  | Register a new task  |
 | `get_task(u64)`         | Retrieve stored task |
 | `execute(Address, u64)` | Execute task         |

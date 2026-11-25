@@ -139,8 +139,8 @@ export function TimeTrackingProvider({ children }: { children: React.ReactNode }
     switch (action.type) {
       case 'ADD_TASK':
         addHistoryEvent(action.payload.id, 'created', [
-          { field: 'title', oldValue: null, newValue: action.payload.title, fieldType: 'text' },
-          { field: 'description', oldValue: null, newValue: action.payload.description, fieldType: 'text' },
+          { field: 'contractAddress', oldValue: null, newValue: action.payload.contractAddress, fieldType: 'text' },
+          { field: 'functionName', oldValue: null, newValue: action.payload.functionName, fieldType: 'text' },
         ]);
         break;
       case 'ADD_TIME_ENTRY':

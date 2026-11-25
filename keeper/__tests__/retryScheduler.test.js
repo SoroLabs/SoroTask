@@ -9,7 +9,7 @@ describe('RetryScheduler', () => {
     // Clean up test storage
     try {
       await fs.unlink(testStoragePath);
-    } catch (e) {
+    } catch (_e) {
       // Ignore if file doesn't exist
     }
 
@@ -28,7 +28,7 @@ describe('RetryScheduler', () => {
     // Clean up test storage
     try {
       await fs.unlink(testStoragePath);
-    } catch (e) {
+    } catch (_e) {
       // Ignore
     }
   });

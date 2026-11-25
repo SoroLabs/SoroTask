@@ -37,7 +37,7 @@ const FormErrorSummary: React.FC<FormErrorSummaryProps> = ({
   };
 
   return (
-    <div className={`bg-red-500/10 border border-red-500/20 rounded-lg p-4 space-y-3 ${className}`}>
+    <div role="alert" className={`bg-red-500/10 border border-red-500/20 rounded-lg p-4 space-y-3 ${className}`}>
       <div className="flex items-center gap-2">
         <div className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center">
           <span className="text-white text-xs font-bold">!</span>

@@ -1,9 +1,53 @@
 /**
  * Locale formatting utilities
- * Handles locale-aware formatting of dates, times, numbers, and relative text
+ * Handles locale-aware formatting of dates, times, numbers, XLM/Stroops
+ * amounts, and relative text.
  */
 
-import type { Locale } from './index';
+import type { Locale } from "./index";
+import { getTextDirection, isRtlLocale } from "./index";
+
+/** Stellar's smallest unit. 1 XLM = 10^7 stroops. */
+export const STROOPS_PER_XLM = 10_000_000;
+
+/** XLM's ISO-4217-style code, used for `Intl` currency formatting. */
+export const XLM_CURRENCY = "XLM";
+
+/**
+ * BCP-47 tags for `Intl`, kept in one table.
+ *
+ * This was previously duplicated inline in five functions and `pt` was missing
+ * from every copy, which is why Portuguese fell back to `toString()` and
+ * printed unformatted numbers. One table means one place to fix.
+ */
+const INTL_LOCALES: Record<Locale, string> = {
+  en: "en-US",
+  es: "es-ES",
+  fr: "fr-FR",
+  pt: "pt-BR",
+  zh: "zh-CN",
+  ja: "ja-JP",
+  ko: "ko-KR",
+  de: "de-DE",
+  ru: "ru-RU",
+  ar: "ar-EG",
+  hi: "hi-IN",
+  tr: "tr-TR",
+};
+
+/** The BCP-47 tag for `locale`, e.g. `pt-BR`. */
+export function toIntlLocale(locale: Locale): string {
+  return INTL_LOCALES[locale] ?? INTL_LOCALES.en;
+}
+
+/** Runs `fn` with `Intl` support, falling back when the runtime lacks it. */
+function withIntl<T>(fn: () => T, fallback: () => T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback();
+  }
+}
 
 /**
  * Format number for locale (handles thousand separators, decimal points)
@@ -14,9 +58,9 @@ export function formatNumber(
   options?: {
     minimumFractionDigits?: number;
     maximumFractionDigits?: number;
-    style?: 'decimal' | 'percent' | 'currency';
+    style?: "decimal" | "percent" | "currency";
     currency?: string;
-  }
+  },
 ): string {
   const localeMap: Record<Locale, string> = {
     en: 'en-US',
@@ -29,15 +73,15 @@ export function formatNumber(
     ar: 'ar-SA',
   };
 
+/** Parses a stroop amount without losing precision. Returns null if invalid. */
+export function toBigInt(stroops: string | number | bigint): bigint | null {
   try {
-    return new Intl.NumberFormat(localeMap[locale], {
-      minimumFractionDigits: options?.minimumFractionDigits ?? 0,
-      maximumFractionDigits: options?.maximumFractionDigits ?? 2,
-      style: options?.style ?? 'decimal',
-      currency: options?.currency,
-    }).format(value);
+    if (typeof stroops === "bigint") return stroops;
+    // A number that is not an integer cannot have come from a u64.
+    if (typeof stroops === "number" && !Number.isInteger(stroops)) return null;
+    return BigInt(stroops);
   } catch {
-    return value.toString();
+    return null;
   }
 }
 
@@ -45,10 +89,7 @@ export function formatNumber(
  * Format gas balance with proper locale and unit
  */
 export function formatGasBalance(value: number, locale: Locale): string {
-  return formatNumber(value, locale, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
+  return formatXlm(value, locale, 4);
 }
 
 /**
@@ -56,7 +97,7 @@ export function formatGasBalance(value: number, locale: Locale): string {
  */
 export function formatInterval(
   intervalSeconds: number,
-  locale: Locale
+  locale: Locale,
 ): { hours: number; display: string } {
   const hours = Math.round(intervalSeconds / 3600);
 
@@ -78,6 +119,7 @@ export function formatInterval(
     es: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} segundos)`,
     pt: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} segundos)`,
     fr: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} secondes)`,
+    pt: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} segundos)`,
     zh: `${formatter.format(hours)}小时(${formatter.format(intervalSeconds)}秒)`,
     ja: `${formatter.format(hours)}時間（${formatter.format(intervalSeconds)}秒）`,
     ko: `${formatter.format(hours)}시간(${formatter.format(intervalSeconds)}초)`,
@@ -93,10 +135,7 @@ export function formatInterval(
 /**
  * Format time ago relative to locale
  */
-export function formatRelativeTime(
-  date: Date,
-  locale: Locale
-): string {
+export function formatRelativeTime(date: Date, locale: Locale): string {
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffSecs = Math.floor(diffMs / 1000);
@@ -115,29 +154,26 @@ export function formatRelativeTime(
     ar: 'ar-SA',
   };
 
-  try {
-    const rtf = new Intl.RelativeTimeFormat(localeMap[locale], {
-      numeric: 'auto',
-    });
-
-    if (diffDays > 0) {
-      return rtf.format(-diffDays, 'day');
-    }
-    if (diffHours > 0) {
-      return rtf.format(-diffHours, 'hour');
-    }
-    if (diffMins > 0) {
-      return rtf.format(-diffMins, 'minute');
-    }
-    return rtf.format(-diffSecs, 'second');
-  } catch {
-    // Fallback for browsers without Intl.RelativeTimeFormat
-    if (diffMins < 1) return 'just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 30) return `${diffDays}d ago`;
-    return date.toLocaleDateString(localeMap[locale]);
-  }
+      if (diffDays > 0) {
+        return rtf.format(-diffDays, "day");
+      }
+      if (diffHours > 0) {
+        return rtf.format(-diffHours, "hour");
+      }
+      if (diffMins > 0) {
+        return rtf.format(-diffMins, "minute");
+      }
+      return rtf.format(-diffSecs, "second");
+    },
+    () => {
+      // Fallback for browsers without Intl.RelativeTimeFormat
+      if (diffMins < 1) return "just now";
+      if (diffMins < 60) return `${diffMins}m ago`;
+      if (diffHours < 24) return `${diffHours}h ago`;
+      if (diffDays < 30) return `${diffDays}d ago`;
+      return date.toLocaleDateString(toIntlLocale(locale));
+    },
+  );
 }
 
 /**
@@ -147,15 +183,15 @@ export function formatDateTime(
   date: Date,
   locale: Locale,
   options?: {
-    year?: 'numeric' | '2-digit';
-    month?: 'numeric' | '2-digit' | 'long' | 'short';
-    day?: 'numeric' | '2-digit';
-    hour?: 'numeric' | '2-digit';
-    minute?: 'numeric' | '2-digit';
-    second?: '2-digit' | 'numeric';
-    weekday?: 'long' | 'short' | 'narrow';
+    year?: "numeric" | "2-digit";
+    month?: "numeric" | "2-digit" | "long" | "short";
+    day?: "numeric" | "2-digit";
+    hour?: "numeric" | "2-digit";
+    minute?: "numeric" | "2-digit";
+    second?: "2-digit" | "numeric";
+    weekday?: "long" | "short" | "narrow";
     timeZone?: string;
-  }
+  },
 ): string {
   const localeMap: Record<Locale, string> = {
     en: 'en-US',
@@ -196,8 +232,10 @@ export function getTextDirection(locale: Locale): 'ltr' | 'rtl' {
  * Get CSS classes for text direction
  */
 export function getDirectionClass(locale: Locale): string {
-  return getTextDirection(locale) === 'rtl' ? 'rtl' : 'ltr';
+  return getTextDirection(locale) === "rtl" ? "rtl" : "ltr";
 }
+
+export { isRtlLocale };
 
 /**
  * Estimate text expansion for longer translations
@@ -214,6 +252,7 @@ export function getTextExpansionFactor(locale: Locale): number {
     es: 1.25,
     pt: 1.25,
     fr: 1.3,
+    pt: 1.2,
     zh: 0.75,
     ja: 0.8,
     ko: 0.85,

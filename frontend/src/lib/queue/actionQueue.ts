@@ -267,7 +267,8 @@ export class ActionQueue {
     this.actions = this.actions.map((a) => {
       if (a.id !== id) return a;
       changed = true;
-      return { ...a, ...patch } as QueuedAction;
+      Object.assign(a, patch);
+      return a;
     });
     if (changed) {
       this.persist();

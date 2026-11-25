@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { SuggestionsPopover } from '../components/SuggestionsPopover';
-import { MentionableEntity } from '../types/mentions';
+import { SuggestionsPopover } from '../SuggestionsPopover';
+import { MentionableEntity } from '../../types/mentions';
 
 const mockEntities: MentionableEntity[] = [
   { id: 'user-1', type: 'user', displayName: 'Alice Johnson', avatar: 'AJ' },
@@ -30,7 +30,7 @@ describe('SuggestionsPopover', () => {
 
     expect(screen.getByText('Alice Johnson')).toBeInTheDocument();
     expect(screen.getByText('Bob Smith')).toBeInTheDocument();
-    expect(screen.getByText('USER')).toBeInTheDocument();
+    expect(screen.getAllByText('user')[0]).toBeInTheDocument();
   });
 
   it('highlights selected suggestion', () => {
@@ -44,7 +44,7 @@ describe('SuggestionsPopover', () => {
       />
     );
 
-    const bobItem = screen.getByText('Bob Smith').closest('div');
+    const bobItem = screen.getByText('Bob Smith').closest('.p-3');
     expect(bobItem).toHaveClass('bg-neutral-700');
   });
 

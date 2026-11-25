@@ -1,10 +1,7 @@
-# Contract Error Handling — Spike
+# Contract Error Handling and Diagnostic Recovery
 
-This document captures the result of the "Improve Smart Contract Error
-Handling and Recovery Messaging" spike. The frontend has no on-chain code
-yet — this work establishes the error model, the user-facing presentation,
-and the integration pattern that on-chain features will plug into when they
-land.
+This document describes SoroTask's Soroban error translation, diagnostic
+decoding, and recovery guidance.
 
 ## TL;DR
 
@@ -14,6 +11,8 @@ land.
   [`src/components/ContractErrorBanner.tsx`](../src/components/ContractErrorBanner.tsx).
 - Demo route: `/errors-demo` exercises every category and lets you paste a
   custom error shape to see how it gets classified.
+- Error wizard: `/error-wizard` accepts keeper logs and raw diagnostic text,
+  including hexadecimal and base64-encoded Soroban payloads.
 
 ## Why a single mapper
 
@@ -23,7 +22,7 @@ The contributor issue lists four call sites we'll eventually have:
 2. **Soroban RPC** — `simulateTransaction`, `sendTransaction`,
    `getTransaction`.
 3. **Stellar Horizon / classic transactions** — sequence number issues,
-   fee bumps, auth.
+   fee bumps, auth, and token allowance failures.
 4. **Contract code itself** — host traps, asserts, custom error codes.
 
 Each of these throws a different shape. A wallet error is an `Error` whose
@@ -42,7 +41,7 @@ treatment. Components only see the mapped result.
 
 ```ts
 interface MappedContractError {
-  category: ContractErrorCategory;          // 21 enum values
+  category: ContractErrorCategory;
   title: string;                            // user-facing headline
   userMessage: string;                      // user-facing explanation
   action: "retry" | "wait" | "fix_input" | "none";
@@ -52,6 +51,7 @@ interface MappedContractError {
     message: string;
     code?: string | number;
     raw?: unknown;
+    diagnostic?: DecodedContractDiagnostic;
   };
 }
 ```
@@ -93,9 +93,12 @@ error object so a developer can paste a JSON dump into a bug report.
 2. **Wallet messages** — substring match on phrases like
    `"user declined"`, `"freighter is locked"`, `"network passphrase mismatch"`.
 3. **Soroban host / state** — `"entry expired"`, `"restorepreamble"`,
-   `"simulation failed"`. Inside a simulation failure, host traps
-   (`"vm error"`, `"contract panicked"`) become `CONTRACT_REVERT` rather
-   than the generic `SIMULATION_FAILED`.
+   `"simulation failed"`, plus host domains `Contract`, `Budget`, `Storage`,
+   and `Auth`. These map to contract revert, gas, expired state, and
+   authorization guidance, respectively.
+   Allowance failures map to `TOKEN_APPROVAL_REQUIRED`; the wizard identifies
+   token/spender context when provided and requires the user to inspect the
+   wallet request rather than submitting an approval automatically.
 4. **Embedded XDR codes** — `tx_bad_seq`, `tx_insufficient_fee`, etc.,
    inside the message body for cases where the error wasn't structured
    with a `code` field.
@@ -104,8 +107,11 @@ error object so a developer can paste a JSON dump into a bug report.
 6. **Fallback** — `UNKNOWN`. Action is `retry` so the user can at least
    try again; the debug panel lets them capture the raw error.
 
-The function never throws. Null, undefined, primitives, and circular
-objects all pass through as `UNKNOWN`.
+`decodeContractDiagnostic` extracts text from hex and base64 strings and
+from common nested Soroban RPC error fields. The function never throws.
+Unknown custom contract error numbers remain contract-specific: the wizard
+shows the number and asks users to check that contract's published error
+codes rather than guessing a meaning.
 
 ## Integration pattern
 
@@ -158,11 +164,10 @@ the retry button stays hidden until the auto-retry loop gives up.
   multi-signature flows, and timeouts mid-signing. Add fixtures to
   [`src/lib/errors/fixtures.ts`](../src/lib/errors/fixtures.ts) and a test
   case for each.
-- **No real RPC payload coverage.** Soroban's `simulateTransaction` returns
-  rich error structures (host error events, diagnostic events, restore
-  preamble). The current mapper looks at the top-level message string. A
-  follow-up should extend `MappedContractError.debug` to carry the
-  diagnostic events when present, so the dev panel shows them.
+- **Diagnostic decoding is best-effort.** XDR often contains structured
+  binary values rather than readable strings; unknown contract-specific
+  codes cannot be given a reliable explanation without that contract's ABI
+  or published error map. Preserve the payload for support in those cases.
 - **One banner shape, no toast variant yet.** The banner is inline. A
   future toast / global error surface should reuse the same
   `MappedContractError` shape — only the presentation layer changes.
@@ -174,20 +179,18 @@ the retry button stays hidden until the auto-retry loop gives up.
 
 | Criterion                                                          | How this spike addresses it                                                                                            |
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| Raw blockchain errors are translated into clear UI feedback.       | `mapContractError` covers 21 categories with title + message; `<ContractErrorBanner>` renders them.                    |
+| Raw blockchain errors are translated into clear UI feedback.       | `mapContractError` maps known keeper and Soroban host codes; `<ContractErrorBanner>` renders the result.              |
 | Users can tell whether to retry, wait, or change input.            | The four `action` values drive distinct affordances (button / wait dot / input-fix tone / none).                       |
-| Developer-debuggable context remains available where appropriate.  | The "Show technical details" panel shows category, code, name, message, and raw payload as JSON.                       |
+| Developer-debuggable context remains available where appropriate.  | Error wizard displays decoded diagnostics and preserves the raw message and code for review.                           |
 | Error handling is consistent across on-chain flows.                | Single shared mapper + single shared banner; integration pattern documented above so all call sites converge on it.    |
 
 ## Follow-ups for the next contributor
 
-1. When the wallet integration lands, replace the wallet substring rules
-   with the wallet library's structured error types. Add fixtures.
-2. When Soroban RPC calls land, extend `debug` to surface diagnostic
-   events, restore preamble, and host error metadata.
-3. Wire `<ContractErrorBanner>` into a global toast container so callers
+1. Add ABI-specific error mappings for contract custom codes where an
+   authoritative error map is available.
+2. Wire `<ContractErrorBanner>` into a global toast container so callers
    can `showContractError(e)` from anywhere.
-4. Consider a `useContractCall(fn)` hook that wraps a promise, owns the
+3. Consider a `useContractCall(fn)` hook that wraps a promise, owns the
    retry/backoff loop, and returns `{ status, error, retry }` where
    `error` is already a `MappedContractError`. Most call sites would no
    longer touch `mapContractError` directly.

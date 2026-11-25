@@ -360,9 +360,9 @@ describe('TaskFilterChain', () => {
     it('applies filters in registration order', () => {
       const order = [];
       const chain = new TaskFilterChain();
-      chain.addFilter('first', (id) => { order.push('first'); return { pass: true, reason: 'ok' }; });
-      chain.addFilter('second', (id) => { order.push('second'); return { pass: true, reason: 'ok' }; });
-      chain.addFilter('third', (id) => { order.push('third'); return { pass: true, reason: 'ok' }; });
+      chain.addFilter('first', (_id) => { order.push('first'); return { pass: true, reason: 'ok' }; });
+      chain.addFilter('second', (_id) => { order.push('second'); return { pass: true, reason: 'ok' }; });
+      chain.addFilter('third', (_id) => { order.push('third'); return { pass: true, reason: 'ok' }; });
 
       chain.filterTaskIds([1], {});
       expect(order).toEqual(['first', 'second', 'third']);
@@ -378,9 +378,9 @@ describe('createDefaultFilterChain', () => {
     expect(chain).toBeInstanceOf(TaskFilterChain);
   });
 
-  it('registers exactly 5 built-in filters', () => {
+  it('registers exactly 7 built-in filters', () => {
     const chain = createDefaultFilterChain();
-    expect(chain._filters).toHaveLength(5);
+    expect(chain._filters).toHaveLength(7);
   });
 
   it('filters are registered in correct order', () => {
@@ -392,6 +392,8 @@ describe('createDefaultFilterChain', () => {
       'cachedTimingFilter',
       'idempotencyLockFilter',
       'circuitBreakerFilter',
+      'liquidityPauseFilter',
+      'quarantineFilter',
     ]);
   });
 
@@ -470,11 +472,11 @@ describe('createDefaultFilterChain', () => {
   });
 
   describe('extensibility — custom filter can be appended', () => {
-    it('addFilter appends after the five built-ins', () => {
+    it('addFilter appends after the built-ins', () => {
       const chain = createDefaultFilterChain();
       chain.addFilter('myCustomFilter', () => ({ pass: true, reason: 'ok' }));
-      expect(chain._filters).toHaveLength(6);
-      expect(chain._filters[5].name).toBe('myCustomFilter');
+      expect(chain._filters).toHaveLength(8);
+      expect(chain._filters[7].name).toBe('myCustomFilter');
     });
 
     it('custom filter participates in rejection correctly', () => {

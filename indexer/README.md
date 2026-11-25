@@ -19,6 +19,8 @@ This indexer subscribes to events emitted by the SoroTask Soroban contract and s
 - Uses SQLite for local storage with deduplication
 - Implements cursor-based polling to avoid reprocessing events
 - Handles chain reprocessing safely with INSERT OR IGNORE
+- Reconciles indexed task rows against on-chain task state and classifies drift
+- Detects stale indexed task records and supports archive-before-delete cleanup
 - Graceful shutdown with database connection cleanup
 - Configurable polling interval
 
@@ -42,12 +44,44 @@ Edit `src/index.js` to configure:
 node src/index.js
 ```
 
+Run a reviewable stale-task cleanup preview:
+
+```bash
+node src/index.js --cleanup-stale
+```
+
+Apply cleanup after reviewing the dry-run logs:
+
+```bash
+node src/index.js --cleanup-stale --apply
+```
+
 The indexer will:
 1. Connect to the Soroban RPC
 2. Create/open the SQLite database
 3. Begin polling for new events
 4. Store each unique event in the database
 5. Continue until interrupted (Ctrl+C)
+
+## Stale Task Cleanup
+
+The cleanup workflow treats indexed task rows as stale when they have missing timestamps, old reconciliation timestamps, or inactive rows that are past the grace period. By default, cleanup is a dry run: it writes planned actions to `stale_cleanup_logs` and leaves `tasks` unchanged.
+
+When run with `--apply`, each cleaned task is copied to `archived_tasks` with the cleanup reasons before it is deleted from `tasks`. This preserves enough history for debugging while keeping read models from accumulating misleading records.
+
+Operators should run `--cleanup-stale` first, review `stale_cleanup_logs`, and only then rerun with `--apply`.
+
+## Cold Storage Archival (Issue #825)
+
+Events older than `ARCHIVAL_CUTOFF_DAYS` (default 90) are automatically archived off the primary `events` table:
+
+1. A daily scheduled check (`scheduleArchival` in `src/archival.js`, started from `src/index.js`) looks for events past the retention window.
+2. Eligible events are written to a Parquet file (SNAPPY-compressed) and uploaded to `s3://$S3_COLD_STORAGE_BUCKET/events/year=YYYY/month=MM/`.
+3. Once uploaded, the archived rows are pruned from the primary `events` table.
+
+This requires `S3_COLD_STORAGE_BUCKET` (defaults to `ignition-cold-storage`) and standard AWS credentials/region (`AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) to be configured in the environment; the run is skipped harmlessly (logged, not thrown) if nothing is eligible yet.
+
+Archived events remain queryable without re-hydrating them into the primary database via `GET /events/archived?contractId=<id>&limit=<n>` (requires a `USER`-role JWT), which runs a DuckDB query directly over the S3 Parquet files using the `httpfs` extension. See `src/archivalQuery.js`.
 
 ## Database Schema
 
@@ -92,6 +126,24 @@ The indexer maps each event type to specific database operations:
 - GasDeposited → Balance increased
 - GasWithdrawn → Balance decreased
 
+## Reconciliation
+
+Run full reconciliation on demand:
+
+```bash
+node src/index.js --reconcile
+```
+
+Run reconciliation for one task:
+
+```bash
+node src/index.js --reconcile --task-id 42
+```
+
+The reconciliation workflow treats the contract as the source of truth for task fields. It compares creator, target, function, arguments, resolver, interval, last run, gas balance, whitelist, active status, and dependency blockers. Mismatches are classified by likely cause, such as missed lifecycle event, missed balance event, scheduler update drift, or replay gaps.
+
+Non-destructive repairs upsert indexed rows from chain state. Rows that exist in the index but cannot be fetched from the contract are removed only through the existing explicit reconciliation path and logged with a destructive repair plan so maintainers can review the cause.
+
 ## Deduplication & Re-indexing
 
 The `UNIQUE` constraint on `(ledger_sequence, contract_id, event_name, task_id)` combined with `INSERT OR IGNORE` ensures:
@@ -105,6 +157,15 @@ To add support for new event types:
 1. Add the event name to the switch statement in `handleEvent()`
 2. Define how to convert the event's `data` array to JSON
 3. Ensure the data structure matches what your analytics need
+
+## PostgreSQL / TimescaleDB (production)
+
+For high-volume deployments, apply the SQL migrations under `indexer/migrations/` to PostgreSQL with TimescaleDB enabled:
+
+1. `001_initial_schema.sql` — core relational schema.
+2. `002_timescaledb_raw_events_retention.sql` — renames the raw event store to `raw_events`, partitions it into **7-day hypertable chunks** on `ledger_timestamp`, enables **columnar compression for chunks older than 14 days**, and exposes a backwards-compatible `events` view for read queries.
+
+New writes should target `raw_events` and set `ledger_timestamp` to the ledger close time when available (existing rows are backfilled from `processed_at` during migration).
 
 ## Production Considerations
 

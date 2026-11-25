@@ -1,5 +1,7 @@
 import NextAuth from "next-auth";
 import type { NextAuthConfig } from "next-auth";
+import GitHubProvider from "next-auth/providers/github";
+import GoogleProvider from "next-auth/providers/google";
 
 const config: NextAuthConfig = {
   providers: [
@@ -28,42 +30,19 @@ const config: NextAuthConfig = {
       },
     },
     // GitHub provider
-    {
-      id: "github",
-      name: "GitHub",
-      type: "oauth",
+    GitHubProvider({
+      clientId: (process.env.AUTH_GITHUB_ID ?? process.env.GITHUB_CLIENT_ID) || "",
+      clientSecret: (process.env.AUTH_GITHUB_SECRET ?? process.env.GITHUB_CLIENT_SECRET) || "",
       authorization: {
         params: {
           scope: "read:user user:email",
         },
       },
-      clientId: process.env.GITHUB_CLIENT_ID || "",
-      clientSecret: process.env.GITHUB_CLIENT_SECRET || "",
-      userinfo: {
-        url: "https://api.github.com/user",
-        async request({ tokens }: { tokens: { access_token: string } }) {
-          const response = await fetch("https://api.github.com/user", {
-            headers: {
-              Authorization: `Bearer ${tokens.access_token}`,
-            },
-          });
-          return response.json();
-        },
-      },
-      profile(profile) {
-        return {
-          id: profile.id.toString(),
-          name: profile.name || profile.login,
-          email: profile.email,
-          image: profile.avatar_url,
-        };
-      },
-    },
+    }),
     // Google provider
-    {
-      id: "google",
-      name: "Google",
-      type: "oauth",
+    GoogleProvider({
+      clientId: (process.env.AUTH_GOOGLE_ID ?? process.env.GOOGLE_CLIENT_ID) || "",
+      clientSecret: (process.env.AUTH_GOOGLE_SECRET ?? process.env.GOOGLE_CLIENT_SECRET) || "",
       authorization: {
         params: {
           prompt: "consent",
@@ -71,28 +50,7 @@ const config: NextAuthConfig = {
           response_type: "code",
         },
       },
-      clientId: process.env.GOOGLE_CLIENT_ID || "",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
-      userinfo: {
-        url: "https://www.googleapis.com/oauth2/v3/userinfo",
-        async request({ tokens }: { tokens: { access_token: string } }) {
-          const response = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-            headers: {
-              Authorization: `Bearer ${tokens.access_token}`,
-            },
-          });
-          return response.json();
-        },
-      },
-      profile(profile) {
-        return {
-          id: profile.sub,
-          name: profile.name,
-          email: profile.email,
-          image: profile.picture,
-        };
-      },
-    },
+    }),
   ],
   callbacks: {
     async jwt({ token, user, account }) {
@@ -121,7 +79,7 @@ const config: NextAuthConfig = {
   session: {
     strategy: "jwt",
   },
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET,
 };
 
 export const { handlers, auth, signIn, signOut } = NextAuth(config);

@@ -2,7 +2,54 @@ const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
 const { createLogger } = require('./logger');
-const { ErrorClassification } = require('./retry');
+const { ErrorClassification, calculateDelay } = require('./retry');
+const { safeFetch } = require('./ssrfGuard');
+
+/**
+ * Task-domain failure categories (issue #1204).
+ *
+ * Distinct from {@link ErrorClassification}, which describes whether an
+ * error is retryable; these describe WHAT failed on-chain so creators can
+ * act on the diagnostic (e.g. top up an escrow instead of resubmitting).
+ */
+const FailureCategory = Object.freeze({
+  INSUFFICIENT_ESCROW: 'InsufficientEscrow',
+  TARGET_REVERTED: 'TargetReverted',
+  CONDITION_UNMET: 'ConditionUnmet',
+  UNKNOWN: 'Unknown',
+});
+
+const FAILURE_CATEGORY_PATTERNS = [
+  {
+    category: FailureCategory.INSUFFICIENT_ESCROW,
+    pattern: /insufficient[_ -]?escrow|escrow[_ -]?(?:balance|funding|funded|missing|too low|empty)|not enough gas/i,
+  },
+  {
+    category: FailureCategory.TARGET_REVERTED,
+    pattern: /revert(?:ed|s|ion)?\b|contract[_ -]?error|host[_ -]?error|wasm[_ -]?trap|\btrap\b|panic/i,
+  },
+  {
+    category: FailureCategory.CONDITION_UNMET,
+    pattern: /condition[_ -]?(?:unmet|not[_ -]?met|not[_ -]?satisfied)|predicate[_ -]?(?:unmet|failed)|precondition/i,
+  },
+];
+
+/**
+ * Classifies a task failure into a {@link FailureCategory} from the error
+ * message and code. Unknown shapes fall back to `FailureCategory.UNKNOWN`.
+ */
+function classifyTaskFailure(context) {
+  const message = String(context?.error?.message || '');
+  const code = String(context?.error?.code || context?.error?.errorCode || '');
+
+  for (const { category, pattern } of FAILURE_CATEGORY_PATTERNS) {
+    if (pattern.test(message) || pattern.test(code)) {
+      return category;
+    }
+  }
+
+  return FailureCategory.UNKNOWN;
+}
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DEAD_LETTER_FILE = path.join(DATA_DIR, 'dead-letter-queue.json');
@@ -12,6 +59,9 @@ const DEAD_LETTER_FILE = path.join(DATA_DIR, 'dead-letter-queue.json');
  * 
  * Captures tasks that have exceeded retry thresholds and isolates them
  * from the normal execution loop to prevent resource waste and noise.
+ * 
+ * Implements exponential backoff for quarantined tasks and webhook
+ * notifications to task creators on quarantine events.
  */
 class DeadLetterQueue extends EventEmitter {
   constructor(options = {}) {
@@ -21,8 +71,8 @@ class DeadLetterQueue extends EventEmitter {
     
     // Configuration with defaults
     this.config = {
-      // Maximum number of failures before quarantine
-      maxFailures: parseInt(process.env.DLQ_MAX_FAILURES, 10) || 5,
+      // Maximum number of consecutive failures before quarantine
+      maxFailures: parseInt(process.env.DLQ_MAX_FAILURES, 10) || 3,
       
       // Time window for counting failures (in milliseconds)
       failureWindowMs: parseInt(process.env.DLQ_FAILURE_WINDOW_MS, 10) || 3600000, // 1 hour
@@ -32,6 +82,16 @@ class DeadLetterQueue extends EventEmitter {
       
       // Maximum number of dead-letter records to keep
       maxRecords: parseInt(process.env.DLQ_MAX_RECORDS, 10) || 1000,
+      
+      // Exponential backoff configuration
+      baseDelayMs: parseInt(process.env.DLQ_BASE_DELAY_MS, 10) || 5000, // 5 seconds base
+      maxDelayMs: parseInt(process.env.DLQ_MAX_DELAY_MS, 10) || 3600000, // 1 hour max
+      
+      // Webhook notification configuration
+      webhookUrl: process.env.DLQ_WEBHOOK_URL || null,
+      webhookTimeoutMs: parseInt(process.env.DLQ_WEBHOOK_TIMEOUT_MS, 10) || 10000,
+      // Telegram alert webhook (issue #1204)
+      telegramWebhookUrl: process.env.DLQ_TELEGRAM_WEBHOOK_URL || null,
       
       ...options.config,
     };
@@ -46,16 +106,93 @@ class DeadLetterQueue extends EventEmitter {
     // Dead-letter records with full context
     // Map<taskId, DeadLetterRecord>
     this.deadLetterRecords = new Map();
+    
+    // Exponential backoff tracking: Map<taskId, { attempt, nextRetryAt }>
+    this.backoffState = new Map();
 
     // Statistics
     this.stats = {
       totalQuarantined: 0,
       totalRecovered: 0,
       activeQuarantined: 0,
+      notificationsSent: 0,
+      notificationsFailed: 0,
     };
+
+    // Optional PostgreSQL persistence adapter (issue #1204). When provided
+    // the dead-letter state is mirrored to Postgres in addition to the JSON
+    // file and hydrated from it on startup if the file is empty.
+    this.pgStore = options.pgStore || null;
+    // Optional KeeperAlertManager used as an additional alert dispatcher
+    // (Slack/Discord/PagerDuty/Telegram fan-out, issue #1204).
+    this.alertManager = options.alertManager || null;
 
     this._ensureDataDir();
     this._loadFromDisk();
+    this._hydrateFromPgStore().catch(() => {});
+  }
+
+  /**
+   * Hydrates dead-letter state from the PostgreSQL store when one is
+   * configured and no newer state exists on disk. Failures are logged and
+   * swallowed so an unreachable database cannot prevent the keeper from
+   * starting.
+   */
+  async _hydrateFromPgStore() {
+    if (!this.pgStore) {
+      return;
+    }
+
+    if (fs.existsSync(DEAD_LETTER_FILE)) {
+      this.logger.info('Skipping PostgreSQL dead-letter hydration; file state is newer');
+      return;
+    }
+
+    try {
+      const state = await this.pgStore.loadState();
+      if (!state) {
+        this.logger.info('PostgreSQL dead-letter store empty; starting fresh');
+        return;
+      }
+
+      this._applyLoadedState(state);
+      this.logger.info('Hydrated dead-letter queue from PostgreSQL', {
+        quarantinedCount: this.quarantinedTasks.size,
+        totalRecords: this.deadLetterRecords.size,
+      });
+    } catch (err) {
+      this.logger.warn('Could not hydrate dead-letter queue from PostgreSQL', {
+        error: err.message,
+      });
+    }
+  }
+
+  /**
+   * Mirrors the current dead-letter state to the PostgreSQL store when one
+   * is configured. Fire-and-forget: persistence failures are logged but
+   * never block execution.
+   */
+  _persistToPgStore() {
+    if (!this.pgStore) {
+      return;
+    }
+
+    const data = {
+      quarantinedTasks: Array.from(this.quarantinedTasks),
+      deadLetterRecords: Object.fromEntries(this.deadLetterRecords),
+      failureHistory: Object.fromEntries(this.failureHistory),
+      backoffState: Object.fromEntries(this.backoffState),
+      stats: this.stats,
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.pgStore
+      .saveState(data)
+      .catch((err) => {
+        this.logger.warn('Could not persist dead-letter queue to PostgreSQL', {
+          error: err.message,
+        });
+      });
   }
 
   /**
@@ -81,6 +218,7 @@ class DeadLetterQueue extends EventEmitter {
         stack: context.error?.stack,
       },
       errorClassification: context.errorClassification || ErrorClassification.RETRYABLE,
+      failureCategory: classifyTaskFailure(context),
       attempt: context.attempt || 1,
       txHash: context.txHash || null,
       phase: context.phase || 'execution',
@@ -100,6 +238,7 @@ class DeadLetterQueue extends EventEmitter {
 
     // Save to disk to persist failure history across restarts
     this._saveToDisk();
+    this._persistToPgStore();
 
     // Check if task should be quarantined
     if (this.config.autoQuarantine && this._shouldQuarantine(taskId)) {
@@ -131,6 +270,10 @@ class DeadLetterQueue extends EventEmitter {
 
     const history = this.failureHistory.get(taskId) || [];
     const now = Date.now();
+    // Task-domain failure classification (issue #1204): dominant category
+    // across the failure window, e.g. InsufficientEscrow, TargetReverted,
+    // ConditionUnmet.
+    const failureCategory = this._dominantFailureCategory(history);
 
     const deadLetterRecord = {
       taskId,
@@ -138,6 +281,7 @@ class DeadLetterQueue extends EventEmitter {
       reason,
       metadata,
       failureCount: history.length,
+      failureCategory,
       failureHistory: history.slice(-10), // Keep last 10 failures for diagnosis
       firstFailure: history.length > 0 ? history[0].timestamp : now,
       lastFailure: history.length > 0 ? history[history.length - 1].timestamp : now,
@@ -150,19 +294,80 @@ class DeadLetterQueue extends EventEmitter {
     this.stats.totalQuarantined++;
     this.stats.activeQuarantined = this.quarantinedTasks.size;
 
+    // Initialize backoff state for quarantined task
+    this.backoffState.set(taskId, {
+      attempt: 0,
+      nextRetryAt: Date.now() + this.config.baseDelayMs,
+      quarantinedAt: now,
+    });
+
     // Enforce max records limit
     this._enforceMaxRecords();
 
     this._saveToDisk();
+    this._persistToPgStore();
 
     this.logger.warn('Task quarantined', {
       taskId,
       reason,
       failureCount: history.length,
+      failureCategory,
       errorPattern: deadLetterRecord.errorPattern,
     });
 
     this.emit('task:quarantined', { taskId, record: deadLetterRecord });
+
+    // Structured creator alert (issue #1204): the creator receives a
+    // payload with the failure classification and the error diagnostic
+    // captured at execution time, not just a bare task ID.
+    const lastFailure = history[history.length - 1] || null;
+    const creatorAlert = {
+      type: 'task_quarantined',
+      taskId,
+      reason,
+      failureCategory,
+      classification: deadLetterRecord.errorPattern.classification,
+      failureCount: history.length,
+      diagnostics: {
+        lastErrorMessage: lastFailure?.error?.message || null,
+        lastErrorCode: lastFailure?.error?.code || null,
+        lastPhase: lastFailure?.phase || null,
+        lastTxHash: lastFailure?.txHash || null,
+      },
+      taskConfig: lastFailure?.taskConfig || null,
+      quarantinedAt: new Date(now).toISOString(),
+    };
+
+    // Send webhook notification (async, non-blocking)
+    this.sendNotification(creatorAlert).catch(() => {}); // Fire and forget
+
+    // Fan out through the shared keeper alert manager when one is wired up
+    // (Slack/Discord/PagerDuty/Telegram, issue #1204).
+    if (this.alertManager?.notify) {
+      this.alertManager
+        .notify(
+          'dlq_quarantine',
+          `Task ${taskId} quarantined after ${history.length} consecutive failures (${failureCategory}).`,
+          { taskId, failureCategory, reason, ...creatorAlert.diagnostics },
+          'critical'
+        )
+        .catch(() => {}); // Fire and forget
+    }
+  }
+
+  /**
+   * Dominant task-domain failure category across the failure window.
+   *
+   * @param {Object[]} history - Failure history
+   * @returns {string} - FailureCategory value
+   */
+  _dominantFailureCategory(history) {
+    const dominant = this._getMostFrequent(
+      this._countOccurrences(
+        history.map((f) => f.failureCategory).filter(Boolean)
+      )
+    );
+    return dominant.value || FailureCategory.UNKNOWN;
   }
 
   /**
@@ -186,10 +391,12 @@ class DeadLetterQueue extends EventEmitter {
 
     this.quarantinedTasks.delete(taskId);
     this.failureHistory.delete(taskId);
+    this.resetBackoff(taskId);
     this.stats.totalRecovered++;
     this.stats.activeQuarantined = this.quarantinedTasks.size;
 
     this._saveToDisk();
+    this._persistToPgStore();
 
     this.logger.info('Task recovered from quarantine', {
       taskId,
@@ -197,6 +404,14 @@ class DeadLetterQueue extends EventEmitter {
     });
 
     this.emit('task:recovered', { taskId, recoveryReason });
+
+    // Send recovery notification (async, non-blocking)
+    this.sendNotification({
+      type: 'task_recovered',
+      taskId,
+      recoveryReason,
+      recoveredAt: new Date().toISOString(),
+    }).catch(() => {}); // Fire and forget
 
     return true;
   }
@@ -255,6 +470,210 @@ class DeadLetterQueue extends EventEmitter {
   }
 
   /**
+   * Calculate the exponential backoff delay for a quarantined task.
+   * 
+   * @param {number} taskId - The task ID
+   * @returns {number} - Delay in milliseconds before next retry attempt
+   */
+  getBackoffDelay(taskId) {
+    const state = this.backoffState.get(taskId);
+    if (!state) {
+      return this.config.baseDelayMs;
+    }
+    return calculateDelay(state.attempt, this.config.baseDelayMs, this.config.maxDelayMs);
+  }
+
+  /**
+   * Check if a quarantined task is eligible for retry based on backoff timing.
+   * 
+   * @param {number} taskId - The task ID
+   * @returns {boolean} - True if task can be retried now
+   */
+  isReadyForRetry(taskId) {
+    if (!this.quarantinedTasks.has(taskId)) {
+      return true; // Not quarantined, always ready
+    }
+    
+    const state = this.backoffState.get(taskId);
+    if (!state || !state.nextRetryAt) {
+      return true; // No backoff state, ready to retry
+    }
+    
+    return Date.now() >= state.nextRetryAt;
+  }
+
+  /**
+   * Record a retry attempt for a quarantined task and update backoff state.
+   * 
+   * @param {number} taskId - The task ID
+   */
+  recordRetryAttempt(taskId) {
+    const state = this.backoffState.get(taskId) || { attempt: 0 };
+    state.attempt++;
+    
+    const delay = calculateDelay(state.attempt, this.config.baseDelayMs, this.config.maxDelayMs);
+    state.nextRetryAt = Date.now() + delay;
+    state.lastAttemptAt = Date.now();
+    
+    this.backoffState.set(taskId, state);
+    
+    this.logger.info('Recorded retry attempt with backoff', {
+      taskId,
+      attempt: state.attempt,
+      nextRetryAt: new Date(state.nextRetryAt).toISOString(),
+      backoffMs: delay,
+    });
+    
+    this._saveToDisk();
+    this._persistToPgStore();
+  }
+
+  /**
+   * Reset backoff state for a task (on successful recovery or execution).
+   * 
+   * @param {number} taskId - The task ID
+   */
+  resetBackoff(taskId) {
+    this.backoffState.delete(taskId);
+    this._saveToDisk();
+    this._persistToPgStore();
+  }
+
+  /**
+   * Send notification about a quarantine event.
+   *
+   * Dispatches to the operator webhook (Slack-style JSON payload) and, when
+   * configured, a Telegram bot webhook (issue #1204).
+   *
+   * @param {Object} notification - Notification payload
+   * @returns {Promise<boolean>} - True if any channel accepted the event
+   */
+  async sendNotification(notification) {
+    const channels = [];
+
+    if (this.config.webhookUrl) {
+      channels.push(this._postWebhook(this.config.webhookUrl, notification, {
+        'X-SoroTask-DLQ-Event': notification.type,
+      }));
+    }
+
+    if (this.config.telegramWebhookUrl) {
+      channels.push(
+        this._postTelegram(
+          this.config.telegramWebhookUrl,
+          notification,
+        )
+      );
+    }
+
+    if (channels.length === 0) {
+      return false;
+    }
+
+    const results = await Promise.allSettled(channels);
+    const delivered = results.filter(
+      (r) => r.status === 'fulfilled' && r.value === true
+    ).length;
+    return delivered > 0;
+  }
+
+  /**
+   * POST a structured JSON payload to the operator webhook.
+   *
+   * @param {string} url - Operator-configured webhook URL
+   * @param {Object} notification - Notification payload
+   * @param {Object} extraHeaders - Additional headers
+   * @returns {Promise<boolean>} - True when the endpoint accepted the event
+   */
+  async _postWebhook(url, notification, extraHeaders = {}) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.config.webhookTimeoutMs);
+
+      // SSRF filter (Issue #1056): webhookUrl is operator-configured but
+      // still reaches the network from inside the perimeter.
+      const response = await safeFetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...extraHeaders,
+        },
+        body: JSON.stringify(notification),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        this.stats.notificationsSent++;
+        this.logger.info('DLQ notification sent', { type: notification.type, taskId: notification.taskId, channel: 'webhook' });
+        return true;
+      } else {
+        this.stats.notificationsFailed++;
+        this.logger.warn('DLQ notification failed', { status: response.status, channel: 'webhook' });
+        return false;
+      }
+    } catch (err) {
+      this.stats.notificationsFailed++;
+      this.logger.warn('DLQ notification error', { error: err.message, channel: 'webhook' });
+      return false;
+    }
+  }
+
+  /**
+   * POST a Markdown Telegram message via a bot webhook (issue #1204).
+   *
+   * @param {string} url - Telegram bot webhook URL
+   * @param {Object} notification - Notification payload
+   * @returns {Promise<boolean>} - True when Telegram accepted the message
+   */
+  async _postTelegram(url, notification) {
+    try {
+      const diagnostics = notification.diagnostics || {};
+      const lines = Object.entries(diagnostics)
+        .filter(([, v]) => v !== null && v !== undefined)
+        .map(([k, v]) => `${k}: ${String(v)}`);
+      const text =
+        `🚨 *SoroTask DLQ Alert (${notification.type})*\n` +
+        `Task: ${notification.taskId}\n` +
+        `Category: ${notification.failureCategory || 'unknown'}\n` +
+        `Failures: ${notification.failureCount ?? 'n/a'}\n` +
+        lines.join('\n');
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.config.webhookTimeoutMs);
+
+      const response = await safeFetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text,
+          parse_mode: 'Markdown',
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        this.stats.notificationsSent++;
+        this.logger.info('DLQ notification sent', { type: notification.type, taskId: notification.taskId, channel: 'telegram' });
+        return true;
+      } else {
+        this.stats.notificationsFailed++;
+        this.logger.warn('DLQ notification failed', { status: response.status, channel: 'telegram' });
+        return false;
+      }
+    } catch (err) {
+      this.stats.notificationsFailed++;
+      this.logger.warn('DLQ notification error', { error: err.message, channel: 'telegram' });
+      return false;
+    }
+  }
+
+  /**
    * Get all dead-letter records (for inspection/debugging).
    * 
    * @param {Object} filters - Optional filters
@@ -290,6 +709,7 @@ class DeadLetterQueue extends EventEmitter {
       for (const [taskId, record] of this.deadLetterRecords.entries()) {
         if (record.status === 'recovered') {
           this.deadLetterRecords.delete(taskId);
+          this.backoffState.delete(taskId);
         }
       }
       this.logger.info('Cleared recovered dead-letter records');
@@ -297,12 +717,43 @@ class DeadLetterQueue extends EventEmitter {
       this.quarantinedTasks.clear();
       this.failureHistory.clear();
       this.deadLetterRecords.clear();
+      this.backoffState.clear();
       this.stats.activeQuarantined = 0;
       this.logger.warn('Cleared all dead-letter records');
     }
 
     this._saveToDisk();
+    this._persistToPgStore();
     this.emit('dlq:cleared', options);
+  }
+
+  /**
+   * Purge a single task's dead-letter record, failure history, and backoff
+   * state (Issue #783's admin "purge" operation). Unlike `clear()`, which
+   * only supports `{ recoveredOnly: true }` or wiping everything, this
+   * removes exactly one task without touching any other task's state.
+   *
+   * @param {number} taskId - The task ID to purge
+   * @returns {boolean} - True if a record existed and was purged
+   */
+  purgeTask(taskId) {
+    const existed = this.deadLetterRecords.has(taskId) || this.failureHistory.has(taskId);
+
+    this.deadLetterRecords.delete(taskId);
+    this.failureHistory.delete(taskId);
+    this.backoffState.delete(taskId);
+    if (this.quarantinedTasks.delete(taskId)) {
+      this.stats.activeQuarantined = Math.max(0, this.stats.activeQuarantined - 1);
+    }
+
+    if (existed) {
+      this._saveToDisk();
+      this._persistToPgStore();
+      this.logger.warn('Purged dead-letter record for task', { taskId });
+      this.emit('dlq:purged', { taskId });
+    }
+
+    return existed;
   }
 
   // ---- Internal methods ----
@@ -315,21 +766,22 @@ class DeadLetterQueue extends EventEmitter {
    */
   _shouldQuarantine(taskId) {
     const history = this.failureHistory.get(taskId) || [];
-    
-    // Check if failure count exceeds threshold
-    if (history.length >= this.config.maxFailures) {
-      // Check if there are any non-retryable errors
-      const hasNonRetryable = history.some(
-        f => f.errorClassification === ErrorClassification.NON_RETRYABLE,
-      );
-
-      // Quarantine if:
-      // 1. Max failures exceeded, OR
-      // 2. Any non-retryable error detected
-      return hasNonRetryable || history.length >= this.config.maxFailures;
+    if (history.length === 0) {
+      return false;
     }
 
-    return false;
+    const latestAttempt = history[history.length - 1].attempt || 1;
+
+    // Check if there are any non-retryable errors
+    const hasNonRetryable = history.some(
+      f => f.errorClassification === ErrorClassification.NON_RETRYABLE,
+    );
+
+    // Quarantine if:
+    // 1. Non-retryable error detected (immediate quarantine), OR
+    // 2. Max consecutive failures exceeded, OR
+    // 3. Attempt count reaches maxFailures
+    return hasNonRetryable || history.length >= this.config.maxFailures || latestAttempt >= this.config.maxFailures;
   }
 
   /**
@@ -363,7 +815,7 @@ class DeadLetterQueue extends EventEmitter {
     }
 
     const errorCodes = history.map(f => f.error.code).filter(Boolean);
-    const errorMessages = history.map(f => f.error.message);
+    const _errorMessages = history.map(f => f.error.message);
     const classifications = history.map(f => f.errorClassification);
     const phases = history.map(f => f.phase);
 
@@ -489,34 +941,14 @@ class DeadLetterQueue extends EventEmitter {
     try {
       if (fs.existsSync(DEAD_LETTER_FILE)) {
         const data = JSON.parse(fs.readFileSync(DEAD_LETTER_FILE, 'utf-8'));
-        
-        if (data.quarantinedTasks) {
-          this.quarantinedTasks = new Set(data.quarantinedTasks);
-        }
-        
-        if (data.deadLetterRecords) {
-          this.deadLetterRecords = new Map(Object.entries(data.deadLetterRecords).map(
-            ([k, v]) => [parseInt(k, 10), v],
-          ));
-        }
-        
-        // Load failure history
-        if (data.failureHistory) {
-          this.failureHistory = new Map(Object.entries(data.failureHistory).map(
-            ([k, v]) => [parseInt(k, 10), v],
-          ));
-        }
-        
-        if (data.stats) {
-          this.stats = { ...this.stats, ...data.stats };
-        }
 
-        this.stats.activeQuarantined = this.quarantinedTasks.size;
+        this._applyLoadedState(data);
 
         this.logger.info('Loaded dead-letter queue from disk', {
           quarantinedCount: this.quarantinedTasks.size,
           totalRecords: this.deadLetterRecords.size,
           failureHistoryCount: this.failureHistory.size,
+          backoffStateCount: this.backoffState.size,
         });
       }
     } catch (err) {
@@ -524,6 +956,42 @@ class DeadLetterQueue extends EventEmitter {
         error: err.message,
       });
     }
+  }
+
+  /**
+   * Restores dead-letter state from a persisted snapshot (JSON file or
+   * PostgreSQL store payload).
+   */
+  _applyLoadedState(data) {
+    if (data.quarantinedTasks) {
+      this.quarantinedTasks = new Set(data.quarantinedTasks);
+    }
+
+    if (data.deadLetterRecords) {
+      this.deadLetterRecords = new Map(Object.entries(data.deadLetterRecords).map(
+        ([k, v]) => [parseInt(k, 10), v],
+      ));
+    }
+
+    // Load failure history
+    if (data.failureHistory) {
+      this.failureHistory = new Map(Object.entries(data.failureHistory).map(
+        ([k, v]) => [parseInt(k, 10), v],
+      ));
+    }
+
+    // Load backoff state
+    if (data.backoffState) {
+      this.backoffState = new Map(Object.entries(data.backoffState).map(
+        ([k, v]) => [parseInt(k, 10), v],
+      ));
+    }
+
+    if (data.stats) {
+      this.stats = { ...this.stats, ...data.stats };
+    }
+
+    this.stats.activeQuarantined = this.quarantinedTasks.size;
   }
 
   /**
@@ -535,6 +1003,7 @@ class DeadLetterQueue extends EventEmitter {
         quarantinedTasks: Array.from(this.quarantinedTasks),
         deadLetterRecords: Object.fromEntries(this.deadLetterRecords),
         failureHistory: Object.fromEntries(this.failureHistory),
+        backoffState: Object.fromEntries(this.backoffState),
         stats: this.stats,
         updatedAt: new Date().toISOString(),
       };
@@ -548,4 +1017,100 @@ class DeadLetterQueue extends EventEmitter {
   }
 }
 
-module.exports = { DeadLetterQueue };
+/**
+ * PostgreSQL persistence adapter for the dead-letter queue (issue #1204).
+ *
+ * Implements the pgStore contract consumed by {@link DeadLetterQueue}:
+ * `saveState(snapshot)` mirrors the in-memory dead-letter state into the
+ * `keeper_dead_letter_records` table and `loadState()` reads it back for
+ * hydration after a keeper restart. Pass `new PostgresDeadLetterStore(pg)`
+ * (pg = a `pg.Pool` or any object with `query(sql, params)`) as the DLQ's
+ * `pgStore` option to make quarantine state survive restarts in Postgres
+ * instead of (or in addition to) the local JSON file.
+ */
+class PostgresDeadLetterStore {
+  constructor(pg) {
+    this.pg = pg;
+  }
+
+  async saveState(snapshot) {
+    const taskIds = Object.keys(snapshot.deadLetterRecords || {}).map((k) =>
+      parseInt(k, 10),
+    );
+    const quarantined = new Set(snapshot.quarantinedTasks || []);
+
+    const upserts = [];
+    for (const taskId of Object.keys(snapshot.deadLetterRecords || {})) {
+      upserts.push(
+        this.pg.query(
+          `INSERT INTO keeper_dead_letter_records
+             (task_id, quarantined, record, failure_history, backoff, updated_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())
+           ON CONFLICT (task_id) DO UPDATE SET
+             quarantined = $2,
+             record = $3,
+             failure_history = $4,
+             backoff = $5,
+             updated_at = NOW()`,
+          [
+            parseInt(taskId, 10),
+            quarantined.has(parseInt(taskId, 10)),
+            JSON.stringify(snapshot.deadLetterRecords[taskId] || {}),
+            JSON.stringify(snapshot.failureHistory?.[taskId] || []),
+            JSON.stringify(snapshot.backoffState?.[taskId] || null),
+          ],
+        ),
+      );
+    }
+
+    await Promise.all(upserts);
+
+    if (taskIds.length > 0) {
+      const placeholders = taskIds.map((_, i) => `$${i + 1}`).join(', ');
+      await this.pg.query(
+        `DELETE FROM keeper_dead_letter_records
+          WHERE task_id NOT IN (${placeholders})`,
+        taskIds,
+      );
+    }
+  }
+
+  async loadState() {
+    const { rows } = await this.pg.query(
+      `SELECT task_id, quarantined, record, failure_history, backoff
+         FROM keeper_dead_letter_records`,
+    );
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    const state = {
+      quarantinedTasks: [],
+      deadLetterRecords: {},
+      failureHistory: {},
+      backoffState: {},
+      stats: {},
+    };
+
+    for (const row of rows) {
+      state.deadLetterRecords[String(row.task_id)] =
+        typeof row.record === 'string' ? JSON.parse(row.record) : row.record;
+      state.failureHistory[String(row.task_id)] =
+        typeof row.failure_history === 'string'
+          ? JSON.parse(row.failure_history)
+          : row.failure_history || [];
+      if (row.backoff !== null && row.backoff !== undefined) {
+        state.backoffState[String(row.task_id)] =
+          typeof row.backoff === 'string' ? JSON.parse(row.backoff) : row.backoff;
+      }
+      if (row.quarantined) {
+        state.quarantinedTasks.push(row.task_id);
+      }
+    }
+
+    return state;
+  }
+}
+
+module.exports = { DeadLetterQueue, PostgresDeadLetterStore, FailureCategory, classifyTaskFailure };

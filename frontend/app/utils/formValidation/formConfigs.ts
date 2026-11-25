@@ -1,26 +1,19 @@
 import { FormConfig } from './types';
-import { 
-  required, 
-  contractAddress, 
-  functionName, 
-  intervalSeconds, 
-  gasBalance 
-} from './validators';
+import { createZodFieldValidator } from './zodValidation';
+import { taskCreationSchema, taskFormSchema, EXAMPLE_CONTRACT_ADDRESS } from './schemas/taskCreationSchema';
+import { required } from './validators';
 
-// Task Creation Form Configuration
+// Task Creation Form Configuration (Zod-backed)
 export const taskCreationFormConfig: FormConfig = {
   fields: {
     contractAddress: {
       name: 'contractAddress',
       initialValue: '',
-      validation: [
-        required('Contract address is required'),
-        contractAddress()
-      ],
+      validation: [createZodFieldValidator(taskCreationSchema, 'contractAddress')],
       asyncValidation: async (address: string) => {
         // Mock async validation - in real app, verify contract exists
         await new Promise(resolve => setTimeout(resolve, 800));
-        const validContracts = ['C1234567890ABCDEF1234567890ABCDEF12345678'];
+        const validContracts = [EXAMPLE_CONTRACT_ADDRESS, 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'];
         return {
           isValid: validContracts.includes(address),
           message: validContracts.includes(address) ? undefined : 'Contract not found or invalid'
@@ -34,10 +27,7 @@ export const taskCreationFormConfig: FormConfig = {
     functionName: {
       name: 'functionName',
       initialValue: '',
-      validation: [
-        required('Function name is required'),
-        functionName()
-      ],
+      validation: [createZodFieldValidator(taskCreationSchema, 'functionName')],
       required: true,
       placeholder: 'harvest_yield',
       type: 'text'
@@ -45,10 +35,7 @@ export const taskCreationFormConfig: FormConfig = {
     interval: {
       name: 'interval',
       initialValue: '',
-      validation: [
-        required('Interval is required'),
-        intervalSeconds()
-      ],
+      validation: [createZodFieldValidator(taskCreationSchema, 'interval')],
       required: true,
       placeholder: '3600',
       type: 'number',
@@ -57,10 +44,7 @@ export const taskCreationFormConfig: FormConfig = {
     gasBalance: {
       name: 'gasBalance',
       initialValue: '',
-      validation: [
-        required('Gas balance is required'),
-        gasBalance()
-      ],
+      validation: [createZodFieldValidator(taskCreationSchema, 'gasBalance')],
       required: true,
       placeholder: '10',
       type: 'number',
@@ -90,6 +74,52 @@ export const taskCreationFormConfig: FormConfig = {
       throw new Error('Invalid contract address');
     }
   }
+};
+
+// Simpler TaskForm configuration (Zod-backed, used by TaskForm component)
+export const taskFormConfig: FormConfig = {
+  fields: {
+    targetAddress: {
+      name: 'targetAddress',
+      initialValue: '',
+      validation: [createZodFieldValidator(taskFormSchema, 'targetAddress')],
+      required: true,
+      placeholder: 'C...',
+      type: 'text',
+    },
+    functionName: {
+      name: 'functionName',
+      initialValue: '',
+      validation: [createZodFieldValidator(taskFormSchema, 'functionName')],
+      required: true,
+      placeholder: 'harvest_yield',
+      type: 'text',
+    },
+    intervalSeconds: {
+      name: 'intervalSeconds',
+      initialValue: 3600,
+      validation: [createZodFieldValidator(taskFormSchema, 'intervalSeconds')],
+      required: true,
+      placeholder: '3600',
+      type: 'number',
+      min: 60,
+    },
+    gasBalance: {
+      name: 'gasBalance',
+      initialValue: 10,
+      validation: [createZodFieldValidator(taskFormSchema, 'gasBalance')],
+      required: true,
+      placeholder: '10',
+      type: 'number',
+      min: 0.1,
+      max: 10000,
+      step: '0.1',
+    },
+  },
+  validateOnChange: true,
+  validateOnBlur: true,
+  focusFirstError: true,
+  resetOnSubmit: false,
 };
 
 // User Settings Form Configuration
@@ -231,8 +261,10 @@ export const projectSettingsFormConfig: FormConfig = {
 // Field label mappings for error summaries
 export const fieldLabels = {
   contractAddress: 'Contract Address',
+  targetAddress: 'Target Contract Address',
   functionName: 'Function Name',
   interval: 'Interval (seconds)',
+  intervalSeconds: 'Interval (seconds)',
   gasBalance: 'Gas Balance (XLM)',
   dueDate: 'Due Date',
   username: 'Username',

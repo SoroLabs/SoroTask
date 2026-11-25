@@ -12,10 +12,12 @@ data without re-doing the research.
 
 - Library: [`@tanstack/react-virtual`](https://tanstack.com/virtual) v3.
 - Component: `src/components/VirtualizedTaskList.tsx`.
+- Infinite data pipeline: `src/lib/virtualization/largeListDataPipeline.ts`.
 - Demo route: `/tasks-demo` — toggle between 0 / 1k / 5k / 10k rows, simulate
   loading, exercise keyboard navigation.
 - Tests: `src/components/__tests__/VirtualizedTaskList.test.tsx`,
-  `src/lib/__tests__/mockTasks.test.ts`.
+  `src/lib/__tests__/mockTasks.test.ts`,
+  `src/lib/virtualization/__tests__/largeListDataPipeline.test.ts`.
 
 ## Library choice
 
@@ -65,6 +67,13 @@ The spike covers the interactions the issue called out as must-keep:
 - **Empty state** — rendered when `tasks.length === 0`.
 - **Variable-height cards** — driven by description length; measured at
   mount. Confirmed visually in the demo at 5k–10k rows.
+- **Fault-tolerant pagination** — when `hasMore` and `onLoadMore` are provided,
+  the list triggers a guarded load-more pipeline near scroll bottom with
+  bounded retries and structured error reporting.
+- **Measurement fallback layout** — if `ResizeObserver` is unavailable or row
+  measurement repeatedly fails, the component degrades to a stable non-
+  virtualized fallback (`task-list-fallback`) that still supports selection,
+  status badges, and progressive loading hints.
 
 A "menus" interaction was deferred — it is a product decision (what menu?
 what actions?) that should come from the real task UI work, not from a
@@ -131,3 +140,8 @@ React Profiler pass with real card content before declaring acceptance.
    `useVirtualizer` supports it via `getItemKey` + a discriminated row type
    — wrap that pattern rather than introducing a second virtualization
    library.
+
+## Issue mapping
+
+- Issue #591: large-list virtualization with variable heights, guarded load-
+  more pipeline, and fallback layout is implemented by the above modules.

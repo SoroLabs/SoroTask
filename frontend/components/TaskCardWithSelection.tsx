@@ -2,6 +2,9 @@
 
 import React from 'react';
 import { useTaskSelection } from '@/src/hooks/useTaskSelection';
+import { createPerformanceMonitor, afterNextPaint } from '@/src/lib/frontend-performance';
+
+const monitor = createPerformanceMonitor({ route: "/tasks" });
 
 // Support both Task types from different parts of the codebase
 interface BaseTask {
@@ -26,6 +29,12 @@ export default function TaskCardWithSelection({ task, isBlocked }: TaskCardProps
   const isSelected = isTaskSelected(taskId);
   const hasBlockingDependencies = task.blockedBy && task.blockedBy.length > 0 && task.lastRun === 0;
 
+  const handleSelect = () => {
+    const endMeasure = monitor.start("task_open", { taskId });
+    selectTask(taskId);
+    afterNextPaint(() => endMeasure());
+  };
+
   return (
     <div
       className={`bg-neutral-800/50 border rounded-xl p-4 hover:border-neutral-600 transition-all cursor-pointer ${
@@ -35,13 +44,13 @@ export default function TaskCardWithSelection({ task, isBlocked }: TaskCardProps
           ? 'border-yellow-500/30'
           : 'border-neutral-700/50'
       }`}
-      onClick={() => selectTask(taskId)}
+      onClick={handleSelect}
       role="button"
       tabIndex={0}
       onKeyDown={(e: React.KeyboardEvent) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          selectTask(taskId);
+          handleSelect();
         }
       }}
       aria-pressed={isSelected}

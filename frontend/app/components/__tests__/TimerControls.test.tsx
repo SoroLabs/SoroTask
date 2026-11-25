@@ -1,10 +1,10 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { TimerControls } from '../components/TimerControls';
+import { TimerControls } from '../TimerControls';
 
 // Mock the context
 const mockDispatch = jest.fn();
-jest.mock('../context/TimeTrackingContext', () => ({
+jest.mock('../../context/TimeTrackingContext', () => ({
   useTimeTracking: () => ({
     dispatch: mockDispatch,
   }),

@@ -31,6 +31,8 @@ export function MentionsInput({
     char: string;
     type: MentionableEntity['type'];
     start: number;
+    query: string;
+    end: number;
   } | null>(null);
 
   const getCaretCoordinates = useCallback(() => {

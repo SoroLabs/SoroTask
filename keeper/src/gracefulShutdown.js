@@ -29,6 +29,17 @@ class GracefulShutdownManager extends EventEmitter {
       options.forceTimeoutMs || process.env.SHUTDOWN_FORCE_TIMEOUT_MS || 60000,
       10
     );
+    this.cleanupTimeoutMs = parseInt(
+      options.cleanupTimeoutMs || process.env.SHUTDOWN_CLEANUP_TIMEOUT_MS || 5000,
+      10
+    );
+    this.exitOnComplete = options.exitOnComplete ?? process.env.NODE_ENV !== "test";
+
+    if (process.env.NODE_ENV === "test") {
+      this.drainTimeoutMs = Math.min(this.drainTimeoutMs, 1000);
+      this.forceTimeoutMs = Math.min(this.forceTimeoutMs, 1000);
+      this.cleanupTimeoutMs = Math.min(this.cleanupTimeoutMs, 1000);
+    }
 
     // State management
     this.state = "initializing"; // initializing -> running -> draining -> forced -> cleanup -> exiting
@@ -45,6 +56,7 @@ class GracefulShutdownManager extends EventEmitter {
     // Resources to clean
     this.resources = [];
     this.signalHandlers = new Map();
+    this.activeLocks = new Map();
 
     this.logger.info("GracefulShutdownManager initialized", {
       drainTimeoutMs: this.drainTimeoutMs,
@@ -89,6 +101,39 @@ class GracefulShutdownManager extends EventEmitter {
   }
 
   /**
+   * Whether shutdown is currently in progress
+   */
+  get isShuttingDown() {
+    return this.state !== "initializing" && this.state !== "running";
+  }
+
+  /**
+   * Track a held Redis lock for clean release during shutdown
+   */
+  trackLock(taskId, token, options = {}) {
+    this.activeLocks.set(String(taskId), {
+      taskId: String(taskId),
+      token,
+      releaseFn: options.releaseFn || null,
+      nodes: options.nodes || [],
+    });
+    this.logger.debug("Tracked lock for shutdown management", { taskId, token });
+  }
+
+  trackRedisLock(taskId, token, options = {}) {
+    return this.trackLock(taskId, token, options);
+  }
+
+  untrackLock(taskId) {
+    this.activeLocks.delete(String(taskId));
+    this.logger.debug("Untracked lock", { taskId });
+  }
+
+  untrackRedisLock(taskId) {
+    return this.untrackLock(taskId);
+  }
+
+  /**
    * Track in-flight task
    */
   trackTask(taskId) {
@@ -118,6 +163,7 @@ class GracefulShutdownManager extends EventEmitter {
         durationMs: duration,
       });
     }
+    this.untrackLock(taskId);
   }
 
   /**
@@ -136,6 +182,7 @@ class GracefulShutdownManager extends EventEmitter {
         error: task.error,
       });
     }
+    this.untrackLock(taskId);
   }
 
   /**
@@ -207,6 +254,10 @@ class GracefulShutdownManager extends EventEmitter {
       this.logger.info("Phase 4: Cleaning up resources");
       await this._cleanupResources();
 
+      // Phase 4.5: Release held locks cleanly
+      this.logger.info("Phase 4.5: Releasing held locks");
+      await this._releaseHeldLocks();
+
       // Phase 5: Final summary
       this._summarizeShutdown();
 
@@ -222,13 +273,17 @@ class GracefulShutdownManager extends EventEmitter {
         ).length,
       });
 
-      process.exit(0);
+      if (this.exitOnComplete) {
+        process.exit(0);
+      }
     } catch (error) {
       this.logger.error("Error during graceful shutdown", {
         error: error.message,
         stack: error.stack,
       });
-      process.exit(1);
+      if (this.exitOnComplete) {
+        process.exit(1);
+      }
     }
   }
 
@@ -240,7 +295,11 @@ class GracefulShutdownManager extends EventEmitter {
     const startInFlightCount = this.inFlightTasks.size;
 
     return new Promise((resolve) => {
+      let checkInterval;
       const drainTimeout = setTimeout(() => {
+        if (checkInterval) {
+          clearInterval(checkInterval);
+        }
         this.logger.warn("Drain phase timeout", {
           durationMs: Date.now() - startTime,
           remainingInFlight: this._getInFlightTasks().length,
@@ -249,7 +308,7 @@ class GracefulShutdownManager extends EventEmitter {
       }, this.drainTimeoutMs);
 
       // Check periodically if all tasks have been drained
-      const checkInterval = setInterval(() => {
+      checkInterval = setInterval(() => {
         const inFlightTasks = this._getInFlightTasks();
 
         if (inFlightTasks.length === 0) {
@@ -298,7 +357,7 @@ class GracefulShutdownManager extends EventEmitter {
 
     // Wait for force timeout to allow graceful cancellation
     return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
+      const _timeout = setTimeout(() => {
         const remaining = this._getInFlightTasks();
         if (remaining.length > 0) {
           this.logger.error("Force phase timeout: Tasks still in-flight", {
@@ -325,7 +384,7 @@ class GracefulShutdownManager extends EventEmitter {
           new Promise((_, reject) =>
             setTimeout(
               () => reject(new Error("Cleanup timeout")),
-              5000
+              this.cleanupTimeoutMs
             )
           ),
         ]);
@@ -353,6 +412,45 @@ class GracefulShutdownManager extends EventEmitter {
   }
 
   /**
+   * Release held Redis locks cleanly before exit
+   */
+  async _releaseHeldLocks() {
+    if (this.activeLocks.size === 0) {
+      this.logger.debug("No held Redis locks to release");
+      return;
+    }
+
+    this.logger.info("Releasing held Redis locks cleanly before exit", {
+      count: this.activeLocks.size,
+    });
+
+    const { releaseLock, releaseRedlock } = require("./lock");
+
+    for (const lockInfo of this.activeLocks.values()) {
+      try {
+        let released = false;
+        if (typeof lockInfo.releaseFn === "function") {
+          released = await lockInfo.releaseFn(lockInfo.taskId, lockInfo.token);
+        } else if (lockInfo.nodes && lockInfo.nodes.length > 0) {
+          released = await releaseRedlock(lockInfo.taskId, lockInfo.token, lockInfo.nodes);
+        } else {
+          released = await releaseLock(lockInfo.taskId, lockInfo.token);
+        }
+        this.logger.info("Released held Redis lock cleanly during shutdown", {
+          taskId: lockInfo.taskId,
+          released,
+        });
+      } catch (error) {
+        this.logger.error("Error releasing Redis lock during shutdown", {
+          taskId: lockInfo.taskId,
+          error: error.message,
+        });
+      }
+    }
+    this.activeLocks.clear();
+  }
+
+  /**
    * Summarize shutdown for logs
    */
   _summarizeShutdown() {
@@ -373,6 +471,9 @@ class GracefulShutdownManager extends EventEmitter {
         registered: this.resources.length,
         cleaned: this.resources.filter((r) => r.cleaned).length,
         errored: this.resources.filter((r) => r.error).length,
+      },
+      locks: {
+        active: this.activeLocks.size,
       },
     };
 
@@ -420,7 +521,7 @@ class GracefulShutdownManager extends EventEmitter {
       shutdownSignal: this.shutdownSignal,
       shutdownReason: this.shutdownReason,
       startTime: this.startTime,
-      durationMs: this.startTime ? Date.now() - this.startTime : null,
+      durationMs: this._getDurationMs(),
       inFlight: {
         count: this._getInFlightTasks().length,
         taskIds: this._getInFlightTasks(),
@@ -442,7 +543,27 @@ class GracefulShutdownManager extends EventEmitter {
         cleaned: this.resources.filter((r) => r.cleaned).length,
         withErrors: this.resources.filter((r) => r.error).length,
       },
+      locks: {
+        active: this.activeLocks.size,
+        taskIds: Array.from(this.activeLocks.keys()),
+      },
     };
+  }
+
+  _getDurationMs() {
+    if (this.startTime) {
+      return Date.now() - this.startTime;
+    }
+
+    const taskStartTimes = Array.from(this.inFlightTasks.values())
+      .map((task) => task.startTime)
+      .filter(Number.isFinite);
+
+    if (taskStartTimes.length === 0) {
+      return null;
+    }
+
+    return Date.now() - Math.min(...taskStartTimes);
   }
 
   /**
