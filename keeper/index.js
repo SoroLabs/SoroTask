@@ -8,6 +8,7 @@ const { ExecutionQueue } = require("./src/queue");
 const TaskPoller = require("./src/poller");
 const TaskRegistry = require("./src/registry");
 const { createLogger } = require("./src/logger");
+const { NotificationDispatchClient } = require("./src/notificationDispatchClient");
 const { dryRunTask } = require("./src/dryRun");
 const { executeTaskWithRetry } = require("./src/executor");
 const { ExecutionIdempotencyGuard } = require("./src/idempotency");
@@ -40,6 +41,9 @@ const { KeeperP2PNetwork } = require("./src/p2pNetwork");
 
 // Create root logger for the main module
 const logger = createLogger("keeper");
+const notificationDispatcher = new NotificationDispatchClient({
+  logger: createLogger("notification-dispatch"),
+});
 
 // Parse --dry-run flag from CLI arguments
 const DRY_RUN = process.argv.includes("--dry-run");
@@ -449,6 +453,14 @@ async function main() {
             forecastedCost: forecast.estimatedCost,
             netProfit,
           });
+          if (task?.creator) {
+            void notificationDispatcher.dispatch({
+              recipient: task.creator,
+              category: "executionSkipped",
+              title: `Task #${taskId} execution skipped`,
+              message: "The keeper skipped this run because its forecasted execution cost exceeded its expected reward.",
+            });
+          }
           historyManager.record({
             taskId,
             keeper: keypair.publicKey(),
@@ -524,6 +536,24 @@ async function main() {
       if (retryResult.result?.feePaid) {
         gasForecaster.recordExecution(taskId, retryResult.result.feePaid);
       }
+      const taskConfig = registry.tasks.get(taskId) || registry.tasks.get(String(taskId));
+      if (taskConfig?.creator) {
+        const wasQuarantined = deadLetterQueue.isQuarantined(taskId);
+        if (wasQuarantined) {
+          void notificationDispatcher.dispatch({
+            recipient: taskConfig.creator,
+            category: "taskRecovered",
+            title: `Task #${taskId} recovered`,
+            message: "The task has recovered and completed an execution successfully.",
+          });
+        }
+        void notificationDispatcher.dispatch({
+          recipient: taskConfig.creator,
+          category: "executionSuccess",
+          title: `Task #${taskId} executed successfully`,
+          message: `Task completed successfully${retryResult.result?.txHash ? ` (transaction: ${retryResult.result.txHash})` : ""}.`,
+        });
+      }
       metricsServer.publishTaskEvent("completed", taskId, {
         attemptId: context.attemptId || null,
         correlationId,
@@ -565,6 +595,15 @@ async function main() {
         txHash: error.result?.txHash || null,
         phase: "execution",
       });
+      const taskConfig = registry.tasks.get(taskId) || registry.tasks.get(String(taskId));
+      if (taskConfig?.creator) {
+        void notificationDispatcher.dispatch({
+          recipient: taskConfig.creator,
+          category: "taskFailed",
+          title: `Task #${taskId} failed`,
+          message: `Task execution failed: ${String(error.error?.message || error.message || error).slice(0, 3500)}`,
+        });
+      }
       throw error;
     }
   };
@@ -613,6 +652,34 @@ async function main() {
     resolverCacheMaxSize: config.resolverCacheMaxSize,
   });
   await registry.init();
+
+  registry.on("task:updated", ({ previous, next }) => {
+    if (!next?.creator) return;
+    if (next.status === "paused" && previous?.status !== "paused") {
+      void notificationDispatcher.dispatch({
+        recipient: next.creator,
+        category: "taskPaused",
+        title: `Task #${next.id} paused`,
+        message: "This task was paused and will not run until it is resumed.",
+      });
+    }
+
+    const threshold = Number(poller.gasThreshold) || 0;
+    const previousBalance = Number(previous?.gas_balance);
+    const nextBalance = Number(next.gas_balance);
+    if (
+      Number.isFinite(nextBalance) &&
+      nextBalance <= threshold &&
+      (!Number.isFinite(previousBalance) || previousBalance > threshold)
+    ) {
+      void notificationDispatcher.dispatch({
+        recipient: next.creator,
+        category: "gasLow",
+        title: `Task #${next.id} has low gas`,
+        message: `Task gas balance is ${nextBalance}, at or below the configured threshold of ${threshold}.`,
+      });
+    }
+  });
 
   // Wire event-driven cache invalidation now that the registry is initialized.
   // Registry events (TaskPaused, GasDeposited, KeeperPaid, etc.) instantly

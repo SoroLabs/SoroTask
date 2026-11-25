@@ -1,6 +1,3 @@
-export const NOTIFICATION_PREFERENCES_STORAGE_KEY =
-  "sorotask.notification-preferences";
-
 export type NotificationChannel = "inApp" | "browser" | "email" | "webhook" | "telegram" | "discord";
 
 /** Channels that deliver to services the user configures (issue #1263). */
@@ -24,9 +21,8 @@ export type BrowserPermissionState =
 
 export type ExternalChannelEndpoint = {
   url: string;
-  /** Optional secret, stored encrypted with the user's wallet public key
-   *  (see notification-secrets.ts, issue #1263). */
   secret: string;
+  configured?: boolean;
 };
 
 export type NotificationPreferences = {
@@ -38,6 +34,7 @@ export type NotificationPreferences = {
   categoryChannels: Partial<Record<NotificationCategoryId, NotificationChannel[]>>;
   /** Delivery endpoints for the external channels. */
   externalEndpoints: Record<ExternalNotificationChannel, ExternalChannelEndpoint>;
+  emailAddress: string;
   updatedAt: string | null;
 };
 
@@ -116,9 +113,9 @@ export const externalNotificationChannels: ExternalNotificationChannel[] = [
 ];
 
 const emptyExternalEndpoints = (): Record<ExternalNotificationChannel, ExternalChannelEndpoint> => ({
-  webhook: { url: "", secret: "" },
-  telegram: { url: "", secret: "" },
-  discord: { url: "", secret: "" },
+  webhook: { url: "", secret: "", configured: false },
+  telegram: { url: "", secret: "", configured: false },
+  discord: { url: "", secret: "", configured: false },
 });
 
 export const defaultNotificationPreferences: NotificationPreferences = {
@@ -141,65 +138,9 @@ export const defaultNotificationPreferences: NotificationPreferences = {
   },
   categoryChannels: {},
   externalEndpoints: emptyExternalEndpoints(),
+  emailAddress: "",
   updatedAt: null,
 };
-
-export function loadNotificationPreferences(): NotificationPreferences {
-  if (typeof window === "undefined") {
-    return defaultNotificationPreferences;
-  }
-
-  try {
-    const raw = window.localStorage.getItem(
-      NOTIFICATION_PREFERENCES_STORAGE_KEY,
-    );
-    if (!raw) {
-      return defaultNotificationPreferences;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<NotificationPreferences>;
-
-    return {
-      channels: {
-        ...defaultNotificationPreferences.channels,
-        ...parsed.channels,
-      },
-      categories: {
-        ...defaultNotificationPreferences.categories,
-        ...parsed.categories,
-      },
-      categoryChannels: isPlainObject(parsed.categoryChannels)
-        ? (parsed.categoryChannels as NotificationPreferences["categoryChannels"])
-        : {},
-      externalEndpoints: {
-        ...emptyExternalEndpoints(),
-        ...safeEndpoints(parsed.externalEndpoints),
-      },
-      updatedAt:
-        typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
-    };
-  } catch {
-    return defaultNotificationPreferences;
-  }
-}
-
-export function saveNotificationPreferences(
-  preferences: NotificationPreferences,
-): NotificationPreferences {
-  const nextPreferences = {
-    ...preferences,
-    updatedAt: new Date().toISOString(),
-  };
-
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(
-      NOTIFICATION_PREFERENCES_STORAGE_KEY,
-      JSON.stringify(nextPreferences),
-    );
-  }
-
-  return nextPreferences;
-}
 
 export function getBrowserPermissionState(): BrowserPermissionState {
   if (typeof window === "undefined" || !("Notification" in window)) {
@@ -207,27 +148,6 @@ export function getBrowserPermissionState(): BrowserPermissionState {
   }
 
   return window.Notification.permission;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function safeEndpoints(
-  value: unknown,
-): Partial<Record<ExternalNotificationChannel, ExternalChannelEndpoint>> {
-  if (!isPlainObject(value)) return {};
-  const out: Partial<Record<ExternalNotificationChannel, ExternalChannelEndpoint>> = {};
-  for (const channel of externalNotificationChannels) {
-    const entry = value[channel];
-    if (isPlainObject(entry)) {
-      out[channel] = {
-        url: typeof entry.url === "string" ? entry.url : "",
-        secret: typeof entry.secret === "string" ? entry.secret : "",
-      };
-    }
-  }
-  return out;
 }
 
 /** True when an external channel has enough configuration to deliver. */
@@ -239,7 +159,10 @@ export function isExternalChannelConfigured(
     return true;
   }
   const endpoint = preferences.externalEndpoints?.[channel];
-  return Boolean(endpoint && endpoint.url.trim());
+  return Boolean(
+    endpoint &&
+      (endpoint.url.trim() || endpoint.secret || endpoint.configured),
+  );
 }
 
 export function getActiveDeliveryChannels(
