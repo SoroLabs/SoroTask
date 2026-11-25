@@ -79,3 +79,21 @@ docker-compose.*.override.yml
 # Environments
 .env.*
 !.env.example
+
+# Test snapshots
+__snapshots__/
+*.snap
+
+# Git merge conflict dumps & temporary test scripts
+conflicts_*.txt
+merge_output_*.txt
+test-rpc.js
+
+# Terraform local state / secrets
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform/terraform.tfvars
+crash.log
+

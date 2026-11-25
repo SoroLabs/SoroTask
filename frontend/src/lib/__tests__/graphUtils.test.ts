@@ -5,6 +5,9 @@ import {
   validateDependency,
   wouldCreateCycle,
   filterToNeighbourhood,
+  shouldVirtualizeGraph,
+  truncateLabel,
+  GRAPH_VIRTUALIZE_THRESHOLD,
 } from "../graphUtils";
 import type { Task, TaskDependency } from "@/src/types/task";
 
@@ -250,5 +253,58 @@ describe("filterToNeighbourhood", () => {
 
   it("returns empty array for empty deps", () => {
     expect(filterToNeighbourhood("a", [])).toHaveLength(0);
+  });
+});
+
+// ── shouldVirtualizeGraph ─────────────────────────────────────────────────────
+
+describe("shouldVirtualizeGraph", () => {
+  it("returns false at or below the threshold", () => {
+    expect(shouldVirtualizeGraph(0)).toBe(false);
+    expect(shouldVirtualizeGraph(GRAPH_VIRTUALIZE_THRESHOLD)).toBe(false);
+  });
+
+  it("returns true above the threshold", () => {
+    expect(shouldVirtualizeGraph(GRAPH_VIRTUALIZE_THRESHOLD + 1)).toBe(true);
+    expect(shouldVirtualizeGraph(1000)).toBe(true);
+  });
+
+  it("uses 200 as the threshold", () => {
+    expect(GRAPH_VIRTUALIZE_THRESHOLD).toBe(200);
+    expect(shouldVirtualizeGraph(200)).toBe(false);
+    expect(shouldVirtualizeGraph(201)).toBe(true);
+  });
+});
+
+// ── truncateLabel ─────────────────────────────────────────────────────────────
+
+describe("truncateLabel", () => {
+  it("leaves short labels unchanged", () => {
+    expect(truncateLabel("short")).toBe("short");
+  });
+
+  it("leaves labels exactly at maxLen unchanged", () => {
+    const label = "a".repeat(24);
+    expect(truncateLabel(label)).toBe(label);
+  });
+
+  it("truncates long labels with an ellipsis to maxLen total chars", () => {
+    const label = "a".repeat(40);
+    const result = truncateLabel(label);
+    expect(result.length).toBe(24);
+    expect(result.endsWith("…")).toBe(true);
+  });
+
+  it("respects a custom maxLen", () => {
+    expect(truncateLabel("abcdef", 4)).toBe("abc…");
+  });
+
+  it("returns an empty string for a non-positive maxLen", () => {
+    expect(truncateLabel("abc", 0)).toBe("");
+    expect(truncateLabel("abc", -5)).toBe("");
+  });
+
+  it("returns just an ellipsis when maxLen is 1", () => {
+    expect(truncateLabel("abc", 1)).toBe("…");
   });
 });

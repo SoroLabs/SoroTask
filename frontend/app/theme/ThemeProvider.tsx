@@ -2,13 +2,17 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
-  useState,
-  useCallback,
 } from "react";
+import {
+  ThemeProvider as NextThemesProvider,
+  useTheme as useNextTheme,
+} from "next-themes";
+import { initHoudiniThemeEngine } from "@/src/lib/theme/houdiniThemeEngine";
 
-export type ThemeMode = "light" | "dark" | "system";
+export type ThemeMode = "light" | "dark" | "system" | "high-contrast";
 
 interface ThemeContextValue {
   mode: ThemeMode;
@@ -20,49 +24,51 @@ const ThemeContext = createContext<ThemeContextValue>({
   setMode: () => {},
 });
 
-function resolveTheme(mode: ThemeMode): "light" | "dark" {
-  if (mode !== "system") return mode;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
-}
-
-export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [mode, setModeState] = useState<ThemeMode>("system");
-
-  const applyTheme = useCallback((m: ThemeMode) => {
-    document.documentElement.setAttribute("data-theme", resolveTheme(m));
-  }, []);
-
-  // Hydrate from localStorage once on mount
-  useEffect(() => {
-    const saved = (localStorage.getItem("theme") as ThemeMode) ?? "system";
-    setModeState(saved);
-    applyTheme(saved);
-  }, [applyTheme]);
-
-  // Listen for OS preference changes when mode is "system"
-  useEffect(() => {
-    if (mode !== "system") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => applyTheme("system");
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, [mode, applyTheme]);
+function ThemeStateProvider({ children }: { children: React.ReactNode }) {
+  const { theme, setTheme } = useNextTheme();
+  const mode: ThemeMode =
+    theme === "light" || theme === "dark" || theme === "high-contrast"
+      ? theme
+      : "system";
 
   const setMode = useCallback(
-    (m: ThemeMode) => {
-      setModeState(m);
-      localStorage.setItem("theme", m);
-      applyTheme(m);
-    },
-    [applyTheme],
+    (nextMode: ThemeMode) => setTheme(nextMode),
+    [setTheme],
   );
+
+  useEffect(() => {
+    void initHoudiniThemeEngine({
+      fallbackTokens: {
+        background: "#09090b",
+        foreground: "#f4f4f5",
+        accent: "#3b82f6",
+        surface: "#18181b",
+      },
+      externalThemeUrl: process.env.NEXT_PUBLIC_THEME_ENDPOINT,
+      onError: (error) => {
+        console.warn("Theme engine fallback activated", error.message);
+      },
+    });
+  }, []);
 
   return (
     <ThemeContext.Provider value={{ mode, setMode }}>
       {children}
     </ThemeContext.Provider>
+  );
+}
+
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  return (
+    <NextThemesProvider
+      attribute="data-theme"
+      defaultTheme="system"
+      enableSystem
+      themes={["light", "dark", "high-contrast"]}
+      storageKey="theme"
+    >
+      <ThemeStateProvider>{children}</ThemeStateProvider>
+    </NextThemesProvider>
   );
 }
 

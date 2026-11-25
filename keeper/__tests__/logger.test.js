@@ -278,4 +278,51 @@ describe('Logger', () => {
       expect(registryLogger.raw.bindings().module).toBe('registry');
     });
   });
+
+  describe('traced child loggers', () => {
+    let tracedLogger;
+    let tracedSpy;
+
+    beforeEach(() => {
+      jest.resetModules();
+      const { createLogger: freshCreateLogger } = require('../src/logger.js');
+      tracedLogger = freshCreateLogger('poller').childWithTrace('cycle-123');
+      tracedSpy = {
+        trace: jest.spyOn(tracedLogger.raw, 'trace').mockImplementation(() => {}),
+        debug: jest.spyOn(tracedLogger.raw, 'debug').mockImplementation(() => {}),
+        info: jest.spyOn(tracedLogger.raw, 'info').mockImplementation(() => {}),
+        warn: jest.spyOn(tracedLogger.raw, 'warn').mockImplementation(() => {}),
+        error: jest.spyOn(tracedLogger.raw, 'error').mockImplementation(() => {}),
+        fatal: jest.spyOn(tracedLogger.raw, 'fatal').mockImplementation(() => {}),
+      };
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('should proxy all log methods to the traced raw logger', () => {
+      tracedLogger.trace('trace message', { trace: true });
+      tracedLogger.debug('debug message', { debug: true });
+      tracedLogger.info('info message', { info: true });
+      tracedLogger.warn('warn message', { warn: true });
+      tracedLogger.error('error message', { error: true });
+      tracedLogger.fatal('fatal message', { fatal: true });
+
+      expect(tracedSpy.trace).toHaveBeenCalledWith({ trace: true }, 'trace message');
+      expect(tracedSpy.debug).toHaveBeenCalledWith({ debug: true }, 'debug message');
+      expect(tracedSpy.info).toHaveBeenCalledWith({ info: true }, 'info message');
+      expect(tracedSpy.warn).toHaveBeenCalledWith({ warn: true }, 'warn message');
+      expect(tracedSpy.error).toHaveBeenCalledWith({ error: true }, 'error message');
+      expect(tracedSpy.fatal).toHaveBeenCalledWith({ fatal: true }, 'fatal message');
+    });
+
+    it('should create nested traced loggers', () => {
+      const nested = tracedLogger.childWithTrace('task-456');
+      expect(nested.raw.bindings()).toMatchObject({
+        module: 'poller',
+        correlationId: 'task-456',
+      });
+    });
+  });
 });

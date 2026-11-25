@@ -1,0 +1,16 @@
+# Dynamic TLS configuration, hot-reloaded by Traefik's file provider (#1461).
+# Traefik picks up changed certificate files without a restart. Existing TLS
+# sessions keep the certificate they negotiated, so long-lived WebSocket
+# connections are not dropped by a reload.
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256

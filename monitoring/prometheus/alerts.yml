@@ -1,0 +1,47 @@
+# Prometheus Alerting Rules for SoroTask Services (Issue #1098)
+groups:
+  - name: sorotask-sla-alerts
+    rules:
+      - alert: IndexerHighLedgerLag
+        expr: (sorotask_indexer_current_ledger - sorotask_indexer_synced_ledger) > 5 or indexer_ledger_lag_ledgers > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: indexer
+          component: sync
+        annotations:
+          summary: "Indexer ledger lag exceeds threshold"
+          description: "Indexer is lagging behind stellar network by {{ $value }} ledgers for more than 2 minutes."
+
+      - alert: KeeperBalanceLow
+        expr: sorotask_keeper_balance_xlm < 50 or keeper_wallet_balance_xlm < 50
+        for: 5m
+        labels:
+          severity: critical
+          service: keeper
+          component: wallet
+        annotations:
+          summary: "Keeper wallet balance critically low"
+          description: "Keeper bot wallet balance is {{ $value }} XLM, which is below the minimum operational threshold of 50 XLM."
+
+      - alert: KeeperHighFailureRate
+        expr: (rate(keeper_task_execution_failures_total[5m]) / (rate(keeper_task_executions_total[5m]) + 0.001)) * 100 > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: keeper
+          component: execution
+        annotations:
+          summary: "Keeper task execution failure rate high"
+          description: "Keeper task execution failure rate is {{ $value }}% over the last 5 minutes (exceeds 5% SLA limit)."
+
+      - alert: ZKProverQueueHighLatency
+        expr: zk_queue_wait_ms > 60000 or (histogram_quantile(0.95, sum(rate(zk_queue_wait_ms_bucket[5m])) by (le)) > 60000)
+        for: 2m
+        labels:
+          severity: warning
+          service: zk-proof-service
+          component: prover-queue
+        annotations:
+          summary: "ZK prover queue latency high"
+          description: "ZK prover queue wait time is {{ $value }}ms, exceeding the 60 second SLA limit."

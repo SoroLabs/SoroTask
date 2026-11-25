@@ -5,40 +5,84 @@ import DOMPurify from "dompurify";
  * Intentionally restrictive — only what Tiptap StarterKit + Link + CodeBlock produce.
  */
 const ALLOWED_TAGS = [
-  "p", "br",
-  "strong", "em", "s", "code",
-  "h1", "h2", "h3",
-  "ul", "ol", "li",
+  "p",
+  "br",
+  "strong",
+  "em",
+  "s",
+  "code",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "ul",
+  "ol",
+  "li",
   "blockquote",
   "pre",
   "a",
   "hr",
+  "span",
+  "div",
+  "img",
 ];
 
-const ALLOWED_ATTR = ["href", "target", "rel", "class"];
+const ALLOWED_ATTR = ["href", "target", "rel", "class", "data-lang", "src", "alt", "title"];
 
 /**
  * Sanitizes an HTML string to prevent XSS.
  * - Strips all tags not in the allowlist
  * - Strips all attributes not in the allowlist
  * - Forces external links to open safely (rel="noopener noreferrer")
- *
- * Safe to call in SSR (returns input unchanged when window is unavailable).
  */
 export function sanitizeHtml(dirty: string): string {
   if (typeof window === "undefined") {
-    // SSR: DOMPurify requires a DOM. Return empty string to avoid leaking raw HTML.
     return "";
   }
 
   return DOMPurify.sanitize(dirty, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
-    // Force safe link attributes
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
     ADD_ATTR: ["target"],
     FORCE_BODY: false,
     RETURN_DOM: false,
     RETURN_DOM_FRAGMENT: false,
+  });
+}
+
+/**
+ * Sanitizes dynamic resolver output strings and task execution return values.
+ * Neutralizes stored XSS payloads (`<script>`, `onload=`, `javascript:`, `onerror=`).
+ */
+export function sanitizeResolverOutput(output: unknown): string {
+  if (output === null || output === undefined) {
+    return "";
+  }
+
+  const rawString =
+    typeof output === "object"
+      ? JSON.stringify(output, null, 2)
+      : String(output);
+
+  if (typeof window === "undefined") {
+    return rawString.replace(/[&<>"']/g, (character) => {
+      const entities: Record<string, string> = {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      };
+      return entities[character]!;
+    });
+  }
+
+  return DOMPurify.sanitize(rawString, {
+    ALLOWED_TAGS: [], // Disallow HTML tags in raw output strings
+    ALLOWED_ATTR: [],
   });
 }
 
@@ -48,14 +92,14 @@ export function sanitizeHtml(dirty: string): string {
  */
 export function addSafeLinkAttributes(html: string): string {
   return html.replace(
-    /<a\s([^>]*href="[^"]*"[^>]*)>/gi,
+    /<a\s([^>]*)>/gi,
     (match, attrs: string) => {
-      const hasRel = /rel=/i.test(attrs);
-      const hasTarget = /target=/i.test(attrs);
-      let result = attrs;
-      if (!hasTarget) result += ' target="_blank"';
-      if (!hasRel) result += ' rel="noopener noreferrer"';
-      return `<a ${result}>`;
-    }
+      if (!/\bhref\s*=/i.test(attrs)) return match;
+      const safeAttrs = attrs.replace(
+        /\s(?:target|rel)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+        "",
+      );
+      return `<a${safeAttrs} target="_blank" rel="noopener noreferrer">`;
+    },
   );
 }

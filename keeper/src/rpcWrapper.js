@@ -1,4 +1,4 @@
-const { CircuitBreaker, State } = require('./circuitBreaker');
+const { CircuitBreaker, _State } = require('./circuitBreaker');
 const { createLogger } = require('./logger');
 
 /**

@@ -8,17 +8,17 @@
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 
-# Reject crates with vulnerabilities
-vulnerability = "deny"
-
-# Reject unmaintained crates (warn only — set to "deny" for stricter policy)
-unmaintained = "warn"
+# Check direct workspace dependencies for unmaintained advisories.
+unmaintained = "workspace"
 
 # Reject crates with unsound code advisories
-unsound = "deny"
+unsound = "all"
 
-# Ignore specific advisories by ID if needed (add IDs here after review)
-ignore = []
+# Known transitive warnings from the current Soroban SDK dependency tree.
+ignore = [
+  "RUSTSEC-2024-0388",
+  "RUSTSEC-2024-0436",
+]
 
 # ── Licenses ─────────────────────────────────────────────────────────────────
 # Only allow OSI-approved and permissive licenses.
@@ -33,15 +33,6 @@ allow = [
   "Unicode-DFS-2016",
   "Zlib",
 ]
-
-# Reject crates with no license specified
-unlicensed = "deny"
-
-# Reject crates using copyleft licenses (e.g. GPL) unless explicitly allowed
-copyleft = "deny"
-
-# Treat OSI-approved licenses not in the allow list as warnings
-allow-osi-fsf-free = "neither"
 
 # ── Bans ─────────────────────────────────────────────────────────────────────
 # Deny duplicate versions of the same crate and flag known-bad crates.

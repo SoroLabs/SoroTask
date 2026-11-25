@@ -12,6 +12,7 @@ See the centralized [Glossary](../GLOSSARY.md) for definitions of domain-specifi
 - [Setup Instructions](#setup-instructions)
 - [P2P Keeper Discovery](#p2p-keeper-discovery)
 - [Dead-Letter Queue](#dead-letter-queue)
+- [Serverless Resolvers](#serverless-resolvers)
 - [Mock Soroban RPC](#mock-soroban-rpc-for-faster-local-testing)
 - [Chaos Testing](#chaos-testing)
 - [Docker Deployment](#docker-deployment)
@@ -70,6 +71,25 @@ LOG_LEVEL=info
 # KEEPER_STATE_DIR=./data
 # IDEMPOTENCY_STATE_FILE=./data/execution_locks.json
 
+ # Optional: lock expiration controls (milliseconds)
+ # EXECUTION_LOCK_TTL_MS=120000
+ # EXECUTION_COMPLETED_MARKER_TTL_MS=30000
+
+ # === SLO (Service Level Objectives) ===
+ # Maximum allowed milliseconds between poll cycle completions (freshness)
+ # SLO_POLL_FRESHNESS_MS=60000
+
+ # Maximum allowed execution lateness in milliseconds.
+ # If not set, defaults to 3x the polling interval.
+ # SLO_EXECUTION_TIMELINESS_MS=30000
+
+ # Approximate wall-clock time per ledger in milliseconds.
+ # Used to convert ledger-based timeliness measurements to wall-clock.
+ # LEDGER_TIME_MS=5000
+
+ # Maximum number of retry tasks to process each cycle (fair scheduling)
+ # MAX_RETRIES_PER_CYCLE=5
+ ```
 # Optional: lock expiration controls (milliseconds)
 # EXECUTION_LOCK_TTL_MS=120000
 # EXECUTION_COMPLETED_MARKER_TTL_MS=30000
@@ -79,10 +99,44 @@ METRICS_PORT=3000
 HEALTH_STALE_THRESHOLD_MS=60000
 # KEEPER_ADMIN_TOKEN=replace-with-strong-random-token
 
+# Fraud / anomaly alerting
+# FRAUD_ALERT_WEBHOOK_URL=https://alerts.example.com/keeper-fraud
+# FRAUD_ALERT_DEBOUNCE_MS=600000
+# FRAUD_BURST_WINDOW_MS=300000
+# FRAUD_FAILURE_WINDOW_MS=600000
+# FRAUD_ALERT_THRESHOLD=4
+# FRAUD_FEE_SPIKE_MULTIPLIER=4
+# FRAUD_MIN_FEE_SPIKE=10
+# FRAUD_DRAIN_MULTIPLIER=3
+# FRAUD_MIN_DRAIN_FEE=50
+# FRAUD_TASK_BURST_THRESHOLD=5
+# FRAUD_FAILURE_BURST_THRESHOLD=3
+# FRAUD_CROSS_TASK_THRESHOLD=8
+# FRAUD_CROSS_TASK_FEE_THRESHOLD=100
+# FRAUD_ALERT_WEBHOOK_TIMEOUT_MS=5000
+# FRAUD_ALERT_MAX_ATTEMPTS=3
+
+# Reconciliation / accounting alerting
+# RECONCILIATION_ALERT_WEBHOOK_URL=https://alerts.example.com/keeper-reconciliation
+# RECONCILIATION_ALERT_DEBOUNCE_MS=600000
+# RECONCILIATION_EXECUTION_SETTLING_MS=120000
+# RECONCILIATION_TOLERANCE=0
+# RECONCILIATION_ALERT_WEBHOOK_TIMEOUT_MS=5000
+# RECONCILIATION_ALERT_MAX_ATTEMPTS=3
+
 # Stable work partitioning across keeper instances
 KEEPER_SHARD_INDEX=0
 KEEPER_SHARD_COUNT=1
 # KEEPER_SHARD_LABEL=keeper-a
+
+# Optional Postgres shard automation
+DB_SHARD_BASE_COUNT=1
+DB_SHARD_MAX_COUNT=8
+DB_SHARD_SCALE_UP_THRESHOLD=0.75
+DB_SHARD_SCALE_DOWN_THRESHOLD=0.45
+DB_SHARD_USER_CAPACITY=1000
+DB_SHARD_TASK_CAPACITY=5000
+DB_SHARD_AUTO_SCALING=true
 
 # Optional P2P discovery/load-sharing layer
 P2P_ENABLED=false
@@ -95,6 +149,11 @@ P2P_LISTEN_PORT=4100
 # Recurring schedule drift thresholds (seconds)
 DRIFT_WARNING_SECONDS=60
 DRIFT_CRITICAL_SECONDS=300
+
+# Optional serverless resolver runtime
+# RESOLVER_FUNCTIONS_CONFIG=./resolvers.json
+RESOLVER_DEFAULT_TIMEOUT_MS=250
+RESOLVER_FAILURE_MODE=skip
 ```
 
 ### Explanation of Variables:
@@ -112,14 +171,49 @@ DRIFT_CRITICAL_SECONDS=300
 - **`LOG_LEVEL`**: Minimum log severity to emit (`trace`, `debug`, `info`, `warn`, `error`, `fatal`).
 - **`LOG_FORMAT`**: Optional log renderer. Leave unset for JSON logs; set to `pretty` for local human-readable output.
 - **`KEEPER_STATE_DIR` / `IDEMPOTENCY_STATE_FILE`**: Location of persisted execution idempotency locks used to prevent duplicate submissions.
+ - **`EXECUTION_LOCK_TTL_MS`**: How long an in-progress execution lock is considered valid before stale recovery allows new work.
+ - **`EXECUTION_COMPLETED_MARKER_TTL_MS`**: Short-lived post-success marker to reduce accidental immediate duplicate submissions.
+
+ - **`SLO_POLL_FRESHNESS_MS`**: Maximum allowed milliseconds between poll cycle completions. A poll taking longer than this increments the freshness SLO failure counter.
+ - **`SLO_EXECUTION_TIMELINESS_MS`**: Maximum allowed execution lateness (ms). Tasks completing after this delay count as timeliness SLO failures. Defaults to 3 × `POLLING_INTERVAL_MS`.
+ - **`LEDGER_TIME_MS`**: Estimated wall-clock milliseconds per ledger closure. Used to convert ledger-based lateness to milliseconds for SLO evaluation (default: 5000).
+ - **`MAX_RETRIES_PER_CYCLE`**: Maximum number of retry tasks to process in a single cycle (fair scheduling). Default: 5.
 - **`EXECUTION_LOCK_TTL_MS`**: How long an in-progress execution lock is considered valid before stale recovery allows new work.
 - **`EXECUTION_COMPLETED_MARKER_TTL_MS`**: Short-lived post-success marker to reduce accidental immediate duplicate submissions.
 - **`KEEPER_ADMIN_TOKEN`**: Bearer token required to call the keeper admin pause/resume API.
+- **`FRAUD_ALERT_WEBHOOK_URL`**: Optional webhook target that receives fraud/anomaly alerts as JSON.
+- **`FRAUD_ALERT_DEBOUNCE_MS`**: Minimum time between duplicate alerts for the same signature.
+- **`FRAUD_BURST_WINDOW_MS`**: Rolling window used for burst and drain heuristics.
+- **`FRAUD_FAILURE_WINDOW_MS`**: Rolling failure window used for repeated error detection.
+- **`FRAUD_ALERT_THRESHOLD`**: Minimum heuristic score required before an alert is queued.
+- **`FRAUD_FEE_SPIKE_MULTIPLIER`**: Fee multiplier used to flag sudden execution cost spikes.
+- **`FRAUD_MIN_FEE_SPIKE`**: Minimum absolute fee value before a spike can alert.
+- **`FRAUD_DRAIN_MULTIPLIER`**: Rolling-window fee growth multiplier used for rapid-drain detection.
+- **`FRAUD_MIN_DRAIN_FEE`**: Minimum rolling fee volume before a drain alert can trigger.
+- **`FRAUD_TASK_BURST_THRESHOLD`**: Number of executions of the same task in the window before it is considered bursty.
+- **`FRAUD_FAILURE_BURST_THRESHOLD`**: Number of failures in the window before it is considered a failure storm.
+- **`FRAUD_CROSS_TASK_THRESHOLD`**: Distinct task count in the window before cross-task velocity becomes suspicious.
+- **`FRAUD_CROSS_TASK_FEE_THRESHOLD`**: Total fee volume required for cross-task velocity alerts.
+- **`FRAUD_ALERT_WEBHOOK_TIMEOUT_MS`**: Timeout for outbound fraud alert webhook delivery.
+- **`FRAUD_ALERT_MAX_ATTEMPTS`**: Number of delivery attempts before an alert is marked failed.
+- **`RECONCILIATION_ALERT_WEBHOOK_URL`**: Optional webhook target for balance-vs-fee reconciliation mismatches.
+- **`RECONCILIATION_ALERT_DEBOUNCE_MS`**: Minimum time between duplicate reconciliation alerts for the same signature.
+- **`RECONCILIATION_EXECUTION_SETTLING_MS`**: Grace period before an unmatched execution is escalated.
+- **`RECONCILIATION_TOLERANCE`**: Accepted balance drift tolerance; keep at `0` for exact accounting.
+- **`RECONCILIATION_ALERT_WEBHOOK_TIMEOUT_MS`**: Timeout for outbound reconciliation alert webhook delivery.
+- **`RECONCILIATION_ALERT_MAX_ATTEMPTS`**: Number of delivery attempts before a reconciliation alert is marked failed.
 - **`KEEPER_SHARD_INDEX` / `KEEPER_SHARD_COUNT`**: Stable shard assignment controls so multiple keeper instances can partition work without ambiguous ownership.
 - **`KEEPER_SHARD_LABEL`**: Optional human-readable shard identifier used in metrics and logs.
+- **`DB_SHARD_BASE_COUNT` / `DB_SHARD_MAX_COUNT`**: Minimum and maximum Postgres shard counts for automatic scaling. The manager scales shard usage within these bounds.
+- **`DB_SHARD_SCALE_UP_THRESHOLD` / `DB_SHARD_SCALE_DOWN_THRESHOLD`**: Hysteresis thresholds for shard scaling decisions, preventing flapping during load transitions.
+- **`DB_SHARD_USER_CAPACITY` / `DB_SHARD_TASK_CAPACITY`**: Capacity heuristics used to translate active user load and task volume into shard count.
+- **`DB_SHARD_AUTO_SCALING`**: Enable or disable Postgres shard auto-scaling while preserving safe fallback behavior.
 - **`P2P_ENABLED` / `P2P_SHARED_SECRET`**: Enables signed peer discovery and load-aware ownership. See [P2P Keeper Discovery](./docs/p2p-keeper-discovery.md).
 - **`P2P_PUBLIC_URL` / `P2P_BOOTSTRAP_PEERS`**: Advertised peer URL and initial peer list used to join the keeper mesh.
 - **`DRIFT_WARNING_SECONDS` / `DRIFT_CRITICAL_SECONDS`**: Thresholds for recurring execution drift classification.
+- **`SOROBAN_RPC_URLS` / `RPC_FAILOVER_ENABLED`**: Optional multi-region RPC list and failover toggle (automatically enabled when multiple URLs are configured).
+- **`RPC_FAILOVER_FAILURE_THRESHOLD` / `RPC_FAILOVER_COOLDOWN_MS`**: Endpoint quarantine policy after repeated failures.
+- **`RPC_FAILOVER_HEALTH_CHECK_INTERVAL_MS`**: Background health-probe interval used for endpoint recovery and rebalancing.
 
 ## RPC Load Balancer Configuration
 
@@ -154,11 +248,28 @@ RPC_LOAD_BALANCING_STRATEGY=weighted_round_robin
 - Metrics for the load balancer are exposed via the standard `/metrics/prometheus` endpoint
 - The load balancer is backward compatible - if only one RPC endpoint is configured, it operates in single-server mode
 
+## Health Status Interpretation
+
+The keeper health endpoint reports richer state than a binary up/down signal. Operators will see:
+
+- `healthy`: keeper is polling and RPC connectivity is working normally.
+- `degraded`: partial issues are present, such as RPC disconnects or a half-open circuit breaker.
+- `stale`: polling has not refreshed within the configured `HEALTH_STALE_THRESHOLD_MS` window.
+- `unhealthy`: the keeper is not operational due to missing polls or failed RPC health.
+
+This makes it easier to distinguish slow recovery from critical outages during incident response.
+
 ## P2P Keeper Discovery
 
 The optional P2P layer lets keepers discover each other, advertise load, and split ownership with load-aware rendezvous hashing. It is disabled by default; when disabled or unhealthy, the keeper falls back to configured shard ownership.
 
 See [P2P Keeper Discovery](./docs/p2p-keeper-discovery.md) for setup, security review notes, health fields, and failure behavior.
+
+## Disaster Recovery and Failover
+
+The keeper supports automated multi-region RPC failover for disaster recovery. Configure a primary endpoint in `SOROBAN_RPC_URL` and additional regions in `SOROBAN_RPC_URLS`.
+
+See [Disaster Recovery and Failover Guide](./docs/disaster-recovery-failover.md) for architecture, metrics, and operational runbooks.
 
 ### Dead-Letter Queue Configuration
 
@@ -179,6 +290,9 @@ DLQ_MAX_RECORDS=1000
 ```
 
 The DLQ automatically isolates tasks that fail repeatedly, preventing resource waste and providing diagnostic information for operators. See [Dead-Letter Queue Documentation](./docs/dead-letter-queue.md) for details.
+
+For fraud and anomaly alerting, see [Fraud Detection and Anomaly Alerting](./docs/fraud-detection.md).
+For strict fee-vs-balance accounting, see [Real-time Financial Reconciliation](./docs/reconciliation.md).
 
 ## Setup Instructions
 
@@ -513,6 +627,8 @@ docker compose ps
 ### Data Persistence
 
 The task registry (`data/tasks.json`) is stored in `./keeper/data/` on the host and mounted into the container. It survives container restarts and upgrades automatically.
+
+Note: task IDs are expected to be sequential for a healthy registration history. The keeper exposes allocation summaries that surface missing IDs or duplicate registration events so operators can distinguish delayed task discovery from actual registry drift.
 
 ### Standalone Docker Commands (npm scripts)
 

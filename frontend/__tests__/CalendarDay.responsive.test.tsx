@@ -76,8 +76,8 @@ describe('CalendarDay Responsive Design', () => {
       />
     );
 
-    // Should show "+2 more" button
-    expect(screen.getByText('+2 more')).toBeInTheDocument();
+    // Should show "+1 more" button when maxVisibleTasks is 2 and tasks length is 3
+    expect(screen.getByText(/\+\s*1\s*more/i)).toBeInTheDocument();
 
     // Should show only first 2 tasks
     expect(screen.getByText('harvest_yield')).toBeInTheDocument();
@@ -99,7 +99,7 @@ describe('CalendarDay Responsive Design', () => {
       />
     );
 
-    const expandButton = screen.getByText('+2 more');
+    const expandButton = screen.getByText(/\+\s*1\s*more/i);
     fireEvent.click(expandButton);
 
     expect(mockOnExpand).toHaveBeenCalled();

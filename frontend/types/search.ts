@@ -16,6 +16,24 @@ export interface DateRange {
   to: string;
 }
 
+/**
+ * Execution interval buckets (issue #874).
+ *
+ * Buckets rather than a raw seconds range: users reason about automations as
+ * "hourly" or "daily", and a numeric input would require them to know the
+ * schedule is stored in seconds.
+ */
+export type IntervalBucket = 'minutes' | 'hourly' | 'daily' | 'weekly' | 'custom';
+
+/**
+ * Gas balance health, relative to each task's own top-up threshold.
+ *
+ * Absolute amounts are not comparable across tasks — a balance that is
+ * healthy for a daily task is critical for one running every minute — so this
+ * filters on the derived state, not the number.
+ */
+export type GasBalanceBand = 'healthy' | 'low' | 'critical' | 'empty';
+
 export interface TaskFilters {
   query?: string;
   status?: TaskStatus[];
@@ -24,6 +42,14 @@ export interface TaskFilters {
   priority?: TaskPriority[];
   dueDateFrom?: string;
   dueDateTo?: string;
+  /** Task creator addresses (#874). */
+  creator?: string[];
+  /** Target contract addresses the task invokes (#874). */
+  target?: string[];
+  /** Execution cadence buckets (#874). */
+  interval?: IntervalBucket[];
+  /** Gas balance health bands (#874). */
+  gasBalance?: GasBalanceBand[];
 }
 
 export interface ActiveFilter {

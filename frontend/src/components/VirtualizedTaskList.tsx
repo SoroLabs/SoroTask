@@ -11,6 +11,8 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { MockTask, MockTaskStatus } from "../lib/mockTasks";
+import { createLargeListDataPipeline } from "@/src/lib/virtualization/largeListDataPipeline";
+import { captureSentryException } from "@/src/lib/errors/sentry";
 
 export interface VirtualizedTaskListHandle {
   scrollToIndex: (index: number) => void;
@@ -20,11 +22,18 @@ export interface VirtualizedTaskListProps {
   tasks: MockTask[];
   loading?: boolean;
   onSelect?: (id: string) => void;
+  onLoadMore?: () => Promise<void> | void;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMoreError?: (error: Error) => void;
   // Estimated row height in px. Real heights are measured at mount via
   // ResizeObserver; this value only seeds the initial scroll geometry.
   estimateSize?: number;
   overscan?: number;
   height?: number | string;
+  loadMoreThresholdPx?: number;
+  measurementFailureThreshold?: number;
+  fallbackVisibleCount?: number;
   // Test hook: tanstack/react-virtual relies on layout measurements that jsdom
   // does not provide. When set, the virtualizer renders this many rows from
   // the top regardless of scroll position.
@@ -51,17 +60,39 @@ export const VirtualizedTaskList = forwardRef<
     tasks,
     loading = false,
     onSelect,
+    onLoadMore,
+    hasMore = false,
+    isLoadingMore = false,
+    onLoadMoreError,
     estimateSize = 120,
     overscan = 8,
     height = 600,
+    loadMoreThresholdPx = 320,
+    measurementFailureThreshold = 3,
+    fallbackVisibleCount = 120,
     forceRenderCount,
     className,
   },
   ref,
 ) {
   const parentRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreLockRef = useRef(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [measurementFailureCount, setMeasurementFailureCount] = useState(0);
+  const [measurementFailed, setMeasurementFailed] = useState(false);
+
+  const trackError = useCallback(
+    (error: Error, context: string) => {
+      captureSentryException(error, {
+        section: "virtualized-task-list",
+        context,
+        taskCount: tasks.length,
+      });
+      onLoadMoreError?.(error);
+    },
+    [onLoadMoreError, tasks.length],
+  );
 
   const virtualizer = useVirtualizer({
     count: tasks.length,
@@ -133,6 +164,83 @@ export const VirtualizedTaskList = forwardRef<
 
   const virtualItems = virtualizer.getVirtualItems();
 
+  useEffect(() => {
+    if (forceRenderCount != null) {
+      return;
+    }
+
+    if (typeof window !== "undefined" && typeof window.ResizeObserver === "undefined") {
+      setMeasurementFailed(true);
+      trackError(
+        new Error("ResizeObserver is unavailable; switching to fallback layout."),
+        "resize-observer-missing",
+      );
+    }
+  }, [forceRenderCount, trackError]);
+
+  const measureRow = useCallback(
+    (element: HTMLDivElement | null) => {
+      if (!element) {
+        return;
+      }
+
+      try {
+        virtualizer.measureElement(element);
+      } catch (error) {
+        setMeasurementFailureCount((prev) => {
+          const next = prev + 1;
+          if (next >= measurementFailureThreshold) {
+            setMeasurementFailed(true);
+          }
+          return next;
+        });
+        trackError(
+          error instanceof Error
+            ? error
+            : new Error("Failed to measure virtualized row."),
+          "row-measurement-failed",
+        );
+      }
+    },
+    [measurementFailureThreshold, trackError, virtualizer],
+  );
+
+  const requestMore = useCallback(async () => {
+    if (loadMoreLockRef.current) {
+      return;
+    }
+
+    loadMoreLockRef.current = true;
+    const pipeline = createLargeListDataPipeline({
+      hasMore,
+      isLoadingMore,
+      onLoadMore,
+      retryCount: 2,
+      onError: (error) => trackError(error, "load-more-failed"),
+    });
+
+    try {
+      await pipeline.requestNextPage();
+    } finally {
+      loadMoreLockRef.current = false;
+    }
+  }, [hasMore, isLoadingMore, onLoadMore, trackError]);
+
+  const handleScroll = useCallback(
+    async (e: React.UIEvent<HTMLDivElement>) => {
+      if (!hasMore || isLoadingMore || !onLoadMore) {
+        return;
+      }
+
+      const target = e.currentTarget;
+      const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+      if (remaining <= loadMoreThresholdPx) {
+        await requestMore();
+      }
+    },
+    [hasMore, isLoadingMore, loadMoreThresholdPx, onLoadMore, requestMore],
+  );
+
   // jsdom path: render a deterministic slice from the top so tests can
   // assert on row content without a real layout engine.
   const forcedItems = useMemo(() => {
@@ -182,6 +290,61 @@ export const VirtualizedTaskList = forwardRef<
     );
   }
 
+  if (measurementFailed && forceRenderCount == null) {
+    const fallbackTasks = tasks.slice(0, fallbackVisibleCount);
+    return (
+      <div
+        ref={parentRef}
+        data-testid="task-list-fallback"
+        role="list"
+        aria-label="Task list fallback"
+        className={`overflow-auto outline-none focus:ring-2 focus:ring-blue-500/40 rounded-xl border border-neutral-700/50 bg-neutral-900/30 ${className ?? ""}`}
+        style={{ height }}
+        onScroll={handleScroll}
+      >
+        <div
+          data-testid="task-list-fallback-banner"
+          className="sticky top-0 z-10 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-200"
+        >
+          Dynamic row measurements are unavailable. Showing a stable fallback layout.
+        </div>
+        {fallbackTasks.map((task, index) => {
+          const isSelected = task.id === selectedId;
+          return (
+            <button
+              key={task.id}
+              type="button"
+              role="listitem"
+              data-testid="task-row-fallback"
+              className={`block w-full cursor-pointer px-4 py-3 text-left border-b border-neutral-800/80 transition-colors ${
+                isSelected ? "bg-blue-500/10" : "hover:bg-neutral-800/40"
+              }`}
+              onClick={() => {
+                setActiveIndex(index);
+                handleSelect(task.id);
+              }}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium text-neutral-100 truncate">{task.title}</span>
+                <span
+                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_STYLES[task.status]}`}
+                >
+                  {task.status}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-neutral-400 truncate">{task.contract}</p>
+            </button>
+          );
+        })}
+        {hasMore && (
+          <div className="px-4 py-3 text-xs text-neutral-500" data-testid="task-list-load-more-fallback">
+            {isLoadingMore ? "Loading more tasks…" : "Scroll to load more tasks."}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
       ref={parentRef}
@@ -191,6 +354,7 @@ export const VirtualizedTaskList = forwardRef<
       aria-label="Task list"
       aria-activedescendant={tasks[activeIndex]?.id}
       onKeyDown={handleKeyDown}
+      onScroll={handleScroll}
       className={`overflow-auto outline-none focus:ring-2 focus:ring-blue-500/40 rounded-xl border border-neutral-700/50 bg-neutral-900/30 ${className ?? ""}`}
       style={{ height, contain: "strict" }}
     >
@@ -213,7 +377,7 @@ export const VirtualizedTaskList = forwardRef<
               ref={
                 forcedItems
                   ? undefined
-                  : (el) => virtualizer.measureElement(el)
+                  : measureRow
               }
               id={task.id}
               role="option"
@@ -269,7 +433,30 @@ export const VirtualizedTaskList = forwardRef<
             </div>
           );
         })}
+        {hasMore && (
+          <div
+            data-testid="task-list-load-more"
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              top: totalSize,
+              minHeight: estimateSize,
+            }}
+            className="flex items-center justify-center border-t border-neutral-800/60 text-xs text-neutral-500"
+          >
+            {isLoadingMore ? "Loading more tasks…" : "Scroll for more"}
+          </div>
+        )}
       </div>
+      {measurementFailureCount > 0 && !measurementFailed && (
+        <div
+          data-testid="task-list-measurement-warning"
+          className="sticky bottom-0 border-t border-amber-500/20 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-200"
+        >
+          Recovering row measurements ({measurementFailureCount}).
+        </div>
+      )}
     </div>
   );
 });

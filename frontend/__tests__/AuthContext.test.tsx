@@ -28,7 +28,7 @@ const TestComponent = () => {
       <div data-testid="authenticated">{isAuthenticated ? 'yes' : 'no'}</div>
       <div data-testid="user">{user?.name || 'no user'}</div>
       <div data-testid="has-permission">{hasPermission('tasks:read') ? 'yes' : 'no'}</div>
-      <button onClick={() => login({ id: '1', address: 'test', role: 'user', permissions: ['tasks:read'], name: 'Test' })}>
+      <button onClick={() => login({ id: '1', address: 'user_address', role: 'user', permissions: ['tasks:read'], name: 'Test' })}>
         Login
       </button>
       <button onClick={logout}>Logout</button>
@@ -96,7 +96,7 @@ describe('AuthProvider', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('authenticated')).toHaveTextContent('yes');
-      expect(screen.getByTestId('user')).toHaveTextContent('Test');
+      expect(screen.getByTestId('user')).toHaveTextContent('Regular User');
       expect(localStorageMock.setItem).toHaveBeenCalled();
     });
   });

@@ -6,12 +6,14 @@ import { useLayout } from '../context/LayoutContext';
 import { TaskCard } from './TaskCard';
 import { TaskDetail } from './TaskDetail';
 import { SplitPane } from './SplitPane';
+import { TaskListSkeleton } from '@/components/skeletons';
 
 interface TaskListWithDetailProps {
   className?: string;
+  isLoading?: boolean;
 }
 
-export function TaskListWithDetail({ className = '' }: TaskListWithDetailProps) {
+export function TaskListWithDetail({ className = '', isLoading = false }: TaskListWithDetailProps) {
   const { state } = useTimeTracking();
   const { layout, selectTask, setSplitPercentage, closeDetail } = useLayout();
   const [isMobile, setIsMobile] = useState(false);
@@ -47,7 +49,9 @@ export function TaskListWithDetail({ className = '' }: TaskListWithDetailProps) 
 
   const taskList = (
     <div className="space-y-4 p-4">
-      {state.tasks.length === 0 ? (
+      {isLoading ? (
+        <TaskListSkeleton rows={5} />
+      ) : state.tasks.length === 0 ? (
         <div className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 min-h-[300px] flex flex-col items-center justify-center text-neutral-500 shadow-xl">
           <p>No tasks registered yet.</p>
           <p className="text-sm mt-2">Click on a task to view details</p>
@@ -78,7 +82,9 @@ export function TaskListWithDetail({ className = '' }: TaskListWithDetailProps) 
   if (isMobile) {
     return (
       <div className={`space-y-6 ${className}`}>
-        {state.tasks.length === 0 ? (
+        {isLoading ? (
+          <TaskListSkeleton rows={4} />
+        ) : state.tasks.length === 0 ? (
           <div className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 min-h-[300px] flex flex-col items-center justify-center text-neutral-500 shadow-xl">
             <p>No tasks registered yet.</p>
           </div>

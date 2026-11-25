@@ -18,6 +18,8 @@ GET  /metrics
 GET  /metrics/forecast
 GET  /drift
 GET  /admin/keeper
+GET  /admin/fraud
+GET  /admin/reconciliation
 POST /admin/keeper/pause
 POST /admin/keeper/resume
 ```
@@ -34,6 +36,7 @@ The `/admin/keeper*` endpoints require `Authorization: Bearer <KEEPER_ADMIN_TOKE
 | `keeper_tasks_due_total` | Counter | Total number of tasks that were due for execution |
 | `keeper_tasks_executed_total` | Counter | Total number of tasks executed successfully |
 | `keeper_tasks_failed_total` | Counter | Total number of tasks that failed during execution |
+| `keeper_tasks_skipped_idempotency_total` | Counter | Total number of tasks skipped due to idempotency lock |
 
 ### Fee and Performance Metrics
 
@@ -73,18 +76,46 @@ The `/admin/keeper*` endpoints require `Authorization: Bearer <KEEPER_ADMIN_TOKE
 | `keeper_recurring_drift_warning_tasks` | Gauge | Number of tasks currently showing warning-level drift |
 | `keeper_recurring_drift_critical_tasks` | Gauge | Number of tasks currently showing critical drift |
 
+### Fraud Detection Metrics
+
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `keeper_fraud_observations_total` | Counter | Total number of task execution observations processed by fraud detection |
+| `keeper_fraud_alerts_queued_total` | Counter | Total number of fraud alerts queued for delivery |
+| `keeper_fraud_alerts_sent_total` | Counter | Total number of fraud alerts delivered or emitted locally |
+| `keeper_fraud_alerts_suppressed_total` | Counter | Total number of fraud alerts suppressed by debounce rules |
+| `keeper_fraud_alerts_failed_total` | Counter | Total number of fraud alerts that failed after retries |
+| `keeper_fraud_pipeline_errors_total` | Counter | Total number of fraud detection pipeline errors encountered |
+| `keeper_fraud_risk_score` | Gauge | Current fraud risk score produced by the heuristic engine |
+| `keeper_fraud_pending_alerts` | Gauge | Number of fraud alerts currently queued for delivery |
+
+### Reconciliation Metrics
+
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `keeper_reconciliation_executions_total` | Counter | Total number of successful task executions observed by reconciliation |
+| `keeper_reconciliation_accounting_changes_total` | Counter | Total number of accounting changes observed by reconciliation |
+| `keeper_reconciliation_matches_total` | Counter | Total number of execution-to-accounting matches confirmed |
+| `keeper_reconciliation_mismatches_total` | Counter | Total number of reconciliation mismatches detected |
+| `keeper_reconciliation_alerts_queued_total` | Counter | Total number of reconciliation alerts queued for delivery |
+| `keeper_reconciliation_alerts_sent_total` | Counter | Total number of reconciliation alerts delivered or emitted locally |
+| `keeper_reconciliation_alerts_failed_total` | Counter | Total number of reconciliation alerts that failed after retries |
+| `keeper_reconciliation_pipeline_errors_total` | Counter | Total number of reconciliation pipeline errors encountered |
+| `keeper_reconciliation_balance_drift` | Gauge | Current balance drift between expected and observed balances |
+| `keeper_reconciliation_pending_executions` | Gauge | Number of successful executions awaiting reconciliation confirmation |
+
 ### Default Process Metrics
 
 The following Node.js process metrics are also exposed automatically:
 
-- `process_cpu_user_seconds_total` - User CPU time spent
-- `process_cpu_system_seconds_total` - System CPU time spent
-- `process_cpu_seconds_total` - Total CPU time spent
-- `process_resident_memory_bytes` - Resident memory size
-- `process_heap_bytes` - Process heap size
-- `nodejs_eventloop_lag_seconds` - Event loop lag
-- `nodejs_active_handles_total` - Number of active handles
-- `nodejs_active_requests_total` - Number of active requests
+- `process_cpu_user_seconds_total` — User CPU time spent
+- `process_cpu_system_seconds_total` — System CPU time spent
+- `process_cpu_seconds_total` — Total CPU time spent
+- `process_resident_memory_bytes` — Resident memory size
+- `process_heap_bytes` — Process heap size
+- `nodejs_eventloop_lag_seconds` — Event loop lag
+- `nodejs_active_handles_total` — Number of active handles
+- `nodejs_active_requests_total` — Number of active requests
 
 ## Configuration
 
@@ -94,6 +125,10 @@ Set the metrics server port via environment variable:
 METRICS_PORT=3000
 ```
 
+### SLO Thresholds
+
+- `SLO_POLL_FRESHNESS_MS` — Maximum allowed milliseconds between poll cycle completions (default: 60000)
+- `SLO_EXECUTION_TIMELINESS_MS` — Maximum allowed milliseconds a task may be late before counting as SLO failure (default: 3 * POLLING_INTERVAL_MS)
 Shard ownership is controlled with:
 
 ```bash
@@ -126,44 +161,26 @@ scrape_configs:
 
 A sample Grafana dashboard configuration is available at [grafana-dashboard.json](./grafana-dashboard.json). Import this JSON file into Grafana to get started with pre-configured panels for all key metrics.
 
-### Example Queries
+### Example SLO Queries
 
-**Task Execution Rate:**
+**Poll Freshness SLO Rate (5m window):**
 ```promql
-rate(keeper_tasks_executed_total[5m])
+rate(keeper_poll_freshness_slo_success_total[5m]) / rate(keeper_poll_freshness_slo_success_total[5m] + keeper_poll_freshness_slo_failure_total[5m])
 ```
 
-**Task Failure Rate:**
+**Execution Timeliness SLO Rate (5m window):**
 ```promql
-rate(keeper_tasks_failed_total[5m])
+rate(keeper_execution_timeliness_slo_success_total[5m]) / rate(keeper_execution_timeliness_slo_success_total[5m] + keeper_execution_timeliness_slo_failure_total[5m])
 ```
 
-**Task Success Rate (%):**
+**Retry Queue Size:**
 ```promql
-100 * (
-  rate(keeper_tasks_executed_total[5m]) / 
-  (rate(keeper_tasks_executed_total[5m]) + rate(keeper_tasks_failed_total[5m]))
-)
+keeper_retry_queue_size
 ```
 
-**Average Fee Trend:**
+**Task Lateness Distribution:**
 ```promql
-keeper_avg_fee_paid_xlm
-```
-
-**Cycle Duration:**
-```promql
-keeper_last_cycle_duration_ms
-```
-
-**Low Gas Alert:**
-```promql
-keeper_low_gas_count > 0
-```
-
-**Service Uptime:**
-```promql
-keeper_uptime_seconds
+histogram_quantile(0.95, rate(keeper_task_execution_lateness_ledgers_bucket[5m]))
 ```
 
 ## Legacy JSON Endpoint
@@ -187,9 +204,9 @@ keeper_tasks_checked_total 1250
 # TYPE keeper_tasks_executed_total counter
 keeper_tasks_executed_total 342
 
-# HELP keeper_avg_fee_paid_xlm Average transaction fee paid in XLM (rolling average over last 100 transactions)
-# TYPE keeper_avg_fee_paid_xlm gauge
-keeper_avg_fee_paid_xlm 0.00001
+# HELP keeper_slo_poll_freshness_rate Rolling rate of poll freshness SLO success (0-1)
+# TYPE keeper_slo_poll_freshness_rate gauge
+keeper_slo_poll_freshness_rate 0.98
 
 # HELP keeper_uptime_seconds Keeper service uptime in seconds since start
 # TYPE keeper_uptime_seconds gauge

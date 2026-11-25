@@ -116,20 +116,104 @@
         ],
         "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 }
       },
-      {
-        "id": 10,
-        "title": "Event Loop Lag",
-        "type": "graph",
-        "targets": [
-          {
-            "expr": "nodejs_eventloop_lag_seconds",
-            "legendFormat": "Lag (s)"
-          }
-        ],
-        "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 }
-      }
-    ],
-    "refresh": "10s",
+       {
+         "id": 10,
+         "title": "Event Loop Lag",
+         "type": "graph",
+         "targets": [
+           {
+             "expr": "nodejs_eventloop_lag_seconds",
+             "legendFormat": "Lag (s)"
+           }
+         ],
+         "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 }
+       },
+       {
+         "id": 11,
+         "title": "Poll Freshness SLO Rate",
+         "type": "gauge",
+         "targets": [
+           {
+             "expr": "keeper_slo_poll_freshness_rate",
+             "legendFormat": "Freshness SLO"
+           }
+         ],
+         "gridPos": { "x": 0, "y": 24, "w": 6, "h": 4 }
+       },
+       {
+         "id": 12,
+         "title": "Execution Timeliness SLO Rate",
+         "type": "gauge",
+         "targets": [
+           {
+             "expr": "keeper_slo_execution_timeliness_rate",
+             "legendFormat": "Timeliness SLO"
+           }
+         ],
+         "gridPos": { "x": 6, "y": 24, "w": 6, "h": 4 }
+       },
+       {
+         "id": 13,
+         "title": "Retry Queue Size",
+         "type": "stat",
+         "targets": [
+           {
+             "expr": "keeper_retry_queue_size",
+             "legendFormat": "Queued"
+           }
+         ],
+         "gridPos": { "x": 12, "y": 24, "w": 6, "h": 4 }
+       },
+       {
+         "id": 14,
+         "title": "Oldest Task Age (seconds)",
+         "type": "stat",
+         "targets": [
+           {
+             "expr": "keeper_oldest_task_age_seconds",
+             "legendFormat": "Age (s)"
+           }
+         ],
+         "gridPos": { "x": 18, "y": 24, "w": 6, "h": 4 }
+       },
+       {
+         "id": 15,
+         "title": "Task Execution Lateness (ledgers)",
+         "type": "graph",
+         "targets": [
+           {
+             "expr": "histogram_quantile(0.95, rate(keeper_task_execution_lateness_ledgers_bucket[5m]))",
+             "legendFormat": "p95"
+           },
+           {
+             "expr": "histogram_quantile(0.50, rate(keeper_task_execution_lateness_ledgers_bucket[5m]))",
+             "legendFormat": "p50"
+           }
+         ],
+         "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 }
+       },
+       {
+         "id": 16,
+         "title": "Retry Attempts",
+         "type": "graph",
+         "targets": [
+           {
+             "expr": "rate(keeper_retry_attempts_total{outcome=\"success\"}[5m])",
+             "legendFormat": "Success"
+           },
+           {
+             "expr": "rate(keeper_retry_attempts_total{outcome=\"failure\"}[5m])",
+             "legendFormat": "Failure"
+           },
+           {
+             "expr": "rate(keeper_retry_attempts_total{outcome=\"duplicate\"}[5m])",
+             "legendFormat": "Duplicate"
+           }
+         ],
+         "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 }
+       }
+     ],
+     "refresh": "10s",
     "time": {
       "from": "now-1h",
       "to": "now"

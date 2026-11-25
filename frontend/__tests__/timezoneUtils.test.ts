@@ -5,9 +5,60 @@ import {
   getTimezoneOffset,
   formatTimeInTimezone,
   formatDateWithTimezone,
+  toUTCISOString,
+  parseUTCTimestamp,
+  formatDualTimestamp,
+  isDSTActive,
+  getDSTWarning,
 } from '@/lib/timezoneUtils';
 
 describe('timezoneUtils', () => {
+  describe('toUTCISOString & parseUTCTimestamp', () => {
+    it('should convert date to standardized UTC ISO string', () => {
+      const d = new Date('2026-08-25T12:00:00Z');
+      const iso = toUTCISOString(d);
+      expect(iso).toBe('2026-08-25T12:00:00.000Z');
+    });
+
+    it('should throw on invalid date input', () => {
+      expect(() => toUTCISOString('invalid-date')).toThrow();
+      expect(() => parseUTCTimestamp('invalid-date')).toThrow();
+    });
+
+    it('should parse valid UTC ISO string to Date', () => {
+      const parsed = parseUTCTimestamp('2026-08-25T12:00:00.000Z');
+      expect(parsed.toISOString()).toBe('2026-08-25T12:00:00.000Z');
+    });
+  });
+
+  describe('formatDualTimestamp', () => {
+    it('should return local, utc, and formatted string', () => {
+      const date = new Date('2026-08-25T12:00:00Z');
+      const dual = formatDualTimestamp(date, 'America/New_York', 'en-US');
+      expect(dual.utc).toContain('2026-08-25 12:00:00 UTC');
+      expect(dual.local).toBeDefined();
+      expect(dual.formatted).toContain('UTC');
+    });
+
+    it('should handle invalid date gracefully', () => {
+      const dual = formatDualTimestamp('invalid', 'UTC');
+      expect(dual.utc).toBe('Invalid Date');
+    });
+  });
+
+  describe('isDSTActive & getDSTWarning', () => {
+    it('should return DST active status and warning object', () => {
+      const summerDate = new Date('2026-07-15T12:00:00Z');
+      const warning = getDSTWarning(summerDate, 'America/New_York');
+      expect(typeof warning.isDST).toBe('boolean');
+      if (warning.isDST) {
+        expect(warning.warning).toContain('Daylight Savings Time');
+      } else {
+        expect(warning.warning).toBeNull();
+      }
+    });
+  });
+
   describe('isValidTimezone', () => {
     it('should return true for valid timezone', () => {
       expect(isValidTimezone('America/New_York')).toBe(true);
@@ -55,7 +106,7 @@ describe('timezoneUtils', () => {
 
   describe('formatDateWithTimezone', () => {
     it('should format date with timezone info', () => {
-      const date = new Date(2024, 0, 15);
+      const date = new Date(Date.UTC(2024, 0, 15, 12, 0, 0));
       const result = formatDateWithTimezone(date, {
         timezone: 'America/New_York',
         locale: 'en-US',

@@ -18,6 +18,7 @@ The module consists of four primary components, encapsulated securely within the
 - **Data Boundaries:** Hot database interactions and cold storage writes are separated.
 - **Fail-Safe Mechanism:** The `ErrorTracker` circuit breaker ensures that repeated failures stop the automated pipeline, preventing data corruption or repeated unauthorized access attempts.
 - **Transaction Safety:** The `Migrator` component strictly uses database transactions (`BEGIN TRANSACTION`, `COMMIT`, `ROLLBACK`) to ensure schema integrity.
+- **Rollback Capability:** Failed or malformed migration batches are rolled back cleanly and tracked by the `ErrorTracker` so the backend can recover without corrupting state.
 - **Least Privilege:** The archival pipeline only accesses the specific `logs` table data required for its process.
 
 ## Integration Guide

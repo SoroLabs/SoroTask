@@ -35,7 +35,7 @@ const mockGasMonitor = {
 // Mock logger
 const mockLogger = {
   info: jest.fn(),
-  error: jest.fn(),
+  error: (msg, obj) => console.error(msg, obj),
 };
 
 describe('Prometheus Metrics Integration', () => {

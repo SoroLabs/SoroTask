@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { TimeDisplay } from '../components/TimeDisplay';
+import { TimeDisplay } from '../TimeDisplay';
 
 describe('TimeDisplay', () => {
   it('displays minutes and seconds for less than an hour', () => {

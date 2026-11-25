@@ -4,6 +4,12 @@ import TaskDependencyGraph from "../TaskDependencyGraph";
 import { useTaskStore } from "@/src/store/taskStore";
 import type { Task } from "@/src/types/task";
 
+jest.mock("@/src/components/graph/CanvasNodeGraphEditor", () => ({
+  CanvasNodeGraphEditor: ({ nodes }: { nodes: Array<{ id: string }> }) => (
+    <div data-testid="canvas-node-graph-editor">{nodes.length}</div>
+  ),
+}));
+
 // ReactFlow requires a browser canvas and ResizeObserver — mock it entirely.
 jest.mock("reactflow", () => {
   const React = require("react");
@@ -134,6 +140,11 @@ describe("rendering nodes", () => {
       screen.getByRole("img", { name: /task dependency graph/i })
     ).toBeInTheDocument();
   });
+
+  it("renders canvas mode when requested", () => {
+    render(<TaskDependencyGraph renderMode="canvas" />);
+    expect(screen.getByTestId("canvas-node-graph-editor")).toBeInTheDocument();
+  });
 });
 
 // ── node click / selection ────────────────────────────────────────────────────
@@ -253,5 +264,58 @@ describe("focusTaskId prop", () => {
     expect(screen.getByTestId("node-b")).toBeInTheDocument();
     expect(screen.getByTestId("node-c")).toBeInTheDocument();
     expect(screen.getByTestId("node-d")).toBeInTheDocument();
+  });
+});
+
+// ── large graph banner ────────────────────────────────────────────────────────
+
+describe("large graph banner", () => {
+  it("does not show the large-graph warning for small graphs", () => {
+    seedStore([makeTask("a"), makeTask("b")], [{ fromId: "a", toId: "b" }]);
+    render(<TaskDependencyGraph />);
+    expect(screen.queryByTestId("graph-large-warning")).not.toBeInTheDocument();
+  });
+
+  it("shows the large-graph warning above 200 nodes", () => {
+    const tasks: Task[] = [];
+    const deps: { fromId: string; toId: string }[] = [];
+    for (let i = 0; i < 250; i++) tasks.push(makeTask(`n${i}`));
+    for (let i = 0; i < 249; i++) {
+      deps.push({ fromId: `n${i}`, toId: `n${i + 1}` });
+    }
+    seedStore(tasks, deps);
+    render(<TaskDependencyGraph />);
+    expect(screen.getByTestId("graph-large-warning")).toBeInTheDocument();
+    expect(
+      screen.getByText(/showing top 200 nodes/i)
+    ).toBeInTheDocument();
+  });
+});
+
+// ── accessibility & hints ─────────────────────────────────────────────────────
+
+describe("accessibility and hints", () => {
+  beforeEach(() => {
+    seedStore([makeTask("a"), makeTask("b")], [{ fromId: "a", toId: "b" }]);
+  });
+
+  it("renders the keyboard hint text", () => {
+    render(<TaskDependencyGraph />);
+    expect(screen.getByTestId("graph-hint")).toHaveTextContent(
+      /click a node to select it/i
+    );
+  });
+
+  it("announces the selected task in the live region", () => {
+    render(<TaskDependencyGraph />);
+    fireEvent.click(screen.getByTestId("node-a"));
+    expect(screen.getByTestId("graph-live-region")).toHaveTextContent(
+      "Selected Task: Task a"
+    );
+  });
+
+  it("has an empty live region when nothing is selected", () => {
+    render(<TaskDependencyGraph />);
+    expect(screen.getByTestId("graph-live-region")).toHaveTextContent("");
   });
 });

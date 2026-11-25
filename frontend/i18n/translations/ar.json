@@ -1,0 +1,124 @@
+{
+  "common": {
+    "app_name": "SoroTask",
+    "connect_wallet": "ربط المحفظة",
+    "close": "إغلاق",
+    "cancel": "إلغاء",
+    "save": "حفظ",
+    "edit": "تحرير",
+    "delete": "حذف",
+    "loading": "جارٍ التحميل...",
+    "error": "خطأ",
+    "success": "نجاح",
+    "warning": "تحذير",
+    "no_data": "لا توجد بيانات متاحة"
+  },
+  "calendar": {
+    "title": "تقويم جدولة المهام",
+    "today": "اليوم",
+    "previous_month": "الشهر السابق",
+    "next_month": "الشهر التالي",
+    "timezone": "المنطقة الزمنية",
+    "legend": {
+      "today": "اليوم",
+      "task_with_deadline": "مهمة لها موعد نهائي",
+      "multiple_tasks": "عدة مهام في نفس التاريخ",
+      "past_deadline": "موعد نهائي منتهٍ"
+    },
+    "selected_date_title": "المهام في {date}",
+    "no_tasks_scheduled": "لا توجد مهام مجدولة",
+    "schedule_calendar": "جدولة"
+  },
+  "calendar_day": {
+    "more_button": "+{count} أخرى",
+    "tasks_label": "{count, plural, =0 {لا مهام} one {مهمة واحدة} two {مهمتان} few {# مهام} many {# مهمة} other {# مهمة}}"
+  },
+  "dense_popover": {
+    "tasks_scheduled": "{count, plural, =0 {لا مهام مجدولة} one {مهمة واحدة مجدولة} two {مهمتان مجدولتان} few {# مهام مجدولة} many {# مهمة مجدولة} other {# مهمة مجدولة}}",
+    "click_task_to_view": "انقر على المهمة لعرض التفاصيل"
+  },
+  "task_detail": {
+    "title": "تفاصيل المهمة",
+    "status": "الحالة",
+    "contract_address": "عنوان العقد",
+    "description": "الوصف",
+    "schedule_settings": "إعدادات الجدولة",
+    "execution_interval": "فترة التنفيذ",
+    "gas_balance": "رصيد الغاز",
+    "next_execution": "التنفيذ التالي",
+    "deadline": "الموعد النهائي",
+    "due_date": "تاريخ الاستحقاق",
+    "time_until_deadline": "الوقت المتبقي حتى الموعد النهائي",
+    "due_today": "مستحقة اليوم!",
+    "overdue_by": "{days, plural, =0 {متأخرة} one {متأخرة يوم واحد} two {متأخرة يومان} few {متأخرة # أيام} many {متأخرة # يوماً} other {متأخرة # يوم}}",
+    "days_remaining": "{days, plural, =0 {لم يتبقَّ شيء} one {يوم واحد متبقٍ} two {يومان متبقيان} few {# أيام متبقية} many {# يوماً متبقياً} other {# يوم متبقٍ}}",
+    "created": "أُنشئت",
+    "timezone_label": "المنطقة الزمنية",
+    "tags": "الوسوم",
+    "edit_task": "تحرير المهمة",
+    "view_logs": "عرض السجلات",
+    "status_pending": "قيد الانتظار",
+    "status_active": "نشطة",
+    "status_completed": "مكتملة",
+    "status_failed": "فاشلة",
+    "status_paused": "متوقفة"
+  },
+  "forms": {
+    "create_automation_task": "إنشاء مهمة أتمتة",
+    "your_tasks": "مهامك",
+    "target_contract_address": "عنوان العقد الهدف",
+    "contract_placeholder": "C...",
+    "function_name": "اسم الدالة",
+    "function_placeholder": "harvest_yield",
+    "interval_seconds": "الفترة (بالثواني)",
+    "interval_placeholder": "3600",
+    "gas_balance_xlm": "رصيد الغاز (XLM)",
+    "gas_balance_placeholder": "10",
+    "register_task": "تسجيل المهمة",
+    "no_tasks_registered_yet": "لم تُسجَّل أي مهام بعد."
+  },
+  "execution_logs": {
+    "title": "سجلات التنفيذ",
+    "task_id": "معرّف المهمة",
+    "target": "الهدف",
+    "keeper": "الحارس",
+    "status": "الحالة",
+    "timestamp": "الطابع الزمني",
+    "status_success": "نجاح",
+    "mins_ago": "قبل {mins} دقيقة"
+  },
+  "formatting": {
+    "hours_short": "س",
+    "seconds_short": "ث",
+    "interval_display": "{hours}س ({seconds} ثانية)",
+    "xlm_unit": "XLM"
+  },
+  "offline": {
+    "title": "حالة الاتصال",
+    "online": "متصل",
+    "offline": "غير متصل",
+    "resyncing": "جارٍ المزامنة",
+    "sync_failed": "فشلت المزامنة",
+    "queued_actions": "{count, plural, =0 {لا إجراءات في الطابور} one {إجراء واحد في الطابور} two {إجراءان في الطابور} few {# إجراءات في الطابور} many {# إجراءً في الطابور} other {# إجراء في الطابور}}",
+    "replaying": "{count, plural, one {إعادة تشغيل إجراء واحد} two {إعادة تشغيل إجراءين} few {إعادة تشغيل # إجراءات} many {إعادة تشغيل # إجراءً} other {إعادة تشغيل # إجراء}}",
+    "still_queued": "{count, plural, one {إجراء واحد لا يزال في الطابور} two {إجراءان لا يزالان في الطابور} few {# إجراءات لا تزال في الطابور} many {# إجراءً لا يزال في الطابور} other {# إجراء لا يزال في الطابور}}",
+    "browse_cached": "لا يزال بإمكانك تصفح المحتوى المخزّن مؤقتًا. سيتم حفظ التغييرات في الطابور.",
+    "will_run_when_back": "سيتم تشغيلها عند عودة الاتصال.",
+    "retry": "إعادة المحاولة",
+    "read_only_notice": "أنت في وضع القراءة فقط. سيُرسل ما تكتبه عند عودة الاتصال."
+  },
+  "theme": {
+    "label": "المظهر",
+    "light": "فاتح",
+    "dark": "داكن",
+    "oled": "تباين عالٍ OLED",
+    "system": "النظام",
+    "change": "المظهر: {mode}. انقر للتغيير.",
+    "resolving_to": "يحل حاليًا إلى {resolved}."
+  },
+  "language": {
+    "label": "اختر اللغة",
+    "loading": "جارٍ تحميل اللغة...",
+    "available": "{count, plural, zero {لا لغات} one {لغة واحدة} two {لغتان} few {# لغات} many {# لغة} other {# لغة}}"
+  }
+}

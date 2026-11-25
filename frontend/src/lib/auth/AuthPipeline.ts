@@ -1,6 +1,6 @@
 import { IAuthProvider, AuthCredentials, AuthResult, AuthProviderConfig } from './types';
 import { IdentityManager } from './IdentityManager';
-import { User } from '../../types/auth';
+import { User } from '@/types/auth';
 
 interface AuthPipelineOptions {
   enableErrorTracking?: boolean;

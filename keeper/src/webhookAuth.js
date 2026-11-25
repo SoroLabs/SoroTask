@@ -131,6 +131,65 @@ class InMemoryReplayStore {
   }
 }
 
+/**
+ * Redis-backed replay nonce store for distributed multi-instance deployments.
+ *
+ * Resolves issue #844: guarantees strict single-execution semantics for
+ * webhooks across keeper cluster nodes by storing ephemeral nonces in Redis
+ * with atomic SET NX + PX TTL operations, preventing replay attacks even when
+ * multiple keeper instances share the same webhook endpoint.
+ *
+ * Usage:
+ *   const store = new RedisReplayStore({ client: redisClient, keyPrefix: 'wh:nonce:' });
+ *   const protocol = new WebhookAuthProtocol({ ..., replayStore: store });
+ *
+ * Note: consume() is async when using Redis. WebhookAuthProtocol.verify() must
+ * be called with `await` when a RedisReplayStore is provided. Use the async
+ * verifyAsync() method on WebhookAuthProtocol for distributed deployments.
+ */
+class RedisReplayStore {
+  /**
+   * @param {object} options
+   * @param {object} options.client - ioredis or node-redis client instance.
+   * @param {string} [options.keyPrefix='sorotask:wh:nonce:'] - Redis key namespace.
+   */
+  constructor(options = {}) {
+    if (!options.client) {
+      throw new Error('RedisReplayStore requires a Redis client instance');
+    }
+    this.client = options.client;
+    this.keyPrefix = options.keyPrefix || 'sorotask:wh:nonce:';
+  }
+
+  /**
+   * Atomically mark a nonce as seen. Returns false if the nonce was already
+   * consumed (replay detected), true if it is fresh and has been stored.
+   *
+   * Uses SET key 1 NX PX <ttlMs> — a single round-trip atomic operation.
+   *
+   * @param {string} key - Composite replay key (keyId:timestamp:nonce:sig).
+   * @param {number} ttlMs - Time-to-live in milliseconds.
+   * @returns {Promise<boolean>} true if fresh, false if replayed.
+   */
+  async consume(key, ttlMs) {
+    const redisKey = `${this.keyPrefix}${key}`;
+    // SET NX returns 'OK' on first write, null when key already exists.
+    const result = await this.client.set(redisKey, '1', 'NX', 'PX', Math.ceil(ttlMs));
+    return result === 'OK' || result === 1;
+  }
+
+  /**
+   * Synchronous fallback — always rejects to avoid silent no-ops when called
+   * from the synchronous verify() path. Use verifyAsync() instead.
+   */
+  consumeSync(_key, _ttlMs) {
+    throw new Error(
+      'RedisReplayStore.consume() is asynchronous. ' +
+      'Use WebhookAuthProtocol.verifyAsync() for Redis-backed nonce stores.',
+    );
+  }
+}
+
 class WebhookAuthProtocol {
   constructor(options = {}) {
     this.enabled = Boolean(options.enabled);
@@ -228,6 +287,79 @@ class WebhookAuthProtocol {
       })}`,
     };
   }
+
+  /**
+   * Async variant of verify() required when using a RedisReplayStore.
+   *
+   * Resolves issue #844: all header validation is identical to verify(), but
+   * the final nonce-consumption step awaits an async Redis SET NX call so that
+   * distributed keeper instances share a single source of truth for seen nonces.
+   *
+   * @param {object} params - Same as verify().
+   * @returns {Promise<{ok: boolean, status?: number, reason?: string, keyId?: string, nonce?: string, timestamp?: number, bodyHash?: string}>}
+   */
+  async verifyAsync({ method = 'POST', path = '/', headers = {}, rawBody = '', now = Date.now() }) {
+    if (!this.enabled) {
+      return { ok: false, status: 404, reason: 'webhooks_disabled' };
+    }
+    if (Buffer.byteLength(rawBody || '') > this.maxBodyBytes) {
+      return { ok: false, status: 413, reason: 'body_too_large' };
+    }
+
+    const timestamp = getHeader(headers, this.headers.timestamp);
+    const nonce = getHeader(headers, this.headers.nonce);
+    const keyId = getHeader(headers, this.headers.keyId) || this.defaultKeyId;
+    const signatures = parseSignatureHeader(getHeader(headers, this.headers.signature));
+    const providedSignature = signatures.v1;
+
+    if (!timestamp || !nonce || !providedSignature) {
+      return { ok: false, status: 401, reason: 'missing_auth_headers' };
+    }
+
+    const timestampMs = Number(timestamp);
+    if (!Number.isFinite(timestampMs)) {
+      return { ok: false, status: 401, reason: 'invalid_timestamp' };
+    }
+    if (Math.abs(now - timestampMs) > this.toleranceMs) {
+      return { ok: false, status: 401, reason: 'timestamp_out_of_window' };
+    }
+
+    const secret = this.secrets.get(keyId);
+    if (!secret) {
+      return { ok: false, status: 401, reason: 'unknown_key_id' };
+    }
+
+    const expectedSignature = signWebhookRequest({
+      method,
+      path,
+      timestamp,
+      nonce,
+      body: rawBody,
+      secret,
+    });
+
+    if (!timingSafeEqualHex(expectedSignature, providedSignature)) {
+      return { ok: false, status: 401, reason: 'signature_mismatch' };
+    }
+
+    // Atomic nonce consumption — works with both InMemoryReplayStore (sync)
+    // and RedisReplayStore (async). The await is a no-op for sync stores.
+    const replayKey = `${keyId}:${timestamp}:${nonce}:${providedSignature}`;
+    const fresh = await Promise.resolve(
+      this.replayStore.consume(replayKey, this.replayTtlMs, now),
+    );
+    if (!fresh) {
+      return { ok: false, status: 409, reason: 'replay_detected' };
+    }
+
+    return {
+      ok: true,
+      keyId,
+      nonce,
+      timestamp: timestampMs,
+      bodyHash: sha256Hex(rawBody),
+    };
+  }
 }
 
 function validateTaskExecutionPayload(payload) {
@@ -269,6 +401,7 @@ module.exports = {
   DEFAULT_TIMESTAMP_HEADER,
   DEFAULT_TOLERANCE_MS,
   InMemoryReplayStore,
+  RedisReplayStore,
   WebhookAuthProtocol,
   buildCanonicalRequest,
   parseSecretMap,

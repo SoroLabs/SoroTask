@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import {
   DndContext,
   KeyboardSensor,
@@ -18,6 +18,14 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import TaskCardWithSelection from "./TaskCardWithSelection"
+import { useCollaborativePresence } from "../../hooks/useCollaborativePresence"
+import CollaborativePresenceLayer from "./CollaborativePresenceLayer"
+
+// WebSocket presence server URL — override via env in production
+const PRESENCE_WS_URL =
+  typeof process !== 'undefined' && process.env.NEXT_PUBLIC_PRESENCE_WS_URL
+    ? process.env.NEXT_PUBLIC_PRESENCE_WS_URL
+    : 'ws://localhost:4001/presence'
 
 type Task = {
   id: string
@@ -33,6 +41,9 @@ const columnLabels: Record<string, string> = {
 }
 
 export default function Board() {
+  const boardRef = useRef<HTMLElement>(null)
+  const { collaborators, connected } = useCollaborativePresence(PRESENCE_WS_URL, boardRef)
+
   const [columns, setColumns] = useState<Columns>({
     todo: [
       { id: "1", title: "Task 1" },
@@ -105,11 +116,27 @@ export default function Board() {
   }
 
   return (
-    <section aria-label="Task board">
+    <section aria-label="Task board" ref={boardRef} style={{ position: 'relative' }}>
+      {/* Presence status indicator */}
+      <div className="mb-2 flex items-center gap-2">
+        <span
+          className={`h-2 w-2 rounded-full ${connected ? 'bg-green-400' : 'bg-neutral-500'}`}
+          title={connected ? 'Live collaboration active' : 'Offline — reconnecting…'}
+        />
+        {collaborators.length > 0 && (
+          <span className="text-xs text-neutral-400">
+            {collaborators.length} collaborator{collaborators.length !== 1 ? 's' : ''} online
+          </span>
+        )}
+      </div>
+
       <p className="mb-4 text-sm text-neutral-400">
         Drag tasks between columns. Keyboard users can focus a task, press Space,
         move with arrow keys, and press Space again to drop.
       </p>
+
+      {/* Live cursors & avatars for remote collaborators */}
+      <CollaborativePresenceLayer collaborators={collaborators} />
 
       <DndContext
         sensors={sensors}

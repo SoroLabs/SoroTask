@@ -8,6 +8,11 @@ updates:
     labels:
       - "automation"
       - "maintenance"
+    open-pull-requests-limit: 5
+    groups:
+      github-actions-deps:
+        patterns:
+          - "*"
 
   # 2. Rust Smart Contract (Soroban)
   # Matches your strict security requirements in deny.toml
@@ -19,6 +24,7 @@ updates:
       - "dependencies"
       - "smart-contract"
       - "security"
+    open-pull-requests-limit: 5
     groups:
       contract-deps:
         patterns:
@@ -33,6 +39,7 @@ updates:
       - "dependencies"
       - "keeper"
       - "backend"
+    open-pull-requests-limit: 5
     groups:
       keeper-deps:
         patterns:
@@ -47,6 +54,7 @@ updates:
       - "dependencies"
       - "frontend"
       - "ui"
+    open-pull-requests-limit: 5
     groups:
       frontend-deps:
         patterns:
@@ -60,3 +68,8 @@ updates:
     labels:
       - "maintenance"
       - "dx" # Developer Experience
+    open-pull-requests-limit: 5
+    groups:
+      root-deps:
+        patterns:
+          - "*"

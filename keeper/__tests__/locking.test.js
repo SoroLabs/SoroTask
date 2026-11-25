@@ -1,6 +1,6 @@
 jest.mock('ioredis', () => require('ioredis-mock'));
 
-const { acquireLock, releaseLock, getRedisClient } = require('../src/lock');
+const { acquireLock, releaseLock, _getRedisClient } = require('../src/lock');
 
 describe('Distributed lock', () => {
   beforeAll(() => {

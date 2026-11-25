@@ -1,4 +1,5 @@
 import { ValidationRule, ValidationResult } from './types';
+import { parseUnits } from '../../../src/lib/tokenAmounts';
 
 // Common validation rules
 export const required = (message?: string): ValidationRule => ({
@@ -137,13 +138,28 @@ export const functionName = (message?: string): ValidationRule<string> => ({
   }
 });
 
-export const gasBalance = (message?: string): ValidationRule<number> => ({
-  validate: (value: number) => {
-    const numValue = Number(value);
+export const gasBalance = (message?: string): ValidationRule<string | number> => ({
+  validate: (value: string | number) => {
+    const errorMessage = message || 'Gas balance must be an exact amount between 0 and 10000 XLM';
+    if (value === '') {
+      return { isValid: true, message: errorMessage };
+    }
+    if (typeof value === 'number' && (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER)) {
+      return { isValid: false, message: errorMessage };
+    }
+    try {
+      const stroops = parseUnits(String(value));
+      const maxStroops = 10000n * 10n ** 7n;
     return {
-      isValid: !value || (!isNaN(numValue) && numValue > 0 && numValue <= 10000),
-      message: message || 'Gas balance must be between 0 and 10000 XLM'
-    };
+        isValid: stroops > 0n && stroops <= maxStroops,
+        message: errorMessage
+      };
+    } catch {
+      return {
+        isValid: false,
+        message: errorMessage
+      };
+    }
   }
 });
 
@@ -171,7 +187,10 @@ export const uniqueEmail = async (email: string): Promise<ValidationResult> => {
 export const validContract = async (address: string): Promise<ValidationResult> => {
   // Mock async validation - in real app, this would verify contract exists
   await new Promise(resolve => setTimeout(resolve, 1000));
-  const validContracts = ['C1234567890ABCDEF1234567890ABCDEF12345678', 'C9876543210FEDCBA9876543210FEDCBA98765432'];
+  const validContracts = [
+    'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+  ];
   return {
     isValid: validContracts.includes(address),
     message: validContracts.includes(address) ? undefined : 'Contract not found or invalid'

@@ -1,0 +1,26 @@
+# Prometheus Configuration for SoroTask
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerts.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+
+scrape_configs:
+  - job_name: "sorotask-keeper"
+    static_configs:
+      - targets: ["keeper:3000"]
+
+  - job_name: "sorotask-indexer"
+    static_configs:
+      - targets: ["indexer:4000"]
+
+  - job_name: "zk-proof-service"
+    static_configs:
+      - targets: ["zk-proof-service:5000"]

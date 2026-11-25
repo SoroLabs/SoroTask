@@ -3,15 +3,21 @@ name = "soro_task_contract"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-soroban-sdk = "25.3.1"
+soroban-sdk = { version = "28.0.0", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
-soroban-sdk = { version = "25.3.1", features = ["testutils"] }
+soroban-sdk = { version = "28.0.0", features = ["testutils"] }
+vrf-rfc9381 = { version = "0.0.7", default-features = false, features = ["edwards25519"] }
 proptest = "1.5.0"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+rand = "0.10"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
@@ -20,3 +26,13 @@ testutils = ["soroban-sdk/testutils"]
 timeout = 600
 out = ["Xml"]
 exclude-files = ["fuzz/*"]
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true

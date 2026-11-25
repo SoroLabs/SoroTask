@@ -164,4 +164,114 @@ describe('KeeperP2PNetwork', () => {
     expect(network.pruneStalePeers()).toEqual(['keeper-b']);
     expect(network.getHealthyPeers()).toEqual([]);
   });
+
+  test('starts injected libp2p node and publishes discovery over gossipsub', async () => {
+    const published = [];
+    const subscribed = [];
+    const libp2pNode = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      services: {
+        pubsub: {
+          subscribe: jest.fn((topic) => subscribed.push(topic)),
+          publish: jest.fn((topic, data) => published.push({ topic, data })),
+          addEventListener: jest.fn(),
+        },
+      },
+    };
+
+    const network = new KeeperP2PNetwork({
+      enabled: true,
+      nodeId: 'keeper-libp2p',
+      sharedSecret: 'shared-secret',
+      transport: 'libp2p',
+      libp2pNode,
+      logger,
+    });
+    networks.push(network);
+
+    await network.start();
+
+    expect(libp2pNode.start).toHaveBeenCalled();
+    expect(subscribed).toEqual([
+      'sorotask.keeper.discovery.v1',
+      'sorotask.keeper.task-locks.v1',
+      'sorotask.keeper.bids.v1',
+    ]);
+    expect(published[0].topic).toBe('sorotask.keeper.discovery.v1');
+    expect(network.getStateSnapshot()).toMatchObject({
+      transport: 'libp2p',
+      libp2pStarted: true,
+    });
+  });
+
+  test('records task locks, skips remotely claimed work, and reassigns on stale peer', () => {
+    const network = new KeeperP2PNetwork({
+      enabled: true,
+      nodeId: 'keeper-a',
+      sharedSecret: 'shared-secret',
+      stalePeerMs: 1000,
+      taskLockTtlMs: 1000,
+      logger,
+    });
+    const reassign = jest.fn();
+    network.on('tasks:reassign', reassign);
+
+    network.upsertPeer('keeper-b', {
+      load: { capacity: 1 },
+    });
+    const lock = createSignedEnvelope({
+      type: 'task_lock_claimed',
+      payload: {
+        taskId: 'task-1',
+        claimedAt: Date.now(),
+        expiresAt: Date.now() + 1000,
+      },
+      nodeId: 'keeper-b',
+      secret: 'shared-secret',
+    });
+
+    network.handleTaskLockEnvelope(lock);
+    const selection = network.selectOwnedTasks(['task-1', 'task-2']);
+
+    expect(selection.activeLocks['task-1'].nodeId).toBe('keeper-b');
+    expect(selection.owners['task-1']).toBe('keeper-b');
+    expect(selection.skippedTaskIds).toContain('task-1');
+
+    network.peers.get('keeper-b').lastSeenAt = Date.now() - 2000;
+    network.pruneStalePeers();
+
+    expect(reassign).toHaveBeenCalledWith({ nodeId: 'keeper-b', taskIds: ['task-1'] });
+    expect(network.getActiveTaskLocks()).toEqual({});
+  });
+
+  test('broadcasts local task locks over mesh transports', () => {
+    const published = [];
+    const network = new KeeperP2PNetwork({
+      enabled: true,
+      nodeId: 'keeper-a',
+      sharedSecret: 'shared-secret',
+      transport: 'libp2p',
+      logger,
+      libp2pNode: {
+        services: {
+          pubsub: {
+            subscribe: jest.fn(),
+            publish: jest.fn((topic, data) => published.push({ topic, data })),
+          },
+        },
+      },
+    });
+    network.started = true;
+    network.libp2pStarted = true;
+
+    const envelope = network.broadcastTaskLock('task-7', { correlationId: 'poll-1' });
+
+    expect(envelope.payload).toMatchObject({
+      taskId: 'task-7',
+      correlationId: 'poll-1',
+    });
+    expect(network.getActiveTaskLocks()['task-7'].nodeId).toBe('keeper-a');
+    expect(published[0].topic).toBe('sorotask.keeper.task-locks.v1');
+  });
 });

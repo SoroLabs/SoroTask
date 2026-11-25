@@ -8,7 +8,7 @@ import {
   FieldValidation, 
   AsyncValidationState 
 } from './types';
-import { validateField } from './validators';
+import { validateField as runFieldValidation } from './validators';
 
 const useFormValidation = <T extends Record<string, any>>(
   config: FormConfig<T>
@@ -43,6 +43,8 @@ const useFormValidation = <T extends Record<string, any>>(
   };
 
   const [formState, setFormState] = useState<FormState<T>>(initialState);
+  const valuesRef = useRef(formState.values);
+  valuesRef.current = formState.values;
   const asyncValidationStates = useRef<Record<string, AsyncValidationState>>({});
   const debounceTimeouts = useRef<Record<string, NodeJS.Timeout>>({});
 
@@ -67,7 +69,7 @@ const useFormValidation = <T extends Record<string, any>>(
 
       case 'SET_WARNINGS': {
         const newWarnings = { ...state.warnings, [action.field]: action.warnings };
-        return { ...state.warnings, [action.field]: action.warnings };
+        return { ...state, warnings: newWarnings };
       }
 
       case 'SET_VALIDATING': {
@@ -118,7 +120,11 @@ const useFormValidation = <T extends Record<string, any>>(
   }, []);
 
   // Validate a single field
-  const validateField = useCallback(async (fieldName: string, value: any) => {
+  const validateFieldByName = useCallback(async (
+    fieldName: string,
+    value: any,
+    options: { immediate?: boolean } = {}
+  ) => {
     const fieldConfig = config.fields[fieldName];
     if (!fieldConfig?.validation) return;
 
@@ -127,13 +133,13 @@ const useFormValidation = <T extends Record<string, any>>(
       clearTimeout(debounceTimeouts.current[fieldName]);
     }
 
-    const debounceMs = fieldConfig.debounceMs || 300;
+    const debounceMs = options.immediate ? 0 : (fieldConfig.debounceMs ?? 300);
 
     const performValidation = async () => {
       dispatch({ type: 'SET_VALIDATING', field: fieldName, validating: true });
 
       try {
-        const { errors, warnings } = await validateField(value, fieldConfig.validation || []);
+        const { errors, warnings } = await runFieldValidation(value, fieldConfig.validation || []);
         
         dispatch({ type: 'SET_ERRORS', field: fieldName, errors });
         dispatch({ type: 'SET_WARNINGS', field: fieldName, warnings });
@@ -203,10 +209,11 @@ const useFormValidation = <T extends Record<string, any>>(
 
   // Handle field value change
   const handleChange = useCallback((fieldName: string, value: any) => {
+    valuesRef.current = { ...valuesRef.current, [fieldName]: value };
     dispatch({ type: 'SET_VALUE', field: fieldName, value });
     
     if (config.validateOnChange !== false) {
-      validateField(fieldName, value);
+      validateFieldByName(fieldName, value);
     }
 
     // Trigger async validation if value is valid and async validation exists
@@ -217,36 +224,43 @@ const useFormValidation = <T extends Record<string, any>>(
 
     // Call field change callback
     config.onFieldChange?.(fieldName as keyof T, value, formState);
-  }, [config, validateField, validateFieldAsync, formState]);
+  }, [config, validateFieldByName, validateFieldAsync, formState]);
 
   // Handle field blur
   const handleBlur = useCallback((fieldName: string) => {
     dispatch({ type: 'SET_TOUCHED', field: fieldName, touched: true });
     
     if (config.validateOnBlur !== false) {
-      const value = formState.values[fieldName];
-      validateField(fieldName, value);
+      const value = valuesRef.current[fieldName];
+      validateFieldByName(fieldName, value, { immediate: true });
     }
-  }, [config, validateField, formState.values]);
+  }, [config, validateFieldByName]);
 
   // Validate entire form
-  const validateForm = useCallback(async () => {
+  const validateForm = useCallback(async (): Promise<{ isValid: boolean; firstErrorField?: string }> => {
     let isValid = true;
-    
+    let firstErrorField: string | undefined;
+
     for (const fieldName of Object.keys(config.fields)) {
-      const value = formState.values[fieldName];
-      await validateField(fieldName, value);
-      
-      const fieldErrors = formState.errors[fieldName];
-      if (fieldErrors && fieldErrors.length > 0) {
-        isValid = false;
+      dispatch({ type: 'SET_TOUCHED', field: fieldName, touched: true });
+
+      const value = valuesRef.current[fieldName];
+      const fieldConfig = config.fields[fieldName];
+
+      if (fieldConfig?.validation) {
+        const { errors } = await runFieldValidation(value, fieldConfig.validation);
+        dispatch({ type: 'SET_ERRORS', field: fieldName, errors });
+
+        if (errors.length > 0) {
+          isValid = false;
+          firstErrorField ??= fieldName;
+        }
       }
     }
 
-    // Update overall form validity
     setFormState(prev => ({ ...prev, isValid }));
-    return isValid;
-  }, [config.fields, validateField, formState.errors]);
+    return { isValid, firstErrorField };
+  }, [config.fields]);
 
   // Handle form submission
   const handleSubmit = useCallback(async (event?: React.FormEvent) => {
@@ -254,11 +268,11 @@ const useFormValidation = <T extends Record<string, any>>(
     
     dispatch({ type: 'SET_SUBMITTING', submitting: true });
     
-    const isValid = await validateForm();
+    const { isValid, firstErrorField } = await validateForm();
     
     if (isValid) {
       try {
-        await config.onSubmit?.(formState.values);
+        await config.onSubmit?.(valuesRef.current);
         dispatch({ type: 'SET_SUBMITTED', submitted: true });
         
         if (config.resetOnSubmit) {
@@ -266,23 +280,14 @@ const useFormValidation = <T extends Record<string, any>>(
         }
       } catch (error) {
         console.error('Form submission error:', error);
-        // Handle submission error (could be added to form state)
       }
-    } else {
-      // Focus first error field if configured
-      if (config.focusFirstError) {
-        const firstErrorField = Object.keys(formState.errors).find(
-          field => formState.errors[field as keyof T]?.length > 0
-        );
-        if (firstErrorField) {
-          const element = document.querySelector(`[name="${firstErrorField}"]`) as HTMLElement;
-          element?.focus();
-        }
-      }
+    } else if (config.focusFirstError && firstErrorField) {
+      const element = document.querySelector(`[name="${firstErrorField}"]`) as HTMLElement;
+      element?.focus();
     }
     
     dispatch({ type: 'SET_SUBMITTING', submitting: false });
-  }, [config, validateForm, formState.errors]);
+  }, [config, validateForm]);
 
   // Reset form
   const resetForm = useCallback(() => {
@@ -305,8 +310,9 @@ const useFormValidation = <T extends Record<string, any>>(
 
   // Set multiple values at once
   const setValues = useCallback((values: Partial<T>) => {
-    dispatch({ type: 'SET_FORM_VALUES', values: { ...formState.values, ...values } });
-  }, [dispatch, formState.values]);
+    valuesRef.current = { ...valuesRef.current, ...values };
+    dispatch({ type: 'SET_FORM_VALUES', values: { ...valuesRef.current } });
+  }, [dispatch]);
 
   // Get field-specific state
   const getFieldState = useCallback((fieldName: string): FieldValidation => {

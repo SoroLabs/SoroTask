@@ -190,9 +190,9 @@ export function TaskPerformanceDashboard() {
   const [isMutating, startMutationTransition] = useTransition();
   const mediaMetricsRef = useRef(new Set<string>());
   const deferredQuery = useDeferredValue(query);
-  const pendingSearchRef = useRef<null | (() => PerformanceMetric | null)>(null);
-  const pendingOpenRef = useRef<null | (() => PerformanceMetric | null)>(null);
-  const pendingMutationRef = useRef<null | (() => PerformanceMetric | null)>(null);
+  const pendingSearchRef = useRef<null | ((metadata?: any, durationOverride?: number) => any | null)>(null);
+  const pendingOpenRef = useRef<null | ((metadata?: any, durationOverride?: number) => any | null)>(null);
+  const pendingMutationRef = useRef<null | ((metadata?: any, durationOverride?: number) => any | null)>(null);
 
   useEffect(() => {
     const finishRouteLoad = monitor.start("route_load", {

@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, FormEvent } from "react";
+import useFormValidation from "../utils/formValidation/useFormValidation";
+import { taskFormConfig, fieldLabels } from "../utils/formValidation/formConfigs";
+import FormField from "./form/FormField";
+import FormErrorSummary from "./form/FormErrorSummary";
 import { Button } from "./Button";
 
 export interface TaskFormValues {
@@ -16,91 +19,82 @@ interface TaskFormProps {
 }
 
 export function TaskForm({ onSubmit, loading = false }: TaskFormProps) {
-  const [values, setValues] = useState<TaskFormValues>({
-    targetAddress: "",
-    functionName: "",
-    intervalSeconds: 3600,
-    gasBalance: 10,
+  const {
+    handleChange,
+    handleBlur,
+    handleSubmit,
+    getFieldState,
+    hasErrors,
+    formState,
+  } = useFormValidation({
+    ...taskFormConfig,
+    onSubmit: async (values) => {
+      onSubmit?.(values as TaskFormValues);
+    },
   });
-
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    onSubmit?.(values);
-  }
-
-  const inputClass =
-    "w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm";
 
   return (
     <form
       onSubmit={handleSubmit}
       className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-6 space-y-4 shadow-xl"
     >
-      <div>
-        <label className="block text-sm font-medium text-neutral-400 mb-1">
-          Target Contract Address
-        </label>
-        <input
-          type="text"
-          placeholder="C..."
-          value={values.targetAddress}
-          onChange={(e) =>
-            setValues((v) => ({ ...v, targetAddress: e.target.value }))
-          }
-          className={inputClass}
+      {hasErrors() && (
+        <FormErrorSummary
+          errors={formState.errors}
+          fieldLabels={fieldLabels}
         />
-      </div>
+      )}
 
-      <div>
-        <label className="block text-sm font-medium text-neutral-400 mb-1">
-          Function Name
-        </label>
-        <input
-          type="text"
-          placeholder="harvest_yield"
-          value={values.functionName}
-          onChange={(e) =>
-            setValues((v) => ({ ...v, functionName: e.target.value }))
-          }
-          className={inputClass}
-        />
-      </div>
+      <FormField
+        name="targetAddress"
+        label="Target Contract Address"
+        required
+        placeholder="C..."
+        fieldState={getFieldState("targetAddress")}
+        onChange={(value) => handleChange("targetAddress", value)}
+        onBlur={() => handleBlur("targetAddress")}
+        helpText="Enter the Stellar contract address starting with 'C'"
+      />
+
+      <FormField
+        name="functionName"
+        label="Function Name"
+        required
+        placeholder="harvest_yield"
+        fieldState={getFieldState("functionName")}
+        onChange={(value) => handleChange("functionName", value)}
+        onBlur={() => handleBlur("functionName")}
+        helpText="Lowercase letters, numbers, and underscores only"
+      />
 
       <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-neutral-400 mb-1">
-            Interval (seconds)
-          </label>
-          <input
-            type="number"
-            placeholder="3600"
-            value={values.intervalSeconds}
-            onChange={(e) =>
-              setValues((v) => ({
-                ...v,
-                intervalSeconds: Number(e.target.value),
-              }))
-            }
-            className={inputClass}
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-neutral-400 mb-1">
-            Gas Balance (XLM)
-          </label>
-          <input
-            type="number"
-            placeholder="10"
-            value={values.gasBalance}
-            onChange={(e) =>
-              setValues((v) => ({
-                ...v,
-                gasBalance: Number(e.target.value),
-              }))
-            }
-            className={inputClass}
-          />
-        </div>
+        <FormField
+          name="intervalSeconds"
+          label="Interval (seconds)"
+          required
+          placeholder="3600"
+          type="number"
+          min={60}
+          fieldState={getFieldState("intervalSeconds")}
+          onChange={(value) => handleChange("intervalSeconds", value)}
+          onBlur={() => handleBlur("intervalSeconds")}
+          helpText="Minimum 60 seconds"
+        />
+
+        <FormField
+          name="gasBalance"
+          label="Gas Balance (XLM)"
+          required
+          placeholder="10"
+          type="number"
+          min={0.1}
+          max={10000}
+          step="0.1"
+          fieldState={getFieldState("gasBalance")}
+          onChange={(value) => handleChange("gasBalance", value)}
+          onBlur={() => handleBlur("gasBalance")}
+          helpText="Between 0.1 and 10000 XLM"
+        />
       </div>
 
       <Button type="submit" fullWidth loading={loading} className="mt-2 py-3">

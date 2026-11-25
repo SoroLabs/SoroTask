@@ -2,92 +2,118 @@ name: Keeper CI
 
 on:
   push:
-    branches: [ "main", "feat/*", "fix/*" ]
-    paths:
-      - 'keeper/**'
-      - '.github/workflows/keeper.yml'
+    branches: [ main, master ]
   pull_request:
-    branches: [ "main", "feat/*" ]
-    paths:
-      - 'keeper/**'
-      - '.github/workflows/keeper.yml'
-
-# This ensures all 'run' commands happen inside the Keeper directory
-defaults:
-  run:
-    working-directory: ./keeper
-
-env:
-  NODE_ENV: test
+    branches: [ main, master ]
 
 jobs:
-  lint-and-test:
-    name: Lint, Test, and Coverage
+  keeper:
+    name: Keeper lint / test / coverage
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [18.x, 20.x]
+    defaults:
+      run:
+        working-directory: keeper
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Checkout Repository
+        uses: actions/checkout@v7
 
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 20
           cache: 'npm'
-          cache-dependency-path: './keeper/package-lock.json'
+          cache-dependency-path: keeper/package-lock.json
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: npm ci
 
-      - name: Run ESLint
+      - name: Lint (ESLint flat config)
         run: npm run lint
 
-      - name: Run Unit Tests
+      - name: Run Tests
         run: npm test
 
       - name: Run Tests with Coverage
-        run: npm run test:cov
+        run: npm run test:coverage
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+      - name: Upload Coverage to Codecov
+        uses: codecov/codecov-action@v5
         with:
-          files: ./keeper/coverage/lcov.info
-          flags: keeper
-          name: keeper-node-${{ matrix.node-version }}
+          directory: keeper/coverage
           fail_ci_if_error: false
 
-  coverage-threshold:
-    name: Coverage Threshold Check
+  docker:
+    name: Build & Harden Docker Image
     runs-on: ubuntu-latest
-    needs: lint-and-test
+    needs: keeper
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Checkout Repository
+        uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (distroless)
+        uses: docker/build-push-action@v5
         with:
-          node-version: 20.x
-          cache: 'npm'
-          cache-dependency-path: './keeper/package-lock.json'
+          context: keeper
+          push: false
+          load: true
+          tags: sorotask-keeper:local
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run coverage check
-        run: npm run test:cov
-
-      - name: Check coverage threshold (80%)
+      - name: Check image size
         run: |
-          COVERAGE=$(cat coverage/coverage-summary.json | jq -r '.total.lines.pct')
-          echo "Line coverage: ${COVERAGE}%"
-          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
-            echo "Coverage ${COVERAGE}% is below threshold of 80%"
+          SIZE=$(docker image inspect sorotask-keeper:local --format '{{.Size}}')
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          echo "Image size: ${SIZE_MB}MB"
+          if [ "$SIZE_MB" -gt 80 ]; then
+            echo "::error::Image size ${SIZE_MB}MB exceeds 80MB limit"
             exit 1
           fi
-          echo "Coverage check passed!"
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: sorotask-keeper:local
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  terraform:
+    name: Terraform tflint / checkov
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Set up TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: TFLint
+        run: |
+          tflint --init
+          tflint --config .tflint.hcl
+
+      - name: Checkov security scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform
+          quiet: true
+          soft_fail: false

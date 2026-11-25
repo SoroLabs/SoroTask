@@ -1,0 +1,197 @@
+openapi: 3.0.3
+info:
+  title: SoroTask ZK-Proof Service API
+  version: 1.0.0
+paths:
+  /generate-proof:
+    post:
+      operationId: generateProof
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateProofRequest'
+      responses:
+        '200': { description: Proof generated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { description: Constraint unsatisfied }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /verify-proof:
+    post:
+      operationId: verifyProof
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyProofRequest'
+      responses:
+        '200': { description: Verification completed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /generate-proof/plonk:
+    post:
+      operationId: generateProofPlonk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200': { description: PLONK proof generated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /verify-proof/plonk:
+    post:
+      operationId: verifyProofPlonk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200': { description: PLONK proof verified }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /proofs/async:
+    post:
+      operationId: createAsyncProofJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AsyncProofRequest'
+      responses:
+        '202':
+          description: Proof job queued. Poll or stream for progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsyncProofJob'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { description: Constraint unsatisfied }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /proofs/{job_id}/stream:
+    get:
+      operationId: streamAsyncProofJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: The job_id returned by POST /proofs/async
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Server-Sent Events (SSE) stream with status, progress and final proof payload
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '404': { description: Job not found }
+  /health:
+    get:
+      operationId: health
+      responses:
+        '200': { description: Healthy }
+        '503': { description: Unavailable }
+  /metrics:
+    get:
+      operationId: metrics
+      responses:
+        '200': { description: Prometheus metrics }
+components:
+  schemas:
+    GenerateProofRequest:
+      type: object
+      additionalProperties: false
+      required: [taskId, circuitId, taskCondition, clientData]
+      properties:
+        requestId: { type: string, format: uuid }
+        keeperId: { type: string, minLength: 1 }
+        taskId: { type: integer, format: int64, minimum: 1 }
+        circuitId: { type: string, minLength: 1 }
+        taskCondition: { $ref: '#/components/schemas/TaskCondition' }
+        clientData: { $ref: '#/components/schemas/ClientData' }
+        verifierAddress: { type: string, minLength: 1 }
+    VerifyProofRequest:
+      type: object
+      additionalProperties: false
+      required: [taskId, circuitId, taskCondition, proof]
+      properties:
+        requestId: { type: string, format: uuid }
+        keeperId: { type: string, minLength: 1 }
+        taskId: { type: integer, format: int64, minimum: 1 }
+        circuitId: { type: string, minLength: 1 }
+        taskCondition: { $ref: '#/components/schemas/TaskCondition' }
+        conditionHash: { type: string, minLength: 1 }
+        verifierAddress: { type: string, minLength: 1 }
+        proof: { $ref: '#/components/schemas/ZkProof' }
+    TaskCondition:
+      type: object
+      additionalProperties: false
+      required: [type, params]
+      properties:
+        type: { type: string, minLength: 1 }
+        params: { type: object, additionalProperties: true }
+    ClientData:
+      type: object
+      additionalProperties: false
+      required: [witness]
+      properties:
+        witness: { type: object, minProperties: 1, additionalProperties: true }
+        salt: { type: string }
+    ZkProof:
+      type: object
+      additionalProperties: false
+      required: [proofId, pi_a, pi_b, pi_c, publicSignals]
+      properties:
+        proofId: { type: string, format: uuid }
+        pi_a: { type: array, minItems: 2, maxItems: 2, items: { type: string, minLength: 1 } }
+        pi_b: { type: array, minItems: 2, maxItems: 2, items: { type: array, minItems: 2, maxItems: 2, items: { type: string, minLength: 1 } } }
+        pi_c: { type: array, minItems: 2, maxItems: 2, items: { type: string, minLength: 1 } }
+        publicSignals: { type: array, items: { type: string, minLength: 1 } }
+    AsyncProofRequest:
+      type: object
+      additionalProperties: false
+      required: [taskCondition, clientData]
+      properties:
+        requestId: { type: string, format: uuid }
+        taskId: { type: integer, format: int64, minimum: 1 }
+        circuitId: { type: string, minLength: 1 }
+        circuitVersion: { type: string }
+        taskCondition: { $ref: '#/components/schemas/TaskCondition' }
+        clientData: { $ref: '#/components/schemas/ClientData' }
+    AsyncProofJob:
+      type: object
+      required: [jobId, status, taskId, createdAt]
+      properties:
+        jobId: { type: string, format: uuid }
+        status: { type: string, enum: [queued, processing, completed, failed] }
+        taskId: { type: integer }
+        createdAt: { type: string, format: date-time }
+        pollUrl: { type: string }
+    ProblemDetails:
+      type: object
+      required: [type, title, status, detail]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        errors: { type: array, items: { type: object, additionalProperties: true } }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    Unauthorized:
+      description: Unauthorized
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    ServiceUnavailable:
+      description: Service unavailable
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }

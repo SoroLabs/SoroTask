@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { HistoryEvent, FieldChange } from '../../types';
-import { useHistory } from '../../context/history/HistoryContext';
+import { HistoryEvent, FieldChange } from '../types';
+import { useHistory } from '../context/history/HistoryContext';
 import { RelativeTimeDisplay } from './RelativeTimeDisplay';
 
 interface TaskHistoryProps {

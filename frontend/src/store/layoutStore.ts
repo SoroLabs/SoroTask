@@ -66,7 +66,7 @@ export const useLayoutStore = create<LayoutStore>()(
       },
 
       saveBoardScrollPosition(columnId: string, position: number) {
-        set((state: LayoutState) => ({
+        set((state) => ({
           boardScrollPositions: {
             ...state.boardScrollPositions,
             [columnId]: position,
@@ -80,7 +80,7 @@ export const useLayoutStore = create<LayoutStore>()(
     }),
     {
       name: "sorotask-layout-storage",
-      partialize: (state: LayoutState) => ({
+      partialize: (state) => ({
         // Only persist the pane width, not the selected task or scroll positions
         detailPaneWidth: state.detailPaneWidth,
       }),

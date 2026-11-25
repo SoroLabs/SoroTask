@@ -1,5 +1,5 @@
 import { renderHook, act } from '@testing-library/react';
-import { MentionsProvider, useMentions } from '../context/mentions/MentionsContext';
+import { MentionsProvider, useMentions } from '../MentionsContext';
 
 describe('MentionsContext', () => {
   it('provides triggers and search function', () => {

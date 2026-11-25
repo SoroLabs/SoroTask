@@ -24,9 +24,12 @@ class CircuitBreaker {
   }
 
   async execute(fn) {
+    let recoveredFromOpen = false;
+
     if (this.state === State.OPEN) {
       if (Date.now() - this.lastFailureTime > this.recoveryTimeoutMs) {
         this.transitionTo(State.HALF_OPEN);
+        recoveredFromOpen = true;
       } else {
         this.logger.warn('Circuit is OPEN, rejecting request', { name: this.name });
         if (this.metrics) {
@@ -38,7 +41,7 @@ class CircuitBreaker {
 
     try {
       const result = await fn();
-      this.onSuccess();
+      this.onSuccess({ recoveredFromOpen });
       return result;
     } catch (error) {
       this.onFailure(error);
@@ -46,10 +49,14 @@ class CircuitBreaker {
     }
   }
 
-  onSuccess() {
+  onSuccess(options = {}) {
     this.failureCount = 0;
     if (this.state === State.HALF_OPEN) {
       this.successCount++;
+      if (options.recoveredFromOpen) {
+        return;
+      }
+
       if (this.successCount >= this.halfOpenMaxRequests) {
         this.transitionTo(State.CLOSED);
       }

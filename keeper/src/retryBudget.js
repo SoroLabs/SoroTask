@@ -135,7 +135,7 @@ class RetryBudget {
   cleanupExpired() {
     const now = Date.now();
 
-    const beforeGlobal = this.globalConsumption.length;
+    const _beforeGlobal = this.globalConsumption.length;
     this.globalConsumption = this.globalConsumption.filter(
       (entry) => now - entry.timestamp < this.config.globalBudgetWindowMs
     );
@@ -278,10 +278,10 @@ class RetryBudget {
     this.save();
   }
 
-  releaseRetry(taskId = null) {
+  releaseRetry(_taskId = null) {
   }
 
-  recordBudgetExhaustion(scope = 'global') {
+  recordBudgetExhaustion(_scope = 'global') {
     this.totalExhaustedEvents++;
     this.save();
   }

@@ -1,5 +1,5 @@
-const { EventEmitter } = require('events');
-const { WebhookTriggerHandler, readRawBody } = require('../src/webhookTrigger');
+const { URL } = require('url');
+const { WebhookTriggerHandler } = require('../src/webhookTrigger');
 const { InMemoryReplayStore } = require('../src/webhookAuth');
 const { createLogger } = require('../src/logger');
 
@@ -122,7 +122,7 @@ describe('WebhookTriggerHandler', () => {
         }
       });
 
-      const errorHandler = jest.fn();
+      const _errorHandler = jest.fn();
       mockReq.destroy = jest.fn();
       
       // Set smaller max body bytes
@@ -702,6 +702,144 @@ describe('WebhookTriggerHandler', () => {
 
       // Verify that the handler tracked the keyId for logging
       expect(mockRes.writeHead).toHaveBeenCalledWith(401, expect.any(Object));
+    });
+  });
+
+  describe('path resolution', () => {
+    it('uses configured path as default', () => {
+      const handler = new WebhookTriggerHandler({
+        authProtocol: mockAuthProtocol,
+        enqueueTask: mockEnqueueTask,
+        path: '/webhook/trigger',
+      });
+      expect(handler.path).toBe('/webhook/trigger');
+    });
+
+    it('resolves path from request URL', async () => {
+      const body = JSON.stringify({
+        type: 'task.execute',
+        eventId: 'evt-456',
+        taskId: 789,
+      });
+
+      mockReq.url = '/webhook/trigger';
+      mockReq.on.mockImplementation((event, callback) => {
+        if (event === 'data') callback(body);
+        else if (event === 'end') callback();
+      });
+
+      await handler.handle(mockReq, mockRes);
+
+      expect(mockAuthProtocol.verify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: '/webhook/trigger',
+        })
+      );
+    });
+
+    it('handles legacy /webhooks/task-executions path', async () => {
+      const body = JSON.stringify({
+        type: 'task.execute',
+        eventId: 'evt-789',
+        taskId: 321,
+      });
+
+      mockReq.url = '/webhooks/task-executions';
+      mockReq.on.mockImplementation((event, callback) => {
+        if (event === 'data') callback(body);
+        else if (event === 'end') callback();
+      });
+
+      await handler.handle(mockReq, mockRes);
+
+      expect(mockAuthProtocol.verify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: '/webhooks/task-executions',
+        })
+      );
+      expect(mockEnqueueTask).toHaveBeenCalledWith(321, expect.any(Object));
+    });
+
+    it('falls back to configured path when URL parsing fails', () => {
+      const handler = new WebhookTriggerHandler({
+        authProtocol: mockAuthProtocol,
+        enqueueTask: mockEnqueueTask,
+        path: '/webhook/trigger',
+      });
+      const req = { url: null };
+      const resolved = handler._resolvePath(req);
+      expect(resolved).toBe('/webhook/trigger');
+    });
+  });
+
+  describe('cross-cutting auth scenarios', () => {
+    it('rejects request with missing auth headers', async () => {
+      const body = '{"type":"task.execute","eventId":"evt-1","taskId":123}';
+      mockReq.on.mockImplementation((event, callback) => {
+        if (event === 'data') callback(body);
+        else if (event === 'end') callback();
+      });
+      mockAuthProtocol.verify.mockReturnValue({
+        ok: false,
+        status: 401,
+        reason: 'missing_auth_headers',
+      });
+
+      await handler.handle(mockReq, mockRes);
+      expect(mockRes.writeHead).toHaveBeenCalledWith(401, expect.any(Object));
+      const response = JSON.parse(mockRes.end.mock.calls[0][0]);
+      expect(response.error).toBe('missing_auth_headers');
+    });
+
+    it('rejects request with expired timestamp', async () => {
+      const body = '{"type":"task.execute","eventId":"evt-1","taskId":123}';
+      mockReq.on.mockImplementation((event, callback) => {
+        if (event === 'data') callback(body);
+        else if (event === 'end') callback();
+      });
+      mockAuthProtocol.verify.mockReturnValue({
+        ok: false,
+        status: 401,
+        reason: 'timestamp_out_of_window',
+      });
+
+      await handler.handle(mockReq, mockRes);
+      expect(mockRes.writeHead).toHaveBeenCalledWith(401, expect.any(Object));
+    });
+
+    it('rejects request with unknown key ID', async () => {
+      const body = '{"type":"task.execute","eventId":"evt-1","taskId":123}';
+      mockReq.on.mockImplementation((event, callback) => {
+        if (event === 'data') callback(body);
+        else if (event === 'end') callback();
+      });
+      mockAuthProtocol.verify.mockReturnValue({
+        ok: false,
+        status: 401,
+        reason: 'unknown_key_id',
+        keyId: 'unknown-key',
+      });
+
+      await handler.handle(mockReq, mockRes);
+      expect(mockRes.writeHead).toHaveBeenCalledWith(401, expect.any(Object));
+    });
+
+    it('includes keyId in structured error response', async () => {
+      const body = '{"type":"task.execute","eventId":"evt-1","taskId":123}';
+      mockReq.on.mockImplementation((event, callback) => {
+        if (event === 'data') callback(body);
+        else if (event === 'end') callback();
+      });
+      mockAuthProtocol.verify.mockReturnValue({
+        ok: false,
+        status: 401,
+        reason: 'signature_mismatch',
+        keyId: 'primary',
+      });
+
+      await handler.handle(mockReq, mockRes);
+      const response = JSON.parse(mockRes.end.mock.calls[0][0]);
+      expect(response.keyId).toBe('primary');
     });
   });
 });

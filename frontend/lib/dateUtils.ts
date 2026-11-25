@@ -242,5 +242,18 @@ export function getMonthCalendarGrid(year: number, month: number): Date[][] {
     calendarGrid.push(week);
   }
 
+  // Ensure standard 6-week grid (42 days)
+  while (calendarGrid.length < 6) {
+    const lastWeek = calendarGrid[calendarGrid.length - 1];
+    const lastDate = lastWeek[lastWeek.length - 1];
+    const nextWeek: Date[] = [];
+    for (let i = 1; i <= 7; i++) {
+      const nextDate = new Date(lastDate);
+      nextDate.setDate(lastDate.getDate() + i);
+      nextWeek.push(nextDate);
+    }
+    calendarGrid.push(nextWeek);
+  }
+
   return calendarGrid;
 }

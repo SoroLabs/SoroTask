@@ -19,8 +19,28 @@ This module implements a backend worker pool dedicated to generating ZK proofs f
 - [x] Security review completed (boundary isolated, inputs validated).
 - [x] Comprehensive documentation written.
 
+## API Specification
+
+The keeper ↔ zk-proof-service contract is defined in [`openapi.yaml`](./openapi.yaml).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/generate-proof` | Generate a Groth16 proof from task condition + client witness |
+| `POST` | `/verify-proof` | Off-chain proof verification before on-chain submission |
+| `GET` | `/health` | Worker pool readiness |
+
+Start the HTTP server:
+
+```bash
+ZK_PROOF_API_TOKEN=your-keeper-token npm start
+```
+
+Default port: `3100` (override with `PORT`).
+
 ## How to Integrate
-This module is currently standalone. When ready to merge into the core SoroTask platform, it can be instantiated inside the backend service controller like so:
+This module can be used as a library or as a standalone HTTP service.
+
+**Library usage** (inside another Node service):
 
 ```javascript
 const { ZKProofService } = require('./zk-proof-service');
@@ -28,13 +48,14 @@ const { ZKProofService } = require('./zk-proof-service');
 const zkService = new ZKProofService(4); // 4 workers
 zkService.initialize();
 
-// Usage in an Express route or RPC handler:
-app.post('/api/proofs/generate', async (req, res) => {
-  try {
-    const proof = await zkService.generateProof(req.body.taskCondition, req.body.clientData);
-    res.json(proof);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+const proof = await zkService.generateProof(taskCondition, clientData);
+```
+
+**HTTP usage** (keeper calls the standalone service):
+
+```bash
+curl -X POST http://localhost:3100/generate-proof \
+  -H "Authorization: Bearer $ZK_PROOF_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"taskId":42,"circuitId":"liquidity-threshold-v1","taskCondition":{"type":"liquidity-threshold","params":{"minLiquidity":10000}},"clientData":{"witness":{"actualLiquidity":25000}}}'
 ```

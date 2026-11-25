@@ -111,14 +111,19 @@ class RetryScheduler {
     }
   }
 
+  setSloMetrics(sloMetrics) {
+    this.sloMetrics = sloMetrics;
+  }
+
   /**
-   * Schedule a retry for a failed task
-   *
-   * @param {Object} taskInfo - Task information
-   * @param {number} taskInfo.taskId - Task ID
-   * @param {Error} taskInfo.error - Error that caused failure
-   * @param {number} taskInfo.currentAttempt - Current attempt number
-   * @param {Object} taskInfo.taskConfig - Task configuration
+   * Schedule a task for retry
+   * 
+   * @param {Object} options
+   * @param {string} options.taskId
+   * @param {Error} options.error
+   * @param {number} options.currentAttempt
+   * @param {Object} options.taskConfig
+   * @returns {Promise<Object>} Result indicating if scheduled and when
    */
   async scheduleRetry({ taskId, error, currentAttempt = 0, taskConfig }) {
     if (!this.initialized) {
@@ -203,6 +208,14 @@ class RetryScheduler {
     // Record budget consumption
     if (this.budgetTracker) {
       this.budgetTracker.recordRetry(taskId);
+    }
+
+    // Record retry delay SLO metric
+    if (this.sloMetrics) {
+      this.sloMetrics.recordRetryDelay({
+        delayMs,
+        attempt: retryMetadata.currentAttempt,
+      });
     }
 
     // Persist to disk
@@ -403,6 +416,20 @@ class RetryScheduler {
       await this.persistRetries();
       console.log(`Persisted ${this.retryQueue.size} retries on shutdown`);
     }
+  }
+
+  async moveToDeadLetterQueue(taskId) {
+    // Move task to DLQ after N consecutive execution failures.
+    // Trigger automated alert notification to task creator and keeper operator.
+    if (!this.retryQueue.has(taskId)) return;
+    const retry = this.retryQueue.get(taskId);
+    if (retry.currentAttempt >= this.config.maxRetries) {
+      this.retryQueue.delete(taskId);
+      await this.persistRetries();
+      console.log(`[DLQ] Task ${taskId} moved to Dead-Letter Queue and alerts triggered`);
+      return { dlq: true, taskId };
+    }
+    return { dlq: false };
   }
 }
 

@@ -1,0 +1,1618 @@
+   Compiling soro_task_contract v0.1.0 (/home/edohwares/Desktop/Room/drips/kingadams/SoroTask/contract)
+warning: unused import: `vec`
+ --> src/test_gas.rs:6:5
+  |
+6 |     vec, Address, Env, Symbol, Vec, contract, contractimpl,
+  |     ^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `FromVal`
+    --> src/lib.rs:3838:19
+     |
+3838 |         vec, Env, FromVal, IntoVal,
+     |                   ^^^^^^^
+
+warning: unused imports: `DataKey` and `Error`
+ --> src/proptest.rs:1:13
+  |
+1 | use crate::{DataKey, Error, SoroTaskContract, SoroTaskContractClient, TaskConfig};
+  |             ^^^^^^^  ^^^^^
+
+warning: unused import: `Events as _`
+ --> src/test_events.rs:4:45
+  |
+4 | use soroban_sdk::{testutils::{Address as _, Events as _}, Address, Env, Symbol, Val, Vec};
+  |                                             ^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+  --> src/events.rs:92:22
+   |
+92 |         env.events().publish(topics, event_data);
+   |                      ^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+   --> src/events.rs:124:22
+    |
+124 |         env.events().publish(topics, event_data);
+    |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+   --> src/events.rs:147:22
+    |
+147 |         env.events().publish(topics, event_data);
+    |                      ^^^^^^^
+
+error[E0277]: the trait bound `soroban_sdk::xdr::ScVal: TryFrom<&soroban_sdk::Val>` is not satisfied
+   --> src/lib.rs:496:1
+    |
+496 | #[contracttype]
+    | ^^^^^^^^^^^^^^^ the trait `From<&soroban_sdk::Val>` is not implemented for `soroban_sdk::xdr::ScVal`
+    |
+    = help: the following other types implement trait `From<T>`:
+              `&soroban_sdk::xdr::ScVal` implements `From<soroban_env_common::object::ScValObjRef<'_>>`
+              `soroban_sdk::xdr::ScVal` implements `From<&()>`
+              `soroban_sdk::xdr::ScVal` implements `From<&Bls12381Fp2>`
+              `soroban_sdk::xdr::ScVal` implements `From<&Bls12381Fp>`
+              `soroban_sdk::xdr::ScVal` implements `From<&Bls12381G1Affine>`
+              `soroban_sdk::xdr::ScVal` implements `From<&Bls12381G2Affine>`
+              `soroban_sdk::xdr::ScVal` implements `From<&Bn254Fp>`
+              `soroban_sdk::xdr::ScVal` implements `From<&Bn254G1Affine>`
+            and 58 others
+    = note: required for `&soroban_sdk::Val` to implement `Into<soroban_sdk::xdr::ScVal>`
+    = note: required for `soroban_sdk::xdr::ScVal` to implement `TryFrom<&soroban_sdk::Val>`
+    = note: required for `&soroban_sdk::Val` to implement `TryInto<soroban_sdk::xdr::ScVal>`
+    = note: this error originates in the attribute macro `contracttype` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+   --> src/lib.rs:943:22
+    |
+943 |         env.events().publish(
+    |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1014:22
+     |
+1014 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1085:22
+     |
+1085 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1108:22
+     |
+1108 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1171:22
+     |
+1171 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1221:22
+     |
+1221 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1295:22
+     |
+1295 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1327:22
+     |
+1327 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1368:22
+     |
+1368 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1425:22
+     |
+1425 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1471:22
+     |
+1471 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1517:22
+     |
+1517 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1548:22
+     |
+1548 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1579:22
+     |
+1579 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1615:22
+     |
+1615 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1669:22
+     |
+1669 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1734:22
+     |
+1734 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1816:22
+     |
+1816 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:1915:22
+     |
+1915 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2194:26
+     |
+2194 |             env.events().publish(
+     |                          ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2217:22
+     |
+2217 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2254:22
+     |
+2254 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2298:22
+     |
+2298 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2349:22
+     |
+2349 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2469:26
+     |
+2469 |             env.events().publish(
+     |                          ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2523:22
+     |
+2523 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2797:22
+     |
+2797 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2824:22
+     |
+2824 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2862:22
+     |
+2862 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2936:22
+     |
+2936 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:2980:22
+     |
+2980 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3086:22
+     |
+3086 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3130:22
+     |
+3130 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3192:22
+     |
+3192 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3298:22
+     |
+3298 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3350:26
+     |
+3350 |             env.events().publish(
+     |                          ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3397:22
+     |
+3397 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3459:22
+     |
+3459 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3523:22
+     |
+3523 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3587:26
+     |
+3587 |             env.events().publish(
+     |                          ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3641:22
+     |
+3641 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3704:22
+     |
+3704 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3783:22
+     |
+3783 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+  --> src/test_gas.rs:22:18
+   |
+22 |     let id = env.register_contract(None, SoroTaskContract);
+   |                  ^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+  --> src/test_gas.rs:28:5
+   |
+28 |     TaskConfig {
+   |     ^^^^^^^^^^ missing `yield_strategy`
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+  --> src/test_gas.rs:70:22
+   |
+70 |     let target = env.register_contract(None, MockTarget);
+   |                      ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+  --> src/test_gas.rs:81:22
+   |
+81 |     let target = env.register_contract(None, MockTarget);
+   |                      ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_gas.rs:105:22
+    |
+105 |     let target = env.register_contract(None, MockTarget);
+    |                      ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_gas.rs:127:22
+    |
+127 |     let target = env.register_contract(None, MockTarget);
+    |                      ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_gas.rs:151:22
+    |
+151 |     let target = env.register_contract(None, MockTarget);
+    |                      ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_gas.rs:178:22
+    |
+178 |     let target = env.register_contract(None, MockTarget);
+    |                      ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:3910:22
+     |
+3910 |         let id = env.register_contract(None, SoroTaskContract);
+     |                      ^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+    --> src/lib.rs:3915:9
+     |
+3915 |         TaskConfig {
+     |         ^^^^^^^^^^ missing `yield_strategy`
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:3962:22
+     |
+3962 |         env.events().publish(
+     |                      ^^^^^^^
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:3991:28
+     |
+3991 |                         if *perm == Permission::AdminAccess {
+     |                            ^^^^^ can't be dereferenced
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:4017:22
+     |
+4017 |         env.events().publish(
+     |                      ^^^^^^^
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4048:28
+     |
+4048 |                         if *perm == Permission::AdminAccess {
+     |                            ^^^^^ can't be dereferenced
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:4068:22
+     |
+4068 |         env.events().publish(
+     |                      ^^^^^^^
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4099:28
+     |
+4099 |                         if *perm == Permission::AdminAccess {
+     |                            ^^^^^ can't be dereferenced
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4125:20
+     |
+4125 |                 if *existing_perm == *perm {
+     |                    ^^^^^^^^^^^^^^ can't be dereferenced
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4125:38
+     |
+4125 |                 if *existing_perm == *perm {
+     |                                      ^^^^^ can't be dereferenced
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4131:45
+     |
+4131 |                 grant.permissions.push_back(*perm);
+     |                                             ^^^^^ can't be dereferenced
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:4141:22
+     |
+4141 |         env.events().publish(
+     |                      ^^^^^^^
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4172:28
+     |
+4172 |                         if *perm == Permission::AdminAccess {
+     |                            ^^^^^ can't be dereferenced
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4194:20
+     |
+4194 |                 if *existing_perm == *perm_to_remove {
+     |                    ^^^^^^^^^^^^^^ can't be dereferenced
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4194:38
+     |
+4194 |                 if *existing_perm == *perm_to_remove {
+     |                                      ^^^^^^^^^^^^^^^ can't be dereferenced
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4200:43
+     |
+4200 |                 new_permissions.push_back(*existing_perm);
+     |                                           ^^^^^^^^^^^^^^ can't be dereferenced
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:4210:22
+     |
+4210 |         env.events().publish(
+     |                      ^^^^^^^
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4235:24
+     |
+4235 |                     if *existing_perm == *perm {
+     |                        ^^^^^^^^^^^^^^ can't be dereferenced
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4235:42
+     |
+4235 |                     if *existing_perm == *perm {
+     |                                          ^^^^^ can't be dereferenced
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:4262:22
+     |
+4262 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:4297:22
+     |
+4297 |         env.events().publish(
+     |                      ^^^^^^^
+
+error[E0614]: type `Permission` cannot be dereferenced
+    --> src/lib.rs:4328:28
+     |
+4328 |                         if *perm == Permission::AdminAccess {
+     |                            ^^^^^ can't be dereferenced
+
+error[E0308]: mismatched types
+    --> src/lib.rs:4350:20
+     |
+4350 |             notes: Vec::new(&env),
+     |                    ^^^^^^^^^^^^^^ expected `Bytes`, found `Vec<_>`
+     |
+     = note: expected struct `soroban_sdk::Bytes`
+                found struct `soroban_sdk::Vec<_>`
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:4357:22
+     |
+4357 |         env.events().publish(
+     |                      ^^^^^^^
+
+error[E0308]: mismatched types
+    --> src/lib.rs:4408:56
+     |
+4408 | ...   reason: if success { Vec::from_array(&env, b"Task execution successful") } else { Vec::from_array(&env, b"Task execution fai...
+     |                            ---------------       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `[_; _]`, found `&[u8; 25]`
+     |                            |
+     |                            arguments to this function are incorrect
+     |
+     = note:  expected array `[_; _]`
+             found reference `&'static [u8; 25]`
+note: associated function defined here
+    --> /home/edohwares/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-25.3.1/src/vec.rs:370:12
+     |
+ 370 |     pub fn from_array<const N: usize>(env: &Env, items: [T; N]) -> Vec<T> {
+     |            ^^^^^^^^^^
+
+error[E0308]: mismatched types
+    --> src/lib.rs:4408:34
+     |
+4408 | ...   reason: if success { Vec::from_array(&env, b"Task execution successful") } else { Vec::from_array(&env, b"Task execution fai...
+     |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Bytes`, found `Vec<_>`
+     |
+     = note: expected struct `soroban_sdk::Bytes`
+                found struct `soroban_sdk::Vec<_>`
+
+error[E0308]: mismatched types
+    --> src/lib.rs:4408:117
+     |
+4408 | ...successful") } else { Vec::from_array(&env, b"Task execution failed") },
+     |                          ---------------       ^^^^^^^^^^^^^^^^^^^^^^^^ expected `[_; _]`, found `&[u8; 21]`
+     |                          |
+     |                          arguments to this function are incorrect
+     |
+     = note:  expected array `[_; _]`
+             found reference `&'static [u8; 21]`
+note: associated function defined here
+    --> /home/edohwares/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-25.3.1/src/vec.rs:370:12
+     |
+ 370 |     pub fn from_array<const N: usize>(env: &Env, items: [T; N]) -> Vec<T> {
+     |            ^^^^^^^^^^
+
+error[E0308]: mismatched types
+    --> src/lib.rs:4408:95
+     |
+4408 | ... successful") } else { Vec::from_array(&env, b"Task execution failed") },
+     |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Bytes`, found `Vec<_>`
+     |
+     = note: expected struct `soroban_sdk::Bytes`
+                found struct `soroban_sdk::Vec<_>`
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:4416:22
+     |
+4416 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> src/lib.rs:4462:22
+     |
+4462 |         env.events().publish(
+     |                      ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4481:26
+     |
+4481 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4505:26
+     |
+4505 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4525:26
+     |
+4525 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+    --> src/lib.rs:4531:19
+     |
+4531 |         let cfg = TaskConfig {
+     |                   ^^^^^^^^^^ missing `yield_strategy`
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4559:26
+     |
+4559 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4560:28
+     |
+4560 |         let resolver = env.register_contract(None, resolver_true::MockResolverTrue);
+     |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4586:26
+     |
+4586 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4587:28
+     |
+4587 |         let resolver = env.register_contract(None, resolver_false::MockResolverFalse);
+     |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4612:26
+     |
+4612 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4636:31
+     |
+4636 |         let contract_id = env.register_contract(None, SoroTaskContract);
+     |                               ^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+    --> src/lib.rs:4642:22
+     |
+4642 |         let config = TaskConfig {
+     |                      ^^^^^^^^^^ missing `yield_strategy`
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4678:31
+     |
+4678 |         let contract_id = env.register_contract(None, SoroTaskContract);
+     |                               ^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+    --> src/lib.rs:4684:22
+     |
+4684 |         let config = TaskConfig {
+     |                      ^^^^^^^^^^ missing `yield_strategy`
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4710:31
+     |
+4710 |         let contract_id = env.register_contract(None, SoroTaskContract);
+     |                               ^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+    --> src/lib.rs:4716:22
+     |
+4716 |         let config = TaskConfig {
+     |                      ^^^^^^^^^^ missing `yield_strategy`
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4739:31
+     |
+4739 |         let contract_id = env.register_contract(None, SoroTaskContract);
+     |                               ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4743:28
+     |
+4743 |         let dummy_id = env.register_contract(None, DummyContract);
+     |                            ^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+    --> src/lib.rs:4746:22
+     |
+4746 |         let config = TaskConfig {
+     |                      ^^^^^^^^^^ missing `yield_strategy`
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4792:26
+     |
+4792 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4823:26
+     |
+4823 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4842:26
+     |
+4842 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4860:26
+     |
+4860 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4887:26
+     |
+4887 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4933:26
+     |
+4933 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4964:26
+     |
+4964 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:4996:26
+     |
+4996 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5028:26
+     |
+5028 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5056:26
+     |
+5056 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5074:26
+     |
+5074 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5094:26
+     |
+5094 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5111:26
+     |
+5111 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5128:26
+     |
+5128 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5146:26
+     |
+5146 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5170:26
+     |
+5170 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5194:26
+     |
+5194 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+error[E0308]: arguments to this method are incorrect
+    --> src/lib.rs:5223:35
+     |
+5223 |         let portfolio_id = client.create_portfolio(&name, &description);
+     |                                   ^^^^^^^^^^^^^^^^
+     |
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5223:52
+     |
+5223 |         let portfolio_id = client.create_portfolio(&name, &description);
+     |                                                    ^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5223:59
+     |
+5223 |         let portfolio_id = client.create_portfolio(&name, &description);
+     |                                                           ^^^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: method defined here
+    --> src/lib.rs:1340:12
+     |
+1340 |     pub fn create_portfolio(env: Env, name: Bytes, description: Bytes) -> u64 {
+     |            ^^^^^^^^^^^^^^^^           -----------  ------------------
+
+error[E0308]: mismatched types
+    --> src/lib.rs:5227:36
+     |
+5227 |         assert_eq!(portfolio.name, name);
+     |                                    ^^^^ expected `Bytes`, found `Vec<Vec<u8>>`
+     |
+     = note: expected struct `soroban_sdk::Bytes`
+                found struct `soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+
+error[E0308]: mismatched types
+    --> src/lib.rs:5228:43
+     |
+5228 |         assert_eq!(portfolio.description, description);
+     |                                           ^^^^^^^^^^^ expected `Bytes`, found `Vec<Vec<u8>>`
+     |
+     = note: expected struct `soroban_sdk::Bytes`
+                found struct `soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+
+error[E0308]: arguments to this method are incorrect
+    --> src/lib.rs:5240:35
+     |
+5240 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                   ^^^^^^^^^^^^^^^^
+     |
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5240:52
+     |
+5240 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                                    ^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: expected `&Bytes`, found `&Vec<_>`
+    --> src/lib.rs:5240:59
+     |
+5240 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                                           ^^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<_>`
+note: method defined here
+    --> src/lib.rs:1340:12
+     |
+1340 |     pub fn create_portfolio(env: Env, name: Bytes, description: Bytes) -> u64 {
+     |            ^^^^^^^^^^^^^^^^           -----------  ------------------
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5242:26
+     |
+5242 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+error[E0308]: arguments to this method are incorrect
+    --> src/lib.rs:5266:35
+     |
+5266 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                   ^^^^^^^^^^^^^^^^
+     |
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5266:52
+     |
+5266 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                                    ^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: expected `&Bytes`, found `&Vec<_>`
+    --> src/lib.rs:5266:59
+     |
+5266 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                                           ^^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<_>`
+note: method defined here
+    --> src/lib.rs:1340:12
+     |
+1340 |     pub fn create_portfolio(env: Env, name: Bytes, description: Bytes) -> u64 {
+     |            ^^^^^^^^^^^^^^^^           -----------  ------------------
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5268:26
+     |
+5268 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+error[E0308]: arguments to this method are incorrect
+    --> src/lib.rs:5294:35
+     |
+5294 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                   ^^^^^^^^^^^^^^^^
+     |
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5294:52
+     |
+5294 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                                    ^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: expected `&Bytes`, found `&Vec<_>`
+    --> src/lib.rs:5294:59
+     |
+5294 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                                           ^^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<_>`
+note: method defined here
+    --> src/lib.rs:1340:12
+     |
+1340 |     pub fn create_portfolio(env: Env, name: Bytes, description: Bytes) -> u64 {
+     |            ^^^^^^^^^^^^^^^^           -----------  ------------------
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5296:26
+     |
+5296 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+error[E0308]: arguments to this method are incorrect
+    --> src/lib.rs:5344:35
+     |
+5344 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                   ^^^^^^^^^^^^^^^^
+     |
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5344:52
+     |
+5344 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                                    ^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: expected `&Bytes`, found `&Vec<_>`
+    --> src/lib.rs:5344:59
+     |
+5344 |         let portfolio_id = client.create_portfolio(&name, &vec![&env]);
+     |                                                           ^^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<_>`
+note: method defined here
+    --> src/lib.rs:1340:12
+     |
+1340 |     pub fn create_portfolio(env: Env, name: Bytes, description: Bytes) -> u64 {
+     |            ^^^^^^^^^^^^^^^^           -----------  ------------------
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5346:26
+     |
+5346 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+error[E0061]: this method takes 5 arguments but 3 arguments were supplied
+    --> src/lib.rs:5456:34
+     |
+5456 |         let proposal_id = client.create_proposal(&title, &description, &10000);
+     |                                  ^^^^^^^^^^^^^^^------------------------------ two arguments of type `&ProposalType` and `&soroban_sdk::Vec<soroban_sdk::Val>` are missing
+     |
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5456:50
+     |
+5456 |         let proposal_id = client.create_proposal(&title, &description, &10000);
+     |                                                  ^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5456:58
+     |
+5456 |         let proposal_id = client.create_proposal(&title, &description, &10000);
+     |                                                          ^^^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: method defined here
+    --> src/lib.rs:3600:12
+     |
+3600 | ...fn create_proposal(env: Env, title: Bytes, description: Bytes, expires_at: u64, proposal_type: ProposalType, payload: Vec<Val>) -...
+     |       ^^^^^^^^^^^^^^^           ------------  ------------------                   ---------------------------  -----------------
+help: provide the arguments
+     |
+5456 -         let proposal_id = client.create_proposal(&title, &description, &10000);
+5456 +         let proposal_id = client.create_proposal(/* &soroban_sdk::Bytes */, /* &soroban_sdk::Bytes */, &10000, /* &ProposalType */, /* &soroban_sdk::Vec<soroban_sdk::Val> */);
+     |
+
+error[E0308]: mismatched types
+    --> src/lib.rs:5460:36
+     |
+5460 |         assert_eq!(proposal.title, title);
+     |                                    ^^^^^ expected `Bytes`, found `Vec<Vec<u8>>`
+     |
+     = note: expected struct `soroban_sdk::Bytes`
+                found struct `soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5476:26
+     |
+5476 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5477:28
+     |
+5477 |         let resolver = env.register_contract(None, resolver_false::MockResolverFalse);
+     |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5509:26
+     |
+5509 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5532:26
+     |
+5532 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5560:26
+     |
+5560 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5585:26
+     |
+5585 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5600:26
+     |
+5600 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5620:26
+     |
+5620 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5645:26
+     |
+5645 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5671:26
+     |
+5671 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5702:26
+     |
+5702 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `get_state_channel` found for struct `SoroTaskContractClient<'a>` in the current scope
+    --> src/lib.rs:5751:30
+     |
+ 846 | #[contract]
+     | ----------- method `get_state_channel` not found for this struct
+...
+5751 |         let channel = client.get_state_channel(&channel_id).expect("Channel should exist");
+     |                              ^^^^^^^^^^^^^^^^^
+     |
+help: there is a method `open_state_channel` with a similar name, but with different arguments
+    --> src/lib.rs:849:1
+     |
+ 849 | #[contractimpl]
+     | ^^^^^^^^^^^^^^^
+     = note: this error originates in the attribute macro `soroban_sdk::contractclient` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5780:26
+     |
+5780 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+error[E0308]: arguments to this method are incorrect
+    --> src/lib.rs:5793:16
+     |
+5793 |         client.update_state_channel(&channel_id, &state_hash, &micro_tasks, &signature);
+     |                ^^^^^^^^^^^^^^^^^^^^
+     |
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5793:50
+     |
+5793 |         client.update_state_channel(&channel_id, &state_hash, &micro_tasks, &signature);
+     |                                                  ^^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5793:77
+     |
+5793 |         client.update_state_channel(&channel_id, &state_hash, &micro_tasks, &signature);
+     |                                                                             ^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: method defined here
+    --> src/lib.rs:1756:12
+     |
+1756 |     pub fn update_state_channel(
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+1759 |         state_hash: Bytes,
+     |         -----------------
+1760 |         micro_tasks: Vec<ExecutableTask>,
+1761 |         signature: Bytes,
+     |         ----------------
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+    --> src/lib.rs:5822:26
+     |
+5822 |         let target = env.register_contract(None, MockTarget);
+     |                          ^^^^^^^^^^^^^^^^^
+
+error[E0308]: arguments to this method are incorrect
+    --> src/lib.rs:5835:16
+     |
+5835 |         client.update_state_channel(&channel_id, &state_hash, &micro_tasks, &signature);
+     |                ^^^^^^^^^^^^^^^^^^^^
+     |
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5835:50
+     |
+5835 |         client.update_state_channel(&channel_id, &state_hash, &micro_tasks, &signature);
+     |                                                  ^^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: expected `&Bytes`, found `&Vec<Vec<u8>>`
+    --> src/lib.rs:5835:77
+     |
+5835 |         client.update_state_channel(&channel_id, &state_hash, &micro_tasks, &signature);
+     |                                                                             ^^^^^^^^^^
+     = note: expected reference `&soroban_sdk::Bytes`
+                found reference `&soroban_sdk::Vec<__sorotaskcontract_fn_set_registry::std::vec::Vec<u8>>`
+note: method defined here
+    --> src/lib.rs:1756:12
+     |
+1756 |     pub fn update_state_channel(
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+1759 |         state_hash: Bytes,
+     |         -----------------
+1760 |         micro_tasks: Vec<ExecutableTask>,
+1761 |         signature: Bytes,
+     |         ----------------
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+  --> src/proptest.rs:20:27
+   |
+20 |     let contract_id = env.register_contract(None, SoroTaskContract);
+   |                           ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+  --> src/proptest.rs:27:24
+   |
+27 |     let token_id = env.register_contract(None, MockToken);
+   |                        ^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+  --> src/proptest.rs:44:22
+   |
+44 |         let config = TaskConfig {
+   |                      ^^^^^^^^^^ missing `yield_strategy`
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+  --> src/proptest.rs:77:22
+   |
+77 |         let config = TaskConfig {
+   |                      ^^^^^^^^^^ missing `yield_strategy`
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+   --> src/proptest.rs:131:22
+    |
+131 |         let config = TaskConfig {
+    |                      ^^^^^^^^^^ missing `yield_strategy`
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+  --> src/test_combinations.rs:81:22
+   |
+81 |         let id = env.register_contract(None, SoroTaskContract);
+   |                      ^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `yield_strategy` in initializer of `TaskConfig`
+  --> src/test_combinations.rs:87:9
+   |
+87 |         TaskConfig {
+   |         ^^^^^^^^^^ missing `yield_strategy`
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:116:26
+    |
+116 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:117:28
+    |
+117 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:143:26
+    |
+143 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:144:28
+    |
+144 |         let resolver = env.register_contract(None, resolver_false::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:169:26
+    |
+169 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:170:28
+    |
+170 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:200:26
+    |
+200 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:201:28
+    |
+201 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:229:26
+    |
+229 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:230:28
+    |
+230 |         let resolver = env.register_contract(None, resolver_false::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:255:26
+    |
+255 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:256:28
+    |
+256 |         let resolver = env.register_contract(None, resolver_panic::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:285:26
+    |
+285 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:312:26
+    |
+312 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:341:26
+    |
+341 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:342:28
+    |
+342 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:370:26
+    |
+370 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:371:28
+    |
+371 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:392:26
+    |
+392 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:393:28
+    |
+393 |         let resolver = env.register_contract(None, resolver_false::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:426:26
+    |
+426 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:456:26
+    |
+456 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:457:28
+    |
+457 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:485:26
+    |
+485 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:486:28
+    |
+486 |         let resolver = env.register_contract(None, resolver_false::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:517:26
+    |
+517 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:518:28
+    |
+518 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:547:26
+    |
+547 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:580:26
+    |
+580 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:581:28
+    |
+581 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:607:26
+    |
+607 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:608:28
+    |
+608 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:637:26
+    |
+637 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:660:26
+    |
+660 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:689:26
+    |
+689 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:690:28
+    |
+690 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:734:26
+    |
+734 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:735:28
+    |
+735 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:775:26
+    |
+775 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:776:28
+    |
+776 |         let resolver = env.register_contract(None, resolver_true::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:827:26
+    |
+827 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:865:26
+    |
+865 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:897:26
+    |
+897 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:898:28
+    |
+898 |         let resolver = env.register_contract(None, resolver_false::R);
+    |                            ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:924:26
+    |
+924 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::Env::register_contract`: use `register`
+   --> src/test_combinations.rs:944:26
+    |
+944 |         let target = env.register_contract(None, Target);
+    |                          ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Ledger`
+ --> src/proptest.rs:5:31
+  |
+5 |     testutils::{Address as _, Ledger as _},
+  |                               ^^^^^^
+
+warning: unused variable: `oracle_address`
+    --> src/lib.rs:1036:13
+     |
+1036 |         let oracle_address: Address = env
+     |             ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_oracle_address`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src/lib.rs:1501:13
+     |
+1501 |         let mut portfolio: Portfolio = env
+     |             ----^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src/lib.rs:1532:13
+     |
+1532 |         let mut portfolio: Portfolio = env
+     |             ----^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src/lib.rs:1563:13
+     |
+1563 |         let mut portfolio: Portfolio = env
+     |             ----^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src/lib.rs:1595:13
+     |
+1595 |         let mut portfolio: Portfolio = env
+     |             ----^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable `vrf_request_found` is assigned to, but never used
+    --> src/lib.rs:2064:17
+     |
+2064 |             let mut vrf_request_found = false;
+     |                 ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: consider using `_vrf_request_found` instead
+
+warning: variable `vrf_response` is assigned to, but never used
+    --> src/lib.rs:2066:17
+     |
+2066 |             let mut vrf_response: Option<VrfResponse> = None;
+     |                 ^^^^^^^^^^^^^^^^
+     |
+     = note: consider using `_vrf_response` instead
+
+warning: value assigned to `vrf_request_found` is never read
+    --> src/lib.rs:2076:29
+     |
+2076 | ...                   vrf_request_found = true;
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `vrf_response` is never read
+    --> src/lib.rs:2080:33
+     |
+2080 | ...                   vrf_response = Some(response);
+     |                       ^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+
+warning: variable does not need to be mutable
+    --> src/lib.rs:2755:25
+     |
+2755 |                     let mut network_metrics = Self::get_network_metrics(env);
+     |                         ----^^^^^^^^^^^^^^^
+     |                         |
+     |                         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src/lib.rs:2758:25
+     |
+2758 |                     let mut keeper_metrics = Self::get_keeper_metrics(env);
+     |                         ----^^^^^^^^^^^^^^
+     |                         |
+     |                         help: remove this `mut`
+
+warning: value assigned to `fee` is never read
+    --> src/lib.rs:2738:13
+     |
+2738 |             fee = base_fee + args_size + target_complexity_bonus;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `soro_task_contract` (lib) generated 58 warnings
+error: could not compile `soro_task_contract` (lib) due to 1 previous error; 58 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: unused variable: `name`
+  --> src/test_gas.rs:43:28
+   |
+43 | fn track_gas<F>(env: &Env, name: &str, operation: F)
+   |                            ^^^^ help: if this is intentional, prefix it with an underscore: `_name`
+
+warning: unused variable: `cpu`
+  --> src/test_gas.rs:49:9
+   |
+49 |     let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+   |         ^^^ help: if this is intentional, prefix it with an underscore: `_cpu`
+
+warning: unused variable: `mem`
+  --> src/test_gas.rs:50:9
+   |
+50 |     let mem = env.cost_estimate().budget().memory_bytes_cost();
+   |         ^^^ help: if this is intentional, prefix it with an underscore: `_mem`
+
+warning: unused variable: `token_client`
+    --> src/lib.rs:5404:13
+     |
+5404 |         let token_client = soroban_sdk::token::Client::new(&env, &token_address);
+     |             ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_token_client`
+
+Some errors have detailed explanations: E0061, E0063, E0277, E0308, E0599, E0614.
+For more information about an error, try `rustc --explain E0061`.
+warning: `soro_task_contract` (lib test) generated 181 warnings (58 duplicates)
+error: could not compile `soro_task_contract` (lib test) due to 42 previous errors; 181 warnings emitted

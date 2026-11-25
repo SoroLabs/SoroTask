@@ -7,6 +7,8 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { User, AuthState, Permission } from '@/types/auth';
+import { initializeErrorTracking, clearErrorTracking } from '@/src/lib/errors/tracking';
+import { captureSentryException } from '@/src/lib/errors';
 
 interface AuthContextType extends AuthState {
   login: (user: User) => void;
@@ -117,6 +119,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
             isLoading: false,
             error: null,
           });
+          // Set user context for error tracking
+          initializeErrorTracking({
+            id: user.id,
+            walletAddress: user.address,
+            role: user.role,
+          });
         } else {
           setAuthState({
             user: null,
@@ -151,12 +159,26 @@ export function AuthProvider({ children }: AuthProviderProps) {
         isLoading: false,
         error: null,
       });
+
+      // Initialize error tracking with user context
+      initializeErrorTracking({
+        id: authenticatedUser.id,
+        walletAddress: authenticatedUser.address,
+        role: authenticatedUser.role,
+      });
     } catch (error) {
       setAuthState(prev => ({
         ...prev,
         isLoading: false,
         error: error instanceof Error ? error.message : 'Login failed',
       }));
+
+      // Track login failure
+      const err = error instanceof Error ? error : new Error(String(error));
+      captureSentryException(err, {
+        tags: { type: 'auth_error', action: 'login' },
+      });
+
       throw error;
     }
   }, []);
@@ -169,18 +191,20 @@ export function AuthProvider({ children }: AuthProviderProps) {
       isLoading: false,
       error: null,
     });
+    // Clear user context from Sentry
+    clearErrorTracking();
   }, []);
 
   const hasPermission = useCallback((permission: Permission): boolean => {
     return authState.user?.permissions.includes(permission) ?? false;
   }, [authState.user]);
 
-  const hasAnyPermission = useCallback((permissions: Permission[]): boolean => {
+  const hasAnyPermission = useCallback((permissions: Permission[]) => {
     if (!authState.user) return false;
     return permissions.some(permission => authState.user!.permissions.includes(permission));
   }, [authState.user]);
 
-  const hasAllPermissions = useCallback((permissions: Permission[]): boolean => {
+  const hasAllPermissions = useCallback((permissions: Permission[]) => {
     if (!authState.user) return false;
     return permissions.every(permission => authState.user!.permissions.includes(permission));
   }, [authState.user]);
@@ -240,3 +264,4 @@ export function useAuth() {
   }
   return context;
 }
+

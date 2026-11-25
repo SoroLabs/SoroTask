@@ -1,4 +1,4 @@
-import { User, UserRole } from '../../types/auth';
+import { User, UserRole } from '@/types/auth';
 import { AuthResult, IdentityResolutionResult } from './types';
 
 export class IdentityManager {
@@ -29,7 +29,11 @@ export class IdentityManager {
           user = this.normalizeDIDProfile(authResult.rawProfile);
           break;
         default:
-          throw new Error(`Unsupported provider type for identity resolution: ${authResult.providerId}`);
+          if (authResult.rawProfile?.credentialId) {
+            user = this.normalizePasskeyProfile(authResult.rawProfile);
+          } else {
+            throw new Error(`Unsupported provider type for identity resolution: ${authResult.providerId}`);
+          }
       }
 
       // Mock DB operation: update or create user
@@ -75,10 +79,20 @@ export class IdentityManager {
   private normalizeDIDProfile(profile: any): User {
     return {
       id: profile.id,
-      address: profile.address, // Extracted from DID if method is stellar
+      address: profile.address,
       role: 'user',
       permissions: ['tasks:read', 'tasks:create', 'tasks:execute'],
       name: profile.id.substring(0, 16) + '...'
+    };
+  }
+
+  private normalizePasskeyProfile(profile: any): User {
+    return {
+      id: `passkey:${profile.credentialId}`,
+      address: profile.address ?? '',
+      role: 'user',
+      permissions: ['tasks:read', 'tasks:create'],
+      name: `Passkey ${String(profile.credentialId).substring(0, 8)}`,
     };
   }
 }

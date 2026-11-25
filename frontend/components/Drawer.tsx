@@ -26,6 +26,7 @@ export interface DrawerProps {
   width?: string;
   /** Height class for bottom drawer (default: 'h-[60vh]') */
   height?: string;
+  'data-testid'?: string;
 }
 
 const PANEL_POSITION: Record<DrawerSide, string> = {
@@ -55,6 +56,7 @@ export function Drawer({
   disableEscapeClose,
   width = 'w-80',
   height = 'h-[60vh]',
+  'data-testid': testId = 'drawer-panel',
 }: DrawerProps) {
   const titleId = useId();
   const descId = useId();
@@ -78,7 +80,7 @@ export function Drawer({
         className={`absolute ${PANEL_POSITION[side]} ${sizeClass} bg-neutral-900 border-neutral-700/50 flex flex-col shadow-2xl ${
           side === 'right' ? 'border-l' : side === 'left' ? 'border-r' : 'border-t'
         }`}
-        data-testid="drawer-panel"
+        data-testid={testId}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

@@ -123,11 +123,27 @@ class MockSorobanRpcServer {
     this.server = null;
   }
 
+  close() {
+    return this.stop();
+  }
+
   getUrl() {
     const address = this.server?.address();
     const port =
       typeof address === 'object' && address?.port ? address.port : this.port;
     return `http://${this.host}:${port}`;
+  }
+
+  getHealth() {
+    return clone(this.health);
+  }
+
+  getNetwork() {
+    return clone(this.network);
+  }
+
+  getLatestLedger() {
+    return clone(this.latestLedger);
   }
 
   setHealth(health) {
@@ -293,14 +309,14 @@ class MockSorobanRpcServer {
     return clone(this.defaultSimulationResponse);
   }
 
-  sendTransaction(params) {
+  sendTransaction(_params) {
     return {
       status: 'PENDING',
       hash: 'mock-tx-hash-' + Date.now() + '-' + Math.floor(Math.random() * 1000000)
     };
   }
 
-  getTransaction(params) {
+  getTransaction(_params) {
     return {
       status: 'SUCCESS',
       latestLedger: this.latestLedger.sequence,

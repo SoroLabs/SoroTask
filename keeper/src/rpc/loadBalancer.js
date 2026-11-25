@@ -78,7 +78,7 @@ class RPCLoadBalancer {
    * @param {Object} context - Context object with additional information
    * @returns {string|null} - Selected endpoint URL or null if no healthy endpoints
    */
-  selectEndpoint(context = {}) {
+  selectEndpoint(_context = {}) {
     const startTime = Date.now();
     this.metrics.requestsTotal++;
     

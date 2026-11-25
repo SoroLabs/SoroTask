@@ -1,5 +1,5 @@
-import { timeTrackingReducer, initialState } from '../context/TimeTrackingContext';
-import { Task, TimeEntry } from '../types';
+import { timeTrackingReducer, initialState } from '../TimeTrackingContext';
+import { Task, TimeEntry } from '../../types';
 
 describe('timeTrackingReducer', () => {
   it('adds a task', () => {
