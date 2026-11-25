@@ -15,6 +15,25 @@ drain:
   timeoutMs: 30000
   preStopSleepSeconds: 5
 
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+podAntiAffinity:
+  enabled: true
+
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: DoNotSchedule
+
+startupProbe:
+  enabled: true
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 30
+
 resources:
   requests:
     cpu: "250m"
@@ -26,6 +45,9 @@ resources:
 secrets:
   create: true
   existingSecret: ""
+  sealedSecret:
+    enabled: false
+    encryptedData: {}
   sorobanRpcUrl: "https://soroban-testnet.stellar.org"
   networkPassphrase: "Test SDF Network ; September 2015"
   contractId: "CDUMMYCONTRACTID0000000000000000000000000000000000000000"
