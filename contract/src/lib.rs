@@ -255,6 +255,17 @@ pub enum Error {
     // Congestion surcharge errors (SC-PROD-29)
     InvalidSurchargeConfig = 960,
     InvalidInclusionFee = 961,
+    // ZK-rollup batch verification errors (SC-FINAL-43)
+    RollupNotConfigured = 980,
+    RollupAlreadyConfigured = 981,
+    RollupInvalidVerifyingKey = 982,
+    RollupInvalidBatchSize = 983,
+    RollupUnorderedTransitions = 984,
+    RollupInvalidTransition = 985,
+    RollupBatchOutOfOrder = 986,
+    RollupStaleStateRoot = 987,
+    RollupHeaderMismatch = 988,
+    RollupInvalidProof = 989,
 }
 
 #[contracttype]
@@ -11622,6 +11633,99 @@ impl SoroTaskContract {
         exit_security_guard(&env);
     }
 
+    // =========================================================================
+    // ZK-Rollup Batch Verification for L2 Keeper Tasks (SC-FINAL-43)
+    // =========================================================================
+
+    /// Initialise the ZK rollup with the outer circuit's Groth16 verifying key
+    /// and the genesis L2 state-tree root. Admin only; runs once.
+    pub fn init_zk_rollup(
+        env: Env,
+        admin: Address,
+        vk: crate::zk::RollupVerifyingKey,
+        genesis_state_root: BytesN<32>,
+    ) -> Result<(), Error> {
+        require_config_admin(&env, &admin);
+        crate::zk::init_rollup(&env, vk, genesis_state_root)
+    }
+
+    /// Replace the rollup verifying key after a circuit upgrade. Admin only.
+    pub fn rotate_zk_rollup_vk(
+        env: Env,
+        admin: Address,
+        vk: crate::zk::RollupVerifyingKey,
+    ) -> Result<(), Error> {
+        require_config_admin(&env, &admin);
+        crate::zk::rotate_rollup_verifying_key(&env, vk)
+    }
+
+    /// Settle up to 100 off-chain task transitions with one recursive SNARK.
+    ///
+    /// Rejects the batch unless it extends the stored state root, its
+    /// transitions hash to the header's transitions root, and the proof
+    /// verifies against the batch commitment. See `zk.rs` for the details.
+    pub fn settle_zk_rollup_batch(
+        env: Env,
+        keeper: Address,
+        header: crate::zk::RollupBatchHeader,
+        transitions: Vec<batch::RollupTaskTransition>,
+        proof: crate::zk::RecursiveSnarkProof,
+    ) -> Result<crate::zk::RollupSettlementReceipt, Error> {
+        enter_security_guard(&env);
+        keeper.require_auth();
+        let result =
+            crate::zk::settle_rollup_batch(&env, &keeper, &header, &transitions, &proof);
+        exit_security_guard(&env);
+        result
+    }
+
+    /// Current canonical L2 state-tree root, if the rollup is initialised.
+    pub fn get_zk_rollup_state_root(env: Env) -> Option<BytesN<32>> {
+        crate::zk::get_rollup_state_root(&env)
+    }
+
+    /// ID the next settled batch must carry.
+    pub fn get_zk_rollup_next_batch_id(env: Env) -> u64 {
+        crate::zk::get_rollup_next_batch_id(&env)
+    }
+
+    /// Settlement record of a batch.
+    pub fn get_zk_rollup_batch(env: Env, batch_id: u64) -> Option<crate::zk::RollupBatchRecord> {
+        crate::zk::get_rollup_batch(&env, batch_id)
+    }
+
+    /// The stored rollup verifying key.
+    pub fn get_zk_rollup_vk(env: Env) -> Option<crate::zk::RollupVerifyingKey> {
+        crate::zk::get_rollup_verifying_key(&env)
+    }
+
+    /// The public input a keeper's proof must be generated for. Lets provers
+    /// check their commitment encoding against the contract.
+    pub fn compute_zk_rollup_public_input(
+        env: Env,
+        keeper: Address,
+        header: crate::zk::RollupBatchHeader,
+    ) -> BytesN<32> {
+        let commitment = crate::zk::rollup_batch_commitment(
+            &env,
+            &env.current_contract_address(),
+            &keeper,
+            &header,
+        );
+        crate::zk::rollup_public_input(&commitment)
+    }
+
+    /// Prove that `transition` was settled at `index` of batch `batch_id`.
+    pub fn verify_zk_rollup_task_inclusion(
+        env: Env,
+        batch_id: u64,
+        transition: batch::RollupTaskTransition,
+        index: u32,
+        siblings: Vec<BytesN<32>>,
+    ) -> bool {
+        crate::zk::verify_rollup_task_inclusion(&env, batch_id, &transition, index, &siblings)
+    }
+
     // ─── Commit-Reveal Anti-Frontrunning Protocol (SC-HARD-07) ──────────────
 
     /// Phase 1 – Commit. Keeper posts a hash commitment before executing.
@@ -11795,6 +11899,9 @@ mod test_gas;
 
 #[cfg(test)]
 mod test_zk;
+
+#[cfg(test)]
+mod test_zk_rollup;
 
 #[cfg(test)]
 pub(crate) mod tests {

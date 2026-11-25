@@ -331,3 +331,428 @@ pub fn execute_zk(env: &Env, task_id: u64, proof: Groth16Proof) {
         nullifier,
     );
 }
+
+// ============================================================================
+// ZK-Rollup batch verification for L2 high-frequency keeper tasks (SC-FINAL-43)
+// ============================================================================
+//
+// Sub-second gaming and trading loops would congest the ledger if every
+// execution were submitted on its own. Instead, keepers run the tasks
+// off-chain, keep their state in an L2 state tree, and periodically settle up
+// to `batch::MAX_ROLLUP_BATCH_TASKS` task transitions in one transaction.
+//
+// Off-chain, the keeper's prover proves each task transition, then folds those
+// proofs recursively into a single outer Groth16 proof over BN254. On-chain
+// the contract verifies only that outer proof, so the expensive part (the
+// pairing check) is paid once per batch, not once per task.
+//
+// The outer circuit has exactly one public input, the batch commitment:
+//
+//   digest = SHA-256(
+//       "SOROTASK/ZK-ROLLUP/v1"
+//       || contract_address_xdr || keeper_address_xdr
+//       || batch_id_be8 || prev_state_root || new_state_root
+//       || transitions_root || task_count_be4 || total_executions_be8
+//       || l2_block_start_be8 || l2_block_end_be8)
+//   public_input = digest with its top 3 bits cleared   (always < r)
+//
+// Binding the contract and keeper addresses stops a proof from being replayed
+// against another deployment, or copied out of the mempool and submitted by a
+// different keeper.
+//
+// `settle_rollup_batch` asserts the integrity of the off-chain state tree:
+//
+//   1. The batch extends the canonical chain: `batch_id` is the next expected
+//      ID and `prev_state_root` equals the root stored on-chain. A stale,
+//      forked or replayed batch is rejected.
+//   2. The submitted transitions are the ones the proof covers: the contract
+//      re-derives the transitions root, task count and execution total itself
+//      and requires them to match the header.
+//   3. The recursive SNARK proves `prev_state_root -> new_state_root` under
+//      those transitions: the Groth16 equation
+//        e(-A, B) · e(α, β) · e(vk_x, γ) · e(C, δ) = 1,
+//        vk_x = IC₀ + public_input · IC₁
+//      is checked with the host's BN254 multi-pairing.
+//
+// Only then does the stored state root advance. Individual task states live
+// in the L2 tree, so settlement writes a fixed amount of storage regardless
+// of batch size; anyone can later prove a task's settled transition against
+// the batch's stored transitions root with `verify_rollup_task_inclusion`.
+
+use soroban_sdk::{
+    crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine},
+    xdr::ToXdr,
+    Address, Vec,
+};
+
+use crate::batch::{self, RollupTaskTransition};
+
+/// Domain tag hashed into every batch commitment.
+pub const ROLLUP_COMMITMENT_DOMAIN: &[u8] = b"SOROTASK/ZK-ROLLUP/v1";
+
+/// Number of public inputs of the outer (recursive) circuit.
+pub const ROLLUP_PUBLIC_INPUTS: u32 = 1;
+
+/// BN254 base field modulus `p`, big-endian.
+const BN254_FP_MODULUS: [u8; 32] = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d, 0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c, 0xfd, 0x47,
+];
+
+/// Groth16 verifying key of the outer recursive circuit (BN254).
+///
+/// Points use the uncompressed, Ethereum-compatible encoding the Soroban host
+/// expects: G1 is `X || Y` (64 bytes), G2 is `X.c1 || X.c0 || Y.c1 || Y.c0`
+/// (128 bytes).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RollupVerifyingKey {
+    pub alpha: BytesN<64>,
+    pub beta: BytesN<128>,
+    pub gamma: BytesN<128>,
+    pub delta: BytesN<128>,
+    /// `IC₀ … IC_n`; must hold `ROLLUP_PUBLIC_INPUTS + 1` points.
+    pub ic: Vec<BytesN<64>>,
+}
+
+/// The recursive SNARK settling a batch: one Groth16 proof over BN254.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecursiveSnarkProof {
+    /// π_A ∈ G1.
+    pub a: BytesN<64>,
+    /// π_B ∈ G2.
+    pub b: BytesN<128>,
+    /// π_C ∈ G1.
+    pub c: BytesN<64>,
+}
+
+/// Header of a ZK-rollup batch, committed to by the recursive proof.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RollupBatchHeader {
+    /// Sequential batch number, starting at 1.
+    pub batch_id: u64,
+    /// L2 state-tree root the batch starts from.
+    pub prev_state_root: BytesN<32>,
+    /// L2 state-tree root after applying every transition in the batch.
+    pub new_state_root: BytesN<32>,
+    /// Merkle root over the batch's task transitions (see `batch.rs`).
+    pub transitions_root: BytesN<32>,
+    /// Number of task transitions settled.
+    pub task_count: u32,
+    /// Total off-chain micro-executions across all transitions.
+    pub total_executions: u64,
+    /// First L2 block covered by the batch.
+    pub l2_block_start: u64,
+    /// Last L2 block covered by the batch (inclusive).
+    pub l2_block_end: u64,
+}
+
+/// On-chain record of a settled batch.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RollupBatchRecord {
+    pub header: RollupBatchHeader,
+    pub keeper: Address,
+    /// The commitment digest the proof's public input was derived from.
+    pub commitment: BytesN<32>,
+    pub settled_at: u64,
+    pub settled_ledger: u32,
+}
+
+/// Returned by `settle_rollup_batch`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RollupSettlementReceipt {
+    pub batch_id: u64,
+    pub task_count: u32,
+    pub total_executions: u64,
+    pub new_state_root: BytesN<32>,
+    pub commitment: BytesN<32>,
+}
+
+/// Storage keys owned by the rollup verifier.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RollupKey {
+    /// The outer circuit's [`RollupVerifyingKey`].
+    RollupVerifyingKey,
+    /// Current canonical L2 state-tree root.
+    RollupStateRoot,
+    /// ID the next settled batch must carry.
+    RollupNextBatchId,
+    /// [`RollupBatchRecord`] per settled batch.
+    RollupBatch(u64),
+}
+
+fn rollup_vk(env: &Env) -> Option<RollupVerifyingKey> {
+    env.storage()
+        .persistent()
+        .get(&RollupKey::RollupVerifyingKey)
+}
+
+/// Structural checks on a verifying key. G2 points are checked by the host
+/// when they enter the pairing.
+fn validate_rollup_vk(env: &Env, vk: &RollupVerifyingKey) -> Result<(), Error> {
+    if vk.ic.len() != ROLLUP_PUBLIC_INPUTS + 1 {
+        return Err(Error::RollupInvalidVerifyingKey);
+    }
+    if !is_valid_g1(env, &vk.alpha) {
+        return Err(Error::RollupInvalidVerifyingKey);
+    }
+    for point in vk.ic.iter() {
+        if !is_valid_g1(env, &point) {
+            return Err(Error::RollupInvalidVerifyingKey);
+        }
+    }
+    Ok(())
+}
+
+/// A G1 point is usable when both coordinates are canonical field elements,
+/// it is not the point at infinity, and it lies on the curve.
+fn is_valid_g1(env: &Env, point: &BytesN<64>) -> bool {
+    let bytes = point.to_array();
+    if bytes.iter().all(|b| *b == 0) {
+        return false;
+    }
+    let mut x = [0u8; 32];
+    let mut y = [0u8; 32];
+    x.copy_from_slice(&bytes[..32]);
+    y.copy_from_slice(&bytes[32..]);
+    if x >= BN254_FP_MODULUS || y >= BN254_FP_MODULUS {
+        return false;
+    }
+    env.crypto()
+        .bn254()
+        .g1_is_on_curve(&Bn254G1Affine::from_bytes(point.clone()))
+}
+
+/// Initialise the rollup: store the verifying key and the genesis state root.
+///
+/// Can only run once; use [`rotate_rollup_verifying_key`] to change the key.
+pub fn init_rollup(
+    env: &Env,
+    vk: RollupVerifyingKey,
+    genesis_state_root: BytesN<32>,
+) -> Result<(), Error> {
+    if rollup_vk(env).is_some() {
+        return Err(Error::RollupAlreadyConfigured);
+    }
+    validate_rollup_vk(env, &vk)?;
+
+    let storage = env.storage().persistent();
+    storage.set(&RollupKey::RollupVerifyingKey, &vk);
+    storage.set(&RollupKey::RollupStateRoot, &genesis_state_root);
+    storage.set(&RollupKey::RollupNextBatchId, &1u64);
+
+    env.events().publish(
+        (symbol_short!("ZkRollup"), symbol_short!("init")),
+        genesis_state_root,
+    );
+    Ok(())
+}
+
+/// Replace the verifying key (e.g. after a circuit upgrade). The state root
+/// and batch sequence are kept.
+pub fn rotate_rollup_verifying_key(env: &Env, vk: RollupVerifyingKey) -> Result<(), Error> {
+    if rollup_vk(env).is_none() {
+        return Err(Error::RollupNotConfigured);
+    }
+    validate_rollup_vk(env, &vk)?;
+    env.storage()
+        .persistent()
+        .set(&RollupKey::RollupVerifyingKey, &vk);
+    env.events()
+        .publish((symbol_short!("ZkRollup"), symbol_short!("vk_rot")), ());
+    Ok(())
+}
+
+pub fn get_rollup_verifying_key(env: &Env) -> Option<RollupVerifyingKey> {
+    rollup_vk(env)
+}
+
+pub fn get_rollup_state_root(env: &Env) -> Option<BytesN<32>> {
+    env.storage().persistent().get(&RollupKey::RollupStateRoot)
+}
+
+pub fn get_rollup_next_batch_id(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&RollupKey::RollupNextBatchId)
+        .unwrap_or(1)
+}
+
+pub fn get_rollup_batch(env: &Env, batch_id: u64) -> Option<RollupBatchRecord> {
+    env.storage()
+        .persistent()
+        .get(&RollupKey::RollupBatch(batch_id))
+}
+
+/// SHA-256 digest binding a batch header to a contract and keeper. Its
+/// field-reduced form is the outer circuit's public input.
+pub fn rollup_batch_commitment(
+    env: &Env,
+    contract: &Address,
+    keeper: &Address,
+    header: &RollupBatchHeader,
+) -> BytesN<32> {
+    let mut buf = Bytes::from_slice(env, ROLLUP_COMMITMENT_DOMAIN);
+    buf.append(&contract.clone().to_xdr(env));
+    buf.append(&keeper.clone().to_xdr(env));
+    buf.extend_from_array(&header.batch_id.to_be_bytes());
+    buf.extend_from_array(&header.prev_state_root.to_array());
+    buf.extend_from_array(&header.new_state_root.to_array());
+    buf.extend_from_array(&header.transitions_root.to_array());
+    buf.extend_from_array(&header.task_count.to_be_bytes());
+    buf.extend_from_array(&header.total_executions.to_be_bytes());
+    buf.extend_from_array(&header.l2_block_start.to_be_bytes());
+    buf.extend_from_array(&header.l2_block_end.to_be_bytes());
+    sha256(env, &buf)
+}
+
+/// Reduce a 32-byte digest to a BN254 scalar by clearing its top 3 bits.
+/// The result is below 2^253, which is below the scalar modulus r.
+pub fn rollup_public_input(commitment: &BytesN<32>) -> BytesN<32> {
+    let mut bytes = commitment.to_array();
+    bytes[0] &= 0x1f;
+    BytesN::from_array(commitment.env(), &bytes)
+}
+
+/// Groth16 verification of `proof` against `vk` for one public input.
+pub fn verify_recursive_snark(
+    env: &Env,
+    vk: &RollupVerifyingKey,
+    proof: &RecursiveSnarkProof,
+    public_input: &BytesN<32>,
+) -> bool {
+    if !is_valid_g1(env, &proof.a) || !is_valid_g1(env, &proof.c) {
+        return false;
+    }
+
+    let bn = env.crypto().bn254();
+
+    // vk_x = IC₀ + x · IC₁
+    let ic0 = Bn254G1Affine::from_bytes(vk.ic.get_unchecked(0));
+    let ic1 = Bn254G1Affine::from_bytes(vk.ic.get_unchecked(1));
+    let x = Bn254Fr::from_bytes(public_input.clone());
+    let vk_x = bn.g1_add(&ic0, &bn.g1_mul(&ic1, &x));
+
+    let neg_a = -Bn254G1Affine::from_bytes(proof.a.clone());
+
+    let mut g1: Vec<Bn254G1Affine> = Vec::new(env);
+    g1.push_back(neg_a);
+    g1.push_back(Bn254G1Affine::from_bytes(vk.alpha.clone()));
+    g1.push_back(vk_x);
+    g1.push_back(Bn254G1Affine::from_bytes(proof.c.clone()));
+
+    let mut g2: Vec<Bn254G2Affine> = Vec::new(env);
+    g2.push_back(Bn254G2Affine::from_bytes(proof.b.clone()));
+    g2.push_back(Bn254G2Affine::from_bytes(vk.beta.clone()));
+    g2.push_back(Bn254G2Affine::from_bytes(vk.gamma.clone()));
+    g2.push_back(Bn254G2Affine::from_bytes(vk.delta.clone()));
+
+    bn.pairing_check(g1, g2)
+}
+
+/// Settle a batch of off-chain task transitions with one recursive SNARK.
+///
+/// The caller must have checked the keeper's authorisation. Nothing is
+/// written unless every check passes.
+pub fn settle_rollup_batch(
+    env: &Env,
+    keeper: &Address,
+    header: &RollupBatchHeader,
+    transitions: &Vec<RollupTaskTransition>,
+    proof: &RecursiveSnarkProof,
+) -> Result<RollupSettlementReceipt, Error> {
+    let vk = rollup_vk(env).ok_or(Error::RollupNotConfigured)?;
+
+    // 1. The batch must extend the canonical chain.
+    if header.batch_id != get_rollup_next_batch_id(env) {
+        return Err(Error::RollupBatchOutOfOrder);
+    }
+    let current_root = get_rollup_state_root(env).ok_or(Error::RollupNotConfigured)?;
+    if header.prev_state_root != current_root {
+        return Err(Error::RollupStaleStateRoot);
+    }
+    if header.l2_block_end < header.l2_block_start {
+        return Err(Error::RollupHeaderMismatch);
+    }
+
+    // 2. The submitted transitions must be exactly the ones in the header.
+    let aggregate = batch::aggregate_rollup_transitions(env, transitions)?;
+    if aggregate.task_count != header.task_count
+        || aggregate.total_executions != header.total_executions
+        || aggregate.transitions_root != header.transitions_root
+    {
+        return Err(Error::RollupHeaderMismatch);
+    }
+
+    // 3. The recursive SNARK must prove the state transition.
+    let commitment = rollup_batch_commitment(env, &env.current_contract_address(), keeper, header);
+    let public_input = rollup_public_input(&commitment);
+    if !verify_recursive_snark(env, &vk, proof, &public_input) {
+        return Err(Error::RollupInvalidProof);
+    }
+
+    // All checks passed: advance the canonical state.
+    let storage = env.storage().persistent();
+    storage.set(&RollupKey::RollupStateRoot, &header.new_state_root);
+    storage.set(&RollupKey::RollupNextBatchId, &(header.batch_id + 1));
+    storage.set(
+        &RollupKey::RollupBatch(header.batch_id),
+        &RollupBatchRecord {
+            header: header.clone(),
+            keeper: keeper.clone(),
+            commitment: commitment.clone(),
+            settled_at: env.ledger().timestamp(),
+            settled_ledger: env.ledger().sequence(),
+        },
+    );
+
+    env.events().publish(
+        (
+            symbol_short!("ZkRollup"),
+            symbol_short!("settled"),
+            header.batch_id,
+        ),
+        (
+            keeper.clone(),
+            header.new_state_root.clone(),
+            header.task_count,
+            header.total_executions,
+        ),
+    );
+
+    Ok(RollupSettlementReceipt {
+        batch_id: header.batch_id,
+        task_count: header.task_count,
+        total_executions: header.total_executions,
+        new_state_root: header.new_state_root.clone(),
+        commitment,
+    })
+}
+
+/// Check that `transition` was settled at position `index` of batch
+/// `batch_id`, given the Merkle `siblings` from leaf to root.
+pub fn verify_rollup_task_inclusion(
+    env: &Env,
+    batch_id: u64,
+    transition: &RollupTaskTransition,
+    index: u32,
+    siblings: &Vec<BytesN<32>>,
+) -> bool {
+    let Some(record) = get_rollup_batch(env, batch_id) else {
+        return false;
+    };
+    let leaf = batch::rollup_leaf_hash(env, transition);
+    batch::verify_rollup_inclusion(
+        env,
+        &record.header.transitions_root,
+        &leaf,
+        index,
+        record.header.task_count,
+        siblings,
+    )
+}
