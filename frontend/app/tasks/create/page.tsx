@@ -3,8 +3,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useStellarWallet } from '@/context/StellarWalletContext';
 import { simulateTaskCall, formatXlm } from '@/src/lib/soroban/task-simulation';
-import React, { useState } from "react";
-import { useStellarWallet } from "@/context/StellarWalletContext";
 import {
   TaskWizardFormData,
   WizardStep,
@@ -20,11 +18,6 @@ const INITIAL_FORM_DATA: TaskWizardFormData = {
   functionArgs: '[]',
   cronInterval: '0 * * * *',
   gasDeposit: '10',
-  targetContractId: "",
-  functionName: "",
-  functionArgs: "{}",
-  cronInterval: "0 * * * *",
-  gasDeposit: "10",
 };
 
 export default function CreateTaskWizardPage() {

@@ -43,8 +43,9 @@ export class MockWalletProvider {
     }, account);
 
     const connectBtn = this.page.getByTestId("connect-wallet-button");
-    if (await connectBtn.isVisible()) {
-      await connectBtn.click();
+    await connectBtn.waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+    if (await connectBtn.isVisible().catch(() => false)) {
+      await connectBtn.click({ timeout: 10000 }).catch(() => {});
     }
   }
 
