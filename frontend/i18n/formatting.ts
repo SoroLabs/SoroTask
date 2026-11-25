@@ -21,9 +21,12 @@ export function formatNumber(
   const localeMap: Record<Locale, string> = {
     en: 'en-US',
     es: 'es-ES',
+    pt: 'pt-BR',
     fr: 'fr-FR',
     zh: 'zh-CN',
-    de: 'de-DE',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    ar: 'ar-SA',
   };
 
   try {
@@ -60,9 +63,12 @@ export function formatInterval(
   const localeMap: Record<Locale, string> = {
     en: 'en-US',
     es: 'es-ES',
+    pt: 'pt-BR',
     fr: 'fr-FR',
     zh: 'zh-CN',
-    de: 'de-DE',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    ar: 'ar-SA',
   };
 
   const formatter = new Intl.NumberFormat(localeMap[locale]);
@@ -70,9 +76,12 @@ export function formatInterval(
   const formats: Record<Locale, string> = {
     en: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} seconds)`,
     es: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} segundos)`,
+    pt: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} segundos)`,
     fr: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} secondes)`,
     zh: `${formatter.format(hours)}小时(${formatter.format(intervalSeconds)}秒)`,
-    de: `${formatter.format(hours)}Std (${formatter.format(intervalSeconds)} Sekunden)`,
+    ja: `${formatter.format(hours)}時間（${formatter.format(intervalSeconds)}秒）`,
+    ko: `${formatter.format(hours)}시간(${formatter.format(intervalSeconds)}초)`,
+    ar: `${formatter.format(hours)} س (${formatter.format(intervalSeconds)} ثانية)`,
   };
 
   return {
@@ -98,9 +107,12 @@ export function formatRelativeTime(
   const localeMap: Record<Locale, string> = {
     en: 'en-US',
     es: 'es-ES',
+    pt: 'pt-BR',
     fr: 'fr-FR',
     zh: 'zh-CN',
-    de: 'de-DE',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    ar: 'ar-SA',
   };
 
   try {
@@ -148,9 +160,12 @@ export function formatDateTime(
   const localeMap: Record<Locale, string> = {
     en: 'en-US',
     es: 'es-ES',
+    pt: 'pt-BR',
     fr: 'fr-FR',
     zh: 'zh-CN',
-    de: 'de-DE',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    ar: 'ar-SA',
   };
 
   try {
@@ -173,8 +188,7 @@ export function formatDateTime(
  * Lis supported locales with their collation order for addressing
  */
 export function getTextDirection(locale: Locale): 'ltr' | 'rtl' {
-  // Add RTL locales here as needed
-  const rtlLocales: Locale[] = [];
+  const rtlLocales: Locale[] = ['ar'];
   return rtlLocales.includes(locale) ? 'rtl' : 'ltr';
 }
 
@@ -198,9 +212,12 @@ export function getTextExpansionFactor(locale: Locale): number {
   const factors: Record<Locale, number> = {
     en: 1.0,
     es: 1.25,
+    pt: 1.25,
     fr: 1.3,
     zh: 0.75,
-    de: 1.35,
+    ja: 0.8,
+    ko: 0.85,
+    ar: 1.25,
   };
 
   return factors[locale];
@@ -219,9 +236,12 @@ export function getFontAdjustments(locale: Locale): {
   > = {
     en: { letterSpacing: 'normal', lineHeight: 1.5 },
     es: { letterSpacing: 'normal', lineHeight: 1.55 },
+    pt: { letterSpacing: 'normal', lineHeight: 1.55 },
     fr: { letterSpacing: 'normal', lineHeight: 1.55 },
     zh: { letterSpacing: '0.05em', lineHeight: 1.8 },
-    de: { letterSpacing: 'normal', lineHeight: 1.6 },
+    ja: { letterSpacing: '0.05em', lineHeight: 1.8 },
+    ko: { letterSpacing: '0.05em', lineHeight: 1.75 },
+    ar: { letterSpacing: 'normal', lineHeight: 1.75 },
   };
 
   return adjustments[locale];

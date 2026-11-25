@@ -6,14 +6,16 @@
 'use client';
 
 import React, { createContext, useState, useEffect, useCallback } from 'react';
-import type { Locale } from './index';
 import {
   DEFAULT_LOCALE,
   SUPPORTED_LOCALES,
   getStoredLocale,
   saveLocale,
   detectLocale,
-} from './index';
+  LOCALE_STORAGE_KEY,
+  type Locale,
+} from '@/i18n';
+import { getTextDirection as getDirection } from '@/i18n/formatting';
 
 interface LocaleContextType {
   locale: Locale;
@@ -40,10 +42,13 @@ export function LocaleProvider({
     setIsLoading(true);
 
     try {
-      // Try to get stored locale, otherwise detect from browser
-      const storedLocale = getStoredLocale();
-      const detectedLocale = detectLocale();
-      const initialLocale = storedLocale || detectedLocale || DEFAULT_LOCALE;
+      // Browser storage takes precedence; otherwise prefer server/cookie locale,
+      // or detect the browser locale for a first-time visitor.
+      const explicitlyStored = typeof window !== 'undefined'
+        ? window.localStorage.getItem(LOCALE_STORAGE_KEY)
+        : null;
+      const storedLocale = explicitlyStored ? getStoredLocale() : null;
+      const initialLocale = storedLocale || defaultLocale || detectLocale() || DEFAULT_LOCALE;
 
       if (SUPPORTED_LOCALES.includes(initialLocale)) {
         setLocaleState(initialLocale);
@@ -62,12 +67,20 @@ export function LocaleProvider({
       setLocaleState(newLocale);
       saveLocale(newLocale);
 
-      // Update document language attribute for accessibility
       if (typeof document !== 'undefined') {
         document.documentElement.lang = newLocale;
+        document.documentElement.dir = getDirection(newLocale);
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    document.documentElement.lang = locale;
+    document.documentElement.dir = getDirection(locale);
+  }, [locale]);
 
   return (
     <LocaleContext.Provider value={{ locale, setLocale, isLoading }}>

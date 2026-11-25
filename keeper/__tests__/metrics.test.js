@@ -37,4 +37,10 @@ describe('Metrics', () => {
     expect(snapshot).toBeDefined();
     expect(typeof snapshot).toBe('object');
   });
+
+  it('should include the latest observed ledger sequence in health status', () => {
+    metrics.updateHealth({ latestLedgerSequence: 12345 });
+
+    expect(metrics.getHealthStatus(60_000).latestLedgerSequence).toBe(12345);
+  });
 });

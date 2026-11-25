@@ -10,6 +10,7 @@ class Metrics {
     this.startTime = Date.now();
     this.maxFeeSamples = 100;
     this.lastPollAt = null;
+    this.latestLedgerSequence = null;
     this.rpcConnected = false;
     this.adminState = { paused: false, reason: null, changedAt: null };
     this.shardState = {
@@ -86,6 +87,9 @@ class Metrics {
     if (typeof state.rpcConnected === 'boolean') {
       this.rpcConnected = state.rpcConnected;
     }
+    if (Number.isFinite(state.latestLedgerSequence)) {
+      this.latestLedgerSequence = state.latestLedgerSequence;
+    }
   }
 
   updateAdminState(state = {}) {
@@ -124,6 +128,7 @@ class Metrics {
       uptime: uptimeSeconds,
       lastPollAt: this.lastPollAt ? this.lastPollAt.toISOString() : null,
       rpcConnected: this.rpcConnected,
+      latestLedgerSequence: this.latestLedgerSequence,
       rpcCircuitState: this.gauges.rpcCircuitState === 2
         ? 'OPEN'
         : (this.gauges.rpcCircuitState === 1 ? 'HALF_OPEN' : 'CLOSED'),
@@ -134,18 +139,6 @@ class Metrics {
   }
 }
 
-  reset() {
-    tasksExecutedTotal: 0,
-      tasksFailedTotal: 0,
-        throttledRequestsTotal: 0,
-    };
-    this.gauges = {
-  avgFeePaidXlm: 0,
-  lastCycleDurationMs: 0,
-  rpcCircuitState: 0,
-};
-this.feeSamples = [];
-  }
 function createDefaultGasMonitor() {
   return {
     getLowGasCount: () => 0,
@@ -173,6 +166,8 @@ class MetricsServer {
     this.healthStaleThreshold = options.healthStaleThreshold
       || parseInt(process.env.HEALTH_STALE_THRESHOLD_MS || '60000', 10);
     this.server = null;
+    this.io = null;
+    this.broadcastInterval = null;
     this.registry = null;
     this.metrics = new Metrics();
     this.controlStateProvider = options.controlStateProvider || null;
@@ -417,16 +412,12 @@ class MetricsServer {
   }
 
   start() {
-    this.server = http.createServer((req, res) => {
-      // CORS headers for initial development
-      const protect = (handler) => {
-        return () => requireAdminAuth(req, res, handler);
-      };
     if (this.server) {
       return;
     }
 
     this.server = http.createServer(async (req, res) => {
+      const protect = (handler) => () => requireAdminAuth(req, res, handler);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -489,9 +480,33 @@ class MetricsServer {
       }
     });
 
+    this.io = new Server(this.server, { cors: { origin: '*' } });
+    this.io.on('connection', (socket) => {
+      this.emitRealtimeSnapshot(socket);
+      socket.on('status:ping', (acknowledge) => {
+        if (typeof acknowledge === 'function') {
+          acknowledge(Date.now());
+        }
+      });
+    });
+    this.broadcastInterval = setInterval(() => this.emitRealtimeSnapshot(), 5000);
+    this.broadcastInterval.unref?.();
+
     this.server.listen(this.port, () => {
       this.logger.info(`Metrics server running on port ${this.port}`);
     });
+  }
+
+  emitRealtimeSnapshot(socket) {
+    const health = this.metrics.getHealthStatus(this.healthStaleThreshold);
+    const metrics = this.metrics.snapshot();
+    if (socket) {
+      socket.emit('sync:health', health);
+      socket.emit('sync:metrics', metrics);
+      return;
+    }
+    this.io?.emit('sync:health', health);
+    this.io?.emit('sync:metrics', metrics);
   }
 
   handleHealth(res) {
@@ -636,6 +651,7 @@ class MetricsServer {
 
   updateHealth(state) {
     this.metrics.updateHealth(state);
+    this.emitRealtimeSnapshot();
   }
 
   increment(key, amount) {
@@ -656,6 +672,7 @@ class MetricsServer {
     } else if (key === 'adminStateChangesTotal') {
       this.promAdminStateChanges.inc(typeof amount === 'number' ? amount : 1);
     }
+    this.emitRealtimeSnapshot();
   }
 
   record(key, value) {
@@ -669,21 +686,36 @@ class MetricsServer {
     } else if (key === 'rpcCircuitState') {
       this.promRpcCircuitState.set(value);
     }
+    this.emitRealtimeSnapshot();
   }
 
   updateShardState(state) {
     this.metrics.updateShardState(state);
+    this.emitRealtimeSnapshot();
   }
 
   updateDriftState(state) {
     this.metrics.updateDriftState(state);
+    this.emitRealtimeSnapshot();
   }
 
   updateAdminState(state) {
     this.metrics.updateAdminState(state);
+    this.emitRealtimeSnapshot();
   }
 
   stop() {
+    if (this.broadcastInterval) {
+      clearInterval(this.broadcastInterval);
+      this.broadcastInterval = null;
+    }
+    if (this.io) {
+      this.io.close();
+      this.io = null;
+      this.server = null;
+      this.logger.info('Server stopped');
+      return;
+    }
     if (this.server) {
       this.server.close();
       this.server = null;

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useRef, useState, type FormEvent } from "react";
 import DateInput from "./components/DateInput";
+import { PredictionCard } from "@/src/components/predictive-prefetch/PredictionCard";
 
 export default function Home() {
   const [taskData, setTaskData] = useState({
@@ -21,7 +22,7 @@ export default function Home() {
     }));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     console.log('Task submitted:', taskData);
     // Handle task submission logic here
@@ -571,12 +572,16 @@ export default function Home() {
         setFormError("Contract address and function name are required.");
         return;
       }
-      if (Number(interval) < 1) {
-        setFormError("Interval must be at least 1 second.");
+      if (!Number.isFinite(Number(interval)) || Number(interval) < 60) {
+        setFormError("Interval must be at least 60 seconds.");
         return;
       }
-      if (Number(gasBalance) < 0) {
-        setFormError("Gas balance cannot be negative.");
+      if (
+        !gasBalance.trim() ||
+        !Number.isFinite(Number(gasBalance)) ||
+        Number(gasBalance) < 0.1
+      ) {
+        setFormError("Gas balance must be at least 0.1 XLM.");
         return;
       }
 
@@ -584,8 +589,8 @@ export default function Home() {
         id: nextId.current++,
         contractAddress: contractAddress.trim(),
         functionName: functionName.trim(),
-        interval: Number(interval) || 3600,
-        gasBalance: Number(gasBalance) || 10,
+        interval: Number(interval),
+        gasBalance: Number(gasBalance),
         status: "active",
       };
 
@@ -722,7 +727,10 @@ export default function Home() {
                         type="text"
                         placeholder="C..."
                         value={contractAddress}
-                        onChange={(e) => setContractAddress(e.target.value)}
+                        onChange={(e) => {
+                          setContractAddress(e.target.value);
+                          setFormError("");
+                        }}
                         required
                         aria-required="true"
                         aria-describedby={formError ? "form-error" : undefined}
@@ -744,7 +752,10 @@ export default function Home() {
                         type="text"
                         placeholder="harvest_yield"
                         value={functionName}
-                        onChange={(e) => setFunctionName(e.target.value)}
+                        onChange={(e) => {
+                          setFunctionName(e.target.value);
+                          setFormError("");
+                        }}
                         required
                         aria-required="true"
                         autoComplete="off"
@@ -764,9 +775,12 @@ export default function Home() {
                           id="interval-seconds"
                           type="number"
                           placeholder="3600"
-                          min={1}
+                          min={60}
                           value={interval}
-                          onChange={(e) => setIntervalVal(e.target.value)}
+                          onChange={(e) => {
+                            setIntervalVal(e.target.value);
+                            setFormError("");
+                          }}
                           className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm"
                         />
                       </div>
@@ -781,12 +795,22 @@ export default function Home() {
                           id="gas-balance"
                           type="number"
                           placeholder="10"
-                          min={0}
+                          min={0.1}
+                          step={0.1}
                           value={gasBalance}
-                          onChange={(e) => setGasBalance(e.target.value)}
+                          onChange={(e) => {
+                            setGasBalance(e.target.value);
+                            setFormError("");
+                          }}
                           className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm"
                         />
                       </div>
+                    </div>
+
+                    <div className="mt-4">
+                      <PredictionCard
+                        input={{ contractAddress, functionName, interval, gasBalance }}
+                      />
                     </div>
 
                     <button

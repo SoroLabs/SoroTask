@@ -54,6 +54,15 @@ body {
   min-height: 100vh;
 }
 
+html[dir="rtl"] body {
+  direction: rtl;
+}
+
+html[dir="rtl"] .fixed.bottom-4.right-4 {
+  right: auto;
+  left: 1rem;
+}
+
 img {
   max-width: 100%;
   height: auto;

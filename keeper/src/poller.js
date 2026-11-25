@@ -261,6 +261,7 @@ class TaskPoller {
         this.metricsServer.updateHealth({
           lastPollAt: new Date(),
           rpcConnected: true,
+          latestLedgerSequence: currentTimestamp,
         });
         this.metricsServer.updateDriftState({
           warning: warningDriftCount,

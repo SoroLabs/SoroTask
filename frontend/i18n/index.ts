@@ -7,21 +7,39 @@ import en from './translations/en.json';
 import es from './translations/es.json';
 import fr from './translations/fr.json';
 import zh from './translations/zh.json';
-import de from './translations/de.json';
+import pt from './translations/pt.json';
+import ja from './translations/ja.json';
+import ko from './translations/ko.json';
+import ar from './translations/ar.json';
 
-export type Locale = 'en' | 'es' | 'fr' | 'zh' | 'de';
+export type Locale = 'en' | 'es' | 'pt' | 'fr' | 'zh' | 'ja' | 'ko' | 'ar';
 
-export const SUPPORTED_LOCALES: Locale[] = ['en', 'es', 'fr', 'zh', 'de'];
+export const SUPPORTED_LOCALES: readonly Locale[] = [
+  'en',
+  'es',
+  'pt',
+  'zh',
+  'ja',
+  'ko',
+  'ar',
+  'fr',
+];
 
 export const DEFAULT_LOCALE: Locale = 'en';
+export const LOCALE_COOKIE = 'sorotask_locale';
+export const LOCALE_STORAGE_KEY = LOCALE_COOKIE;
+export type MessageCatalog = typeof en;
 
 // Translation catalog
 const translations: Record<Locale, typeof en> = {
   en,
   es,
+  pt,
   fr,
   zh,
-  de,
+  ja,
+  ko,
+  ar,
 };
 
 /**
@@ -31,9 +49,12 @@ export function getLocaleName(locale: Locale): string {
   const names: Record<Locale, string> = {
     en: 'English',
     es: 'Español (Spanish)',
+    pt: 'Português (Portuguese)',
     fr: 'Français (French)',
     zh: '中文 (Chinese)',
-    de: 'Deutsch (German)',
+    ja: '日本語 (Japanese)',
+    ko: '한국어 (Korean)',
+    ar: 'العربية (Arabic)',
   };
   return names[locale];
 }
@@ -45,9 +66,12 @@ export function getLocaleFlag(locale: Locale): string {
   const flags: Record<Locale, string> = {
     en: '🇺🇸',
     es: '🇪🇸',
+    pt: '🇧🇷',
     fr: '🇫🇷',
     zh: '🇨🇳',
-    de: '🇩🇪',
+    ja: '🇯🇵',
+    ko: '🇰🇷',
+    ar: '🇸🇦',
   };
   return flags[locale];
 }
@@ -67,9 +91,12 @@ export function detectLocale(): Locale {
   const localeMap: Record<string, Locale> = {
     en: 'en',
     es: 'es',
+    pt: 'pt',
     fr: 'fr',
     zh: 'zh',
-    de: 'de',
+    ja: 'ja',
+    ko: 'ko',
+    ar: 'ar',
   };
 
   return (localeMap[baseLocale] as Locale) || DEFAULT_LOCALE;
@@ -84,7 +111,7 @@ export function getStoredLocale(): Locale {
   }
 
   try {
-    const stored = localStorage.getItem('sorotask_locale');
+    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
     if (stored && SUPPORTED_LOCALES.includes(stored as Locale)) {
       return stored as Locale;
     }
@@ -101,7 +128,8 @@ export function getStoredLocale(): Locale {
 export function saveLocale(locale: Locale): void {
   if (typeof window !== 'undefined') {
     try {
-      localStorage.setItem('sorotask_locale', locale);
+      localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+      document.cookie = `${LOCALE_COOKIE}=${locale}; path=/; max-age=31536000; samesite=lax`;
     } catch {
       // localStorage not available
     }
@@ -164,10 +192,15 @@ export function pluralize(count: number, locale: Locale): string {
       return 's'; // Task -> Tasks = tarea -> tareas
     case 'fr':
       return 's'; // Task -> Tasks = tâche -> tâches
-    case 'de':
-      return 'n'; // Already handled in translation
     case 'zh':
       return ''; // Chinese doesn't use plurals
+    case 'ja':
+    case 'ko':
+      return '';
+    case 'ar':
+      return '';
+    case 'pt':
+      return 's';
     default:
       return 's';
   }
@@ -196,6 +229,12 @@ export function getAvailableLocales(): Array<{
       nativeName: 'Español',
     },
     {
+      code: 'pt',
+      name: 'Portuguese',
+      flag: '🇧🇷',
+      nativeName: 'Português',
+    },
+    {
       code: 'fr',
       name: 'French',
       flag: '🇫🇷',
@@ -208,10 +247,22 @@ export function getAvailableLocales(): Array<{
       nativeName: '中文',
     },
     {
-      code: 'de',
-      name: 'German',
-      flag: '🇩🇪',
-      nativeName: 'Deutsch',
+      code: 'ja',
+      name: 'Japanese',
+      flag: '🇯🇵',
+      nativeName: '日本語',
+    },
+    {
+      code: 'ko',
+      name: 'Korean',
+      flag: '🇰🇷',
+      nativeName: '한국어',
+    },
+    {
+      code: 'ar',
+      name: 'Arabic',
+      flag: '🇸🇦',
+      nativeName: 'العربية',
     },
   ];
 }
