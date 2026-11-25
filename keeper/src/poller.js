@@ -1,5 +1,5 @@
 const { Contract, xdr, TransactionBuilder, BASE_FEE, Networks, scValToNative } = require('@stellar/stellar-sdk');
-const { createRateLimiter } = require('./concurrency');
+const { createRateLimiter, createConcurrencyLimit } = require('./concurrency');
 const { DistributedRateLimiter } = require('./distributedRateLimiter');
 const { createLogger } = require('./logger');
 const { validateTaskPayload } = require('./taskValidator');
@@ -113,6 +113,7 @@ class TaskPoller {
         }
       },
     });
+    this.checkLimit = createConcurrencyLimit(this.maxConcurrentReads);
 
     // Cluster-wide (distributed) RPC rate limiter — Issue #849.
     // This gates RPC reads across ALL keeper processes via Redis, enforcing a
@@ -168,20 +169,36 @@ class TaskPoller {
 
     // Optional read batcher — coalesces per-task reads into bulk getLedgerEntries
     // calls, reducing RPC round-trips from O(n) to O(ceil(n/batchSize)).
-    // Enabled when options.batcher is provided OR when options.batchReadsEnabled
-    // is true (in which case this constructor creates one internally).
+    // Enabled when options.batcher is provided or the resolved configuration
+    // enables it (in which case this constructor creates one internally).
     if (options.batcher instanceof ReadBatcher) {
       this.batcher = options.batcher;
-    } else if (options.batchReadsEnabled || process.env.BATCH_READS_ENABLED === 'true') {
+    } else if (
+      options.batchReadsEnabled
+      ?? options.config?.batchReadsEnabled
+      ?? (process.env.BATCH_READS_ENABLED === 'true')
+    ) {
       this.batcher = new ReadBatcher(
         this.server,
         this.contractId,
         scVal => this.decodeTaskConfig(scVal),
         {
-          batchWindowMs: parseInt(options.batchWindowMs || process.env.BATCH_WINDOW_MS || '10', 10),
-          maxBatchSize: parseInt(options.readBatchSize || process.env.READ_BATCH_SIZE || '50', 10),
-          batchConcurrency: parseInt(options.batchConcurrency || process.env.BATCH_CONCURRENCY || '2', 10),
-          batchRps: parseInt(options.batchRps || process.env.BATCH_RPS || '10', 10),
+          batchWindowMs: parseInt(
+            options.batchWindowMs ?? options.config?.batchWindowMs ?? process.env.BATCH_WINDOW_MS ?? '10',
+            10,
+          ),
+          maxBatchSize: parseInt(
+            options.readBatchSize ?? options.config?.readBatchSize ?? process.env.READ_BATCH_SIZE ?? '100',
+            10,
+          ),
+          batchConcurrency: parseInt(
+            options.batchConcurrency ?? options.config?.batchConcurrency ?? process.env.BATCH_CONCURRENCY ?? '2',
+            10,
+          ),
+          batchRps: parseInt(
+            options.batchRps ?? options.config?.batchRps ?? process.env.BATCH_RPS ?? '10',
+            10,
+          ),
           logger: this.logger,
           metricsServer: this.metricsServer,
         },
@@ -316,14 +333,19 @@ class TaskPoller {
         }
       }
 
-      const taskChecks = candidateIds.map(taskId =>
-        this.readLimit(async () => {
+      const taskChecks = candidateIds.map(taskId => {
+        const hasPreloadedConfig = preloadedConfigs?.has(Number(taskId)) || false;
+        const check = async () => {
           const startedAt = Date.now();
           const correlationId = `poll-${taskId}-${crypto.randomBytes(4).toString('hex')}`;
-          // Cluster-wide gate: wait for a global RPC token before issuing the
-          // per-task read. No-op passthrough when Redis is not configured.
-          await this.distributedReadLimit.acquire();
-          const preloaded = preloadedConfigs ? preloadedConfigs.get(Number(taskId)) : undefined;
+          if (!hasPreloadedConfig) {
+            // Batch reads have already passed through the batcher's limiter.
+            // Gate only fallback per-task RPC reads here.
+            await this.distributedReadLimit.acquire();
+          }
+          const preloaded = hasPreloadedConfig
+            ? preloadedConfigs.get(Number(taskId))
+            : undefined;
           const result = await this.checkTask(
             taskId,
             currentTimestamp,
@@ -332,8 +354,11 @@ class TaskPoller {
           );
           rpcLatencies.push(Date.now() - startedAt);
           return { ...result, correlationId };
-        }),
-      );
+        };
+        return this.checkLimit(() => (
+          hasPreloadedConfig ? check() : this.readLimit(check)
+        ));
+      });
 
       const results = await Promise.allSettled(taskChecks);
 
@@ -641,8 +666,8 @@ class TaskPoller {
         // Use config pre-fetched by ReadBatcher — no extra RPC call needed.
         // preloadedConfig is null when the task was not found in the batch response.
         taskConfig = options.preloadedConfig || null;
+        cacheSource = 'batch_preload';
         if (taskConfig) {
-          cacheSource = 'batch_preload';
           this.simulationCache.set(taskId, taskConfig);
           if (this.taskMetadataCache) {
             this.taskMetadataCache.set(taskId, taskConfig);
@@ -651,7 +676,7 @@ class TaskPoller {
       }
 
       // L4: RPC fallback — read task configuration from contract via view call
-      if (!taskConfig) {
+      if (!taskConfig && cacheSource !== 'batch_preload') {
         taskConfig = await this.getTaskConfig(taskId);
         cacheSource = 'rpc';
 
