@@ -19,6 +19,7 @@ pub mod storage;
 pub mod task;
 pub mod upgrade;
 pub mod governance;
+pub mod carbon_vault;
 pub mod escrow_pool;
 pub mod synthetic_arbitrageur;
 
