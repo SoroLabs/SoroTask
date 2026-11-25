@@ -2,13 +2,15 @@
 
 const { createHash } = require('crypto');
 const { createLogger } = require('./logger');
+const { BatchSolver, DEFAULT_SOLVER_CONFIG } = require('./batchSolver');
 
 const DEFAULT_CONFIG = {
   maxBatchSize: 100,
   batchTimeoutMs: 5000,
-  minMatchAmount: 1000000,
+  minMatchAmount: 1000,
   slippageToleranceBps: 50,
-  settlementFeeBps: 10,
+  standardDexFeeBps: 30,
+  cowFeeDiscountPercent: 40, // 40% discount for CoW batch settlement
 };
 
 class IntentOrder {
@@ -26,9 +28,9 @@ class IntentOrder {
     this.userId = userId;
     this.tokenIn = tokenIn;
     this.tokenOut = tokenOut;
-    this.amountIn = amountIn;
-    this.minAmountOut = minAmountOut;
-    this.expiresAt = expiresAt;
+    this.amountIn = Number(amountIn);
+    this.minAmountOut = Number(minAmountOut);
+    this.expiresAt = expiresAt || Date.now() + 300000;
     this.signature = signature;
     this.status = 'pending';
     this.createdAt = Date.now();
@@ -53,18 +55,22 @@ class IntentOrder {
   }
 
   calculateMatchAmount(other) {
-    const matchAmount = Math.min(this.amountIn, other.amountIn);
-    return matchAmount;
+    return Math.min(this.amountIn, other.amountIn);
   }
 }
 
 class CoWSettlementEngine {
-  constructor(config = {}) {
+  constructor(config = {}, dexRouter = null) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.logger = createLogger('cow-settlement');
     this.pendingIntents = new Map();
     this.settlementHistory = [];
     this.batchTimer = null;
+    this.dexRouter = dexRouter;
+    this.solver = new BatchSolver({
+      standardDexFeeBps: this.config.standardDexFeeBps,
+      cowFeeDiscountPercent: this.config.cowFeeDiscountPercent,
+    });
   }
 
   submitIntent(intentData) {
@@ -89,44 +95,39 @@ class CoWSettlementEngine {
     return { accepted: true, intentId: intent.id };
   }
 
+  /**
+   * Run batch settlement solver across all pending intents
+   */
   matchIntents() {
     const intents = Array.from(this.pendingIntents.values()).filter((i) => i.isValid());
+    const solution = this.solver.solve(intents, this.dexRouter);
+
     const matches = [];
-    const matched = new Set();
 
-    for (let i = 0; i < intents.length; i++) {
-      if (matched.has(intents[i].id)) continue;
+    for (const solvedPair of solution.solvedPairs) {
+      if (solvedPair.matches && solvedPair.matches.length > 0) {
+        // Group matches into complementary atomic settlements
+        const matchId = `match_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        const pairMatch = {
+          id: matchId,
+          pair: solvedPair.pair,
+          uniformClearingPrice: solvedPair.uniformClearingPrice,
+          matchedVolume: solvedPair.internalMatchedVolume,
+          standardFee: solvedPair.standardFee,
+          cowFee: solvedPair.cowFee,
+          feeSavings: solvedPair.feeSavings, // 40% discount
+          matches: solvedPair.matches,
+          residualImbalance: solvedPair.residualImbalance,
+          timestamp: Date.now(),
+        };
 
-      for (let j = i + 1; j < intents.length; j++) {
-        if (matched.has(intents[j].id)) continue;
+        matches.push(pairMatch);
 
-        if (intents[i].canMatchWith(intents[j])) {
-          const matchAmount = intents[i].calculateMatchAmount(intents[j]);
-
-          if (matchAmount >= this.config.minMatchAmount) {
-            const clearingPrice = this.calculateClearingPrice(
-              intents[i],
-              intents[j],
-              matchAmount
-            );
-
-            const match = {
-              id: `match_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-              intent1: intents[i],
-              intent2: intents[j],
-              matchAmount,
-              clearingPrice,
-              timestamp: Date.now(),
-            };
-
-            matches.push(match);
-            matched.add(intents[i].id);
-            matched.add(intents[j].id);
-
-            intents[i].status = 'matched';
-            intents[j].status = 'matched';
-
-            break;
+        // Mark participating intents as matched
+        for (const m of solvedPair.matches) {
+          const intent = this.pendingIntents.get(m.orderId);
+          if (intent) {
+            intent.status = 'matched';
           }
         }
       }
@@ -135,51 +136,37 @@ class CoWSettlementEngine {
     return matches;
   }
 
-  calculateClearingPrice(intent1, intent2, matchAmount) {
-    const price1 = intent1.amountIn / intent1.minAmountOut;
-    const price2 = intent2.amountIn / intent2.minAmountOut;
-
-    const avgPrice = (price1 + price2) / 2;
-    const clearingAmount = Math.floor(matchAmount / avgPrice);
-
-    const slippage1 = Math.abs(clearingAmount - intent1.minAmountOut) / intent1.minAmountOut;
-    const slippage2 = Math.abs(clearingAmount - intent2.minAmountOut) / intent2.minAmountOut;
-
-    if (
-      slippage1 > this.config.slippageToleranceBps / 10000 ||
-      slippage2 > this.config.slippageToleranceBps / 10000
-    ) {
-      return null;
-    }
-
-    return clearingAmount;
-  }
-
+  /**
+   * Execute atomic batch settlement
+   */
   async executeSettlement(match) {
-    const settlementFee = Math.floor(
-      (match.matchAmount * this.config.settlementFeeBps) / 10000
-    );
-
     const settlement = {
       id: match.id,
-      intent1Id: match.intent1.id,
-      intent2Id: match.intent2.id,
-      matchAmount: match.matchAmount,
-      clearingPrice: match.clearingPrice,
-      settlementFee,
+      pair: match.pair,
+      matchAmount: match.matchedVolume,
+      clearingPrice: match.uniformClearingPrice,
+      settlementFee: match.cowFee,
+      feeSavings: match.feeSavings,
+      residualImbalance: match.residualImbalance,
       executedAt: Date.now(),
       status: 'completed',
     };
 
     this.settlementHistory.push(settlement);
-    this.pendingIntents.delete(match.intent1.id);
-    this.pendingIntents.delete(match.intent2.id);
 
-    this.logger.info('Settlement executed', {
+    // Clean up matched intents from pending map
+    if (match.matches) {
+      for (const m of match.matches) {
+        this.pendingIntents.delete(m.orderId);
+      }
+    }
+
+    this.logger.info('Settlement executed with 40% fee reduction & uniform price', {
       id: settlement.id,
       matchAmount: settlement.matchAmount,
       clearingPrice: settlement.clearingPrice,
       fee: settlement.settlementFee,
+      savings: settlement.feeSavings,
     });
 
     return settlement;
@@ -192,14 +179,10 @@ class CoWSettlementEngine {
   generateSettlementProof(settlement) {
     const proofData = {
       settlementId: settlement.id,
-      intent1Hash: createHash('sha256')
-        .update(settlement.intent1Id)
-        .digest('hex'),
-      intent2Hash: createHash('sha256')
-        .update(settlement.intent2Id)
-        .digest('hex'),
+      pair: settlement.pair,
       matchAmount: settlement.matchAmount,
       clearingPrice: settlement.clearingPrice,
+      feeSavings: settlement.feeSavings,
       timestamp: settlement.executedAt,
     };
 
@@ -211,11 +194,15 @@ class CoWSettlementEngine {
   getSettlementStats() {
     const totalSettlements = this.settlementHistory.length;
     const totalVolume = this.settlementHistory.reduce(
-      (sum, s) => sum + s.matchAmount,
+      (sum, s) => sum + (s.matchAmount || 0),
       0
     );
     const totalFees = this.settlementHistory.reduce(
-      (sum, s) => sum + s.settlementFee,
+      (sum, s) => sum + (s.settlementFee || 0),
+      0
+    );
+    const totalSavings = this.settlementHistory.reduce(
+      (sum, s) => sum + (s.feeSavings || 0),
       0
     );
 
@@ -223,6 +210,7 @@ class CoWSettlementEngine {
       totalSettlements,
       totalVolume,
       totalFees,
+      totalSavings,
       pendingIntents: this.pendingIntents.size,
       avgSettlementSize: totalSettlements > 0 ? totalVolume / totalSettlements : 0,
     };
