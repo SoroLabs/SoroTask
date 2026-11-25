@@ -11783,6 +11783,301 @@ impl SoroTaskContract {
             (commitment.keeper, commitment.bond_amount, current_ledger),
         );
     }
+
+    // ── Role-Based Access Control (SC-FINAL-09) ──────────────────────────────
+
+    /// Assigns a role to an address with an optional expiration timestamp (`0` = no expiration).
+    /// Only the configured admin or an address with a non-expired `AdminAccess` permission can call.
+    pub fn assign_role(
+        env: Env,
+        caller: Address,
+        address: Address,
+        role: Role,
+        expires_at: u64,
+    ) {
+        enter_security_guard(&env);
+
+        access::require_admin_access(&env, &caller);
+
+        if expires_at != 0 && expires_at <= env.ledger().timestamp() {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        let assignment = RoleAssignment {
+            address: address.clone(),
+            role,
+            assigned_at: env.ledger().timestamp(),
+            expires_at,
+        };
+
+        set_role_assignment(&env, &address, &assignment);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "RoleAssigned"),
+                Symbol::new(&env, "v1"),
+                address.clone(),
+            ),
+            (caller, role, expires_at),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Revokes a role from an address.
+    /// Only the configured admin or an address with a non-expired `AdminAccess` permission can call.
+    pub fn revoke_role(env: Env, caller: Address, address: Address) {
+        enter_security_guard(&env);
+
+        access::require_admin_access(&env, &caller);
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RoleAssignments(address.clone()));
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "RoleRevoked"),
+                Symbol::new(&env, "v1"),
+                address.clone(),
+            ),
+            caller,
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Grants specific permissions to an address with an optional expiration timestamp (`0` = no expiration).
+    /// Only the configured admin or an address with a non-expired `AdminAccess` permission can call.
+    pub fn grant_permission(
+        env: Env,
+        caller: Address,
+        address: Address,
+        permissions: Vec<Permission>,
+        expires_at: u64,
+    ) {
+        enter_security_guard(&env);
+
+        access::require_admin_access(&env, &caller);
+
+        if expires_at != 0 && expires_at <= env.ledger().timestamp() {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        let mut grant = get_permission_grant(&env, &address).unwrap_or_else(|| PermissionGrant {
+            address: address.clone(),
+            permissions: Vec::new(&env),
+            granted_at: 0,
+            expires_at: 0,
+        });
+
+        for perm in permissions.iter() {
+            let mut already_exists = false;
+            for existing_perm in grant.permissions.iter() {
+                if existing_perm == perm {
+                    already_exists = true;
+                    break;
+                }
+            }
+            if !already_exists {
+                grant.permissions.push_back(perm);
+            }
+        }
+
+        grant.granted_at = env.ledger().timestamp();
+        grant.expires_at = expires_at;
+
+        set_permission_grant(&env, &address, &grant);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "PermissionGranted"),
+                Symbol::new(&env, "v1"),
+                address.clone(),
+            ),
+            (caller, grant.permissions, expires_at),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Revokes specific permissions from an address.
+    /// Only the configured admin or an address with a non-expired `AdminAccess` permission can call.
+    pub fn revoke_permission(
+        env: Env,
+        caller: Address,
+        address: Address,
+        permissions: Vec<Permission>,
+    ) {
+        enter_security_guard(&env);
+
+        access::require_admin_access(&env, &caller);
+
+        let mut grant = get_permission_grant(&env, &address).expect("Permission grant not found");
+
+        let mut new_permissions = Vec::new(&env);
+        for existing_perm in grant.permissions.iter() {
+            let mut should_remove = false;
+            for perm_to_remove in permissions.iter() {
+                if existing_perm == perm_to_remove {
+                    should_remove = true;
+                    break;
+                }
+            }
+            if !should_remove {
+                new_permissions.push_back(existing_perm);
+            }
+        }
+
+        grant.permissions = new_permissions;
+
+        set_permission_grant(&env, &address, &grant);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "PermissionRevoked"),
+                Symbol::new(&env, "v1"),
+                address.clone(),
+            ),
+            (caller, grant.permissions),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Delegates specific permissions to another address with an expiration timestamp.
+    /// Caller must authenticate and hold all permissions being delegated (non-expired).
+    pub fn delegate_permission(
+        env: Env,
+        caller: Address,
+        delegatee: Address,
+        permissions: Vec<Permission>,
+        expires_at: u64,
+    ) {
+        enter_security_guard(&env);
+
+        access::require_permissions(&env, &caller, &permissions);
+
+        let now = env.ledger().timestamp();
+        let effective_expiry = if expires_at == 0 {
+            now + 3600 * 24 * 30
+        } else {
+            if expires_at <= now {
+                panic_with_error!(&env, Error::Unauthorized);
+            }
+            expires_at
+        };
+
+        let delegation = Delegation {
+            delegator: caller.clone(),
+            delegatee: delegatee.clone(),
+            permissions: permissions.clone(),
+            created_at: now,
+            expires_at: effective_expiry,
+            is_revocable: true,
+        };
+
+        set_delegation(&env, &delegatee, &delegation);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "PermissionDelegated"),
+                Symbol::new(&env, "v1"),
+                delegatee.clone(),
+            ),
+            (caller, permissions, effective_expiry),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Delegates specific permissions with explicit Ed25519 delegator signature verification.
+    pub fn delegate_permission_signed(
+        env: Env,
+        caller: Address,
+        delegator_pubkey: BytesN<32>,
+        delegatee: Address,
+        permissions: Vec<Permission>,
+        expires_at: u64,
+        signature: BytesN<64>,
+    ) {
+        enter_security_guard(&env);
+
+        access::require_permissions(&env, &caller, &permissions);
+
+        let now = env.ledger().timestamp();
+        if expires_at <= now {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        access::verify_delegation_signature(
+            &env,
+            &delegator_pubkey,
+            &delegatee,
+            expires_at,
+            &signature,
+        );
+
+        let delegation = Delegation {
+            delegator: caller.clone(),
+            delegatee: delegatee.clone(),
+            permissions: permissions.clone(),
+            created_at: now,
+            expires_at,
+            is_revocable: true,
+        };
+
+        set_delegation(&env, &delegatee, &delegation);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "PermissionDelegated"),
+                Symbol::new(&env, "v1"),
+                delegatee.clone(),
+            ),
+            (caller, permissions, expires_at),
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Revokes a delegation of permissions.
+    /// Only the original delegator can revoke their delegation.
+    pub fn revoke_delegation(env: Env, caller: Address, delegatee: Address) {
+        enter_security_guard(&env);
+
+        caller.require_auth();
+        let delegation = get_delegation(&env, &delegatee);
+
+        if let Some(delegation) = delegation {
+            if delegation.delegator != caller {
+                panic_with_error!(&env, Error::Unauthorized);
+            }
+        } else {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Delegations(delegatee.clone()));
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "DelegationRevoked"),
+                Symbol::new(&env, "v1"),
+                delegatee.clone(),
+            ),
+            caller,
+        );
+
+        exit_security_guard(&env);
+    }
+
+    /// Returns `true` if `address` holds `permission` via admin status,
+    /// a non-expired direct grant, or a non-expired delegation.
+    pub fn check_permission(env: Env, address: Address, permission: Permission) -> bool {
+        access::has_active_permission(&env, &address, permission)
+    }
 }
 
 // ============================================================================
@@ -12149,329 +12444,189 @@ pub(crate) mod tests {
         );
     }
 
-    /// Assigns a role to an address.
-    /// Only admin or addresses with AdminAccess permission can assign roles.
-    pub fn assign_role(env: Env, address: Address, role: Role) {
-        enter_security_guard(&env);
+    // ── RBAC Explicit Caller Auth, Expiration & Signature Tests (SC-FINAL-09) ─
 
-        // Check if caller has admin access
-        let caller = Address::generate(&env);
-        let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
+    #[test]
+    fn test_rbac_admin_can_assign_and_revoke_role() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let target = Address::generate(&env);
 
-        if let Some(admin) = admin_address {
-            if caller != admin {
-                // Check if caller has AdminAccess permission
-                let permission_grant = get_permission_grant(&env, &caller);
-                if let Some(grant) = permission_grant {
-                    let mut has_admin_access = false;
-                    for perm in grant.permissions.iter() {
-                        if perm == Permission::AdminAccess {
-                            has_admin_access = true;
-                            break;
-                        }
-                    }
-                    if !has_admin_access {
-                        panic_with_error!(&env, Error::Unauthorized);
-                    }
-                } else {
-                    panic_with_error!(&env, Error::Unauthorized);
-                }
-            }
-        }
-
-        // Create role assignment
-        let assignment = RoleAssignment {
-            address: address.clone(),
-            role,
-            assigned_at: env.ledger().timestamp(),
-            expires_at: 0, // No expiration by default
-        };
-
-        // Store role assignment
-        set_role_assignment(&env, &address, &assignment);
-
-        // Emit RoleAssigned event
-        env.events().publish(
-            (
-                Symbol::new(&env, "RoleAssigned"),
-                Symbol::new(&env, "v1"),
-                address.clone(),
-            ),
-            (caller, role),
-        );
-
-        exit_security_guard(&env);
+        client.init_proxy(&admin, &token, &1);
+        client.assign_role(&admin, &target, &Role::Keeper, &0);
+        client.revoke_role(&admin, &target);
     }
 
-    /// Revokes a role from an address.
-    /// Only admin or addresses with AdminAccess permission can revoke roles.
-    pub fn revoke_role(env: Env, address: Address) {
-        enter_security_guard(&env);
+    #[test]
+    fn test_rbac_unauthorized_caller_rejected() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let intruder = Address::generate(&env);
+        let token = Address::generate(&env);
+        let target = Address::generate(&env);
 
-        // Check if caller has admin access
-        let caller = Address::generate(&env);
-        let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
+        client.init_proxy(&admin, &token, &1);
 
-        if let Some(admin) = admin_address {
-            if caller != admin {
-                // Check if caller has AdminAccess permission
-                let permission_grant = get_permission_grant(&env, &caller);
-                if let Some(grant) = permission_grant {
-                    let mut has_admin_access = false;
-                    for perm in grant.permissions.iter() {
-                        if perm == Permission::AdminAccess {
-                            has_admin_access = true;
-                            break;
-                        }
-                    }
-                    if !has_admin_access {
-                        panic_with_error!(&env, Error::Unauthorized);
-                    }
-                } else {
-                    panic_with_error!(&env, Error::Unauthorized);
-                }
-            }
-        }
-
-        // Remove role assignment
-        env.storage()
-            .persistent()
-            .remove(&DataKey::RoleAssignments(address.clone()));
-
-        // Emit RoleRevoked event
-        env.events().publish(
-            (
-                Symbol::new(&env, "RoleRevoked"),
-                Symbol::new(&env, "v1"),
-                address.clone(),
-            ),
-            caller,
+        let res_assign = client.try_assign_role(&intruder, &target, &Role::Keeper, &0);
+        assert_eq!(
+            res_assign,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::Unauthorized as u32
+            )))
         );
 
-        exit_security_guard(&env);
+        let res_revoke = client.try_revoke_role(&intruder, &target);
+        assert_eq!(
+            res_revoke,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::Unauthorized as u32
+            )))
+        );
+
+        let res_grant = client.try_grant_permission(
+            &intruder,
+            &target,
+            &vec![&env, Permission::TaskExecute],
+            &0,
+        );
+        assert_eq!(
+            res_grant,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::Unauthorized as u32
+            )))
+        );
     }
 
-    /// Grants specific permissions to an address.
-    /// Only admin or addresses with AdminAccess permission can grant permissions.
-    pub fn grant_permission(env: Env, address: Address, permissions: Vec<Permission>) {
-        enter_security_guard(&env);
-
-        // Check if caller has admin access
+    #[test]
+    #[should_panic]
+    fn test_rbac_assign_role_requires_caller_auth() {
+        let env = Env::default(); // No mock_all_auths
+        let id = env.register(SoroTaskContract, ());
+        let client = SoroTaskContractClient::new(&env, &id);
         let caller = Address::generate(&env);
-        let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
+        let target = Address::generate(&env);
 
-        if let Some(admin) = admin_address {
-            if caller != admin {
-                // Check if caller has AdminAccess permission
-                let permission_grant = get_permission_grant(&env, &caller);
-                if let Some(grant) = permission_grant {
-                    let mut has_admin_access = false;
-                    for perm in grant.permissions.iter() {
-                        if perm == Permission::AdminAccess {
-                            has_admin_access = true;
-                            break;
-                        }
-                    }
-                    if !has_admin_access {
-                        panic_with_error!(&env, Error::Unauthorized);
-                    }
-                } else {
-                    panic_with_error!(&env, Error::Unauthorized);
-                }
-            }
-        }
-
-        // Get existing permission grant
-        let mut grant = get_permission_grant(&env, &address).unwrap_or_else(|| PermissionGrant {
-            address: address.clone(),
-            permissions: Vec::new(&env),
-            granted_at: 0,
-            expires_at: 0,
-        });
-
-        // Add new permissions
-        for perm in permissions.iter() {
-            let mut already_exists = false;
-            for existing_perm in grant.permissions.iter() {
-                if existing_perm == perm {
-                    already_exists = true;
-                    break;
-                }
-            }
-            if !already_exists {
-                grant.permissions.push_back(perm);
-            }
-        }
-
-        grant.granted_at = env.ledger().timestamp();
-
-        // Store permission grant
-        set_permission_grant(&env, &address, &grant);
-
-        // Emit PermissionGranted event
-        env.events().publish(
-            (
-                Symbol::new(&env, "PermissionGranted"),
-                Symbol::new(&env, "v1"),
-                address.clone(),
-            ),
-            (caller, grant.permissions),
-        );
-
-        exit_security_guard(&env);
+        // Must panic because caller.require_auth() is not satisfied
+        client.assign_role(&caller, &target, &Role::Keeper, &0);
     }
 
-    /// Revokes specific permissions from an address.
-    /// Only admin or addresses with AdminAccess permission can revoke permissions.
-    pub fn revoke_permission(env: Env, address: Address, permissions: Vec<Permission>) {
-        enter_security_guard(&env);
+    #[test]
+    fn test_rbac_permission_expiration_enforced() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let sub_admin = Address::generate(&env);
+        let target = Address::generate(&env);
+        let token = Address::generate(&env);
 
-        // Check if caller has admin access
-        let caller = Address::generate(&env);
-        let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        client.init_proxy(&admin, &token, &1);
 
-        if let Some(admin) = admin_address {
-            if caller != admin {
-                // Check if caller has AdminAccess permission
-                let permission_grant = get_permission_grant(&env, &caller);
-                if let Some(grant) = permission_grant {
-                    let mut has_admin_access = false;
-                    for perm in grant.permissions.iter() {
-                        if perm == Permission::AdminAccess {
-                            has_admin_access = true;
-                            break;
-                        }
-                    }
-                    if !has_admin_access {
-                        panic_with_error!(&env, Error::Unauthorized);
-                    }
-                } else {
-                    panic_with_error!(&env, Error::Unauthorized);
-                }
-            }
-        }
-
-        // Get existing permission grant
-        let mut grant = get_permission_grant(&env, &address).expect("Permission grant not found");
-
-        // Remove specified permissions
-        let mut new_permissions = Vec::new(&env);
-        for existing_perm in grant.permissions.iter() {
-            let mut should_remove = false;
-            for perm_to_remove in permissions.iter() {
-                if existing_perm == perm_to_remove {
-                    should_remove = true;
-                    break;
-                }
-            }
-            if !should_remove {
-                new_permissions.push_back(existing_perm);
-            }
-        }
-
-        grant.permissions = new_permissions;
-
-        // Store permission grant
-        set_permission_grant(&env, &address, &grant);
-
-        // Emit PermissionRevoked event
-        env.events().publish(
-            (
-                Symbol::new(&env, "PermissionRevoked"),
-                Symbol::new(&env, "v1"),
-                address.clone(),
-            ),
-            (caller, grant.permissions),
+        // Grant AdminAccess to sub_admin expiring at t = 2_000
+        client.grant_permission(
+            &admin,
+            &sub_admin,
+            &vec![&env, Permission::AdminAccess],
+            &2_000,
         );
+        assert!(client.check_permission(&sub_admin, &Permission::AdminAccess));
 
-        exit_security_guard(&env);
+        // Before expiration, sub_admin can assign roles
+        client.assign_role(&sub_admin, &target, &Role::Auditor, &0);
+
+        // Advance ledger timestamp to expiration boundary (t = 2_000)
+        env.ledger().with_mut(|l| l.timestamp = 2_000);
+        assert!(!client.check_permission(&sub_admin, &Permission::AdminAccess));
+
+        // After expiration, sub_admin is rejected with Unauthorized
+        let res = client.try_assign_role(&sub_admin, &target, &Role::Keeper, &0);
+        assert_eq!(
+            res,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::Unauthorized as u32
+            )))
+        );
     }
 
-    /// Delegates specific permissions to another address.
-    /// Only addresses with the permissions being delegated can delegate them.
-    pub fn delegate_permission(env: Env, delegatee: Address, permissions: Vec<Permission>) {
-        enter_security_guard(&env);
+    #[test]
+    fn test_rbac_delegation_expiration_and_revocation() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let delegator = Address::generate(&env);
+        let delegatee = Address::generate(&env);
+        let other = Address::generate(&env);
+        let token = Address::generate(&env);
 
-        // Check if caller has the permissions being delegated
-        let caller = Address::generate(&env);
-        let permission_grant = get_permission_grant(&env, &caller);
+        env.ledger().with_mut(|l| l.timestamp = 500);
+        client.init_proxy(&admin, &token, &1);
 
-        if let Some(grant) = permission_grant {
-            for perm in permissions.iter() {
-                let mut has_permission = false;
-                for existing_perm in grant.permissions.iter() {
-                    if existing_perm == perm {
-                        has_permission = true;
-                        break;
-                    }
-                }
-                if !has_permission {
-                    panic_with_error!(&env, Error::Unauthorized);
-                }
-            }
-        } else {
-            panic_with_error!(&env, Error::Unauthorized);
-        }
-
-        // Create delegation
-        let delegation = Delegation {
-            delegator: caller.clone(),
-            delegatee: delegatee.clone(),
-            permissions: permissions.clone(),
-            created_at: env.ledger().timestamp(),
-            expires_at: env.ledger().timestamp() + 3600 * 24 * 30, // 30 days default
-            is_revocable: true,
-        };
-
-        // Store delegation
-        set_delegation(&env, &delegatee, &delegation);
-
-        // Emit PermissionDelegated event
-        env.events().publish(
-            (
-                Symbol::new(&env, "PermissionDelegated"),
-                Symbol::new(&env, "v1"),
-                delegatee.clone(),
-            ),
-            (caller, permissions),
+        client.grant_permission(
+            &admin,
+            &delegator,
+            &vec![&env, Permission::TaskExecute],
+            &0,
         );
 
-        exit_security_guard(&env);
+        // Delegate TaskExecute until t = 1_000
+        client.delegate_permission(
+            &delegator,
+            &delegatee,
+            &vec![&env, Permission::TaskExecute],
+            &1_000,
+        );
+        assert!(client.check_permission(&delegatee, &Permission::TaskExecute));
+
+        // Non-delegator cannot revoke
+        let res_revoke = client.try_revoke_delegation(&other, &delegatee);
+        assert_eq!(
+            res_revoke,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::Unauthorized as u32
+            )))
+        );
+
+        // Delegator can revoke
+        client.revoke_delegation(&delegator, &delegatee);
+        assert!(!client.check_permission(&delegatee, &Permission::TaskExecute));
+
+        // Re-delegate and verify expiration
+        client.delegate_permission(
+            &delegator,
+            &delegatee,
+            &vec![&env, Permission::TaskExecute],
+            &1_000,
+        );
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        assert!(!client.check_permission(&delegatee, &Permission::TaskExecute));
     }
 
-    /// Revokes a delegation of permissions.
-    /// Only the original delegator can revoke their delegation.
-    pub fn revoke_delegation(env: Env, delegatee: Address) {
-        enter_security_guard(&env);
+    #[test]
+    #[should_panic]
+    fn test_rbac_delegate_permission_signed_rejects_invalid_signature() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let delegatee = Address::generate(&env);
+        let token = Address::generate(&env);
 
-        // Check if caller is the original delegator
-        let caller = Address::generate(&env);
-        let delegation = get_delegation(&env, &delegatee);
+        env.ledger().with_mut(|l| l.timestamp = 100);
+        client.init_proxy(&admin, &token, &1);
 
-        if let Some(delegation) = delegation {
-            if delegation.delegator != caller {
-                panic_with_error!(&env, Error::Unauthorized);
-            }
-        } else {
-            panic_with_error!(&env, Error::Unauthorized);
-        }
+        let fake_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+        let fake_sig = BytesN::from_array(&env, &[2u8; 64]);
 
-        // Remove delegation
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Delegations(delegatee.clone()));
-
-        // Emit DelegationRevoked event
-        env.events().publish(
-            (
-                Symbol::new(&env, "DelegationRevoked"),
-                Symbol::new(&env, "v1"),
-                delegatee.clone(),
-            ),
-            caller,
+        client.delegate_permission_signed(
+            &admin,
+            &fake_pubkey,
+            &delegatee,
+            &vec![&env, Permission::TaskExecute],
+            &1_000,
+            &fake_sig,
         );
-
-        exit_security_guard(&env);
     }
 
     /// Initializes keeper reputation tracking for a new keeper.
