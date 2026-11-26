@@ -45,3 +45,151 @@ groups:
         annotations:
           summary: "ZK prover queue latency high"
           description: "ZK prover queue wait time is {{ $value }}ms, exceeding the 60 second SLA limit."
+
+  # Keeper SLO alerting (Issue #1723).
+  #
+  # Every expression below reads a series exported by keeper/src/sloMetrics.js
+  # and scraped from the keeper's /metrics/prometheus endpoint. Thresholds
+  # mirror the SloMetrics defaults (freshness 120 s target / 300 s critical,
+  # lateness 60 s target, 99% on-time objective, MTTR ceiling 1 h) so an alert
+  # fires exactly when GET /metrics/slo/report starts reporting the matching
+  # objective as `breached`.
+  - name: sorotask-keeper-slo-alerts
+    rules:
+      # --- Error budget burn rate (acceptance criterion: alert > 2% per hour) ---
+      - alert: KeeperSloErrorBudgetBurnHigh
+        expr: keeper_slo_error_budget_burn_percent_per_hour > 2
+        for: 10m
+        labels:
+          severity: warning
+          service: keeper
+          component: slo
+          slo: error_budget
+        annotations:
+          summary: "Keeper error budget burning faster than 2% per hour"
+          description: "The keeper is consuming {{ $value | printf \"%.2f\" }}% of its error budget per hour, above the 2%/h objective. At this rate the budget is exhausted within {{ printf \"%.1f\" (div 100.0 $value) }} hours."
+
+      - alert: KeeperSloErrorBudgetBurnCritical
+        expr: keeper_slo_error_budget_burn_percent_per_hour > 5
+        for: 5m
+        labels:
+          severity: critical
+          service: keeper
+          component: slo
+          slo: error_budget
+        annotations:
+          summary: "Keeper error budget burning faster than 5% per hour"
+          description: "The keeper is consuming {{ $value | printf \"%.2f\" }}% of its error budget per hour, above the 5%/h critical threshold. Budget exhaustion is imminent."
+
+      - alert: KeeperSloErrorBudgetExhausted
+        expr: keeper_slo_error_budget_consumed_ratio >= 1
+        for: 5m
+        labels:
+          severity: critical
+          service: keeper
+          component: slo
+          slo: error_budget
+        annotations:
+          summary: "Keeper error budget exhausted"
+          description: "The keeper has consumed 100% of its error budget over the rolling window. The 99% execution-timeliness objective is no longer met."
+
+      # --- Poll freshness (is the keeper actually reaching the chain?) ---
+      - alert: KeeperSloPollFreshnessWarning
+        expr: (time() - keeper_slo_last_successful_poll_timestamp_seconds) > 120
+        for: 1m
+        labels:
+          severity: warning
+          service: keeper
+          component: slo
+          slo: poll_freshness
+        annotations:
+          summary: "Keeper has not polled the chain for over 2 minutes"
+          description: "No successful poll for {{ $value | printf \"%.0f\" }}s, above the 120s freshness target. Due tasks may already be late."
+
+      - alert: KeeperSloPollFreshnessCritical
+        expr: (time() - keeper_slo_last_successful_poll_timestamp_seconds) > 300
+        for: 1m
+        labels:
+          severity: critical
+          service: keeper
+          component: slo
+          slo: poll_freshness
+        annotations:
+          summary: "Keeper polling is stalled"
+          description: "No successful poll for {{ $value | printf \"%.0f\" }}s, above the 300s critical freshness threshold. Check RPC reachability and keeper logs."
+
+      # --- Execution latency percentiles (issue asks for p95/p99 delays) ---
+      - alert: KeeperSloExecutionLatencyP95High
+        expr: histogram_quantile(0.95, sum(rate(keeper_slo_execution_latency_seconds_bucket[5m])) by (le)) > 300
+        for: 10m
+        labels:
+          severity: warning
+          service: keeper
+          component: slo
+          slo: execution_latency
+        annotations:
+          summary: "Keeper p95 execution latency above 5 minutes"
+          description: "95% of task executions take longer than {{ $value | printf \"%.0f\" }}s over the last 5 minutes."
+
+      - alert: KeeperSloExecutionLatencyP99High
+        expr: histogram_quantile(0.99, sum(rate(keeper_slo_execution_latency_seconds_bucket[5m])) by (le)) > 900
+        for: 10m
+        labels:
+          severity: critical
+          service: keeper
+          component: slo
+          slo: execution_latency
+        annotations:
+          summary: "Keeper p99 execution latency above 15 minutes"
+          description: "99% of task executions take longer than {{ $value | printf \"%.0f\" }}s over the last 5 minutes."
+
+      # --- Detection lateness (staleness at poll time) ---
+      - alert: KeeperSloTaskLatenessP99High
+        expr: histogram_quantile(0.99, sum(rate(keeper_slo_task_lateness_seconds_bucket[10m])) by (le)) > 60
+        for: 10m
+        labels:
+          severity: warning
+          service: keeper
+          component: slo
+          slo: execution_timeliness
+        annotations:
+          summary: "Keeper detects due tasks more than 60s late at p99"
+          description: "99th percentile detection lateness is {{ $value | printf \"%.0f\" }}s, above the 60s target. Tasks risk missing their SLA window."
+
+      # --- Mean Time To Recovery ---
+      - alert: KeeperSloMttrHigh
+        expr: keeper_slo_mttr_seconds > 3600
+        for: 5m
+        labels:
+          severity: warning
+          service: keeper
+          component: slo
+          slo: mttr
+        annotations:
+          summary: "Keeper mean time to recovery above one hour"
+          description: "Mean recovery time from the last {{ $value | printf \"%.0f\" }} completed incidents exceeds the 3600s MTTR objective."
+
+      - alert: KeeperSloIncidentOpen
+        expr: keeper_slo_incident_open == 1
+        for: 15m
+        labels:
+          severity: critical
+          service: keeper
+          component: slo
+          slo: mttr
+        annotations:
+          summary: "Keeper execution incident has been open for 15 minutes"
+          description: "Every task execution has been failing since at least 15 minutes ago. The incident has not recovered; MTTR is still accruing."
+
+      # --- Keeper uptime ---
+      - alert: KeeperSloUptimeLow
+        expr: keeper_slo_uptime_ratio < 0.99
+        for: 30m
+        labels:
+          severity: warning
+          service: keeper
+          component: slo
+          slo: uptime
+        annotations:
+          summary: "Keeper uptime below the 99% objective"
+          description: "Keeper uptime is {{ $value | printf \"%.4f\" }} ({{ $value | printf \"%.2f\" }}% of running time able to poll), below the 99% objective."

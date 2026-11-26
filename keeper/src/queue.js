@@ -474,6 +474,28 @@ class ExecutionQueue extends EventEmitter {
     };
   }
 
+  /**
+   * Run the distributed load/stress benchmark against this queue.
+   *
+   * Thin wrapper over {@link StressBenchmarkHarness} (issue #1454) so the
+   * benchmark can be pointed at a real queue instance instead of a throwaway
+   * one. All options are forwarded to the harness untouched.
+   *
+   * @param {object} [options]
+   * @param {number} [options.taskCount]
+   * @param {Function} [options.executorFn]
+   * @returns {Promise<object>} Benchmark report
+   */
+  async runStressBenchmark(options = {}) {
+    const harness = new StressBenchmarkHarness({
+      ...options,
+      queue: this,
+      workerConcurrency: this.concurrencyLimit,
+      maxWritesPerSecond: this.maxWritesPerSecond,
+    });
+    return harness.run(options);
+  }
+
   async enqueue(tasksToEnqueue, executorFn, taskConfigMap = {}) {
     if (this.shuttingDown) {
       this.logger.warn('Queue is shutting down, rejecting new execution batch', {
@@ -1307,7 +1329,11 @@ function simulateConcurrentDueConditions(tasks = [], options = {}) {
       continue;
     }
 
-    const nextRun = (Number(task.last_run) || 0) + (Number(task.interval) || 0);
+    // Synthetic task fixtures carry `lastRun`, on-chain task configs carry
+    // `last_run`; accept both so the simulation is not silently treating every
+    // task as overdue.
+    const lastRun = Number(task.last_run ?? task.lastRun) || 0;
+    const nextRun = lastRun + (Number(task.interval) || 0);
     if (nextRun <= currentTimestamp) {
       dueTasks.push({
         ...task,
@@ -1413,7 +1439,7 @@ class StressBenchmarkHarness {
         getStatistics: () => ({ total: 0, pending: 0, overdue: 0 }),
         shutdown: async () => {},
       },
-    );
+    });
 
     // Ensure high throughput limiter on dedicated benchmark queue
     if (!this.queue) {

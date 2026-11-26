@@ -211,6 +211,114 @@
            }
          ],
          "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 }
+       },
+       {
+         "id": 17,
+         "title": "Error Budget Burn Rate (% of budget per hour)",
+         "type": "stat",
+         "targets": [
+           {
+             "expr": "keeper_slo_error_budget_burn_percent_per_hour",
+             "legendFormat": "Burn %/h"
+           }
+         ],
+         "gridPos": { "x": 0, "y": 36, "w": 6, "h": 8 }
+       },
+       {
+         "id": 18,
+         "title": "Error Budget Remaining",
+         "type": "gauge",
+         "targets": [
+           {
+             "expr": "keeper_slo_error_budget_remaining_ratio",
+             "legendFormat": "Remaining"
+           }
+         ],
+         "gridPos": { "x": 6, "y": 36, "w": 6, "h": 8 }
+       },
+       {
+         "id": 19,
+         "title": "Task Execution Latency (p95 / p99)",
+         "type": "graph",
+         "targets": [
+           {
+             "expr": "histogram_quantile(0.95, sum(rate(keeper_slo_execution_latency_seconds_bucket[5m])) by (le))",
+             "legendFormat": "p95"
+           },
+           {
+             "expr": "histogram_quantile(0.99, sum(rate(keeper_slo_execution_latency_seconds_bucket[5m])) by (le))",
+             "legendFormat": "p99"
+           }
+         ],
+         "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 }
+       },
+       {
+         "id": 20,
+         "title": "Mean Time To Recovery",
+         "type": "stat",
+         "targets": [
+           {
+             "expr": "keeper_slo_mttr_seconds",
+             "legendFormat": "MTTR (s)"
+           }
+         ],
+         "gridPos": { "x": 0, "y": 44, "w": 6, "h": 8 }
+       },
+       {
+         "id": 21,
+         "title": "Open Execution Incidents",
+         "type": "stat",
+         "targets": [
+           {
+             "expr": "keeper_slo_incident_open",
+             "legendFormat": "Open"
+           },
+           {
+             "expr": "increase(keeper_slo_incidents_total[24h])",
+             "legendFormat": "Opened (24h)"
+           }
+         ],
+         "gridPos": { "x": 6, "y": 44, "w": 6, "h": 8 }
+       },
+       {
+         "id": 22,
+         "title": "Keeper Uptime Ratio",
+         "type": "gauge",
+         "targets": [
+           {
+             "expr": "keeper_slo_uptime_ratio",
+             "legendFormat": "Uptime"
+           }
+         ],
+         "gridPos": { "x": 12, "y": 44, "w": 6, "h": 8 }
+       },
+       {
+         "id": 23,
+         "title": "Seconds Since Last Successful Poll",
+         "type": "stat",
+         "targets": [
+           {
+             "expr": "time() - keeper_slo_last_successful_poll_timestamp_seconds",
+             "legendFormat": "Staleness (s)"
+           }
+         ],
+         "gridPos": { "x": 18, "y": 44, "w": 6, "h": 8 }
+       },
+       {
+         "id": 24,
+         "title": "Error Budget Burn Events by Severity",
+         "type": "graph",
+         "targets": [
+           {
+             "expr": "increase(keeper_slo_error_budget_burn_breaches_total{severity=\"warning\"}[1h])",
+             "legendFormat": "Warning events/h"
+           },
+           {
+             "expr": "increase(keeper_slo_error_budget_burn_breaches_total{severity=\"critical\"}[1h])",
+             "legendFormat": "Critical events/h"
+           }
+         ],
+         "gridPos": { "x": 0, "y": 52, "w": 24, "h": 8 }
        }
      ],
      "refresh": "10s",

@@ -529,6 +529,11 @@ async function main() {
         correlationId,
         txHash: retryResult.result?.txHash || null,
       });
+      // SLO export: execution latency percentile + MTTR recovery sample.
+      metricsServer.sloMetrics.recordExecutionOutcome({
+        success: true,
+        durationMs: Date.now() - executionStartedAt,
+      });
       if (deadLetterQueue.isQuarantined(taskId)) {
         deadLetterQueue.recover(taskId, "execution_succeeded");
       }
@@ -558,6 +563,11 @@ async function main() {
         attemptId: context.attemptId || null,
         correlationId,
         classification: error.classification || null,
+      });
+      // SLO export: opens an MTTR incident if one is not already open.
+      metricsServer.sloMetrics.recordExecutionOutcome({
+        success: false,
+        durationMs: Date.now() - executionStartedAt,
       });
       deadLetterQueue.recordFailure(taskId, {
         error: error.error || error,

@@ -524,3 +524,363 @@ describe('TaskPoller SLO integration', () => {
     expect(pollerSloMetrics).toBe(slo);
   });
 });
+
+// ── recordExecutionOutcome: execution latency + MTTR ─────────────────────────
+//
+// A fixed, realistic wall-clock base is used throughout: SloMetrics treats a
+// freshness timestamp of 0 as "never polled", so epoch-second-zero fixtures
+// would silently exercise the unknown branch instead of the happy path.
+const BASE_MS = 1_700_000_000_000;
+
+describe('recordExecutionOutcome()', () => {
+  test('observes execution latency histogram in seconds', async () => {
+    const slo = makeSlo();
+    slo.recordExecutionOutcome({ success: true, durationMs: 2_500 });
+
+    const metrics = await slo.register.getMetricsAsJSON();
+    const hist = metrics.find(m => m.name === 'keeper_slo_execution_latency_seconds');
+    expect(hist).toBeDefined();
+    // prom-client gives bucket bounds as numbers, +Inf as the string '+Inf'.
+    expect(hist.values.find(v => v.labels.le === '+Inf').value).toBe(1);
+    expect(hist.values.find(v => v.labels.le === 5).value).toBe(1);
+    expect(hist.values.find(v => v.labels.le === 2).value).toBe(0);
+  });
+
+  test('ignores non-finite durations without throwing', () => {
+    const slo = makeSlo();
+    expect(() => slo.recordExecutionOutcome({ success: true, durationMs: NaN })).not.toThrow();
+    expect(() => slo.recordExecutionOutcome({ success: true })).not.toThrow();
+    expect(() => slo.recordExecutionOutcome({ success: true, durationMs: -5 })).not.toThrow();
+  });
+
+  test('a failure opens an incident and exposes incident_open = 1', async () => {
+    const slo = makeSlo();
+    slo.recordExecutionOutcome({ success: false, durationMs: 100, nowMs: BASE_MS });
+
+    expect(await gaugeValue(slo.register, 'keeper_slo_incident_open')).toBe(1);
+    expect(slo.getSnapshot(BASE_MS).mttr.incidentOpen).toBe(true);
+    expect(await counterValue(slo.register, 'keeper_slo_incidents_total')).toBe(1);
+  });
+
+  test('repeated failures during one outage open only one incident', async () => {
+    const slo = makeSlo();
+    slo.recordExecutionOutcome({ success: false, nowMs: BASE_MS });
+    slo.recordExecutionOutcome({ success: false, nowMs: BASE_MS + 1_000 });
+    slo.recordExecutionOutcome({ success: false, nowMs: BASE_MS + 2_000 });
+
+    expect(await counterValue(slo.register, 'keeper_slo_incidents_total')).toBe(1);
+    expect(await gaugeValue(slo.register, 'keeper_slo_incident_open')).toBe(1);
+  });
+
+  test('the next success closes the incident and records recovery time', async () => {
+    const slo = makeSlo();
+    slo.recordExecutionOutcome({ success: false, nowMs: BASE_MS });
+    slo.recordExecutionOutcome({ success: true, nowMs: BASE_MS + 30_000 });
+
+    expect(await gaugeValue(slo.register, 'keeper_slo_mttr_seconds')).toBe(30);
+    expect(await gaugeValue(slo.register, 'keeper_slo_incident_open')).toBe(0);
+    expect(slo.getSnapshot(BASE_MS + 30_000).mttr.samples).toBe(1);
+    expect(slo.getSnapshot(BASE_MS + 30_000).mttr.meanSeconds).toBe(30);
+  });
+
+  test('MTTR is the mean across completed incidents', async () => {
+    const slo = makeSlo();
+    // Incident 1: 10 s recovery
+    slo.recordExecutionOutcome({ success: false, nowMs: BASE_MS });
+    slo.recordExecutionOutcome({ success: true, nowMs: BASE_MS + 10_000 });
+    // Incident 2: 30 s recovery
+    slo.recordExecutionOutcome({ success: false, nowMs: BASE_MS + 20_000 });
+    slo.recordExecutionOutcome({ success: true, nowMs: BASE_MS + 50_000 });
+
+    expect(await gaugeValue(slo.register, 'keeper_slo_mttr_seconds')).toBe(20);
+    expect(slo.getSnapshot(BASE_MS + 50_000).mttr.samples).toBe(2);
+    expect(slo.getSnapshot(BASE_MS + 50_000).mttr.incidentsTotal).toBe(2);
+  });
+
+  test('a success with no open incident does not create an MTTR sample', async () => {
+    const slo = makeSlo();
+    slo.recordExecutionOutcome({ success: true, nowMs: BASE_MS });
+
+    expect(await gaugeValue(slo.register, 'keeper_slo_mttr_seconds')).toBe(0);
+    expect(slo.getSnapshot(BASE_MS).mttr.samples).toBe(0);
+    expect(slo.getSnapshot(BASE_MS).mttr.meanSeconds).toBeNull();
+  });
+});
+
+// ── Error budget burn rate (% of budget per hour) ────────────────────────────
+
+describe('error budget burn rate', () => {
+  /**
+   * Spread `total` lateness observations evenly across `spanMs`, `breaches` of
+   * which are late. On-time observations come first so the measurement window
+   * is established before the breaches land, mirroring a real incident that
+   * starts after a healthy period. Returns the last observation timestamp.
+   */
+  function feed(slo, { breaches, total, spanMs = 60 * 60 * 1000, startMs = BASE_MS }) {
+    const stepMs = total > 1 ? Math.floor(spanMs / (total - 1)) : 0;
+    const firstBreach = total - breaches;
+    for (let i = 0; i < total; i++) {
+      const late = i >= firstBreach;
+      slo.recordTaskLateness({ lateness: late ? 120 : 0, nowMs: startMs + i * stepMs });
+    }
+    return startMs + (total - 1) * stepMs;
+  }
+
+  test('reports insufficient data below minBurnSamples', () => {
+    const slo = makeSlo();
+    slo.recordTaskLateness({ lateness: 120, nowMs: BASE_MS });
+
+    const burn = slo.getSnapshot(BASE_MS).errorBudget.burn;
+    expect(burn.insufficientData).toBe(true);
+    expect(burn.percentPerHour).toBe(0);
+    expect(burn.severity).toBe('insufficient_data');
+  });
+
+  test('stays at 0% per hour when every task is on time', async () => {
+    const slo = makeSlo();
+    const end = feed(slo, { breaches: 0, total: 10 });
+
+    expect(await gaugeValue(slo.register, 'keeper_slo_error_budget_burn_percent_per_hour')).toBe(0);
+    expect(slo.getSnapshot(end).errorBudget.burn.severity).toBe('ok');
+  });
+
+  test('exposes the burn rate as a percentage of budget per hour', async () => {
+    const slo = makeSlo();
+    // 1 breach in 3600 over one hour: 0.0278% of tasks late against a 1%
+    // allowance => ~2.78% of the budget per hour.
+    const end = feed(slo, { breaches: 1, total: 3600 });
+    const burn = slo.getSnapshot(end).errorBudget.burn;
+
+    expect(burn.insufficientData).toBe(false);
+    expect(burn.percentPerHour).toBeGreaterThan(2);
+    expect(burn.percentPerHour).toBeLessThan(4);
+    expect(await gaugeValue(slo.register, 'keeper_slo_error_budget_burn_percent_per_hour'))
+      .toBeCloseTo(burn.percentPerHour, 2);
+  });
+
+  test('flags warning when burning faster than the warning threshold', async () => {
+    const slo = makeSlo({ burnWarningPercentPerHour: 2, burnCriticalPercentPerHour: 5 });
+    const end = feed(slo, { breaches: 1, total: 3600 });
+
+    expect(slo.getSnapshot(end).errorBudget.burn.severity).toBe('warning');
+    expect(slo.getSnapshot(end).errorBudget.burn.percentPerHour).toBeGreaterThan(2);
+    expect(await labelledCounterValue(
+      slo.register, 'keeper_slo_error_budget_burn_breaches_total', { severity: 'warning' },
+    )).toBe(1);
+  });
+
+  test('flags critical when burning faster than the critical threshold', async () => {
+    const slo = makeSlo({ burnWarningPercentPerHour: 2, burnCriticalPercentPerHour: 5 });
+    const end = feed(slo, { breaches: 2, total: 3600 });
+
+    expect(slo.getSnapshot(end).errorBudget.burn.severity).toBe('critical');
+    expect(await labelledCounterValue(
+      slo.register, 'keeper_slo_error_budget_burn_breaches_total', { severity: 'critical' },
+    )).toBe(1);
+  });
+
+  test('counts one burn event per severity transition, not per observation', async () => {
+    const slo = makeSlo({ burnWarningPercentPerHour: 2, burnCriticalPercentPerHour: 5 });
+    // insufficient_data -> warning
+    const warningEnd = feed(slo, { breaches: 1, total: 3600 });
+    expect(slo.getSnapshot(warningEnd).errorBudget.burn.severity).toBe('warning');
+
+    // warning -> critical
+    let t = warningEnd;
+    for (let i = 0; i < 10; i++) {
+      t += 1_000;
+      slo.recordTaskLateness({ lateness: 120, nowMs: t });
+    }
+    expect(slo.getSnapshot(t).errorBudget.burn.severity).toBe('critical');
+
+    // A long run of equally bad observations must not keep incrementing.
+    for (let i = 0; i < 100; i++) {
+      t += 1_000;
+      slo.recordTaskLateness({ lateness: 120, nowMs: t });
+    }
+
+    expect(await labelledCounterValue(
+      slo.register, 'keeper_slo_error_budget_burn_breaches_total', { severity: 'warning' },
+    )).toBe(1);
+    expect(await labelledCounterValue(
+      slo.register, 'keeper_slo_error_budget_burn_breaches_total', { severity: 'critical' },
+    )).toBe(1);
+  });
+
+  test('prunes observations older than the burn window', () => {
+    const slo = makeSlo({ burnWindowMs: 60_000 });
+    slo.recordTaskLateness({ lateness: 120, nowMs: BASE_MS });
+    // A poll cycle two hours later must evict the stale sample.
+    const later = BASE_MS + 2 * 60 * 60 * 1000;
+    slo.recordPollCycle({ success: true, durationMs: 1, nowMs: later });
+
+    const burn = slo.getSnapshot(later).errorBudget.burn;
+    expect(burn.samplesInWindow).toBe(0);
+    expect(burn.percentPerHour).toBe(0);
+    expect(burn.insufficientData).toBe(true);
+  });
+});
+
+// ── Keeper uptime ────────────────────────────────────────────────────────────
+
+describe('keeper uptime', () => {
+  test('starts at 100% uptime', async () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS });
+
+    expect(await gaugeValue(slo.register, 'keeper_slo_uptime_ratio')).toBe(1);
+    expect(await gaugeValue(slo.register, 'keeper_slo_uptime_seconds')).toBe(0);
+    expect(await gaugeValue(slo.register, 'keeper_slo_start_time_seconds')).toBe(BASE_MS / 1000);
+  });
+
+  test('tracks running seconds as time advances', async () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS });
+    slo.recordPollCycle({ success: true, durationMs: 10, nowMs: BASE_MS + 60_000 });
+
+    expect(await gaugeValue(slo.register, 'keeper_slo_uptime_seconds')).toBe(60);
+    expect(slo.getSnapshot(BASE_MS + 60_000).uptime.runningSeconds).toBe(60);
+    expect(slo.getSnapshot(BASE_MS + 60_000).uptime.ratio).toBe(1);
+  });
+
+  test('accumulates downtime from a poll gap beyond the freshness target', async () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS, freshnessTargetSeconds: 120 });
+    slo.recordPollCycle({ success: true, durationMs: 10, nowMs: BASE_MS });
+    // Next successful poll 420 s later: 300 s of that gap exceeds the 120 s target.
+    slo.recordPollCycle({ success: true, durationMs: 10, nowMs: BASE_MS + 420_000 });
+
+    expect(await gaugeValue(slo.register, 'keeper_slo_downtime_seconds_total')).toBe(300);
+    expect(slo.getSnapshot(BASE_MS + 420_000).uptime.downtimeSeconds).toBe(300);
+    expect(slo.getSnapshot(BASE_MS + 420_000).uptime.ratio).toBeCloseTo(1 - 300 / 420, 3);
+  });
+
+  test('a gap within the freshness target costs no uptime', () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS, freshnessTargetSeconds: 120 });
+    slo.recordPollCycle({ success: true, durationMs: 10, nowMs: BASE_MS });
+    slo.recordPollCycle({ success: true, durationMs: 10, nowMs: BASE_MS + 90_000 });
+
+    expect(slo.getSnapshot(BASE_MS + 90_000).uptime.downtimeSeconds).toBe(0);
+    expect(slo.getSnapshot(BASE_MS + 90_000).uptime.ratio).toBe(1);
+  });
+
+  test('uptime ratio is clamped to [0, 1]', () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS, freshnessTargetSeconds: 0 });
+    slo.recordPollCycle({ success: true, durationMs: 1, nowMs: BASE_MS });
+    slo.recordPollCycle({ success: true, durationMs: 1, nowMs: BASE_MS + 10_000_000 });
+
+    const ratio = slo.getSnapshot(BASE_MS + 10_000_000).uptime.ratio;
+    expect(ratio).toBeGreaterThanOrEqual(0);
+    expect(ratio).toBeLessThanOrEqual(1);
+  });
+});
+
+// ── Compliance report ────────────────────────────────────────────────────────
+
+describe('getComplianceReport()', () => {
+  test('returns a versioned, self-describing report', () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS });
+    const report = slo.getComplianceReport(BASE_MS + 1_000);
+
+    expect(report.reportType).toBe('sorotask-keeper-slo-compliance');
+    expect(report.reportVersion).toBe(1);
+    expect(report.generatedAt).toBe(new Date(BASE_MS + 1_000).toISOString());
+    expect(report.window.keeperStartedAtMs).toBe(BASE_MS);
+    expect(report.objectives.map(o => o.objective)).toEqual([
+      'poll_freshness',
+      'execution_timeliness',
+      'error_budget',
+      'mttr',
+      'uptime',
+    ]);
+    expect(report.snapshot).toBeDefined();
+    expect(report.sloTargets).toBeDefined();
+  });
+
+  test('judges a freshly started keeper as unknown rather than compliant', () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS });
+    const report = slo.getComplianceReport(BASE_MS);
+
+    expect(report.objectives.every(o => o.status === 'unknown')).toBe(true);
+    expect(report.summary.compliant).toBeNull();
+    expect(report.summary.objectivesJudged).toBe(0);
+  });
+
+  test('reports compliant when all judged objectives are met', () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS });
+
+    // Ten healthy poll cycles, one minute apart, each seeing an on-time task.
+    let t = BASE_MS;
+    for (let i = 0; i < 10; i++) {
+      slo.recordPollCycle({ success: true, durationMs: 10, nowMs: t });
+      slo.recordTaskLateness({ lateness: 0, nowMs: t });
+      t += 60_000;
+    }
+
+    const report = slo.getComplianceReport(t);
+    expect(report.summary.breachedObjectives).toEqual([]);
+    expect(report.summary.breachedCount).toBe(0);
+    expect(report.summary.compliant).toBe(true);
+  });
+
+  test('reports non-compliant and names the breached objective', () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS, latenessTargetSeconds: 60 });
+
+    // Every task is 120 s late => execution timeliness breached.
+    let t = BASE_MS;
+    for (let i = 0; i < 10; i++) {
+      slo.recordPollCycle({ success: true, durationMs: 10, nowMs: t });
+      slo.recordTaskLateness({ lateness: 120, nowMs: t });
+      t += 60_000;
+    }
+
+    const report = slo.getComplianceReport(t);
+    expect(report.summary.compliant).toBe(false);
+    expect(report.summary.breachedObjectives).toContain('execution_timeliness');
+    expect(report.summary.breachedCount).toBeGreaterThan(0);
+  });
+
+  test('marks the freshness objective breached when the keeper goes stale', () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS, freshnessTargetSeconds: 120 });
+    slo.recordPollCycle({ success: true, durationMs: 10, nowMs: BASE_MS });
+
+    const report = slo.getComplianceReport(BASE_MS + 600_000);
+    const freshness = report.objectives.find(o => o.objective === 'poll_freshness');
+    expect(freshness.status).toBe('breached');
+    expect(freshness.observedSeconds).toBe(600);
+    expect(report.summary.compliant).toBe(false);
+  });
+
+  test('marks the MTTR objective breached when recovery takes over an hour', () => {
+    const slo = makeSlo({ startedAtMs: BASE_MS });
+    slo.recordExecutionOutcome({ success: false, nowMs: BASE_MS });
+    slo.recordExecutionOutcome({ success: true, nowMs: BASE_MS + 7_200_000 });
+
+    const report = slo.getComplianceReport(BASE_MS + 7_200_000);
+    const mttr = report.objectives.find(o => o.objective === 'mttr');
+    expect(mttr.status).toBe('breached');
+    expect(mttr.meanSeconds).toBe(7200);
+  });
+});
+
+// ── Prometheus export wiring ─────────────────────────────────────────────────
+
+describe('Prometheus export wiring', () => {
+  test('MetricsServer scrapes SLO series from its own registry', async () => {
+    const { MetricsServer } = require('../src/metrics');
+    const ms = new MetricsServer(null, null, null, { port: 12345 });
+
+    ms.sloMetrics.recordExecutionOutcome({ success: false, durationMs: 500, nowMs: BASE_MS });
+    ms.sloMetrics.recordExecutionOutcome({ success: true, durationMs: 1_500, nowMs: BASE_MS + 5_000 });
+
+    const exposed = await ms.register.metrics();
+    expect(exposed).toContain('keeper_slo_execution_latency_seconds_bucket');
+    expect(exposed).toContain('keeper_slo_mttr_seconds');
+    expect(exposed).toContain('keeper_slo_uptime_ratio');
+    expect(exposed).toContain('keeper_slo_error_budget_burn_percent_per_hour');
+  });
+
+  test('SLO exporter shares the MetricsServer registry instance', () => {
+    const { MetricsServer } = require('../src/metrics');
+    const ms = new MetricsServer(null, null, null, { port: 12345 });
+
+    expect(ms.sloMetrics.register).toBe(ms.register);
+  });
+});

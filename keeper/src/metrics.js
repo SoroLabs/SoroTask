@@ -747,7 +747,12 @@ class MetricsServer {
     this.server = null;
     this.registry = null;
     this.metrics = new Metrics();
-    this.sloMetrics = options.sloMetrics || new _SloMetrics();
+    // The Prometheus registry is created before the SLO exporter so that
+    // SloMetrics registers its keeper_slo_* series into the same registry the
+    // /metrics/prometheus endpoint scrapes. Without this the SLO exporter
+    // collects data into a private registry that no scrape ever reads.
+    this.register = new promClient.Registry();
+    this.sloMetrics = options.sloMetrics || new _SloMetrics({ register: this.register });
     this.config = options.config || null;
     this.controlStateProvider = options.controlStateProvider || null;
     this.controlActionHandler = options.controlActionHandler || null;
@@ -757,7 +762,6 @@ class MetricsServer {
     this.tmpPath = options.tmpPath || '/tmp';
     this.redisLatencyThresholdMs = options.redisLatencyThresholdMs
       || parseInt(process.env.REDIS_LATENCY_THRESHOLD_MS || '250', 10);
-    this.register = new promClient.Registry();
 
     // Instantiate IndicatorRegistry for SLO observability.
     // When metrics are disabled (no port configured), recordXxx() calls become no-ops
@@ -1551,6 +1555,9 @@ class MetricsServer {
       } else if (req.url === '/metrics/slo' || req.url === '/metrics/slo/') {
         this.handleSloMetrics(res);
 
+      } else if (url.pathname === '/metrics/slo/report' || url.pathname === '/metrics/slo/report/') {
+        this.handleSloComplianceReport(res);
+
       } else if (url.pathname === '/metrics/history' || url.pathname === '/metrics/history/') {
         this.handleMetricsHistory(req, res);
 
@@ -1948,6 +1955,20 @@ class MetricsServer {
     const snapshot = this.sloMetrics.getSnapshot();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(snapshot, null, 2));
+  }
+
+  /**
+   * GET /metrics/slo/report — SLO compliance report in JSON.
+   *
+   * Evaluates every committed objective (freshness, timeliness, error budget,
+   * MTTR, uptime) against its target and returns a `compliant` verdict. The
+   * payload is self-contained so a scheduled job can archive it as the
+   * automated compliance artifact. Unauthenticated (read-only, no secrets).
+   */
+  handleSloComplianceReport(res) {
+    const report = this.sloMetrics.getComplianceReport();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(report, null, 2));
   }
 
   handleDrift(res) {

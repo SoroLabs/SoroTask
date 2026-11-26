@@ -27,6 +27,11 @@ const BOUNDED_LABELS = new Set([
   'shard_index',
   'version',
   'node_env',
+  // SLO exporter labels. Both are fixed enums, not identities:
+  //   severity — 'warning' | 'critical' | 'unacceptable'
+  //   attempt  — '1' | '2' | '3' | '4+'
+  'severity',
+  'attempt',
 ]);
 
 /** Label names that are unbounded by nature — one series per value, forever. */
