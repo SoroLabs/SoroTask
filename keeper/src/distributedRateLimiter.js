@@ -30,9 +30,9 @@
  * If REDIS_URL is not configured, this limiter becomes a NO-OP passthrough:
  * every `acquire()` resolves as allowed immediately. This means single-instance
  * or local-dev deployments are NOT forced to run Redis — they simply rely on
- * the existing per-process `createRateLimiter`. The no-op mode is also used if
- * a Redis command errors at runtime ("fail open"), so a Redis outage degrades
- * to per-process limiting rather than halting the keeper.
+ * the existing per-process `createRateLimiter`. During Redis outages, a local
+ * sliding window bounds requests, and its grants are synchronized to Redis
+ * before distributed limiting resumes.
  */
 
 // The Lua script atomically implements a fixed-window counter.
@@ -90,15 +90,15 @@ return { allowed, remaining, reset_time, max_tokens }
 
 const CONSUME_SCRIPT = `
 local current = tonumber(redis.call('get', KEYS[1]) or '0')
-if current < tonumber(ARGV[1]) then
-  local updated = redis.call('incr', KEYS[1])
-  if updated == 1 then
+local requested = tonumber(ARGV[3]) or 1
+local granted = math.min(requested, math.max(0, tonumber(ARGV[1]) - current))
+if granted > 0 then
+  redis.call('incrby', KEYS[1], granted)
+  if current == 0 then
     redis.call('pexpire', KEYS[1], tonumber(ARGV[2]))
   end
-  return 1
-else
-  return 0
 end
+return granted
 `;
 
 class DistributedRateLimiter {
@@ -141,16 +141,10 @@ class DistributedRateLimiter {
         maxRetriesPerRequest: 2,
         enableOfflineQueue: true,
         lazyConnect: false,
+        retryStrategy: (attempt) => Math.min(50 * (2 ** (attempt - 1)), 2000),
       });
       this.ownsClient = true;
       this.enabled = true;
-      this.redis.on('error', (err) => {
-        if (this.logger) {
-          this.logger.warn('Distributed rate limiter Redis error (failing open)', {
-            error: err.message,
-          });
-        }
-      });
     } else {
       // No Redis configured → no-op passthrough. Per-process limiter still applies.
       this.redis = null;
@@ -164,6 +158,33 @@ class DistributedRateLimiter {
     }
 
     this.localTenantBuckets = new Map();
+    this.localRequests = [];
+    this.unsynchronizedFallbackRequests = [];
+    this.redisReady = !this.enabled || !this.redis.status || this.redis.status === 'ready';
+    this.tokenSyncPromise = null;
+
+    if (this.enabled && typeof this.redis.on === 'function') {
+      this.redis.on('ready', () => {
+        this.redisReady = true;
+        this._synchronizeFallbackRequests().catch((err) => {
+          this.redisReady = false;
+          this._logRedisFailure(err);
+        });
+      });
+      this.redis.on('reconnecting', () => {
+        this.redisReady = false;
+      });
+      this.redis.on('close', () => {
+        this.redisReady = false;
+      });
+      this.redis.on('end', () => {
+        this.redisReady = false;
+      });
+      this.redis.on('error', (err) => {
+        this.redisReady = false;
+        this._logRedisFailure(err);
+      });
+    }
 
     if (this.enabled && typeof this.redis.consumeRateToken !== 'function') {
       // Register the atomic Lua command on the client.
@@ -193,12 +214,72 @@ class DistributedRateLimiter {
     return `${this.keyPrefix}:${windowId}`;
   }
 
+  _logRedisFailure(err) {
+    if (this.logger) {
+      this.logger.warn('Distributed rate limiter Redis error; using local sliding window', {
+        error: err.message,
+      });
+    }
+  }
+
+  _pruneLocalRequests(now) {
+    const cutoff = now - this.windowMs;
+    this.localRequests = this.localRequests.filter((timestamp) => timestamp > cutoff);
+    this.unsynchronizedFallbackRequests = this.unsynchronizedFallbackRequests
+      .filter((timestamp) => timestamp > cutoff);
+  }
+
+  _tryAcquireLocally(now = Date.now()) {
+    this._pruneLocalRequests(now);
+    if (this.localRequests.length >= this.limit) {
+      return false;
+    }
+    this.localRequests.push(now);
+    this.unsynchronizedFallbackRequests.push(now);
+    return true;
+  }
+
+  async _synchronizeFallbackRequests() {
+    if (!this.enabled || !this.redisReady) {
+      return;
+    }
+    if (this.tokenSyncPromise) {
+      return this.tokenSyncPromise;
+    }
+
+    this.tokenSyncPromise = (async () => {
+      const now = Date.now();
+      this._pruneLocalRequests(now);
+      const pending = this.unsynchronizedFallbackRequests.length;
+      if (pending === 0) {
+        return;
+      }
+
+      const synced = await this.redis.consumeRateToken(
+        this._currentKey(now),
+        this.limit,
+        this.windowMs + 1000,
+        pending,
+      );
+      const syncedCount = Number(synced);
+      if (!Number.isInteger(syncedCount) || syncedCount < 0 || syncedCount > pending) {
+        throw new Error('Redis returned an invalid token synchronization result');
+      }
+      this.unsynchronizedFallbackRequests.splice(0, pending);
+    })();
+
+    try {
+      await this.tokenSyncPromise;
+    } finally {
+      this.tokenSyncPromise = null;
+    }
+  }
+
   /**
    * Attempt to consume one token from the cluster-wide budget for the current
    * window. Returns true if allowed, false if the global budget is exhausted.
    *
-   * On any Redis error this "fails open" (returns true) so a Redis outage
-   * degrades to per-process limiting rather than halting all RPC reads.
+   * During Redis errors, a local sliding window enforces the configured limit.
    *
    * @returns {Promise<boolean>}
    */
@@ -206,18 +287,25 @@ class DistributedRateLimiter {
     if (!this.enabled) {
       return true; // no-op passthrough
     }
+    if (!this.redisReady) {
+      return this._tryAcquireLocally();
+    }
     try {
+      await this._synchronizeFallbackRequests();
       const key = this._currentKey();
       const ttl = this.windowMs + 1000; // small slack so the key outlives the window
       const allowed = await this.redis.consumeRateToken(key, this.limit, ttl);
-      return Number(allowed) === 1;
-    } catch (err) {
-      if (this.logger) {
-        this.logger.warn('Distributed rate limiter check failed — failing open', {
-          error: err.message,
-        });
+      if (Number(allowed) === 1) {
+        const now = Date.now();
+        this._pruneLocalRequests(now);
+        this.localRequests.push(now);
+        return true;
       }
-      return true;
+      return false;
+    } catch (err) {
+      this.redisReady = false;
+      this._logRedisFailure(err);
+      return this._tryAcquireLocally();
     }
   }
 
@@ -228,11 +316,10 @@ class DistributedRateLimiter {
    * exceeds the global budget.
    *
    * @param {Object} [opts]
-   * @param {number} [opts.maxWaitMs=5000] - Give up waiting after this long and
-   *   proceed anyway (fail open) to avoid deadlocking the poll cycle.
+   * @param {number} [opts.maxWaitMs=5000] - Give up waiting after this long.
    * @param {number} [opts.pollMs=25] - Retry interval while over budget.
    * @returns {Promise<boolean>} true if a token was acquired, false if it
-   *   proceeded via fail-open after maxWaitMs.
+   *   acquired before maxWaitMs elapsed.
    */
   async acquire(opts = {}) {
     if (!this.enabled) {
@@ -247,7 +334,7 @@ class DistributedRateLimiter {
       }
       if (Date.now() >= deadline) {
         if (this.logger) {
-          this.logger.warn('Distributed rate limiter wait exceeded maxWaitMs — proceeding (fail open)', {
+          this.logger.warn('Distributed rate limiter wait exceeded maxWaitMs', {
             maxWaitMs,
           });
         }
@@ -267,7 +354,9 @@ class DistributedRateLimiter {
    * @returns {Promise<*>}
    */
   async schedule(fn, opts = {}) {
-    await this.acquire(opts);
+    if (!await this.acquire(opts)) {
+      return false;
+    }
     return fn();
   }
 

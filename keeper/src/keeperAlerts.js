@@ -100,6 +100,40 @@ function buildPagerDutyPayload(routingKey, message, details = {}, severity = 'cr
   });
 }
 
+function buildOpsgeniePayload(message, details = {}, severity = 'critical') {
+  const taskDetails = Object.fromEntries(
+    Object.entries(details).map(([key, value]) => [
+      key,
+      typeof value === 'string' ? value : JSON.stringify(value),
+    ]),
+  );
+  return JSON.stringify({
+    message: message.slice(0, 130),
+    alias: String(details.dedupKey || details.taskId || message).slice(0, 512),
+    description: JSON.stringify(details),
+    details: taskDetails,
+    priority: severity === 'critical' ? 'P1' : severity === 'warning' ? 'P2' : 'P3',
+    source: 'sorotask-keeper',
+  });
+}
+
+async function sendOpsgenieAlert(
+  apiKey,
+  message,
+  details = {},
+  severity = 'critical',
+  apiUrl = process.env.OPSGENIE_API_URL || 'https://api.opsgenie.com/v2/alerts',
+) {
+  if (!apiKey) return;
+  const body = buildOpsgeniePayload(message, details, severity);
+  try {
+    await postJson(apiUrl, body, { Authorization: `GenieKey ${apiKey}` });
+    logger.info('Opsgenie alert sent', { message });
+  } catch (err) {
+    logger.error('Failed to send Opsgenie alert', { error: err.message });
+  }
+}
+
 /**
  * Build an email payload for webhook-based email delivery (e.g., SendGrid, Mailgun, Postmark webhooks).
  * Expects a webhook URL that accepts JSON with: to, subject, text, html
@@ -237,6 +271,9 @@ class KeeperAlertManager {
     this.discordWebhookUrl = options.discordWebhookUrl || process.env.DISCORD_WEBHOOK_URL || null;
     this.pagerDutyRoutingKey =
       options.pagerDutyRoutingKey || process.env.PAGERDUTY_ROUTING_KEY || null;
+    this.opsgenieApiKey = options.opsgenieApiKey || process.env.OPSGENIE_API_KEY || null;
+    this.opsgenieApiUrl =
+      options.opsgenieApiUrl || process.env.OPSGENIE_API_URL || 'https://api.opsgenie.com/v2/alerts';
     this.telegramWebhookUrl =
       options.telegramWebhookUrl || process.env.ALERT_TELEGRAM_WEBHOOK || null;
     this.emailWebhookUrl =
@@ -308,16 +345,31 @@ class KeeperAlertManager {
         sendPagerDutyAlert(this.pagerDutyRoutingKey, message, { dedupKey: kind, ...details }, severity),
       );
     }
+    if (this.opsgenieApiKey) {
+      tasks.push(
+        sendOpsgenieAlert(
+          this.opsgenieApiKey,
+          message,
+          { dedupKey: kind, ...details },
+          severity,
+          this.opsgenieApiUrl,
+        ),
+      );
+    }
     if (this.telegramWebhookUrl) {
       tasks.push(sendTelegramAlert(this.telegramWebhookUrl, message, details, severity));
     }
     if (this.emailWebhookUrl) {
       tasks.push(sendEmailAlert(this.emailWebhookUrl, message, details, severity));
     }
+    if (tasks.length === 0) {
+      logger.warn('No alert destinations configured', { kind });
+      return;
+    }
     await Promise.all(tasks);
 
     // Track critical alerts for exponential escalation
-    if (severity === 'critical' && this.pagerDutyRoutingKey) {
+    if (severity === 'critical' && (this.pagerDutyRoutingKey || this.opsgenieApiKey)) {
       this._activeAlerts.set(kind, {
         sentAt: Date.now(),
         attempts: 1,
@@ -357,14 +409,34 @@ class KeeperAlertManager {
         const escalatedMessage = `[ESCALATION ${alert.attempts + 1}/${this.maxEscalationAttempts}] ${alert.message}`;
         logger.warn('Escalating unacknowledged alert', { kind, attempt: alert.attempts + 1, elapsedMs: elapsed });
         try {
-          await sendPagerDutyAlert(
-            this.pagerDutyRoutingKey,
-            escalatedMessage,
-            { dedupKey: kind, ...alert.details, escalationAttempt: alert.attempts + 1 },
-            escalatedSeverity,
-          );
-          // Also re-notify other channels for visibility
-          await this._dispatch(kind, escalatedMessage, { ...alert.details, escalationAttempt: alert.attempts + 1 }, escalatedSeverity);
+          const escalationDetails = {
+            dedupKey: kind,
+            ...alert.details,
+            escalationAttempt: alert.attempts + 1,
+          };
+          const deliveries = [];
+          if (this.pagerDutyRoutingKey) {
+            deliveries.push(
+              sendPagerDutyAlert(
+                this.pagerDutyRoutingKey,
+                escalatedMessage,
+                escalationDetails,
+                escalatedSeverity,
+              ),
+            );
+          }
+          if (this.opsgenieApiKey) {
+            deliveries.push(
+              sendOpsgenieAlert(
+                this.opsgenieApiKey,
+                escalatedMessage,
+                escalationDetails,
+                escalatedSeverity,
+                this.opsgenieApiUrl,
+              ),
+            );
+          }
+          await Promise.all(deliveries);
         } catch (err) {
           logger.error('Escalation failed', { kind, error: err.message });
         }
@@ -526,6 +598,8 @@ module.exports = {
   KeeperAlertManager,
   sendAlert,
   sendPagerDutyAlert,
+  sendOpsgenieAlert,
+  buildOpsgeniePayload,
   sendTelegramAlert,
   sendEmailAlert,
   buildEmailPayload,

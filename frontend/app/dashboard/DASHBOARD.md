@@ -4,6 +4,11 @@
 
 The SoroTask dashboard implements a customizable grid-based widget system that allows users to personalize their analytics workspace. The grid supports drag-and-drop reordering, widget visibility toggling, and persistent configuration via localStorage.
 
+The page also includes a separately loaded portfolio allocation chart for the
+current wallet. Its read-only feed, valuation schema, freshness rules and
+accessibility behavior are documented in
+[Portfolio allocation](../../../docs/portfolio-allocation.md).
+
 ## Widget Registry API
 
 ### WidgetDefinition Type

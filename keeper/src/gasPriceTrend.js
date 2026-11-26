@@ -1,4 +1,10 @@
 const { createLogger } = require('./logger');
+const {
+  buildForecast,
+  clamp,
+  forecastArima,
+  optimalExecutionWindow,
+} = require('./arimaForecast');
 
 function parseInteger(value, fallback) {
   const parsed = parseInt(value, 10);
@@ -20,6 +26,18 @@ class GasPriceTrend {
     this.minMultiplier = parseFloatValue(process.env.GAS_PRICE_MIN_MULTIPLIER, 0.85);
     this.maxMultiplier = parseFloatValue(process.env.GAS_PRICE_MAX_MULTIPLIER, 2.0);
     this.trendSensitivity = parseFloatValue(process.env.GAS_PRICE_TREND_SENSITIVITY, 0.5);
+    this.forecastHorizon = clamp(
+      parseInteger(process.env.GAS_PRICE_FORECAST_HORIZON, 5),
+      1,
+      20,
+    );
+    this.minSamplesForArima = clamp(
+      parseInteger(process.env.GAS_PRICE_ARIMA_MIN_SAMPLES, 8),
+      3,
+      200,
+    );
+    this.arimaModel = null;
+    this.arimaDirty = true;
 
     this.ledgerHistory = []; // Last 10 ledgers fee samples: [{ ledgerSequence, fees: [] }]
     this.MAX_LEDGER_HISTORY = 10;
@@ -31,6 +49,8 @@ class GasPriceTrend {
       minMultiplier: this.minMultiplier,
       maxMultiplier: this.maxMultiplier,
       trendSensitivity: this.trendSensitivity,
+      forecastHorizon: this.forecastHorizon,
+      minSamplesForArima: this.minSamplesForArima,
     });
   }
 
@@ -49,6 +69,38 @@ class GasPriceTrend {
     if (this.history.length > this.maxSamples) {
       this.history.shift();
     }
+
+    this.arimaDirty = true;
+  }
+
+  getArimaModel() {
+    if (!this.arimaDirty && this.arimaModel) return this.arimaModel;
+
+    this.arimaModel = buildForecast(
+      this.history.map(sample => sample.fee),
+      { horizon: this.forecastHorizon, minSamples: this.minSamplesForArima },
+    ).model;
+    this.arimaDirty = false;
+    return this.arimaModel;
+  }
+
+  getMultiStepForecast(horizon = this.forecastHorizon) {
+    const model = this.getArimaModel();
+    return forecastArima(model, horizon);
+  }
+
+  getExecutionRecommendation() {
+    const forecasts = this.getMultiStepForecast();
+    const recommendation = optimalExecutionWindow(forecasts);
+    if (!recommendation) return null;
+
+    return {
+      ...recommendation,
+      action:
+        recommendation.savingsPercent >= 18 && recommendation.ledgerAhead > 1
+          ? 'delay_execution'
+          : 'execute_now',
+    };
   }
 
   /**
@@ -150,13 +202,27 @@ class GasPriceTrend {
   }
 
   getDynamicFeeMultiplier() {
-    const trend = this.getTrend();
+    const model = this.getArimaModel();
+    const forecast = this.getMultiStepForecast(1)[0]?.forecast ?? 0;
+    const baseline =
+      this._windowAverage(this.longWindowSeconds) ||
+      this._windowAverage(this.shortWindowSeconds) ||
+      model.baseline ||
+      forecast;
+
+    if (baseline <= 0 || forecast <= 0) {
+      return 1;
+    }
+
+    const trend = model.trained
+      ? (forecast - baseline) / baseline
+      : this.getTrend();
     const adjustment = trend >= 0
       ? trend * this.trendSensitivity
       : trend * (this.trendSensitivity * 0.5);
 
     const multiplier = 1 + adjustment;
-    const clamped = Math.min(this.maxMultiplier, Math.max(this.minMultiplier, multiplier));
+    const clamped = clamp(multiplier, this.minMultiplier, this.maxMultiplier);
 
     return Number(clamped.toFixed(4));
   }
@@ -166,6 +232,8 @@ class GasPriceTrend {
     const longTermAverage = Number(this._windowAverage(this.longWindowSeconds).toFixed(2));
     const trend = Number(this.getTrend().toFixed(4));
     const multiplier = this.getDynamicFeeMultiplier();
+    const model = this.getArimaModel();
+    const forecasts = this.getMultiStepForecast();
 
     return {
       trackedSamples: this.history.length,
@@ -177,6 +245,19 @@ class GasPriceTrend {
       longWindowSeconds: this.longWindowSeconds,
       minMultiplier: this.minMultiplier,
       maxMultiplier: this.maxMultiplier,
+      arima: {
+        order: model.order,
+        trained: model.trained,
+        reason: model.reason,
+        horizon: this.forecastHorizon,
+        coefficients: {
+          drift: Number(model.drift.toFixed(4)),
+          ar: model.ar.map(value => Number(value.toFixed(4))),
+          ma: model.ma.map(value => Number(value.toFixed(4))),
+        },
+        nextFeeForecast: Math.ceil(forecasts[0]?.forecast ?? 0),
+        upperBound: Math.ceil(forecasts[0]?.upperBound ?? 0),
+      },
     };
   }
 }

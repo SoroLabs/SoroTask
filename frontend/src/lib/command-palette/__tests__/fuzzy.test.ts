@@ -20,7 +20,6 @@ const cmd = (id: string, title: string, group = 'Navigation', keywords?: string)
   group,
   keywords,
   perform: () => {},
-  keywords,
 } as PaletteCommand);
 
 describe('fuzzyMatch', () => {
@@ -130,6 +129,20 @@ describe('rankCommands', () => {
 
   it('handles an empty command list', () => {
     expect(rankCommands([], 'anything')).toEqual([]);
+  });
+
+  it('searches a 10,000-command dataset without an accidental quadratic regression', () => {
+    const commands = Array.from({ length: 10_000 }, (_, index) =>
+      cmd(`task-${index}`, `Task ${index} Execute Contract`, 'Tasks', `automation ${index}`),
+    );
+    const startedAt = performance.now();
+    const ranked = rankCommands(commands, 'tce');
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(ranked).toHaveLength(10_000);
+    // This is a generous regression guard, not a claim that every environment
+    // will meet the issue's aspirational sub-millisecond target.
+    expect(elapsedMs).toBeLessThan(250);
   });
 
   it('carries match indices through for highlighting', () => {

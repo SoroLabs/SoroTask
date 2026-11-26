@@ -12,6 +12,8 @@ import {
   truncateAddress,
   WalletConnectionError,
   EXPECTED_NETWORK_PASSPHRASE,
+  connectWalletWith,
+  restoreWalletSession,
 } from "@/app/lib/wallet";
 
 // ---------------------------------------------------------------------------
@@ -64,6 +66,21 @@ const MOCK_ADDRESS = "GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRS";
 
 beforeEach(() => {
   jest.clearAllMocks();
+});
+
+test("the keeper wallet restores the same address and network after a provider connection", async () => {
+  localStorage.clear();
+  mockIsConnected.mockResolvedValue({ isConnected: true });
+  mockRequestAccess.mockResolvedValue({ address: MOCK_ADDRESS });
+  mockGetNetworkDetails.mockResolvedValue(FUTURENET_DETAILS);
+  const connected = await connectWalletWith("freighter");
+  expect(JSON.parse(localStorage.getItem("sorotask_wallet_session")!)).toMatchObject({
+    providerId: "freighter", address: MOCK_ADDRESS,
+    network: "FUTURENET", networkPassphrase: EXPECTED_NETWORK_PASSPHRASE,
+    networkUrl: FUTURENET_DETAILS.networkUrl,
+  });
+  expect(await restoreWalletSession()).toEqual(connected);
+  localStorage.clear();
 });
 
 // ---------------------------------------------------------------------------

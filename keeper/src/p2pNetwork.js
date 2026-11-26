@@ -14,6 +14,9 @@ const DEFAULT_P2P_TOPICS = {
   discovery: 'sorotask.keeper.discovery.v1',
   taskLocks: 'sorotask.keeper.task-locks.v1',
   bids: 'sorotask.keeper.bids.v1',
+  // Issue #1658: consensus gossip is exposed so the Byzantine fault detector
+  // can compare proposals, votes, commits and results across keepers.
+  consensus: 'sorotask.keeper.consensus.v1',
 };
 
 function parsePeerList(value) {
@@ -259,6 +262,9 @@ class KeeperP2PNetwork extends EventEmitter {
     this.pruneTimer = null;
     // Issue #841: active bid auction state — keyed by taskId
     this.activeBids = new Map();
+    // Issue #1658: optional Byzantine fault detector tap. The detector only
+    // observes signed gossip; it never changes routing or message delivery.
+    this.byzantineDetector = options.byzantineDetector || null;
   }
 
   async start() {
@@ -360,6 +366,7 @@ class KeeperP2PNetwork extends EventEmitter {
     this.subscribeLibp2pTopic(this.topics.discovery);
     this.subscribeLibp2pTopic(this.topics.taskLocks);
     this.subscribeLibp2pTopic(this.topics.bids);
+    this.subscribeLibp2pTopic(this.topics.consensus);
     this.libp2pStarted = true;
     this.broadcastLibp2pDiscovery();
   }
@@ -417,6 +424,14 @@ class KeeperP2PNetwork extends EventEmitter {
     socket.on('keeper:heartbeat', (envelope) => this.handleEnvelope(socket, envelope));
     socket.on('keeper:peers', (envelope) => this.handleEnvelope(socket, envelope));
     socket.on('keeper:task-lock', (envelope) => this.handleTaskLockEnvelope(envelope));
+    // Issue #1658: consensus gossip channel and generic peer messages are
+    // forwarded to the byzantine detector tap.
+    socket.on('keeper:consensus', (envelope) => this.handleConsensusEnvelope(envelope, {
+      transport: 'socketio',
+    }));
+    socket.on('keeper:message', (envelope) => this.handlePeerMessageEnvelope(envelope, {
+      transport: 'socketio',
+    }));
     // Issue #841: receive incoming fee bids from peer keepers
     socket.on('keeper:bid', (envelope) => {
       const verification = this.verify(envelope);
@@ -424,6 +439,7 @@ class KeeperP2PNetwork extends EventEmitter {
         this.logger.warn('Rejected invalid bid envelope', { reason: verification.reason });
         return;
       }
+      this._tapByzantine(envelope, { channel: 'bids', transport: 'socketio' });
       this._recordBid(envelope);
       this.emit('bid:received', { nodeId: envelope.nodeId, payload: envelope.payload });
     });
@@ -511,6 +527,10 @@ class KeeperP2PNetwork extends EventEmitter {
       return;
     }
 
+    if (topic === this.topics.consensus) {
+      this.handleConsensusEnvelope(envelope, { transport: 'libp2p' });
+      return;
+    }
     if (topic === this.topics.taskLocks) {
       this.handleTaskLockEnvelope(envelope);
       return;
@@ -518,6 +538,7 @@ class KeeperP2PNetwork extends EventEmitter {
     if (topic === this.topics.bids) {
       const verification = this.verify(envelope);
       if (verification.ok) {
+        this._tapByzantine(envelope, { channel: 'bids', transport: 'libp2p' });
         this._recordBid(envelope);
         this.emit('bid:received', { nodeId: envelope.nodeId, payload: envelope.payload });
       }
@@ -534,6 +555,7 @@ class KeeperP2PNetwork extends EventEmitter {
       return;
     }
 
+    this._tapByzantine(envelope, { channel: 'discovery' });
     const payload = envelope.payload || {};
     this.upsertPeer(envelope.nodeId, {
       url: payload.url || null,
@@ -552,6 +574,7 @@ class KeeperP2PNetwork extends EventEmitter {
       return;
     }
 
+    this._tapByzantine(envelope, { channel: 'task-locks' });
     const payload = envelope.payload || {};
     if (payload.taskId == null) {
       return;
@@ -567,6 +590,90 @@ class KeeperP2PNetwork extends EventEmitter {
 
     this.taskLocks.set(lock.taskId, lock);
     this.emit('task-lock:claimed', lock);
+  }
+
+  /**
+   * Handle a signed consensus gossip envelope (issue #1658).
+   * Verifies the envelope, taps the byzantine detector and re-emits the
+   * consensus message so ConsensusNetworkAdapter receives it.
+   * @returns {boolean} true when the envelope was accepted
+   */
+  handleConsensusEnvelope(envelope, meta = {}) {
+    const verification = this.verify(envelope);
+    if (!verification.ok) {
+      this.logger.warn('Rejected invalid consensus envelope', { reason: verification.reason });
+      this.emit('security:rejected', { reason: verification.reason });
+      return false;
+    }
+
+    this._tapByzantine(envelope, { channel: 'consensus', ...meta });
+    this.emit('message', {
+      type: envelope.type,
+      payload: envelope.payload,
+      nodeId: envelope.nodeId,
+      timestamp: envelope.timestamp,
+    });
+    return true;
+  }
+
+  /**
+   * Handle a signed generic peer envelope (issue #1658).
+   * @returns {boolean} true when the envelope was accepted
+   */
+  handlePeerMessageEnvelope(envelope, meta = {}) {
+    const verification = this.verify(envelope);
+    if (!verification.ok) {
+      this.logger.warn('Rejected invalid peer message envelope', { reason: verification.reason });
+      this.emit('security:rejected', { reason: verification.reason });
+      return false;
+    }
+
+    this._tapByzantine(envelope, { channel: 'message', ...meta });
+    this.emit('message', {
+      type: envelope.type,
+      payload: envelope.payload,
+      nodeId: envelope.nodeId,
+      timestamp: envelope.timestamp,
+    });
+    return true;
+  }
+
+  /**
+   * Attach a Byzantine fault detector to the gossip tap (issue #1658).
+   * @param {{observe: Function}} detector
+   */
+  attachByzantineDetector(detector) {
+    if (detector && typeof detector.observe !== 'function') {
+      throw new Error('Byzantine detector must expose observe(envelope, meta)');
+    }
+    this.byzantineDetector = detector || null;
+    return this.byzantineDetector;
+  }
+
+  detachByzantineDetector() {
+    const detector = this.byzantineDetector;
+    this.byzantineDetector = null;
+    return detector;
+  }
+
+  /**
+   * Forward an observation to the detector without letting a detector bug
+   * break gossip delivery.
+   * @private
+   */
+  _tapByzantine(envelope, meta = {}) {
+    const detector = this.byzantineDetector;
+    if (!detector || typeof detector.observe !== 'function') {
+      return;
+    }
+    try {
+      detector.observe(envelope, { transport: 'p2p', ...meta });
+    } catch (error) {
+      this.logger.warn('Byzantine detector observation failed', {
+        error: error.message,
+        type: envelope && envelope.type,
+      });
+    }
   }
 
   rejectSocket(socket, reason) {
@@ -685,6 +792,73 @@ class KeeperP2PNetwork extends EventEmitter {
     });
   }
 
+  /**
+   * Normalise the two supported broadcast shapes: a bare payload with an
+   * explicit type, or a ConsensusNetworkAdapter envelope
+   * `{type: 'consensus', payload: message}`.
+   * @private
+   */
+  _normalizeBroadcastPayload(payload, type) {
+    if (
+      payload
+      && typeof payload === 'object'
+      && payload.type === 'consensus'
+      && payload.payload
+    ) {
+      return { type: 'consensus', payload: payload.payload };
+    }
+    return { type: type || 'message', payload };
+  }
+
+  /**
+   * Broadcast a signed payload to all peers (issue #1658).
+   * @param {Object} payload
+   * @param {string} [type]
+   * @returns {Object|null} signed envelope
+   */
+  broadcast(payload, type = 'message') {
+    if (!this.enabled || !this.started) {
+      return null;
+    }
+    const normalized = this._normalizeBroadcastPayload(payload, type);
+    const envelope = this.sign(normalized.type, normalized.payload);
+    if (normalized.type === 'consensus') {
+      this.publishEnvelope(this.topics.consensus, 'keeper:consensus', envelope);
+    } else {
+      this.publishEnvelope(this.topics.discovery, 'keeper:message', envelope);
+    }
+    return envelope;
+  }
+
+  /**
+   * Send a signed payload to a single peer (issue #1658).
+   * Falls back to pubsub when no direct socket is available.
+   * @returns {Object|null} signed envelope
+   */
+  sendToPeer(peerId, payload, type = 'message') {
+    if (!this.enabled || !this.started) {
+      return null;
+    }
+    const normalized = this._normalizeBroadcastPayload(payload, type);
+    const envelope = this.sign(normalized.type, normalized.payload);
+    const socket = this.sockets.get(peerId);
+    if (socket && socket.connected) {
+      socket.emit(
+        normalized.type === 'consensus' ? 'keeper:consensus' : 'keeper:message',
+        envelope,
+      );
+      return envelope;
+    }
+    const topic = normalized.type === 'consensus' ? this.topics.consensus : this.topics.discovery;
+    this.publishLibp2p(topic, envelope);
+    return envelope;
+  }
+
+  /** Broadcast a consensus message over the consensus gossip channel. */
+  broadcastConsensus(message) {
+    return this.broadcast(message, 'consensus');
+  }
+
   publishLibp2p(topic, envelope) {
     const pubsub = this.libp2pNode && this.libp2pNode.services && this.libp2pNode.services.pubsub;
     if (!this.libp2pStarted || !pubsub || typeof pubsub.publish !== 'function') {
@@ -772,6 +946,7 @@ class KeeperP2PNetwork extends EventEmitter {
       libp2pStarted: this.libp2pStarted,
       transport: this.transport,
       taskLockCount: this.taskLocks.size,
+      byzantineDetectorAttached: Boolean(this.byzantineDetector),
       peers: peers.map((peer) => ({
         nodeId: peer.nodeId,
         url: peer.url,

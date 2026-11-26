@@ -4,20 +4,28 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy.yml"
   pull_request:
     branches:
       - main
     paths:
-      - 'frontend/**'
-      - '.github/workflows/deploy.yml'
+      - "frontend/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: deploy-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  smoke-test-and-lint:
-    name: Build & Smoke Tests
+  verify:
+    name: Build & Unit Tests
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -29,12 +37,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install Dependencies
-        run: npm ci --prefer-offline
+        run: npm install --legacy-peer-deps --prefer-offline
 
       - name: Run Unit & Component Tests
         run: npm test -- --passWithNoTests
@@ -43,43 +51,242 @@ jobs:
         env:
           NEXT_PUBLIC_STELLAR_NETWORK: ${{ github.ref == 'refs/heads/main' && 'mainnet' || 'testnet' }}
           NEXT_PUBLIC_SOROBAN_RPC_URL: ${{ github.ref == 'refs/heads/main' && 'https://rpc-mainnet.stellar.org' || 'https://soroban-testnet.stellar.org' }}
-          NEXT_TELEMETRY_DISABLED: '1'
+          NEXT_TELEMETRY_DISABLED: "1"
         run: npm run build
 
   deploy-edge:
-    name: Global Edge Distribution (Vercel / Cloudflare)
-    needs: smoke-test-and-lint
+    name: Deploy Preview or Production to Vercel
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
+    needs: verify
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    outputs:
+      deployment_url: ${{ steps.deploy.outputs.deployment_url }}
+      rollback_target_url: ${{ steps.rollback-target.outputs.rollback_target_url }}
+      target_environment: ${{ steps.environment.outputs.target_environment }}
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v7
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
       - name: Determine Target Environment
-        id: env-spec
+        id: environment
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "env_name=preview" >> $GITHUB_OUTPUT
-            echo "is_prod=false" >> $GITHUB_OUTPUT
-            echo "stellar_network=testnet" >> $GITHUB_OUTPUT
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            echo "target_environment=production" >> "$GITHUB_OUTPUT"
           else
-            echo "env_name=production" >> $GITHUB_OUTPUT
-            echo "is_prod=true" >> $GITHUB_OUTPUT
-            echo "stellar_network=mainnet" >> $GITHUB_OUTPUT
+            echo "target_environment=preview" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Deploy to Vercel Edge
-        uses: amondnet/vercel-action@v42
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN || 'simulated-token' }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID || 'simulated-org' }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID || 'simulated-project' }}
-          vercel-args: ${{ steps.env-spec.outputs.is_prod == 'true' && '--prod' || '' }}
-          working-directory: ./frontend
-        continue-on-error: true
-
-      - name: Post-Deployment Smoke Check & Health Telemetry
+      - name: Require Vercel Credentials
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          echo "Verifying edge deployment routing for environment: ${{ steps.env-spec.outputs.env_name }}"
-          echo "Network configuration: ${{ steps.env-spec.outputs.stellar_network }}"
-          echo "Automated rollback trigger: Listening for Sentry spike threshold (>5% errors within 5m)"
-          echo "All edge health checks passed with 100% success."
+          if [[ -z "$VERCEL_TOKEN" || -z "$VERCEL_ORG_ID" || -z "$VERCEL_PROJECT_ID" ]]; then
+            echo "::error::Set VERCEL_TOKEN, VERCEL_ORG_ID, and VERCEL_PROJECT_ID repository secrets."
+            exit 1
+          fi
+
+      - name: Find Previous Production Deployment
+        id: rollback-target
+        if: steps.environment.outputs.target_environment == 'production'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          query_args=(
+            --data-urlencode "projectId=$VERCEL_PROJECT_ID"
+            --data-urlencode "target=production"
+            --data-urlencode "state=READY"
+            --data-urlencode "rollbackCandidate=true"
+            --data-urlencode "limit=20"
+          )
+          if [[ "$VERCEL_ORG_ID" == team_* ]]; then
+            query_args+=(--data-urlencode "teamId=$VERCEL_ORG_ID")
+          fi
+          response="$(curl --fail --silent --show-error --get \
+            --header "Authorization: Bearer $VERCEL_TOKEN" \
+            "${query_args[@]}" \
+            https://api.vercel.com/v7/deployments)"
+          candidate="$(jq -r '.deployments[] | select(.url != null) | .url' <<< "$response" | head -n 1)"
+          if [[ "$candidate" == https://*.vercel.app ]]; then
+            rollback_target_url="$candidate"
+          elif [[ "$candidate" == *.vercel.app ]]; then
+            rollback_target_url="https://$candidate"
+          elif [[ -n "$candidate" ]]; then
+            echo "::error::Vercel returned an unexpected rollback candidate URL."
+            exit 1
+          else
+            rollback_target_url=""
+            echo "::warning::No previous production rollback candidate is available."
+          fi
+          echo "rollback_target_url=$rollback_target_url" >> "$GITHUB_OUTPUT"
+
+      - name: Pull Vercel Project Settings
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: npx --yes vercel@66.6.0 pull --yes --environment="${{ steps.environment.outputs.target_environment }}"
+
+      - name: Build Vercel Deployment
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          NEXT_PUBLIC_STELLAR_NETWORK: ${{ steps.environment.outputs.target_environment == 'production' && 'mainnet' || 'testnet' }}
+          NEXT_PUBLIC_SOROBAN_RPC_URL: ${{ steps.environment.outputs.target_environment == 'production' && 'https://rpc-mainnet.stellar.org' || 'https://soroban-testnet.stellar.org' }}
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: |
+          if [[ "${{ steps.environment.outputs.target_environment }}" == "production" ]]; then
+            npx --yes vercel@66.6.0 build --prod
+          else
+            npx --yes vercel@66.6.0 build
+          fi
+
+      - name: Deploy to Vercel
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [[ "${{ steps.environment.outputs.target_environment }}" == "production" ]]; then
+            deployment_url="$(npx --yes vercel@66.6.0 deploy --prebuilt --prod --yes)"
+          else
+            deployment_url="$(npx --yes vercel@66.6.0 deploy --prebuilt --yes)"
+          fi
+          if [[ "$deployment_url" != https://*.vercel.app ]]; then
+            echo "::error::Vercel did not return a valid deployment URL."
+            exit 1
+          fi
+          echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+          echo "Deployed ${{ steps.environment.outputs.target_environment }} to $deployment_url"
+
+  canary-smoke:
+    name: Post-Deployment Playwright Canary
+    needs: deploy-edge
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Dependencies
+        run: npm install --legacy-peer-deps --prefer-offline
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke Test Deployment and Wallet Connection
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ needs.deploy-edge.outputs.deployment_url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: npm run test:e2e:ci -- tests/e2e/deployment-smoke.spec.ts --project=chromium
+
+  rollback-after-failed-canary:
+    name: Automatically Roll Back Failed Production Canary
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      needs.canary-smoke.result == 'failure'
+    needs:
+      - deploy-edge
+      - canary-smoke
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      ROLLBACK_TARGET_URL: ${{ needs.deploy-edge.outputs.rollback_target_url }}
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Roll Back Production
+        run: |
+          if [[ -z "$ROLLBACK_TARGET_URL" ]]; then
+            echo "::error::Canary failed, but no previous production deployment is available to roll back to."
+            exit 1
+          fi
+          npx --yes vercel@66.6.0 rollback "$ROLLBACK_TARGET_URL" \
+            --scope "$VERCEL_ORG_ID" \
+            --project "$VERCEL_PROJECT_ID" \
+            --non-interactive
+
+  rollback-on-demand:
+    name: Roll Back Production on Demand
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Require Vercel Credentials
+        run: |
+          if [[ -z "$VERCEL_TOKEN" || -z "$VERCEL_ORG_ID" || -z "$VERCEL_PROJECT_ID" ]]; then
+            echo "::error::Set VERCEL_TOKEN, VERCEL_ORG_ID, and VERCEL_PROJECT_ID repository secrets."
+            exit 1
+          fi
+
+      - name: Find Previous Production Deployment
+        id: rollback-target
+        run: |
+          query_args=(
+            --data-urlencode "projectId=$VERCEL_PROJECT_ID"
+            --data-urlencode "target=production"
+            --data-urlencode "state=READY"
+            --data-urlencode "rollbackCandidate=true"
+            --data-urlencode "limit=20"
+          )
+          if [[ "$VERCEL_ORG_ID" == team_* ]]; then
+            query_args+=(--data-urlencode "teamId=$VERCEL_ORG_ID")
+          fi
+          response="$(curl --fail --silent --show-error --get \
+            --header "Authorization: Bearer $VERCEL_TOKEN" \
+            "${query_args[@]}" \
+            https://api.vercel.com/v7/deployments)"
+          candidate="$(jq -r '.deployments[] | select(.url != null) | .url' <<< "$response" | head -n 1)"
+          if [[ "$candidate" == https://*.vercel.app ]]; then
+            rollback_target_url="$candidate"
+          elif [[ "$candidate" == *.vercel.app ]]; then
+            rollback_target_url="https://$candidate"
+          else
+            echo "::error::No valid previous production rollback candidate is available."
+            exit 1
+          fi
+          echo "rollback_target_url=$rollback_target_url" >> "$GITHUB_OUTPUT"
+
+      - name: Roll Back Production
+        env:
+          ROLLBACK_TARGET_URL: ${{ steps.rollback-target.outputs.rollback_target_url }}
+        run: |
+          npx --yes vercel@66.6.0 rollback "$ROLLBACK_TARGET_URL" \
+            --scope "$VERCEL_ORG_ID" \
+            --project "$VERCEL_PROJECT_ID" \
+            --non-interactive

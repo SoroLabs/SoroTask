@@ -22,19 +22,19 @@
  *   <- { "type": "event", "topic": "task:5:TaskRegistered", "event": { ... } }
  *
  * Backpressure & Client Buffer Congestion Control (Issue #1068):
- *   - Monitors socket.bufferedAmount before pushing data to clients
- *   - Drops non-critical events when buffer exceeds MAX_BUFFER_SIZE
- *   - Terminates connections for unresponsive clients after CLIENT_TIMEOUT_MS
+ *   - Routes events through subscription indexes instead of scanning all clients
+ *   - Bounds each slow client's queue and drops non-critical events under load
+ *   - Terminates clients that miss heartbeat pongs
  */
 
-const { WebSocketServer } = require("ws");
+const WebSocket = require("ws");
+const { WebSocketServer } = WebSocket;
 
 // ─── Backpressure Configuration ──────────────────────────────────────────────
 const MAX_BUFFER_SIZE = parseInt(process.env.WS_MAX_BUFFER_SIZE, 10) || 1048576; // 1MB
 const CLIENT_TIMEOUT_MS = parseInt(process.env.WS_CLIENT_TIMEOUT_MS, 10) || 10000; // 10 seconds
 const LOW_WATERMARK = parseInt(process.env.WS_LOW_WATERMARK, 10) || 524288; // 512KB - resume sending
-const PRIORITY_HIGH = 'high';
-const PRIORITY_LOW = 'low';
+const MAX_CLIENT_QUEUE_BYTES = parseInt(process.env.WS_MAX_CLIENT_QUEUE_BYTES, 10) || 1048576;
 
 // Non-critical event types that can be dropped under backpressure
 const LOW_PRIORITY_EVENTS = new Set([
@@ -45,40 +45,13 @@ const LOW_PRIORITY_EVENTS = new Set([
 ]);
 
 /**
- * Check if an event is high priority (should never be dropped)
+ * Check if an event should be queued rather than dropped under backpressure.
  * @param {object} event
  * @returns {boolean}
  */
 function isHighPriority(event) {
   if (!event || !event.event_name) return true;
   return !LOW_PRIORITY_EVENTS.has(event.event_name.toLowerCase());
-}
-
-/**
- * Determine if an event should be sent based on buffer state
- * @param {import('ws').WebSocket} socket
- * @param {object} event
- * @returns {{ shouldSend: boolean, reason?: string }}
- */
-function shouldSendEvent(socket, event) {
-  const buffered = socket.bufferedAmount || 0;
-  
-  // Always send high-priority events
-  if (isHighPriority(event)) {
-    if (buffered > MAX_BUFFER_SIZE) {
-      // Even high-priority events can't be sent if buffer is critically full
-      // Queue them instead of dropping
-      return { shouldSend: false, reason: 'buffer_critical' };
-    }
-    return { shouldSend: true };
-  }
-  
-  // Low-priority events: drop if buffer exceeds low watermark
-  if (buffered > LOW_WATERMARK) {
-    return { shouldSend: false, reason: 'backpressure_drop' };
-  }
-  
-  return { shouldSend: true };
 }
 
 // Module-level singleton so the ingestion pipeline can broadcast without
@@ -164,43 +137,155 @@ function firstMatchingTopic(subscriptions, topics) {
 function createWsServer(opts = {}) {
   const path = opts.path || "/ws";
   const wssOptions = opts.server ? { server: opts.server, path } : { port: opts.port, path };
+  wssOptions.perMessageDeflate = false;
+  wssOptions.maxPayload = opts.maxPayload || 1024 * 1024;
   const wss = new WebSocketServer(wssOptions);
+  const exactSubscribers = new Map();
+  const wildcardRoot = { subscribers: new Set(), children: new Map() };
+  const drainTimers = new Map();
+  const maxQueueBytes = opts.maxClientQueueBytes || MAX_CLIENT_QUEUE_BYTES;
+  const heartbeatIntervalMs = opts.heartbeatIntervalMs
+    || Math.max(1000, Math.floor(CLIENT_TIMEOUT_MS / 2));
 
-  // Track clients for timeout monitoring
-  const clientTimers = new Map();
-
-  /**
-   * Start or reset the inactivity timeout for a client
-   * @param {import('ws').WebSocket} socket
-   */
-  function startClientTimeout(socket) {
-    // Clear existing timer
-    if (clientTimers.has(socket)) {
-      clearTimeout(clientTimers.get(socket));
-    }
-    
-    // Set new timeout
-    const timer = setTimeout(() => {
-      console.warn(`[WS] Terminating unresponsive client (buffered: ${socket.bufferedAmount} bytes)`);
-      try {
-        socket.close(1000, 'Inactivity timeout');
-      } catch (err) {
-        // Socket may already be closed
+  function updateSubscriptionIndex(socket, pattern, add) {
+    if (pattern.endsWith('*')) {
+      let node = wildcardRoot;
+      const prefix = pattern.slice(0, -1);
+      const pathNodes = [];
+      for (const character of prefix) {
+        if (!node.children.has(character)) {
+          if (!add) return;
+          node.children.set(character, { subscribers: new Set(), children: new Map() });
+        }
+        pathNodes.push([node, character]);
+        node = node.children.get(character);
       }
-      clientTimers.delete(socket);
-    }, CLIENT_TIMEOUT_MS);
-    
-    clientTimers.set(socket, timer);
+      if (add) node.subscribers.add(socket);
+      else {
+        node.subscribers.delete(socket);
+        for (let i = pathNodes.length - 1; i >= 0; i--) {
+          const [parent, character] = pathNodes[i];
+          const child = parent.children.get(character);
+          if (child.subscribers.size || child.children.size) break;
+          parent.children.delete(character);
+        }
+      }
+      return;
+    }
+
+    let subscribers = exactSubscribers.get(pattern);
+    if (!subscribers && add) {
+      subscribers = new Set();
+      exactSubscribers.set(pattern, subscribers);
+    }
+    if (!subscribers) return;
+    if (add) subscribers.add(socket);
+    else {
+      subscribers.delete(socket);
+      if (subscribers.size === 0) exactSubscribers.delete(pattern);
+    }
   }
 
-  /**
-   * Clear the timeout for a client
-   * @param {import('ws').WebSocket} socket
-   */
-  function clearClientTimeout(socket) {
-    if (clientTimers.has(socket)) {
-      clearTimeout(clientTimers.get(socket));
-      clientTimers.delete(socket);
+  function removeClient(socket) {
+    for (const pattern of socket._subscriptions || []) {
+      updateSubscriptionIndex(socket, pattern, false);
+    }
+    socket._subscriptions?.clear();
+    socket._pendingMessages = [];
+    socket._pendingBytes = 0;
+    const timer = drainTimers.get(socket);
+    if (timer) clearTimeout(timer);
+    drainTimers.delete(socket);
+  }
+
+  function getMatchingClients(topics) {
+    const matches = new Map();
+    for (const topic of topics) {
+      const exact = exactSubscribers.get(topic);
+      if (exact) {
+        for (const socket of exact) {
+          if (!matches.has(socket)) matches.set(socket, topic);
+        }
+      }
+
+      let node = wildcardRoot;
+      for (const socket of node.subscribers) {
+        if (!matches.has(socket)) matches.set(socket, topic);
+      }
+      for (const character of topic) {
+        node = node.children.get(character);
+        if (!node) break;
+        for (const socket of node.subscribers) {
+          if (!matches.has(socket)) matches.set(socket, topic);
+        }
+      }
+    }
+    return matches;
+  }
+
+  function sendMessage(socket, message, isEvent = false) {
+    if (socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      socket.send(message, (err) => {
+        if (err) console.error('[WS] Send error:', err.message);
+      });
+      if (isEvent) socket._eventsSent++;
+      return true;
+    } catch (err) {
+      console.error('[WS] Send error:', err.message);
+      return false;
+    }
+  }
+
+  function drainClientQueue(socket) {
+    if (socket.readyState !== WebSocket.OPEN) {
+      removeClient(socket);
+      return;
+    }
+    while (socket._pendingMessages.length && socket.bufferedAmount < LOW_WATERMARK) {
+      const queued = socket._pendingMessages.shift();
+      socket._pendingBytes -= queued.bytes;
+      if (!sendMessage(socket, queued.message, true)) break;
+    }
+    if (socket._pendingMessages.length) {
+      const timer = setTimeout(() => drainClientQueue(socket), 25);
+      if (typeof timer.unref === 'function') timer.unref();
+      drainTimers.set(socket, timer);
+    } else {
+      drainTimers.delete(socket);
+    }
+  }
+
+  function queueEvent(socket, message) {
+    const bytes = Buffer.byteLength(message);
+    if (socket._pendingBytes + bytes > maxQueueBytes) {
+      socket._eventsDropped++;
+      socket.terminate();
+      return;
+    }
+    socket._pendingMessages.push({ message, bytes });
+    socket._pendingBytes += bytes;
+    if (!drainTimers.has(socket)) {
+      const timer = setTimeout(() => drainClientQueue(socket), 25);
+      if (typeof timer.unref === 'function') timer.unref();
+      drainTimers.set(socket, timer);
+    }
+  }
+
+  function sendEvent(socket, event, message) {
+    const buffered = socket.bufferedAmount || 0;
+    if (!isHighPriority(event) && buffered > LOW_WATERMARK) {
+      socket._eventsDropped++;
+      return;
+    }
+    if (buffered + Buffer.byteLength(message) <= MAX_BUFFER_SIZE
+      && socket._pendingMessages.length === 0) {
+      if (sendMessage(socket, message, true)) return;
+    }
+    if (isHighPriority(event)) {
+      queueEvent(socket, message);
+    } else {
+      socket._eventsDropped++;
     }
   }
 
@@ -209,101 +294,101 @@ function createWsServer(opts = {}) {
     socket._lastActivity = Date.now();
     socket._eventsSent = 0;
     socket._eventsDropped = 0;
-
-    // Start inactivity timeout
-    startClientTimeout(socket);
+    socket._pendingMessages = [];
+    socket._pendingBytes = 0;
+    socket._isAlive = true;
 
     socket.send(JSON.stringify({ type: "welcome", topics: ["task:*", "keeper:*", "contract:*"] }));
+    socket.on('pong', () => {
+      socket._isAlive = true;
+    });
 
     socket.on("message", (raw) => {
-      // Update last activity timestamp
       socket._lastActivity = Date.now();
-      startClientTimeout(socket);
-      
       let msg;
       try {
         msg = JSON.parse(raw.toString());
       } catch (_err) {
-        socket.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
+        sendMessage(socket, JSON.stringify({ type: "error", message: "Invalid JSON" }));
         return;
       }
 
-      if (msg.action === "subscribe" && typeof msg.topic === "string") {
-        socket._subscriptions.add(msg.topic);
-        socket.send(JSON.stringify({ type: "subscribed", topic: msg.topic }));
-      } else if (msg.action === "unsubscribe" && typeof msg.topic === "string") {
-        socket._subscriptions.delete(msg.topic);
-        socket.send(JSON.stringify({ type: "unsubscribed", topic: msg.topic }));
+      const topics = Array.isArray(msg.topics) ? msg.topics : [msg.topic];
+      if (msg.action === "subscribe" && topics.every((topic) => typeof topic === 'string'
+        && topic.length > 0 && topic.length <= 256)) {
+        const newTopics = new Set(topics.filter((topic) => !socket._subscriptions.has(topic)));
+        if (socket._subscriptions.size + newTopics.size > 100) {
+          sendMessage(socket, JSON.stringify({ type: 'error', message: 'Subscription limit reached' }));
+          return;
+        }
+        for (const topic of topics) {
+          socket._subscriptions.add(topic);
+          updateSubscriptionIndex(socket, topic, true);
+        }
+        sendMessage(socket, JSON.stringify({
+          type: "subscribed",
+          ...(Array.isArray(msg.topics) ? { topics: [...socket._subscriptions] } : { topic: msg.topic }),
+        }));
+      } else if (msg.action === "unsubscribe" && topics.every((topic) => typeof topic === 'string'
+        && topic.length > 0 && topic.length <= 256)) {
+        for (const topic of topics) {
+          socket._subscriptions.delete(topic);
+          updateSubscriptionIndex(socket, topic, false);
+        }
+        sendMessage(socket, JSON.stringify({
+          type: "unsubscribed",
+          ...(Array.isArray(msg.topics) ? { topics: [...socket._subscriptions] } : { topic: msg.topic }),
+        }));
       } else {
-        socket.send(JSON.stringify({ type: "error", message: "Unknown action" }));
+        sendMessage(socket, JSON.stringify({ type: "error", message: "Unknown or invalid action" }));
       }
     });
 
     socket.on("close", () => {
-      clearClientTimeout(socket);
+      removeClient(socket);
     });
 
     socket.on("error", (err) => {
-      clearClientTimeout(socket);
+      removeClient(socket);
       console.error("[WS] Socket error:", err.message);
     });
   });
+
+  const heartbeatTimer = setInterval(() => {
+    for (const socket of wss.clients) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      if (!socket._isAlive) {
+        socket.terminate();
+        continue;
+      }
+      socket._isAlive = false;
+      try {
+        socket.ping();
+      } catch (_err) {
+        socket.terminate();
+      }
+    }
+  }, heartbeatIntervalMs);
+  if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
   const server = {
     wss,
     broadcast(event) {
       const topics = eventTopics(event);
-      const queuedHighPriority = [];
-      
-      for (const socket of wss.clients) {
-        if (socket.readyState !== socket.OPEN) continue;
-        const matched = firstMatchingTopic(socket._subscriptions || new Set(), topics);
-        if (!matched) continue;
-        
-        // Check backpressure before sending
-        const { shouldSend, reason } = shouldSendEvent(socket, event);
-        
-        if (shouldSend) {
-          try {
-            socket.send(JSON.stringify({ type: "event", topic: matched, event }));
-            socket._eventsSent++;
-          } catch (err) {
-            console.error("[WS] Send error:", err.message);
-          }
-        } else {
-          socket._eventsDropped++;
-          
-          // Queue high-priority events that couldn't be sent due to critical buffer
-          if (reason === 'buffer_critical' && isHighPriority(event)) {
-            queuedHighPriority.push({ socket, matched, event });
-          }
-        }
-      }
-      
-      // Retry queued high-priority events when buffers drain
-      if (queuedHighPriority.length > 0) {
-        setTimeout(() => {
-          for (const { socket, matched, event: queuedEvent } of queuedHighPriority) {
-            if (socket.readyState !== socket.OPEN) continue;
-            if ((socket.bufferedAmount || 0) < LOW_WATERMARK) {
-              try {
-                socket.send(JSON.stringify({ type: "event", topic: matched, event: queuedEvent }));
-                socket._eventsSent++;
-              } catch (err) {
-                console.error("[WS] Retry send error:", err.message);
-              }
-            }
-          }
-        }, 100);
+      const matches = getMatchingClients(topics);
+      for (const [socket, matched] of matches) {
+        if (socket.readyState !== WebSocket.OPEN) continue;
+        const message = JSON.stringify({ type: "event", topic: matched, event });
+        sendEvent(socket, event, message);
       }
     },
     close() {
-      // Clear all client timers
-      for (const timer of clientTimers.values()) {
-        clearTimeout(timer);
+      clearInterval(heartbeatTimer);
+      for (const socket of wss.clients) {
+        removeClient(socket);
+        socket.terminate();
       }
-      clientTimers.clear();
-      
+      if (activeServer === server) activeServer = null;
       return new Promise((resolve) => wss.close(() => resolve()));
     },
     /**
@@ -318,6 +403,7 @@ function createWsServer(opts = {}) {
           bufferedAmount: socket.bufferedAmount || 0,
           eventsSent: socket._eventsSent || 0,
           eventsDropped: socket._eventsDropped || 0,
+          pendingBytes: socket._pendingBytes || 0,
           lastActivity: socket._lastActivity,
         });
       }
@@ -327,6 +413,7 @@ function createWsServer(opts = {}) {
         maxBufferSize: MAX_BUFFER_SIZE,
         lowWatermark: LOW_WATERMARK,
         clientTimeoutMs: CLIENT_TIMEOUT_MS,
+        maxClientQueueBytes: maxQueueBytes,
       };
     },
   };

@@ -92,4 +92,75 @@ describe("SyncManager", () => {
     const a = getSyncManager();
     expect(a).not.toBeNull();
   });
+
+  it("does not mark a healthy action as failed", () => {
+    const { manager } = buildManager();
+
+    expect(manager.isActionFailed("never-enqueued")).toBe(false);
+    manager.stop();
+  });
+
+  it("marks failed actions for rollback when a replay fails", async () => {
+    const { manager } = buildManager();
+    const network = (manager as any).network;
+
+    // Keep the queue offline so both mutations stay pending.
+    jest.spyOn(network, "getHealth").mockReturnValue({
+      online: false,
+      quality: "offline",
+      lastPingMs: null,
+      consecutiveFailures: 1,
+      consecutiveSuccesses: 0,
+      lastChangeAt: null,
+      lastError: "offline",
+      resilienceId: 1,
+    });
+
+    const first = manager.enqueue("task.execute", {
+      taskId: "t1",
+      functionName: "harvest",
+      contractAddress: "C123",
+      gasEstimate: 100,
+    });
+    const second = manager.enqueue("task.cancel", { taskId: "t2" });
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+
+    // Pretend the first mutation was already marked failed by the queue.
+    const raw = (manager as any).queue;
+    raw.getActions().forEach((action: { status: string; id: string }) => {
+      if (action.id === first!.id) action.status = "failed";
+    });
+    expect(manager.isActionFailed(first!.id)).toBe(false);
+
+    // Connectivity is back, but the replay blows up.
+    jest.spyOn(network, "getHealth").mockReturnValue({
+      online: true,
+      quality: "excellent",
+      lastPingMs: 12,
+      consecutiveFailures: 0,
+      consecutiveSuccesses: 2,
+      lastChangeAt: Date.now(),
+      lastError: null,
+      resilienceId: 2,
+    });
+    jest.spyOn(raw, "flush").mockRejectedValueOnce(new Error("Network drop during replay"));
+
+    await manager.flush();
+
+    expect(manager.getState().status).toBe("paused");
+    expect(manager.isActionFailed(first!.id)).toBe(true);
+
+    manager.stop();
+  });
+
+  it("records a rollback_requested event", () => {
+    const { manager } = buildManager();
+
+    manager.requestRollback();
+
+    const state = manager.getState();
+    expect(state.events.some((event) => event.type === "rollback_requested")).toBe(true);
+    manager.stop();
+  });
 });

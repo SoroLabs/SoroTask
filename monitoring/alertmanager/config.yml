@@ -1,0 +1,55 @@
+# Alertmanager Configuration for SoroTask escrow and consensus alerts (Issue #1659)
+global:
+  resolve_timeout: 5m
+  pagerduty_url: "https://events.pagerduty.com/v2/enqueue"
+
+route:
+  group_by: ['alertname', 'service', 'severity']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'telegram-default'
+  routes:
+    - matchers:
+        - 'severity="critical"'
+      receiver: 'pagerduty-oncall'
+      group_wait: 0s
+      repeat_interval: 1h
+
+    - matchers:
+        - 'severity="warning"'
+      receiver: 'telegram-default'
+      repeat_interval: 12h
+
+inhibit_rules:
+  - source_matchers:
+      - 'severity="critical"'
+      - 'component="escrow"'
+    target_matchers:
+      - 'severity="warning"'
+      - 'component="escrow"'
+    equal: ['service']
+
+  - source_matchers:
+      - 'severity="critical"'
+      - 'component="consensus"'
+    target_matchers:
+      - 'severity="warning"'
+      - 'component="consensus"'
+    equal: ['service']
+
+receivers:
+  - name: 'pagerduty-oncall'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_ROUTING_KEY:-sorotask-oncall-key}'
+        send_resolved: true
+        severity: 'critical'
+        description: '{{ .CommonAnnotations.summary }} - {{ .CommonAnnotations.description }}'
+
+  - name: 'telegram-default'
+    telegram_configs:
+      - bot_token: '${TELEGRAM_BOT_TOKEN:-disabled}'
+        chat_id: ${TELEGRAM_CHAT_ID:-0}
+        send_resolved: true
+        parse_mode: 'HTML'
+        message: '<b>[ALERT] {{ .Status | toUpper }}</b>\n<b>Summary:</b> {{ .CommonAnnotations.summary }}\n<b>Description:</b> {{ .CommonAnnotations.description }}\n<b>Service:</b> {{ .CommonLabels.service }}'

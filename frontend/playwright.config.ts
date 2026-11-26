@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const baseURL = process.env.PLAYWRIGHT_BASE_URL || "http://localhost:3005";
+const usesLocalWebServer = !process.env.PLAYWRIGHT_BASE_URL;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
@@ -8,7 +11,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: [["html", { outputFolder: "playwright-report" }], ["list"]],
   use: {
-    baseURL: "http://localhost:3005",
+    baseURL,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
     video: "on-first-retry",
@@ -41,16 +44,18 @@ export default defineConfig({
     },
   ],
 
-  webServer: {
-    command: "npm run dev -- -p 3005",
-    url: "http://localhost:3005",
-    reuseExistingServer: !process.env.CI,
-    timeout: 120000,
-    env: {
-      NEXT_PUBLIC_E2E_MOCK_WALLET: "true",
-      AUTH_SECRET: "test-secret-at-least-32-characters-long-for-authjs",
-      NEXTAUTH_SECRET: "test-secret-at-least-32-characters-long-for-authjs",
-      PORT: "3005",
-    },
-  },
+  webServer: usesLocalWebServer
+    ? {
+        command: "npm run dev -- -p 3005",
+        url: "http://localhost:3005",
+        reuseExistingServer: !process.env.CI,
+        timeout: 120000,
+        env: {
+          NEXT_PUBLIC_E2E_MOCK_WALLET: "true",
+          AUTH_SECRET: "test-secret-at-least-32-characters-long-for-authjs",
+          NEXTAUTH_SECRET: "test-secret-at-least-32-characters-long-for-authjs",
+          PORT: "3005",
+        },
+      }
+    : undefined,
 });

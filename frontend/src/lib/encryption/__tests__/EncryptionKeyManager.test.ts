@@ -20,7 +20,7 @@ function getSubtle(): SubtleCrypto {
     return globalThis.crypto.subtle;
   }
   // Fallback: require the webcrypto module
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { webcrypto } = require('crypto');
   return webcrypto.subtle as SubtleCrypto;
 }
@@ -29,7 +29,7 @@ function getSubtle(): SubtleCrypto {
 // inside EncryptionKeyManager (used outside of the injected `subtle`)
 beforeAll(() => {
   if (typeof globalThis.crypto === 'undefined') {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { webcrypto } = require('crypto');
     Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
   }
@@ -104,7 +104,6 @@ describe('EncryptionKeyManager', () => {
     });
 
     it('throws EncryptionError on invalid input', async () => {
-      const mgr = makeManager();
       // Pass a deliberately broken subtle to force a failure path
       const badManager = new EncryptionKeyManager({
         storage: new MemStorage(),
@@ -181,7 +180,8 @@ describe('EncryptionKeyManager', () => {
       const storage = new MemStorage();
       const mgr = makeManager(storage);
       const wrapperKey = await mgr.generateKey('wrap');
-      const dataKey = await mgr.generateKey('encrypt');
+      // Wrapping requires an explicit opt-in to extractability.
+      const dataKey = await mgr.generateKey('encrypt', 'AES-GCM', undefined, { extractable: true });
 
       const record = await mgr.wrapKey(dataKey.id, wrapperKey.id);
       expect(record.wrappedKey).toBeTruthy();
@@ -195,7 +195,7 @@ describe('EncryptionKeyManager', () => {
     it('unwraps back to a usable key', async () => {
       const mgr = makeManager();
       const wrapperKey = await mgr.generateKey('wrap');
-      const dataKey = await mgr.generateKey('encrypt');
+      const dataKey = await mgr.generateKey('encrypt', 'AES-GCM', undefined, { extractable: true });
       const record = await mgr.wrapKey(dataKey.id, wrapperKey.id);
 
       // Remove data key from memory
@@ -317,16 +317,16 @@ describe('EncryptionKeyManager', () => {
   // ── exportKey / importKey ─────────────────────────────────────────────
 
   describe('exportKey & importKey', () => {
-    it('exports raw key bytes', async () => {
+    it('exports raw key bytes only for keys explicitly created extractable', async () => {
       const mgr = makeManager();
-      const meta = await mgr.generateKey();
+      const meta = await mgr.generateKey('encrypt', 'AES-GCM', undefined, { extractable: true });
       const raw = await mgr.exportKey(meta.id);
       expect(raw.byteLength).toBe(32); // 256-bit AES key = 32 bytes
     });
 
     it('imports raw key bytes and makes them usable', async () => {
       const mgr = makeManager();
-      const original = await mgr.generateKey();
+      const original = await mgr.generateKey('encrypt', 'AES-GCM', undefined, { extractable: true });
       const rawBuf = await mgr.exportKey(original.id);
 
       const mgr2 = makeManager();
