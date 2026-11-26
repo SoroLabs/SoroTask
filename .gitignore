@@ -6,12 +6,10 @@ node_modules/
 .env.local
 
 # Coverage reports
-
 coverage/
 *.lcov
 .nyc_output/
 # Rust build artifacts
-
 target/
 Cargo.lock
 **/*.rs.bk
@@ -81,16 +79,13 @@ docker-compose.*.override.yml
 # Environments
 .env.*
 !.env.example
-
 # Test snapshots
 __snapshots__/
 *.snap
-
 # Git merge conflict dumps & temporary test scripts
 conflicts_*.txt
 merge_output_*.txt
 test-rpc.js
-
 # Terraform local state / secrets
 *.tfstate
 *.tfstate.*
@@ -98,4 +93,4 @@ test-rpc.js
 .terraform.lock.hcl
 terraform/terraform.tfvars
 crash.log
-
+config.bat
