@@ -324,3 +324,7 @@ module.exports = {
   archiveExecutions,
   scheduleExecutionsArchival,
 };
+
+// NOTE: Stale task purge & auto-cancel daemon (BE-FINAL-26) is implemented in
+// indexer/src/staleTasks.js and keeper/src/taskValidator.js; this archival
+// module is intentionally left unchanged by that issue.
