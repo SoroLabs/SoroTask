@@ -8,7 +8,7 @@ import type {
 } from "./types";
 import { PLUGIN_EVENT_NAME } from "./types";
 import { getPluginRegistry } from "./registry";
-import { createSandboxedPluginComponent } from "../pluginRuntime";
+import { createSandboxedPluginComponent } from "./pluginRuntime";
 
 function emitLifecycle(event: PluginLifecycleEvent): void {
   if (typeof window !== "undefined") {
@@ -31,6 +31,29 @@ function updateStatus(
     timestamp: new Date().toISOString(),
     error,
   });
+}
+
+function assertTrustedManifest(
+  manifest: PluginManifest,
+  config: FederationConfig,
+): void {
+  if (manifest.verified !== true) {
+    throw new Error(`Plugin "${manifest.id}" is not verified and cannot be loaded`);
+  }
+
+  const trusted = config.trustedOrigins ?? [];
+  let origin: string;
+  try {
+    origin = new URL(manifest.entry).origin;
+  } catch {
+    throw new Error(`Plugin "${manifest.id}" has an invalid entry URL`);
+  }
+
+  if (!trusted.includes(origin)) {
+    throw new Error(
+      `Plugin "${manifest.id}" origin "${origin}" is not in the trusted origin allowlist`,
+    );
+  }
 }
 
 export function createPluginLoader(config: FederationConfig = {}) {
@@ -61,6 +84,8 @@ export function createPluginLoader(config: FederationConfig = {}) {
     updateStatus(manifest.id, "loading");
 
     try {
+      assertTrustedManifest(manifest, config);
+
       const loaded: LoadedPlugin = {
         manifest,
         component: createSandboxedPluginComponent(manifest, {
@@ -87,6 +112,7 @@ export function createPluginLoader(config: FederationConfig = {}) {
       if (manifest.fallbackEntry) {
         try {
           const fallbackManifest = { ...manifest, entry: manifest.fallbackEntry };
+          assertTrustedManifest(fallbackManifest, config);
 
           const loaded: LoadedPlugin = {
             manifest: fallbackManifest,
