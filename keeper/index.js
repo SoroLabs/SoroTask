@@ -23,6 +23,7 @@ const { normalizeShardConfig, ConsistentHashRing, filterTasksByHashRing } = requ
 const { PostgresShardManager } = require("./src/postgresShardManager");
 const { StartupValidator } = require("./src/validator");
 const { ReconciliationEngine } = require("./src/reconciliation");
+const { MultiNetworkCoordinator } = require("./src/coordinator");
 
 const { RetryScheduler } = require("./src/retryScheduler");
 const { GracefulShutdownManager } = require("./src/gracefulShutdown");
@@ -63,6 +64,21 @@ async function main() {
   } catch (err) {
     logger.error("Configuration error", { error: err.message });
     process.exit(1);
+  }
+
+  if (config.networks.length > 1 && !process.env.KEEPER_NETWORK_ID) {
+    const networkCoordinator = new MultiNetworkCoordinator({
+      networks: config.networks,
+      workerScript: __filename,
+      workerStartupTimeoutMs: Number(process.env.KEEPER_WORKER_STARTUP_TIMEOUT_MS) || 60000,
+      reloadDrainTimeoutMs: Number(process.env.HOT_RELOAD_DRAIN_TIMEOUT_MS) || 30000,
+      shutdownDrainTimeoutMs: Number(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS) || 10000,
+    });
+    await networkCoordinator.start();
+    logger.info("Multi-network keeper is running", {
+      networks: Array.from(networkCoordinator.networks.keys()),
+    });
+    return;
   }
 
   const server = new Server(config.rpcUrl, {
@@ -795,6 +811,31 @@ async function main() {
 
   // Initialize and start listening for signals
   shutdownManager.init();
+  if (typeof process.send === "function") {
+    shutdownManager.exitOnComplete = false;
+    process.on("message", (message) => {
+      if (message?.type !== "drain" || shutdownManager.state !== "running") return;
+      shutdownManager.drainTimeoutMs = Math.min(
+        shutdownManager.drainTimeoutMs,
+        Number(message.timeoutMs) || shutdownManager.drainTimeoutMs,
+      );
+      shutdownManager.initiateShutdown("SIGTERM", "multi-network coordinator drain");
+    });
+    shutdownManager.on("shutdown:complete", () => {
+      if (!process.connected) {
+        process.exit(0);
+        return;
+      }
+      process.send({ type: "drained" }, (err) => {
+        if (err) {
+          logger.error("Failed to acknowledge worker drain", { error: err.message });
+          process.exit(1);
+          return;
+        }
+        process.exit(0);
+      });
+    });
+  }
 
   // Listen to shutdown events for additional logging
   shutdownManager.on("shutdown:initiated", ({ signal, reason }) => {
@@ -1059,9 +1100,16 @@ async function main() {
       logger.error('Error in initial poll', { error: error.message });
     }
   }, 1000);
+  if (typeof process.send === "function") {
+    process.send({ type: "ready", networkId: config.networkId });
+  }
 }
 
 main().catch((err) => {
+  if (typeof process.send === "function" && process.connected) {
+    process.send({ type: "worker:error", error: err.message }, () => process.exit(1));
+    return;
+  }
   logger.fatal("Fatal Keeper Error", { error: err.message, stack: err.stack });
   process.exit(1);
 });
