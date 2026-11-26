@@ -14,7 +14,7 @@
  * needs no build step.
  */
 
-const CACHE_VERSION = 'sorotask-v4';
+const CACHE_VERSION = 'sorotask-v5';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const DATA_CACHE = `${CACHE_VERSION}-data`;
 
@@ -32,6 +32,7 @@ const NAVIGATION_TIMEOUT_MS = 3000;
 
 // Core app-shell requests pre-cached at install time.
 const CORE_ASSETS = [
+  '/',
   OFFLINE_URL,
   '/offline.css',
   '/manifest.json',
@@ -132,7 +133,18 @@ async function putInCache(cacheName, request, response) {
 }
 
 async function networkFirstDocument(request) {
-  const network = fetch(request).catch(() => null);
+  const network = fetch(request)
+    .then(async (response) => {
+      if (new URL(request.url).pathname === '/') {
+        try {
+          await putInCache(STATIC_CACHE, request, response.clone());
+        } catch (error) {
+          console.warn('Could not cache the app shell for offline use.', error);
+        }
+      }
+      return response;
+    })
+    .catch(() => null);
 
   const raced = await withTimeout(network, NAVIGATION_TIMEOUT_MS, 'navigation').catch(() => null);
   if (raced) return raced;
