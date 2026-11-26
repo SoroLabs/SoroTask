@@ -39,13 +39,13 @@ const { createRateLimiter } = require('./concurrency');
 const { createLogger } = require('./logger');
 const crypto = require('crypto');
 
-// Hard ceiling imposed by Soroban RPC limits
-const HARD_MAX_BATCH_SIZE = 200;
+// Keep requests within Soroban's getLedgerEntries key limit.
+const HARD_MAX_BATCH_SIZE = 100;
 
 // Default batch window — 10 ms is enough to coalesce a full polling cycle
 // without adding noticeable latency on individual reads
 const DEFAULT_BATCH_WINDOW_MS = 10;
-const DEFAULT_MAX_BATCH_SIZE = 50;
+const DEFAULT_MAX_BATCH_SIZE = 100;
 const DEFAULT_BATCH_CONCURRENCY = 2;
 const DEFAULT_BATCH_RPS = 10;
 
@@ -63,7 +63,7 @@ class ReadBatcher extends EventEmitter {
    * @param {Function} decoder            - (xdr.ScVal) => Object|null  Task config decoder
    * @param {Object}   [options]
    * @param {number}   [options.batchWindowMs=10]       Debounce window before flush (ms)
-   * @param {number}   [options.maxBatchSize=50]         Max keys per getLedgerEntries call
+   * @param {number}   [options.maxBatchSize=100]        Max keys per getLedgerEntries call
    * @param {number}   [options.batchConcurrency=2]      Max parallel batch calls in flight
    * @param {number}   [options.batchRps=10]             Max batch calls per second
    * @param {Object}   [options.logger]                  Pino-compatible logger
@@ -136,7 +136,7 @@ class ReadBatcher extends EventEmitter {
   read(taskId) {
     return new Promise((resolve, reject) => {
       const id = Number(taskId);
-      if (!Number.isFinite(id) || id < 0) {
+      if (!Number.isSafeInteger(id) || id < 0) {
         return reject(new TypeError(`ReadBatcher.read: invalid taskId "${taskId}"`));
       }
 
@@ -354,7 +354,7 @@ class ReadBatcher extends EventEmitter {
 
     let response;
     try {
-      response = await this.server.getLedgerEntries(...keys);
+      response = await this.server.getLedgerEntries(keys);
     } catch (error) {
       this.logger.error('getLedgerEntries RPC failed', {
         batchId,

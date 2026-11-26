@@ -78,6 +78,16 @@ resource "aws_iam_role_policy_attachment" "eks_node" {
   role       = aws_iam_role.eks_node.name
 }
 
+resource "aws_iam_role_policy_attachment" "eks_node_cni" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+  role       = aws_iam_role.eks_node.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_node_ecr" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role       = aws_iam_role.eks_node.name
+}
+
 resource "aws_eks_node_group" "primary" {
   cluster_name    = aws_eks_cluster.primary.name
   node_group_name = "default"
@@ -89,8 +99,16 @@ resource "aws_eks_node_group" "primary" {
   scaling_config {
     desired_size = 3
     max_size     = 6
-    min_size     = 2
+    min_size     = 3
   }
 
-  depends_on = [aws_iam_role_policy_attachment.eks_node]
+  update_config {
+    max_unavailable = 1
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_node,
+    aws_iam_role_policy_attachment.eks_node_cni,
+    aws_iam_role_policy_attachment.eks_node_ecr,
+  ]
 }

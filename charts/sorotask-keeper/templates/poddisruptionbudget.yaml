@@ -1,0 +1,13 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "sorotask-keeper.fullname" . }}
+  labels:
+    {{- include "sorotask-keeper.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "sorotask-keeper.selectorLabels" . | nindent 6 }}
+{{- end }}

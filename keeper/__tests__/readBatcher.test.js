@@ -116,7 +116,7 @@ describe('ReadBatcher — constructor', () => {
     const server = { getLedgerEntries: jest.fn() };
     const batcher = new ReadBatcher(server, CONTRACT_ID, () => {});
     expect(batcher.batchWindowMs).toBe(10);
-    expect(batcher.maxBatchSize).toBe(50);
+    expect(batcher.maxBatchSize).toBe(100);
   });
 
   it('respects custom options', () => {
@@ -129,10 +129,10 @@ describe('ReadBatcher — constructor', () => {
     expect(batcher.maxBatchSize).toBe(10);
   });
 
-  it('clamps maxBatchSize to HARD_MAX (200)', () => {
+  it('clamps maxBatchSize to HARD_MAX (100)', () => {
     const server = { getLedgerEntries: jest.fn() };
     const batcher = new ReadBatcher(server, CONTRACT_ID, () => {}, { maxBatchSize: 9999 });
-    expect(batcher.maxBatchSize).toBe(200);
+    expect(batcher.maxBatchSize).toBe(100);
   });
 
   it('initialises stats to zero', () => {
@@ -212,6 +212,7 @@ describe('ReadBatcher — batch window coalescing', () => {
     ]);
 
     expect(server.getLedgerEntries).toHaveBeenCalledTimes(1);
+    expect(server.getLedgerEntries.mock.calls[0][0]).toHaveLength(3);
     expect(r1).toEqual(configs.get(1));
     expect(r2).toEqual(configs.get(2));
     expect(r3).toEqual(configs.get(3));
@@ -233,13 +234,14 @@ describe('ReadBatcher — batch window coalescing', () => {
     ]);
 
     expect(server.getLedgerEntries).toHaveBeenCalledTimes(1);
+    expect(server.getLedgerEntries.mock.calls[0][0]).toHaveLength(1);
     expect(r1).toEqual(config);
     expect(r2).toEqual(config);
   });
 
   it('fires a second batch for reads that arrive after the window closes', async () => {
     const makeEntry = id => makeLedgerEntry(id, { _decoded: { id } });
-    const server = makeMockServer((...keys) =>
+    const server = makeMockServer(keys =>
       Promise.resolve({ entries: keys.map((_, i) => makeEntry(i + 1)) }),
     );
 
@@ -272,7 +274,7 @@ describe('ReadBatcher — maxBatchSize chunking', () => {
 
     // Each call returns the subset of entries for its keys
     let callCount = 0;
-    const server = makeMockServer((...keys) => {
+    const server = makeMockServer(keys => {
       const start = callCount * batchSize;
       callCount++;
       return Promise.resolve({ entries: entries.slice(start, start + keys.length) });
@@ -284,9 +286,11 @@ describe('ReadBatcher — maxBatchSize chunking', () => {
     });
 
     const reads = Array.from({ length: N }, (_, i) => batcher.read(i + 1));
-    await Promise.all(reads);
+    const results = await Promise.all(reads);
 
     expect(server.getLedgerEntries).toHaveBeenCalledTimes(Math.ceil(N / batchSize));
+    expect(server.getLedgerEntries.mock.calls.map(([keys]) => keys.length)).toEqual([3, 3, 1]);
+    expect(results).toEqual(entries.map(entry => entry.val.contractData().val()._decoded));
   });
 });
 
@@ -623,6 +627,20 @@ describe('TaskPoller with ReadBatcher integration', () => {
     expect(mockServer.simulateTransaction).not.toHaveBeenCalled();
     // The task should be due (last_run 500 + interval 400 = 900 <= sequence 1000)
     expect(due.some(d => (d.taskId || d) === 1)).toBe(true);
+  });
+
+  it('does not fall back to a per-task read when the batch has no entry', async () => {
+    mockServer.getLedgerEntries.mockResolvedValue({ entries: [] });
+    const batcher = new ReadBatcher(mockServer, contractId, () => null, {
+      batchWindowMs: 0,
+    });
+    const getTaskConfig = jest.spyOn(TaskPoller.prototype, 'getTaskConfig').mockResolvedValue(null);
+    const poller = new TaskPoller(mockServer, contractId, { batcher });
+
+    await poller.pollDueTasks([1]);
+
+    expect(getTaskConfig).not.toHaveBeenCalled();
+    jest.restoreAllMocks();
   });
 
   it('falls back to per-task simulateTransaction when batcher.readMany rejects', async () => {
