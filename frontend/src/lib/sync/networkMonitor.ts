@@ -4,6 +4,8 @@
  * Monitors browser connectivity and RPC health to determine whether
  * the sync manager should be flushing or pausing. Uses lightweight
  * health checks (fetch with low timeout) rather than full RPC calls.
+ * Also provides resilience features for handling sudden disconnects
+ * during transaction submission.
  */
 
 import { createLogger } from "../logger";
@@ -20,6 +22,8 @@ export interface NetworkHealth {
   consecutiveSuccesses: number;
   lastChangeAt: number | null;
   lastError: string | null;
+  /** Monotonically increasing counter for resilience tracking */
+  resilienceId: number;
 }
 
 export interface NetworkMonitorConfig {
@@ -28,6 +32,8 @@ export interface NetworkMonitorConfig {
   timeoutMs: number;
   requiredConsecutiveSuccesses: number;
   degradedAfterFailures: number;
+  /** Maximum number of pending actions to queue before backpressure */
+  maxQueuedActions?: number;
 }
 
 const DEFAULT_CONFIG: Omit<Required<NetworkMonitorConfig>, "rpcEndpoint"> = {
@@ -35,6 +41,7 @@ const DEFAULT_CONFIG: Omit<Required<NetworkMonitorConfig>, "rpcEndpoint"> = {
   timeoutMs: 5_000,
   requiredConsecutiveSuccesses: 2,
   degradedAfterFailures: 3,
+  maxQueuedActions: 50,
 };
 
 export class NetworkMonitor {
@@ -43,6 +50,8 @@ export class NetworkMonitor {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<(health: NetworkHealth) => void>();
   private destroyed = false;
+  /** Monotonic counter so identical-millisecond changes stay ordered. */
+  private resilienceSeq = 0;
 
   constructor(config: NetworkMonitorConfig) {
     this.config = {
@@ -50,6 +59,7 @@ export class NetworkMonitor {
       timeoutMs: config.timeoutMs,
       requiredConsecutiveSuccesses: config.requiredConsecutiveSuccesses,
       degradedAfterFailures: config.degradedAfterFailures,
+      maxQueuedActions: config.maxQueuedActions ?? DEFAULT_CONFIG.maxQueuedActions,
       rpcEndpoint: config.rpcEndpoint,
     };
 
@@ -61,6 +71,7 @@ export class NetworkMonitor {
       consecutiveSuccesses: 0,
       lastChangeAt: null,
       lastError: null,
+      resilienceId: 0,
     };
   }
 
@@ -186,10 +197,11 @@ export class NetworkMonitor {
       lastError: null,
       lastChangeAt: prevOnline ? this.health.lastChangeAt : Date.now(),
       quality: this.computeQuality(latencyMs),
+      resilienceId: ++this.resilienceSeq,
     };
 
     if (!prevOnline) {
-      logger.info("Connectivity restored", { latencyMs, quality: this.health.quality });
+      logger.info("Connectivity restored", { latencyMs, quality: this.health.quality, resilienceId: this.health.resilienceId });
     }
 
     this.notify();
@@ -205,10 +217,11 @@ export class NetworkMonitor {
       lastError: err instanceof Error ? err.message : String(err),
       lastChangeAt: prevOnline ? Date.now() : this.health.lastChangeAt,
       quality: "offline",
+      resilienceId: ++this.resilienceSeq,
     };
 
     if (prevOnline) {
-      logger.warn("Connectivity lost", { error: this.health.lastError });
+      logger.warn("Connectivity lost", { error: this.health.lastError, resilienceId: this.health.resilienceId });
     }
 
     this.notify();
