@@ -14,19 +14,32 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
   });
 
   // 1. Onboarding & Guided Product Tour Journey
-  test("User Journey 1: Guided Product Tour auto-starts, navigates steps, and awards gamified faucet tokens", async ({
+  test("User Journey 1: Guided Product Tour auto-starts without hydration warnings, navigates steps, and awards gamified faucet tokens", async ({
     page,
   }) => {
+    const hydrationWarnings: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error" || msg.type() === "warning") {
+        const text = msg.text();
+        if (/hydration|did not match|server rendered html/i.test(text)) {
+          hydrationWarnings.push(text);
+        }
+      }
+    });
+
     await page.goto("/");
 
-    // Verify product tour auto-launches for new users
+    // Verify product tour auto-launches smoothly for new users with accessible dialog semantics
     const tourModal = page.getByTestId("product-tour-modal");
     await expect(tourModal).toBeVisible();
+    await expect(tourModal).toHaveAttribute("role", "dialog");
+    await expect(tourModal).toHaveAttribute("aria-modal", "true");
+    await expect(tourModal).toHaveAttribute("data-tour-phase", "active");
     await expect(page.getByTestId("tour-step-title")).toContainText(
       "Welcome to SoroTask",
     );
 
-    // Step navigation
+    // Step navigation (deterministic, no timing hacks)
     const nextBtn = page.getByTestId("tour-next-btn");
     await nextBtn.click();
     await expect(page.getByTestId("tour-step-title")).toContainText(
@@ -37,6 +50,13 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
     await expect(page.getByTestId("tour-step-title")).toContainText(
       "Task Creation & Resolvers",
     );
+
+    // Verify back navigation
+    await page.getByTestId("tour-prev-btn").click();
+    await expect(page.getByTestId("tour-step-title")).toContainText(
+      "Connect Your Wallet",
+    );
+    await nextBtn.click();
 
     await nextBtn.click();
     await expect(page.getByTestId("tour-step-title")).toContainText(
@@ -62,23 +82,42 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
     await page.getByTestId("tour-finish-btn").click();
     await expect(tourModal).not.toBeVisible();
 
-    // Replay tour button available
+    // Replay tour button available with completed phase
     const replayBtn = page.getByTestId("start-tour-btn");
     await expect(replayBtn).toBeVisible();
+    await expect(replayBtn).toHaveAttribute("data-tour-phase", "completed");
+
+    // Persistence check across full reload
+    await page.reload();
+    await expect(page.getByTestId("start-tour-btn")).toBeVisible();
+    await expect(tourModal).not.toBeVisible();
+
+    // Zero React hydration mismatch warnings in console
+    expect(hydrationWarnings).toEqual([]);
   });
 
-  test("User Journey 1b: User can dismiss tour and replay anytime", async ({
+  test("User Journey 1b: User can dismiss tour, persist dismissal across reloads, and replay anytime", async ({
     page,
   }) => {
     await page.goto("/");
 
+    const tourModal = page.getByTestId("product-tour-modal");
+    await expect(tourModal).toBeVisible();
+
     const dismissBtn = page.getByTestId("tour-dismiss-btn");
     await dismissBtn.click();
-    await expect(page.getByTestId("product-tour-modal")).not.toBeVisible();
+    await expect(tourModal).not.toBeVisible();
 
+    // Verify dismissed state persists across reload
+    await page.reload();
     const replayBtn = page.getByTestId("start-tour-btn");
+    await expect(replayBtn).toBeVisible();
+    await expect(replayBtn).toHaveAttribute("data-tour-phase", "dismissed");
+    await expect(tourModal).not.toBeVisible();
+
     await replayBtn.click();
-    await expect(page.getByTestId("product-tour-modal")).toBeVisible();
+    await expect(tourModal).toBeVisible();
+    await expect(tourModal).toHaveAttribute("data-tour-phase", "active");
   });
 
   // 2. Wallet & Account Switching Journey

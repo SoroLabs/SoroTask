@@ -65,7 +65,71 @@ jobs:
           fi
 
       - name: Upload Coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           directory: contract
           fail_ci_if_error: false
+
+  fuzz-and-mutation-qa:
+    name: Property Fuzzing (10M) & Mutation Testing QA
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contract/target
+          key: ${{ runner.os }}-cargo-qa-${{ hashFiles('contract/Cargo.lock') }}
+
+      - name: Verify cargo-fuzz Harness Compiles
+        run: cargo check --manifest-path contract/fuzz/Cargo.toml
+
+      - name: Run 10M Fuzz Suite, Math Invariants & Mutation Tests
+        run: |
+          mkdir -p contract/target
+          cd contract
+          cargo test --release proptest -- --nocapture | tee target/proptest-output.log
+          cargo test --release math::tests -- --nocapture | tee -a target/proptest-output.log
+          cargo test --release test:: -- --nocapture | tee -a target/proptest-output.log
+
+      - name: Install cargo-mutants
+        run: cargo install --locked cargo-mutants
+
+      - name: Run Mutation Testing on Critical Math Routines
+        run: |
+          cd contract
+          cargo mutants --file src/math.rs --output target/mutants-out -- --release math
+
+      - name: Generate & Publish Property Test Regression Report
+        if: always()
+        run: |
+          python3 scripts/generate_proptest_report.py \
+            --log contract/target/proptest-output.log \
+            --regressions-dir contract/proptest-regressions \
+            --mutants-dir contract/target/mutants-out \
+            --out-json contract/target/proptest-regression-report.json \
+            --out-md contract/target/proptest-regression-report.md
+          cat contract/target/proptest-regression-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Property Test & Mutation Regression Artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-and-mutation-regression-reports
+          path: |
+            contract/target/proptest-regression-report.json
+            contract/target/proptest-regression-report.md
+            contract/target/proptest-output.log
+            contract/proptest-regressions/
+            contract/target/mutants-out/

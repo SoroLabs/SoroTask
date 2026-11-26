@@ -1,62 +1,15 @@
 const crypto = require('crypto');
-const fs = require('fs');
 const path = require('path');
 const { Worker } = require('worker_threads');
 const { hashTaskCondition, isValidZkProof, zeroizeBuffer } = require('./lib/helpers');
 const { withEphemeralDir, writeFile } = require('./lib/ephemeralDir');
 const { ProverJobQueue, CPU_CONCURRENCY } = require('./lib/prover-job-queue');
 const { ProofCache, createProofCacheKey } = require('./lib/proof-cache');
+// Trusted-setup ceremony coordinator & zkey checksum validator (Issue #BE-FINAL-24).
+// Owning the SHA-256 helpers here keeps a single source of truth for both the
+// low-level auditor and the higher-level ceremony gate integrated in initialize().
+const { computeFileSha256, auditZkeyChecksums } = require('./lib/ceremonyCoordinator');
 const EventEmitter = require('events');
-
-// ---------------------------------------------------------------------------
-// zkey Checksum Auditor
-// Verifies SHA-256 checksums of Powers of Tau / zkey setup files before the
-// service accepts any proof requests.  Aborts startup if a file is missing or
-// its digest does not match the published ceremony record.
-// ---------------------------------------------------------------------------
-
-/**
- * Compute the SHA-256 digest of a file at `filePath`.
- * @param {string} filePath - Absolute path to the file.
- * @returns {Promise<string>} Hex-encoded digest.
- */
-async function computeFileSha256(filePath) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const stream = fs.createReadStream(filePath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('end', () => resolve(hash.digest('hex')));
-    stream.on('error', reject);
-  });
-}
-
-/**
- * Verify a set of zkey / Powers-of-Tau setup files against known SHA-256
- * checksums from the official ceremony records.  Throws if any file fails.
- *
- * @param {Array<{ file: string, expectedSha256: string }>} entries
- *   Each entry maps an absolute file path to its expected hex digest.
- * @throws {Error} When a file is missing or its checksum does not match.
- */
-async function auditZkeyChecksums(entries) {
-  for (const { file, expectedSha256 } of entries) {
-    if (!fs.existsSync(file)) {
-      throw new Error(
-        `[zkey-auditor] Setup file not found: ${file}. ` +
-        'Aborting service startup to prevent unsound proof generation.',
-      );
-    }
-    const actual = await computeFileSha256(file);
-    if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
-      throw new Error(
-        `[zkey-auditor] Checksum mismatch for ${path.basename(file)}. ` +
-        `Expected ${expectedSha256} but got ${actual}. ` +
-        'Aborting service startup — file may be corrupted or compromised.',
-      );
-    }
-    console.log(`[zkey-auditor] ✓ ${path.basename(file)} integrity verified (SHA-256 OK)`);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // 2-of-3 MPC Threshold Protocol (Shamir Secret Sharing)
@@ -253,6 +206,10 @@ class ZKProofService extends EventEmitter {
     // Each entry: { file: string, expectedSha256: string }
     // Inject via options.zkeyAuditEntries (or leave empty to skip, e.g. in tests).
     this.zkeyAuditEntries = options.zkeyAuditEntries ?? null;
+    // Trusted-setup ceremony coordinator (Issue #BE-FINAL-24). When supplied, its
+    // startup audit verifies every proving key on disk against the immutable
+    // on-chain registry before the worker pool starts. Leave null to skip.
+    this.ceremonyCoordinator = options.ceremonyCoordinator ?? null;
     this.proverQueue = new ProverJobQueue({
       redisUrl: options.redisUrl ?? process.env.REDIS_URL,
       concurrency: CPU_CONCURRENCY,
@@ -308,6 +265,12 @@ class ZKProofService extends EventEmitter {
     // SHA-256 checksum does not match the expected ceremony value.
     if (this.zkeyAuditEntries && this.zkeyAuditEntries.length > 0) {
       await auditZkeyChecksums(this.zkeyAuditEntries);
+    }
+    // Trusted-setup ceremony gate (Issue #BE-FINAL-24): audit every local
+    // proving key against the immutable on-chain registry. Any missing,
+    // tampered, or unregistered .zkey aborts startup before workers spawn.
+    if (this.ceremonyCoordinator) {
+      await this.ceremonyCoordinator.auditAtStartup();
     }
     this.isReady = true;
     this.startedAt = Date.now();

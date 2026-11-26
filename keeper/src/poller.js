@@ -337,7 +337,10 @@ class TaskPoller {
           const correlationId = `poll-${taskId}-${crypto.randomBytes(4).toString('hex')}`;
           // Cluster-wide gate: wait for a global RPC token before issuing the
           // per-task read. No-op passthrough when Redis is not configured.
-          await this.distributedReadLimit.acquire();
+          const rateLimitAcquired = await this.distributedReadLimit.acquire();
+          if (!rateLimitAcquired) {
+            throw new Error('Distributed RPC rate limit unavailable; skipping task read');
+          }
           const preloaded = preloadedConfigs ? preloadedConfigs.get(Number(taskId)) : undefined;
           const result = await this.checkTask(
             taskId,

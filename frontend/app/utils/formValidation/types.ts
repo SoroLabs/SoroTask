@@ -1,3 +1,5 @@
+import type { z } from 'zod';
+
 export type ValidationRule<T = any> = {
   validate: (value: T) => ValidationResult;
   message?: string;
@@ -37,6 +39,7 @@ export type FormFieldConfig<T = any> = {
   name: string;
   initialValue?: T;
   validation?: ValidationRule<T>[];
+  zodSchema?: z.ZodType<unknown>;
   dependencies?: string[];
   asyncValidation?: (value: T) => Promise<ValidationResult>;
   debounceMs?: number;
@@ -52,6 +55,7 @@ export type FormFieldConfig<T = any> = {
 
 export type FormConfig<T extends Record<string, any> = Record<string, any>> = {
   fields: Record<keyof T, FormFieldConfig>;
+  zodSchema?: z.ZodType<unknown>;
   onSubmit?: (values: T) => Promise<void> | void;
   onFieldChange?: (field: keyof T, value: any, formState: FormState<T>) => void;
   onValidationChange?: (formState: FormState<T>) => void;
@@ -59,6 +63,15 @@ export type FormConfig<T extends Record<string, any> = Record<string, any>> = {
   validateOnBlur?: boolean;
   resetOnSubmit?: boolean;
   focusFirstError?: boolean;
+};
+
+export type FieldA11yProps = {
+  id: string;
+  name: string;
+  'aria-invalid': boolean;
+  'aria-required'?: boolean;
+  'aria-busy'?: boolean;
+  'aria-describedby'?: string;
 };
 
 export type AsyncValidationState = {

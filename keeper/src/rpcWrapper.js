@@ -1,5 +1,20 @@
-const { CircuitBreaker, State } = require('./circuitBreaker');
+'use strict';
+
+const { CircuitBreaker } = require('./circuitBreaker');
 const { createLogger } = require('./logger');
+const { RPCBenchmarkDaemon, EndpointState } = require('./rpcBenchmark');
+
+const WRAPPED_METHODS = [
+  'getNetwork',
+  'getLatestLedger',
+  'getAccount',
+  'simulateTransaction',
+  'sendTransaction',
+  'getTransaction',
+  'getEvents',
+  'getLedgerEntries',
+  'getHealth',
+];
 
 const WRAPPED_RPC_METHODS = [
   'getNetwork',
@@ -168,740 +183,345 @@ function defaultServerFactory(url) {
 }
 
 /**
- * Intelligent multi-RPC pool manager with:
- *  - Smooth Weighted Round-Robin (SWRR) steered by dynamic latency & health weights
- *  - Instant failover on HTTP 429 / 503 and transient network/timeout errors
- *  - Per-node CircuitBreaker + rate-limit cooldowns
- *  - Continuous latency benchmarking (EWMA) and ledger synchronization height tracking
+ * Wraps a SorobanRpc.Server, load-balanced RPC instance, or multi-endpoint pool
+ * with circuit breaking, background RPC benchmarking, and latency-weighted traffic steering.
+ * All method calls to the server are intercepted and routed through the circuit breaker
+ * and dynamic endpoint steering layer with automatic failover.
  */
-class RPCPoolManager {
-  constructor(nodes = [], options = {}) {
-    this.logger = options.logger || createLogger('rpc-pool');
-    this.metrics = options.metrics || null;
-    this.serverFactory = options.serverFactory || defaultServerFactory;
-
-    // Circuit breaker & failover configuration
-    this.failureThreshold = options.failureThreshold || 5;
-    this.recoveryTimeoutMs = options.recoveryTimeoutMs || 30000;
-    this.halfOpenMaxRequests = options.halfOpenMaxRequests || 1;
-    this.rateLimitCooldownMs = options.rateLimitCooldownMs ?? 10000;
-    this.serviceUnavailableCooldownMs = options.serviceUnavailableCooldownMs ?? 15000;
-    this.instantFailoverOnRateLimit = options.instantFailoverOnRateLimit !== false;
-    this.requestTimeoutMs = options.requestTimeoutMs || 0;
-
-    // Latency & ledger sync health scoring configuration
-    this.ewmaAlpha = options.ewmaAlpha ?? 0.3;
-    this.initialLatencyMs = options.initialLatencyMs ?? 100;
-    this.latencyReferenceMs = options.latencyReferenceMs ?? 250;
-    this.maxAllowedLedgerLag = options.maxAllowedLedgerLag ?? 2;
-    this.healthCheckIntervalMs = options.healthCheckIntervalMs ?? 15000;
-    this.healthCheckTimeoutMs = options.healthCheckTimeoutMs ?? 5000;
-
-    // Pool state
-    this.nodes = [];
-    this.maxObservedLedger = 0;
-    this.healthCheckTimer = null;
-    this.isMonitoring = false;
-
-    // Aggregate metrics
-    this.poolMetrics = {
-      totalRequests: 0,
-      totalSuccesses: 0,
-      totalFailures: 0,
-      totalFailovers: 0,
-      rateLimitFailovers: 0,
-      serviceUnavailableFailovers: 0,
-      lastFailoverAt: null,
-    };
-
-    // Register initial nodes
-    if (Array.isArray(nodes)) {
-      nodes.forEach((nodeInput, index) => {
-        this.addNode(nodeInput, { index });
-      });
-    }
-
-    if (options.autoStartHealthMonitor && this.nodes.length > 0) {
-      this.startHealthMonitor();
-    }
-  }
-
+class RPCWrapper {
   /**
-   * Add a node (URL string, server instance, or descriptor object) to the pool.
-   *
-   * @param {string|Object} nodeInput
-   * @param {Object} [extraOptions]
-   * @returns {Object} The created node entry
+   * @param {Object|Array} serverOrEndpoints - Single server, load-balanced server, or endpoint list
+   * @param {Object} [metrics] - Metrics instance (e.g., MetricsServer or custom collector)
+   * @param {Object} [options] - Wrapper, circuit breaker, and benchmarking options
    */
-  addNode(nodeInput, extraOptions = {}) {
-    let url = null;
-    let server = null;
-    let baseWeight = 1;
-    let id = null;
+  constructor(serverOrEndpoints, metrics, options = {}) {
+    this.logger = options.logger || createLogger('rpc-wrapper');
+    this.metrics = metrics || null;
+    this.options = options;
 
-    if (typeof nodeInput === 'string') {
-      url = nodeInput.trim();
-      id = extraOptions.id || url;
-      server = this.serverFactory(url);
-    } else if (nodeInput && typeof nodeInput === 'object') {
-      if (nodeInput.server) {
-        server = nodeInput.server;
-        url = nodeInput.url || nodeInput.id || `rpc-node-${this.nodes.length + 1}`;
-        id = nodeInput.id || url;
-        baseWeight = Number.isFinite(nodeInput.weight) && nodeInput.weight > 0 ? nodeInput.weight : 1;
-      } else if (nodeInput.url && typeof nodeInput.url === 'string' && typeof nodeInput.getLatestLedger !== 'function') {
-        url = nodeInput.url.trim();
-        id = nodeInput.id || url;
-        baseWeight = Number.isFinite(nodeInput.weight) && nodeInput.weight > 0 ? nodeInput.weight : 1;
-        server = this.serverFactory(url);
-      } else {
-        // Direct server instance
-        server = nodeInput;
-        url = nodeInput.serverURL ? String(nodeInput.serverURL) : (extraOptions.url || `rpc-node-${this.nodes.length + 1}`);
-        id = extraOptions.id || url;
-        baseWeight = Number.isFinite(extraOptions.weight) && extraOptions.weight > 0 ? extraOptions.weight : 1;
-      }
-    } else {
-      throw new Error('Invalid RPC node specification');
-    }
-
-    // Deduplicate by id
-    const existing = this.nodes.find((n) => n.id === id);
-    if (existing) {
-      existing.server = server;
-      existing.baseWeight = baseWeight;
-      this.recomputeNodeHealth(existing);
-      return existing;
-    }
-
-    const breaker = new CircuitBreaker(`soroban-rpc:${id}`, {
-      failureThreshold: this.failureThreshold,
-      recoveryTimeoutMs: this.recoveryTimeoutMs,
-      halfOpenMaxRequests: this.halfOpenMaxRequests,
+    this.breaker = new CircuitBreaker('soroban-rpc', {
+      failureThreshold: options.failureThreshold || 5,
+      recoveryTimeoutMs: options.recoveryTimeoutMs || 30000,
+      halfOpenMaxRequests: options.halfOpenMaxRequests || 1,
       metrics: this.metrics,
       logger: this.logger,
     });
 
-    const node = {
-      id,
-      url,
-      server,
-      baseWeight,
-      breaker,
-      ewmaLatencyMs: this.initialLatencyMs,
-      minLatencyMs: Infinity,
-      maxLatencyMs: 0,
-      sampleCount: 0,
-      latestLedger: 0,
-      ledgerLag: 0,
-      consecutiveFailures: 0,
-      consecutiveSuccesses: 0,
-      totalRequests: 0,
-      totalSuccesses: 0,
-      totalFailures: 0,
-      rateLimitHits: 0,
-      serviceUnavailableHits: 0,
-      cooldownUntil: 0,
-      lastSuccessAt: null,
-      lastFailureAt: null,
-      lastError: null,
-      healthScore: 1.0,
-      effectiveWeight: baseWeight * (1000 / Math.max(this.initialLatencyMs, 10)),
-      currentWeight: 0, // Used by Smooth Weighted Round-Robin (SWRR)
-    };
+    this.endpointBreakers = new Map();
+    this.failoverOnError = options.failoverOnError !== false;
+    this.maxFailoverAttempts = Number.isFinite(Number(options.maxFailoverAttempts))
+      ? Math.max(1, Number(options.maxFailoverAttempts))
+      : null;
+    this.callTimeoutMs = Number.isFinite(Number(options.callTimeoutMs)) && Number(options.callTimeoutMs) > 0
+      ? Number(options.callTimeoutMs)
+      : null;
 
-    this.nodes.push(node);
-    this.recomputeNodeHealth(node);
-    return node;
+    this.benchmarkDaemon = null;
+    this._ownsBenchmarkDaemon = false;
+    this.server = null;
+
+    this._initializeBackend(serverOrEndpoints, options);
+    this._installWrappedMethods();
   }
 
-  /**
-   * Remove a node from the pool by id or url.
-   *
-   * @param {string} idOrUrl
-   * @returns {boolean}
-   */
-  removeNode(idOrUrl) {
-    const idx = this.nodes.findIndex((n) => n.id === idOrUrl || n.url === idOrUrl);
-    if (idx === -1) {
-      return false;
-    }
-    this.nodes.splice(idx, 1);
-    this.recomputeAllLedgerLag();
-    return true;
-  }
+  _initializeBackend(serverOrEndpoints, options) {
+    const endpointInputs = this._resolveEndpointInputs(serverOrEndpoints, options);
 
-  /**
-   * Hot-reload the pool with a new list of endpoints while preserving state for unchanged nodes.
-   *
-   * @param {Array<string|Object>} endpoints
-   */
-  replaceEndpoints(endpoints = []) {
-    if (!Array.isArray(endpoints) || endpoints.length === 0) {
-      return;
-    }
-
-    const incomingIds = new Set();
-    endpoints.forEach((ep, index) => {
-      const id = typeof ep === 'string' ? ep.trim() : (ep.id || ep.url || `rpc-node-${index + 1}`);
-      incomingIds.add(id);
-      if (!this.nodes.some((n) => n.id === id)) {
-        this.addNode(ep, { index });
-      }
-    });
-
-    this.nodes = this.nodes.filter((n) => incomingIds.has(n.id));
-    this.recomputeAllLedgerLag();
-  }
-
-  /**
-   * Check whether a node is currently eligible to receive traffic.
-   *
-   * @param {Object} node
-   * @param {number} [now]
-   * @returns {boolean}
-   */
-  isNodeEligible(node, now = Date.now()) {
-    if (node.cooldownUntil > now) {
-      return false;
+    if (options.benchmarkDaemon) {
+      this.benchmarkDaemon = options.benchmarkDaemon;
+      this._ownsBenchmarkDaemon = false;
+    } else if (endpointInputs.length > 0) {
+      this.benchmarkDaemon = new RPCBenchmarkDaemon(endpointInputs, {
+        ...(options.benchmarkOptions || {}),
+        probeIntervalMs: options.probeIntervalMs ?? options.benchmarkOptions?.probeIntervalMs,
+        probeTimeoutMs: options.probeTimeoutMs ?? options.benchmarkOptions?.probeTimeoutMs,
+        maxLatencyMs: options.maxLatencyMs ?? options.benchmarkOptions?.maxLatencyMs,
+        maxLedgerLag: options.maxLedgerLag ?? options.benchmarkOptions?.maxLedgerLag,
+        maxErrorRate: options.maxErrorRate ?? options.benchmarkOptions?.maxErrorRate,
+        consecutiveFailureThreshold:
+          options.consecutiveFailureThreshold ?? options.benchmarkOptions?.consecutiveFailureThreshold,
+        consecutiveSlowThreshold:
+          options.consecutiveSlowThreshold ?? options.benchmarkOptions?.consecutiveSlowThreshold,
+        quarantineDurationMs: options.quarantineDurationMs ?? options.benchmarkOptions?.quarantineDurationMs,
+        recoverySuccessThreshold:
+          options.recoverySuccessThreshold ?? options.benchmarkOptions?.recoverySuccessThreshold,
+        steeringStrategy: options.steeringStrategy ?? options.benchmarkOptions?.steeringStrategy,
+        latencyWeightExponent:
+          options.latencyWeightExponent ?? options.benchmarkOptions?.latencyWeightExponent,
+        serverFactory: options.serverFactory ?? options.benchmarkOptions?.serverFactory,
+        endpointRegistry:
+          serverOrEndpoints && !Array.isArray(serverOrEndpoints) ? serverOrEndpoints.endpointRegistry : null,
+        loadBalancer:
+          serverOrEndpoints && !Array.isArray(serverOrEndpoints) ? serverOrEndpoints.loadBalancer : null,
+        metrics: this.metrics,
+        logger: this.logger,
+      });
+      this._ownsBenchmarkDaemon = true;
     }
 
-    const state = node.breaker.getState();
-    if (state === State.OPEN) {
-      // Allow half-open probe once recovery timeout has elapsed
-      if (node.breaker.lastFailureTime && now - node.breaker.lastFailureTime > node.breaker.recoveryTimeoutMs) {
-        return true;
-      }
-      return false;
-    }
-
-    return true;
-  }
-
-  /**
-   * Recompute dynamic health score and latency-based effective weight for a single node.
-   *
-   * @param {Object} node
-   * @param {number} [now]
-   */
-  recomputeNodeHealth(node, now = Date.now()) {
-    const inCooldown = node.cooldownUntil > now;
-    const state = node.breaker.getState();
-    const canHalfOpen =
-      state === State.OPEN &&
-      node.breaker.lastFailureTime &&
-      now - node.breaker.lastFailureTime > node.breaker.recoveryTimeoutMs;
-
-    if (inCooldown || (state === State.OPEN && !canHalfOpen)) {
-      node.healthScore = 0;
-      node.effectiveWeight = 0;
-      return;
-    }
-
-    // 1. Latency score (0..1) and inverse-latency weight
-    const latency = Math.max(node.ewmaLatencyMs || this.initialLatencyMs, 1);
-    const latencyScore = 1 / (1 + latency / this.latencyReferenceMs);
-    const latencyWeight = 1000 / Math.max(latency, 10);
-
-    // 2. Ledger sync score (0..1)
-    let ledgerSyncScore = 1.0;
-    if (this.maxObservedLedger > 0 && node.latestLedger > 0) {
-      node.ledgerLag = Math.max(0, this.maxObservedLedger - node.latestLedger);
-      if (node.ledgerLag > this.maxAllowedLedgerLag) {
-        const excessLag = node.ledgerLag - this.maxAllowedLedgerLag;
-        ledgerSyncScore = Math.max(0.05, 1 / (1 + excessLag * 0.75));
-      }
+    if (Array.isArray(serverOrEndpoints)) {
+      const first = this.benchmarkDaemon && this.benchmarkDaemon.selectEndpoint();
+      this.server = (first && first.server) || {};
+    } else if (serverOrEndpoints && typeof serverOrEndpoints === 'object') {
+      this.server = serverOrEndpoints;
     } else {
-      node.ledgerLag = 0;
+      const first = this.benchmarkDaemon && this.benchmarkDaemon.selectEndpoint();
+      this.server = (first && first.server) || {};
     }
 
-    // 3. Reliability score (0..1)
-    const reliabilityScore = 1 / (1 + node.consecutiveFailures * 0.5);
-
-    // 4. Circuit state multiplier
-    const stateMultiplier = state === State.HALF_OPEN || canHalfOpen ? 0.25 : 1.0;
-
-    // Combined dynamic health score (0.0 - 1.0)
-    const rawScore = (latencyScore * 0.4 + ledgerSyncScore * 0.35 + reliabilityScore * 0.25) * stateMultiplier;
-    node.healthScore = Number(Math.max(0.01, Math.min(1.0, rawScore)).toFixed(4));
-
-    // Effective weight for Smooth Weighted Round-Robin:
-    // Strongly steered by inverse latency weight * ledger sync * reliability * baseWeight
-    node.effectiveWeight = Math.max(
-      0.01,
-      node.baseWeight * latencyWeight * ledgerSyncScore * reliabilityScore * stateMultiplier,
-    );
-  }
-
-  /**
-   * Recompute ledger lag and health scores across all nodes.
-   */
-  recomputeAllLedgerLag() {
-    let maxLedger = this.maxObservedLedger;
-    for (const node of this.nodes) {
-      if (node.latestLedger > maxLedger) {
-        maxLedger = node.latestLedger;
+    if (this.benchmarkDaemon) {
+      this._ensureEndpointBreakers();
+      const shouldStart = options.autoStartBenchmark !== undefined
+        ? Boolean(options.autoStartBenchmark)
+        : this._ownsBenchmarkDaemon;
+      if (shouldStart && !this.benchmarkDaemon.isRunning) {
+        this.benchmarkDaemon.start({
+          runImmediately: options.runInitialBenchmark !== false,
+        });
       }
-    }
-    this.maxObservedLedger = maxLedger;
-
-    const now = Date.now();
-    for (const node of this.nodes) {
-      this.recomputeNodeHealth(node, now);
     }
   }
 
-  /**
-   * Record a successful RPC call on a node and update EWMA latency & ledger height.
-   *
-   * @param {Object} node
-   * @param {number} latencyMs
-   * @param {string} method
-   * @param {*} result
-   */
-  recordSuccess(node, latencyMs, method, result) {
-    const now = Date.now();
-    const measuredLatency = Math.max(1, Number(latencyMs) || 1);
+  _resolveEndpointInputs(serverOrEndpoints, options) {
+    const entries = [];
 
-    node.totalRequests++;
-    node.totalSuccesses++;
-    node.consecutiveSuccesses++;
-    node.consecutiveFailures = 0;
-    node.lastSuccessAt = now;
-    node.lastError = null;
-    node.cooldownUntil = 0;
+    if (Array.isArray(serverOrEndpoints)) {
+      entries.push(...serverOrEndpoints);
+    } else if (serverOrEndpoints && typeof serverOrEndpoints === 'object') {
+      const hasExplicitEndpoints =
+        (Array.isArray(options.endpoints) && options.endpoints.length > 0)
+        || (Array.isArray(options.rpcUrls) && options.rpcUrls.length > 0);
 
-    if (node.sampleCount === 0) {
-      node.ewmaLatencyMs = measuredLatency;
-    } else {
-      node.ewmaLatencyMs = this.ewmaAlpha * measuredLatency + (1 - this.ewmaAlpha) * node.ewmaLatencyMs;
-    }
-    node.sampleCount++;
-    if (measuredLatency < node.minLatencyMs) node.minLatencyMs = measuredLatency;
-    if (measuredLatency > node.maxLatencyMs) node.maxLatencyMs = measuredLatency;
-
-    // Passively track ledger synchronization height from getLatestLedger / getHealth / simulateTransaction
-    const observedLedger = this.extractLedgerSequence(method, result);
-    if (observedLedger !== null && observedLedger > node.latestLedger) {
-      node.latestLedger = observedLedger;
-      if (observedLedger > this.maxObservedLedger) {
-        this.maxObservedLedger = observedLedger;
-        this.recomputeAllLedgerLag();
-        return;
-      }
-    }
-
-    this.recomputeNodeHealth(node, now);
-  }
-
-  /**
-   * Record a failed RPC call on a node. Immediately trips cooldown/circuit on 429 or 503.
-   *
-   * @param {Object} node
-   * @param {Error} error
-   */
-  recordFailure(node, error) {
-    const now = Date.now();
-    const statusCode = extractStatusCode(error);
-
-    node.totalRequests++;
-    node.totalFailures++;
-    node.consecutiveFailures++;
-    node.consecutiveSuccesses = 0;
-    node.lastFailureAt = now;
-    node.lastError = error ? error.message || String(error) : 'unknown_error';
-
-    if (statusCode === 429) {
-      node.rateLimitHits++;
-      if (this.instantFailoverOnRateLimit) {
-        const retryAfterMs = extractRetryAfterMs(error);
-        node.cooldownUntil = now + (retryAfterMs !== null ? retryAfterMs : this.rateLimitCooldownMs);
-        if (node.breaker.getState() !== State.OPEN) {
-          node.breaker.lastFailureTime = now;
-          node.breaker.transitionTo(State.OPEN);
-        }
-      }
-    } else if (statusCode === 503) {
-      node.serviceUnavailableHits++;
-      if (this.instantFailoverOnRateLimit) {
-        node.cooldownUntil = now + this.serviceUnavailableCooldownMs;
-        if (node.breaker.getState() !== State.OPEN) {
-          node.breaker.lastFailureTime = now;
-          node.breaker.transitionTo(State.OPEN);
+      if (hasExplicitEndpoints || options.enableBenchmark) {
+        const primaryUrl = this._extractServerUrl(serverOrEndpoints);
+        if (primaryUrl || WRAPPED_METHODS.some((m) => typeof serverOrEndpoints[m] === 'function')) {
+          entries.push({
+            url: primaryUrl || 'primary-rpc',
+            label: 'primary',
+            server: serverOrEndpoints,
+          });
         }
       }
     }
 
-    this.recomputeNodeHealth(node, now);
+    if (Array.isArray(options.endpoints)) {
+      entries.push(...options.endpoints);
+    }
+    if (Array.isArray(options.rpcUrls)) {
+      entries.push(...options.rpcUrls);
+    }
+
+    return entries;
   }
 
-  /**
-   * Extract ledger sequence from RPC responses when available.
-   *
-   * @param {string} method
-   * @param {*} result
-   * @returns {number|null}
-   */
-  extractLedgerSequence(method, result) {
-    if (!result || typeof result !== 'object') {
-      return null;
+  _extractServerUrl(server) {
+    if (!server || typeof server !== 'object') return null;
+    if (typeof server.url === 'string' && server.url) return server.url;
+    if (typeof server.getUrl === 'function') return server.getUrl();
+    if (server.serverURL && typeof server.serverURL.toString === 'function') {
+      return server.serverURL.toString();
     }
-
-    const candidates = [
-      result.sequence,
-      result.latestLedger,
-      result.ledger,
-    ];
-
-    for (const candidate of candidates) {
-      const seq = Number(candidate);
-      if (Number.isInteger(seq) && seq > 0) {
-        return seq;
-      }
-    }
-
     return null;
   }
 
-  /**
-   * Select the next best node using Smooth Weighted Round-Robin (SWRR)
-   * weighted by dynamic latency & health scores, excluding already-attempted nodes.
-   *
-   * @param {Set<string>} [excludeIds]
-   * @returns {Object|null}
-   */
-  selectNode(excludeIds = new Set()) {
-    const now = Date.now();
-    const candidates = this.nodes.filter((n) => !excludeIds.has(n.id) && this.isNodeEligible(n, now));
-
-    if (candidates.length === 0) {
-      // Last-resort fallback: pick an unattempted node with earliest cooldown/recovery expiry
-      const unattempted = this.nodes.filter((n) => !excludeIds.has(n.id));
-      if (unattempted.length === 0) {
-        return null;
-      }
-      unattempted.sort((a, b) => {
-        const aReadyAt = Math.max(a.cooldownUntil || 0, (a.breaker.lastFailureTime || 0) + a.breaker.recoveryTimeoutMs);
-        const bReadyAt = Math.max(b.cooldownUntil || 0, (b.breaker.lastFailureTime || 0) + b.breaker.recoveryTimeoutMs);
-        return aReadyAt - bReadyAt;
-      });
-      return unattempted[0];
-    }
-
-    if (candidates.length === 1) {
-      return candidates[0];
-    }
-
-    // Smooth Weighted Round-Robin (Nginx algorithm)
-    let totalWeight = 0;
-    let bestNode = null;
-
-    for (const node of candidates) {
-      this.recomputeNodeHealth(node, now);
-      const weight = node.effectiveWeight > 0 ? node.effectiveWeight : 0.01;
-      node.currentWeight += weight;
-      totalWeight += weight;
-
-      if (!bestNode || node.currentWeight > bestNode.currentWeight) {
-        bestNode = node;
+  _ensureEndpointBreakers() {
+    if (!this.benchmarkDaemon) return;
+    for (const url of this.benchmarkDaemon.endpoints.keys()) {
+      if (!this.endpointBreakers.has(url)) {
+        this.endpointBreakers.set(
+          url,
+          new CircuitBreaker(`soroban-rpc:${url}`, {
+            failureThreshold: this.options.endpointFailureThreshold || this.options.failureThreshold || 5,
+            recoveryTimeoutMs: this.options.endpointRecoveryTimeoutMs || this.options.recoveryTimeoutMs || 30000,
+            halfOpenMaxRequests: this.options.halfOpenMaxRequests || 1,
+            metrics: this.metrics,
+            logger: this.logger,
+          }),
+        );
       }
     }
-
-    if (bestNode) {
-      bestNode.currentWeight -= totalWeight;
-    }
-
-    return bestNode;
   }
 
-  /**
-   * Execute an RPC method with automatic instant failover across healthy nodes.
-   *
-   * @param {string} method - RPC method name (e.g. 'getLatestLedger', 'simulateTransaction')
-   * @param {Array} [args=[]] - Arguments to pass to the RPC method
-   * @returns {Promise<*>}
-   */
-  async execute(method, args = []) {
-    if (this.nodes.length === 0) {
-      throw new Error(`No RPC nodes configured in pool for ${method}`);
-    }
-
-    this.poolMetrics.totalRequests++;
-    const attemptedIds = new Set();
-    let lastError = null;
-    const maxAttempts = this.nodes.length;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const node = this.selectNode(attemptedIds);
-      if (!node) {
-        break;
-      }
-      attemptedIds.add(node.id);
-
-      const startedAt = Date.now();
-      try {
-        const result = await node.breaker.execute(() => {
-          if (typeof node.server[method] !== 'function') {
-            throw new Error(`RPC method "${method}" not supported by node "${node.id}"`);
-          }
-          const callPromise = node.server[method].apply(node.server, args);
-          if (this.requestTimeoutMs > 0) {
-            return Promise.race([
-              callPromise,
-              new Promise((_, reject) => {
-                const timer = setTimeout(() => {
-                  const timeoutErr = new Error(`RPC ${method} timed out after ${this.requestTimeoutMs}ms on ${node.id}`);
-                  timeoutErr.code = 'ETIMEDOUT';
-                  reject(timeoutErr);
-                }, this.requestTimeoutMs);
-                if (typeof timer.unref === 'function') timer.unref();
-              }),
-            ]);
-          }
-          return callPromise;
-        });
-
-        const latencyMs = Date.now() - startedAt;
-        this.recordSuccess(node, latencyMs, method, result);
-        this.poolMetrics.totalSuccesses++;
-        return result;
-      } catch (error) {
-        lastError = error;
-        const statusCode = extractStatusCode(error);
-        this.recordFailure(node, error);
-
-        const shouldFailover = isFailoverError(error) && attemptedIds.size < this.nodes.length;
-        if (shouldFailover) {
-          this.poolMetrics.totalFailovers++;
-          this.poolMetrics.lastFailoverAt = new Date().toISOString();
-          if (statusCode === 429) {
-            this.poolMetrics.rateLimitFailovers++;
-          } else if (statusCode === 503) {
-            this.poolMetrics.serviceUnavailableFailovers++;
-          }
-
-          if (this.metrics && typeof this.metrics.increment === 'function') {
-            this.metrics.increment('rpcFailoversTotal');
-          }
-
-          this.logger.warn('Instant RPC failover triggered', {
-            method,
-            failedNode: node.id,
-            statusCode,
-            error: error.message || String(error),
-            attempt: attempt + 1,
-            remainingNodes: this.nodes.length - attemptedIds.size,
-          });
-          continue;
-        }
-
-        // Non-failover error (e.g. contract revert / invalid XDR) or no more nodes to try
-        this.poolMetrics.totalFailures++;
-        throw error;
-      }
-    }
-
-    this.poolMetrics.totalFailures++;
-    throw lastError || new Error(`All ${this.nodes.length} RPC nodes failed for ${method}`);
-  }
-
-  /**
-   * Probe a single node to benchmark its latency and ledger synchronization height.
-   *
-   * @param {Object} node
-   * @returns {Promise<Object>}
-   */
-  async probeNode(node) {
-    const startedAt = Date.now();
-    try {
-      const probeFn =
-        typeof node.server.getLatestLedger === 'function'
-          ? () => node.server.getLatestLedger()
-          : typeof node.server.getHealth === 'function'
-            ? () => node.server.getHealth()
-            : null;
-
-      if (!probeFn) {
-        return { id: node.id, ok: false, reason: 'no_probe_method' };
-      }
-
-      const result = await Promise.race([
-        probeFn(),
-        new Promise((_, reject) => {
-          const timer = setTimeout(() => {
-            const err = new Error(`Health probe timeout after ${this.healthCheckTimeoutMs}ms`);
-            err.code = 'ETIMEDOUT';
-            reject(err);
-          }, this.healthCheckTimeoutMs);
-          if (typeof timer.unref === 'function') timer.unref();
+  _getEndpointBreaker(url) {
+    if (!this.endpointBreakers.has(url)) {
+      this.endpointBreakers.set(
+        url,
+        new CircuitBreaker(`soroban-rpc:${url}`, {
+          failureThreshold: this.options.endpointFailureThreshold || this.options.failureThreshold || 5,
+          recoveryTimeoutMs: this.options.endpointRecoveryTimeoutMs || this.options.recoveryTimeoutMs || 30000,
+          halfOpenMaxRequests: this.options.halfOpenMaxRequests || 1,
+          metrics: this.metrics,
+          logger: this.logger,
         }),
-      ]);
-
-      const latencyMs = Date.now() - startedAt;
-      // If node was OPEN and recovery probe succeeded, close its circuit
-      if (node.breaker.getState() === State.OPEN) {
-        node.breaker.transitionTo(State.CLOSED);
-      }
-      this.recordSuccess(node, latencyMs, 'getLatestLedger', result);
-      return {
-        id: node.id,
-        ok: true,
-        latencyMs,
-        latestLedger: node.latestLedger,
-        healthScore: node.healthScore,
-      };
-    } catch (error) {
-      this.recordFailure(node, error);
-      return {
-        id: node.id,
-        ok: false,
-        error: error.message || String(error),
-        healthScore: node.healthScore,
-      };
+      );
     }
+    return this.endpointBreakers.get(url);
   }
 
-  /**
-   * Benchmark all nodes in the pool concurrently.
-   *
-   * @returns {Promise<Array<Object>>}
-   */
-  async benchmarkAllNodes() {
-    const results = await Promise.all(this.nodes.map((node) => this.probeNode(node)));
-    this.recomputeAllLedgerLag();
-    return results;
-  }
-
-  /**
-   * Start periodic background health and latency benchmarking.
-   */
-  startHealthMonitor() {
-    if (this.isMonitoring) {
+  _installWrappedMethods() {
+    if (this.benchmarkDaemon) {
+      WRAPPED_METHODS.forEach((method) => {
+        this[method] = (...args) => this._executeSteered(method, args);
+      });
       return;
     }
-    this.isMonitoring = true;
-    this.healthCheckTimer = setInterval(() => {
-      this.benchmarkAllNodes().catch((err) => {
-        this.logger.error('Background RPC benchmark failed', { error: err.message });
-      });
-    }, this.healthCheckIntervalMs);
 
-    if (typeof this.healthCheckTimer.unref === 'function') {
-      this.healthCheckTimer.unref();
-    }
-  }
-
-  /**
-   * Stop periodic background health benchmarking.
-   */
-  stopHealthMonitor() {
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
-    }
-    this.isMonitoring = false;
-  }
-
-  /**
-   * Get a snapshot of the pool's health, latency weights, ledger heights, and circuit states.
-   *
-   * @returns {Object}
-   */
-  getPoolStatus() {
-    const now = Date.now();
-    const nodes = this.nodes.map((node) => ({
-      id: node.id,
-      url: node.url,
-      circuitState: node.breaker.getState(),
-      inCooldown: node.cooldownUntil > now,
-      healthScore: node.healthScore,
-      effectiveWeight: Number(node.effectiveWeight.toFixed(2)),
-      ewmaLatencyMs: Number(node.ewmaLatencyMs.toFixed(2)),
-      minLatencyMs: node.minLatencyMs === Infinity ? null : node.minLatencyMs,
-      maxLatencyMs: node.maxLatencyMs,
-      latestLedger: node.latestLedger,
-      ledgerLag: node.ledgerLag,
-      totalRequests: node.totalRequests,
-      totalSuccesses: node.totalSuccesses,
-      totalFailures: node.totalFailures,
-      rateLimitHits: node.rateLimitHits,
-      serviceUnavailableHits: node.serviceUnavailableHits,
-    }));
-
-    const healthyCount = nodes.filter((n) => n.circuitState !== State.OPEN && !n.inCooldown).length;
-
-    return {
-      totalNodes: nodes.length,
-      healthyNodes: healthyCount,
-      maxObservedLedger: this.maxObservedLedger,
-      metrics: { ...this.poolMetrics },
-      nodes,
-    };
-  }
-}
-
-/**
- * Wraps a SorobanRpc.Server, load-balanced RPC instance, or multi-RPC pool
- * with per-node circuit breakers, instant 429/503 failover, and dynamic latency weighting.
- */
-class RPCWrapper {
-  constructor(server, metrics, options = {}) {
-    this.logger = options.logger || createLogger('rpc-wrapper');
-    this.metrics = metrics;
-
-    const endpoints = Array.isArray(server)
-      ? server
-      : Array.isArray(options.endpoints) && options.endpoints.length > 0
-        ? options.endpoints
-        : Array.isArray(options.nodes) && options.nodes.length > 0
-          ? options.nodes
-          : null;
-
-    if (endpoints) {
-      this.pool = new RPCPoolManager(endpoints, {
-        ...options,
-        metrics,
-        logger: this.logger,
-      });
-      this.server = this.pool.nodes[0] ? this.pool.nodes[0].server : server;
-      this.breaker = this.pool.nodes[0]
-        ? this.pool.nodes[0].breaker
-        : new CircuitBreaker('soroban-rpc', {
-            failureThreshold: options.failureThreshold || 5,
-            recoveryTimeoutMs: options.recoveryTimeoutMs || 30000,
-            halfOpenMaxRequests: options.halfOpenMaxRequests || 1,
-            metrics,
-            logger: this.logger,
-          });
-      this.isMultiNodePool = true;
-    } else {
-      this.server = server;
-      this.pool = new RPCPoolManager([server], {
-        ...options,
-        metrics,
-        logger: this.logger,
-      });
-      this.breaker = this.pool.nodes[0].breaker;
-      this.isMultiNodePool = false;
-    }
-
-    // Create wrapped methods routed through the pool manager
-    WRAPPED_RPC_METHODS.forEach((method) => {
-      if (this.isMultiNodePool || (this.server && typeof this.server[method] === 'function')) {
-        this[method] = (...args) => this.pool.execute(method, args);
+    WRAPPED_METHODS.forEach((method) => {
+      if (this.server && typeof this.server[method] === 'function') {
+        this[method] = (...args) => {
+          return this.breaker.execute(() => this.server[method].apply(this.server, args));
+        };
       }
     });
   }
 
   /**
-   * Get the underlying primary server instance
+   * Execute an RPC call using latency-weighted traffic steering and transparent
+   * failover across healthy endpoints without disrupting keeper threads.
+   * @param {string} method
+   * @param {Array} args
+   * @returns {Promise<*>}
+   */
+  async _executeSteered(method, args) {
+    return this.breaker.execute(async () => {
+      const triedUrls = new Set();
+      const firstPick = this.benchmarkDaemon.selectEndpoint();
+      const ranked = this.benchmarkDaemon.getRankedEndpoints(firstPick ? [firstPick.url] : []);
+
+      const orderedCandidates = [];
+      if (firstPick) {
+        orderedCandidates.push(firstPick);
+      }
+      if (this.failoverOnError) {
+        for (const ep of ranked) {
+          orderedCandidates.push({
+            url: ep.url,
+            endpoint: ep,
+            server: this.benchmarkDaemon._ensureServer(ep),
+            fallbackUsed: ep.status !== EndpointState.HEALTHY && ep.status !== EndpointState.UNKNOWN,
+          });
+        }
+      }
+
+      const maxAttempts = this.maxFailoverAttempts
+        ? Math.min(this.maxFailoverAttempts, orderedCandidates.length)
+        : orderedCandidates.length;
+
+      let lastError = null;
+      const attemptErrors = [];
+
+      for (let i = 0; i < maxAttempts; i += 1) {
+        const candidate = orderedCandidates[i];
+        if (!candidate || triedUrls.has(candidate.url)) {
+          continue;
+        }
+        triedUrls.add(candidate.url);
+
+        const targetServer = candidate.server;
+        if (!targetServer || typeof targetServer[method] !== 'function') {
+          continue;
+        }
+
+        const epBreaker = this._getEndpointBreaker(candidate.url);
+        const startNs = process.hrtime.bigint();
+
+        try {
+          const result = await epBreaker.execute(() =>
+            this._invokeWithOptionalTimeout(targetServer, method, args),
+          );
+          const latencyMs = Math.max(0.01, Number(process.hrtime.bigint() - startNs) / 1e6);
+
+          this.benchmarkDaemon.recordCallResult(candidate.url, {
+            success: true,
+            latencyMs,
+            result,
+          });
+
+          if (i > 0 && this.metrics && typeof this.metrics.increment === 'function') {
+            this.metrics.increment('failoverSwitchesTotal', 1);
+          }
+
+          return result;
+        } catch (err) {
+          const latencyMs = Math.max(0, Number(process.hrtime.bigint() - startNs) / 1e6);
+          lastError = err;
+          attemptErrors.push({
+            url: candidate.url,
+            error: err && err.message ? err.message : String(err),
+          });
+
+          this.benchmarkDaemon.recordCallResult(candidate.url, {
+            success: false,
+            latencyMs,
+            error: err,
+          });
+
+          if (!this.failoverOnError) {
+            throw err;
+          }
+
+          this.logger.warn('Steered RPC call failed, failing over to next endpoint', {
+            method,
+            failedUrl: candidate.url,
+            attempt: i + 1,
+            maxAttempts,
+            error: err && err.message ? err.message : String(err),
+          });
+        }
+      }
+
+      if (lastError) {
+        if (attemptErrors.length > 1) {
+          lastError.failoverAttempts = attemptErrors;
+        }
+        throw lastError;
+      }
+
+      throw new Error(`No RPC endpoints available supporting method "${method}"`);
+    });
+  }
+
+  _invokeWithOptionalTimeout(targetServer, method, args) {
+    const callPromise = Promise.resolve(targetServer[method].apply(targetServer, args));
+    if (!this.callTimeoutMs) {
+      return callPromise;
+    }
+
+    let timerId = null;
+    const timeoutPromise = new Promise((_, reject) => {
+      timerId = setTimeout(() => {
+        const err = new Error(`RPC call ${method} timed out after ${this.callTimeoutMs}ms`);
+        err.code = 'RPC_CALL_TIMEOUT';
+        reject(err);
+      }, this.callTimeoutMs);
+      if (timerId && typeof timerId.unref === 'function') {
+        timerId.unref();
+      }
+    });
+
+    return Promise.race([callPromise, timeoutPromise]).finally(() => {
+      if (timerId) {
+        clearTimeout(timerId);
+      }
+    });
+  }
+
+  /**
+   * Get the underlying server instance (or currently best-ranked server in steered mode).
    */
   getUnderlyingServer() {
+    if (this.benchmarkDaemon) {
+      const ranked = this.benchmarkDaemon.getRankedEndpoints();
+      if (ranked.length > 0) {
+        const srv = this.benchmarkDaemon._ensureServer(ranked[0]);
+        if (srv) return srv;
+      }
+    }
     return this.server;
   }
 
   /**
-   * Get the current circuit breaker state (primary node or aggregate)
+   * Get the current circuit breaker state.
    */
   getCircuitState() {
     if (this.isMultiNodePool && this.pool.nodes.length > 0) {
@@ -915,47 +535,96 @@ class RPCWrapper {
   }
 
   /**
-   * Get real-time multi-RPC pool status (health scores, latencies, ledger heights, failovers)
+   * Check whether background RPC benchmarking & steering is active on this wrapper.
    */
-  getPoolStatus() {
-    return this.pool.getPoolStatus();
+  isBenchmarked() {
+    return Boolean(this.benchmarkDaemon);
   }
 
   /**
-   * Hot-reload RPC endpoints in the pool without dropping in-flight work
+   * Return the attached RPCBenchmarkDaemon instance, if configured.
    */
-  updateEndpoints(endpoints) {
-    this.pool.replaceEndpoints(endpoints);
-    this.isMultiNodePool = this.pool.nodes.length > 1;
-    if (this.pool.nodes[0]) {
-      this.server = this.pool.nodes[0].server;
-      this.breaker = this.pool.nodes[0].breaker;
+  getBenchmarkDaemon() {
+    return this.benchmarkDaemon;
+  }
+
+  /**
+   * Return full benchmark telemetry, latency savings, and quarantine report.
+   */
+  getBenchmarkReport() {
+    return this.benchmarkDaemon ? this.benchmarkDaemon.getReport() : null;
+  }
+
+  /**
+   * Alias for getBenchmarkReport().
+   */
+  getBenchmarkStatus() {
+    return this.getBenchmarkReport();
+  }
+
+  /**
+   * Return per-endpoint benchmark metrics.
+   * @param {string} url
+   */
+  getEndpointMetrics(url) {
+    return this.benchmarkDaemon ? this.benchmarkDaemon.getEndpointMetrics(url) : null;
+  }
+
+  /**
+   * Return currently quarantined endpoints.
+   */
+  getQuarantinedEndpoints() {
+    return this.benchmarkDaemon ? this.benchmarkDaemon.getQuarantinedEndpoints() : [];
+  }
+
+  /**
+   * Return currently healthy endpoints.
+   */
+  getHealthyEndpoints() {
+    return this.benchmarkDaemon ? this.benchmarkDaemon.getHealthyEndpoints() : [];
+  }
+
+  /**
+   * Trigger an immediate benchmark probe cycle.
+   */
+  async runBenchmarkCycle() {
+    if (!this.benchmarkDaemon) return null;
+    return this.benchmarkDaemon.runBenchmarkCycle();
+  }
+
+  /**
+   * Start background benchmarking if attached.
+   * @param {Object} [options]
+   */
+  startBenchmarking(options = {}) {
+    if (this.benchmarkDaemon) {
+      this.benchmarkDaemon.start(options);
     }
   }
 
   /**
-   * Benchmark all nodes in the pool immediately
+   * Stop background benchmarking if attached.
    */
-  benchmarkNodes() {
-    return this.pool.benchmarkAllNodes();
+  stopBenchmarking() {
+    if (this.benchmarkDaemon) {
+      this.benchmarkDaemon.stop();
+    }
   }
 
   /**
-   * Start background health & latency monitoring
+   * Gracefully shut down wrapper background tasks without disrupting callers.
    */
-  startHealthMonitor() {
-    this.pool.startHealthMonitor();
+  async shutdown() {
+    if (this.benchmarkDaemon && this._ownsBenchmarkDaemon) {
+      this.benchmarkDaemon.stop();
+    }
+    if (this.server && typeof this.server.shutdown === 'function') {
+      await this.server.shutdown();
+    }
   }
 
   /**
-   * Stop background health & latency monitoring
-   */
-  stopHealthMonitor() {
-    this.pool.stopHealthMonitor();
-  }
-
-  /**
-   * Get load balancer metrics (for load-balanced RPC servers)
+   * Get load balancer metrics (for load-balanced RPC servers).
    */
   getLoadBalancerMetrics() {
     if (this.server && this.server.loadBalancer && typeof this.server.loadBalancer.getMetrics === 'function') {
@@ -965,7 +634,7 @@ class RPCWrapper {
   }
 
   /**
-   * Get endpoint registry status (for load-balanced RPC servers)
+   * Get endpoint registry status (for load-balanced RPC servers).
    */
   getEndpointRegistryStatus() {
     if (
@@ -979,7 +648,7 @@ class RPCWrapper {
   }
 
   /**
-   * Get health monitor status (for load-balanced RPC servers)
+   * Get health monitor status (for load-balanced RPC servers).
    */
   getHealthMonitorStatus() {
     if (this.server && this.server.healthMonitor && typeof this.server.healthMonitor.getStatus === 'function') {
@@ -991,24 +660,25 @@ class RPCWrapper {
   }
 
   /**
-   * Check if server supports load balancing / multi-RPC pooling
+   * Check if server supports load balancing.
    */
   isLoadBalanced() {
-    return !!(this.isMultiNodePool || (this.server && this.server.loadBalancer));
+    return Boolean(this.server && this.server.loadBalancer);
   }
 }
 
 /**
- * Factory function to create a wrapped RPC server or multi-RPC failover pool.
- *
- * @param {SorobanRpc.Server|Object|Array} server Raw server instance, load-balanced RPC object, or array of endpoints/servers
- * @param {Object} metrics Metrics instance
- * @param {Object} options Wrapper & pool options
- * @returns {Proxy} A proxy that behaves like the server with circuit breaking & failover
+ * Factory function to create a wrapped RPC server.
+ * @param {Object|Array} serverOrEndpoints - Raw server instance, load-balanced RPC object, or endpoint list
+ * @param {Object} [metrics] - The metrics instance
+ * @param {Object} [options] - Wrapper & benchmarking options
+ * @returns {Proxy} A proxy that behaves like the server with circuit breaking & latency steering
  */
-function wrapRpcServer(server, metrics, options = {}) {
-  const wrapper = new RPCWrapper(server, metrics, options);
-  const proxyTarget = Array.isArray(server) ? wrapper.server || {} : server;
+function wrapRpcServer(serverOrEndpoints, metrics, options = {}) {
+  const wrapper = new RPCWrapper(serverOrEndpoints, metrics, options);
+  const proxyTarget = (!Array.isArray(serverOrEndpoints) && serverOrEndpoints && typeof serverOrEndpoints === 'object')
+    ? serverOrEndpoints
+    : wrapper.getUnderlyingServer() || {};
 
   return new Proxy(proxyTarget, {
     get(target, prop, receiver) {
@@ -1018,15 +688,18 @@ function wrapRpcServer(server, metrics, options = {}) {
       }
 
       if (wrapper.isLoadBalanced()) {
-        if (prop === 'pool') return wrapper.pool;
-        if (prop === 'loadBalancer' && wrapper.server) return wrapper.server.loadBalancer;
-        if (prop === 'endpointRegistry' && wrapper.server) return wrapper.server.endpointRegistry;
-        if (prop === 'healthMonitor' && wrapper.server) return wrapper.server.healthMonitor;
+        if (prop === 'loadBalancer') return wrapper.server.loadBalancer;
+        if (prop === 'endpointRegistry') return wrapper.server.endpointRegistry;
+        if (prop === 'healthMonitor') return wrapper.server.healthMonitor;
       }
 
-      const value = Reflect.get(target, prop, receiver);
+      const activeTarget = wrapper.isBenchmarked()
+        ? (wrapper.getUnderlyingServer() || target)
+        : target;
+
+      const value = Reflect.get(activeTarget, prop, activeTarget === target ? receiver : activeTarget);
       if (typeof value === 'function') {
-        return value.bind(target);
+        return value.bind(activeTarget);
       }
       return value;
     },

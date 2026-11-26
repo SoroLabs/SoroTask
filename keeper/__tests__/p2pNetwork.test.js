@@ -197,6 +197,7 @@ describe('KeeperP2PNetwork', () => {
       'sorotask.keeper.discovery.v1',
       'sorotask.keeper.task-locks.v1',
       'sorotask.keeper.bids.v1',
+      'sorotask.keeper.consensus.v1',
     ]);
     expect(published[0].topic).toBe('sorotask.keeper.discovery.v1');
     expect(network.getStateSnapshot()).toMatchObject({

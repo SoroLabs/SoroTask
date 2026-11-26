@@ -355,7 +355,8 @@ export async function connectWalletWith(walletId: SupportedWallet): Promise<Wall
 
   const stored: StoredSession = {
     providerId: walletId,
-    ...session,
+    address: session.address,
+    ...session.network,
     timestamp: Date.now(),
   };
   saveSession(stored);
