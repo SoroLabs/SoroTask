@@ -472,6 +472,8 @@ const MAX_LOCKUP_DURATION_SECONDS: u64 = 365 * 24 * 60 * 60;
 
 /// Minimum stake a keeper must bond to claim restricted tasks (Issue #1043), in token units.
 const MIN_KEEPER_STAKE: i128 = 500;
+/// Maximum time without a heartbeat or execution before a keeper is challengeable.
+pub const KEEPER_INACTIVITY_WINDOW: u64 = 86_400;
 
 /// Cleanup bounty percentage (1% of refunded gas balance)
 const CLEANUP_BOUNTY_BPS: u32 = 100;
@@ -1452,6 +1454,8 @@ pub enum DataKey {
     VrfCommit(u64),
     /// Keeper economic bond storage (Issue #1043)
     KeeperBond(Address),
+    KeeperLastActive(Address),
+    KeeperInactivityStrikes(Address),
     KeeperSlashCount(Address),
     PendingOptimisticClaims(Address),
     /// Whitelist of keepers allowed to claim restricted tasks
@@ -6339,6 +6343,12 @@ impl SoroTaskContract {
             }
         }
         let _guard = security::ReentrancyGuard::new(&env);
+        if Self::is_keeper_bonded(env.clone(), keeper.clone()) {
+            env.storage().persistent().set(
+                &DataKey::KeeperLastActive(keeper.clone()),
+                &env.ledger().timestamp(),
+            );
+        }
         Self::execute_internal(&env, &keeper, task_id, false);
     }
 
@@ -7009,6 +7019,77 @@ impl SoroTaskContract {
     // Keeper Economic Bonding & On-Chain Stake Slashing (Issue #1043)
     // ============================================================================
 
+    /// Records an authenticated keeper heartbeat.
+    pub fn keeper_heartbeat(env: Env, keeper: Address) {
+        keeper.require_auth();
+        if !Self::is_keeper_bonded(env.clone(), keeper.clone()) {
+            panic_with_error!(&env, Error::KeeperNotBonded);
+        }
+        env.storage().persistent().set(
+            &DataKey::KeeperLastActive(keeper.clone()),
+            &env.ledger().timestamp(),
+        );
+        env.events().publish(
+            (Symbol::new(&env, "KeeperHeartbeat"), Symbol::new(&env, "v1"), keeper),
+            env.ledger().timestamp(),
+        );
+    }
+
+    /// Permissionlessly challenges a bonded keeper that has missed its heartbeat window.
+    /// Half of the penalty goes to the challenger and half to the configured fee recipient.
+    pub fn challenge_inactive_keeper(env: Env, challenger: Address, keeper: Address, task_id: u64) {
+        enter_security_guard(&env);
+        let mut bond: KeeperBond = env.storage().persistent()
+            .get(&DataKey::KeeperBond(keeper.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::KeeperNotBonded));
+        let last_active: u64 = env.storage().persistent()
+            .get(&DataKey::KeeperLastActive(keeper.clone())).unwrap_or(bond.bonded_at);
+        if bond.is_slashed || env.ledger().timestamp().saturating_sub(last_active) < KEEPER_INACTIVITY_WINDOW {
+            panic_with_error!(&env, Error::ChallengeWindowActive);
+        }
+        let penalty = (bond.bonded_amount / 10).max(1).min(bond.bonded_amount);
+        let treasury: Address = env.storage().instance().get(&DataKey::FeeRecipient)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        let token_address: Address = env.storage().instance().get(&DataKey::Token)
+            .expect("Token not initialized");
+        let token = soroban_sdk::token::Client::new(&env, &token_address);
+        let challenger_share = penalty / 2;
+        if challenger_share > 0 {
+            token.transfer(&env.current_contract_address(), &challenger, &challenger_share);
+        }
+        token.transfer(&env.current_contract_address(), &treasury, &(penalty - challenger_share));
+        bond.bonded_amount -= penalty;
+        bond.is_slashed = true;
+        sub_total_keeper_stakes(&env, penalty);
+        env.storage().persistent().set(&DataKey::KeeperBond(keeper.clone()), &bond);
+        let strikes: u32 = env.storage().persistent().get(&DataKey::KeeperInactivityStrikes(keeper.clone())).unwrap_or(0);
+        env.storage().persistent().set(&DataKey::KeeperInactivityStrikes(keeper.clone()), &strikes.saturating_add(1));
+
+        // Expire the task's priority window immediately so another keeper can execute.
+        if let Some(mut assignment) = env.storage().persistent()
+            .get::<DataKey, VrfKeeperAssignment>(&DataKey::VrfKeeperAssignment(task_id)) {
+            if assignment.winner.as_ref() == Some(&keeper) {
+                assignment.winner = None;
+                assignment.fulfilled_at = 0;
+                env.storage().persistent().set(&DataKey::VrfKeeperAssignment(task_id), &assignment);
+                env.storage().persistent().set(&DataKey::VrfAssignmentExclusiveUntil(task_id), &env.ledger().sequence());
+            }
+        }
+        env.events().publish(
+            (Symbol::new(&env, "KeeperInactivitySlashed"), Symbol::new(&env, "v1"), keeper),
+            (penalty, strikes.saturating_add(1), task_id),
+        );
+        exit_security_guard(&env);
+    }
+
+    pub fn get_keeper_last_active(env: Env, keeper: Address) -> u64 {
+        env.storage().persistent().get(&DataKey::KeeperLastActive(keeper)).unwrap_or(0)
+    }
+
+    pub fn get_keeper_inactivity_strikes(env: Env, keeper: Address) -> u32 {
+        env.storage().persistent().get(&DataKey::KeeperInactivityStrikes(keeper)).unwrap_or(0)
+    }
+
     /// Bonds a keeper's stake. The keeper must bond at least `MIN_KEEPER_STAKE`
     /// to be eligible for restricted task execution.
     pub fn bond_keeper_stake(env: Env, keeper: Address, amount: i128) {
@@ -7052,6 +7133,10 @@ impl SoroTaskContract {
         env.storage()
             .persistent()
             .set(&DataKey::KeeperBond(keeper.clone()), &bond);
+        env.storage().persistent().set(
+            &DataKey::KeeperLastActive(keeper.clone()),
+            &env.ledger().timestamp(),
+        );
 
         env.events().publish(
             (
