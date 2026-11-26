@@ -4,6 +4,7 @@ pub mod access;
 pub mod batch;
 pub mod events;
 pub mod insurance;
+pub mod oracle;
 pub mod packed_args;
 pub mod rate_limiter;
 pub use events::*;
@@ -45,6 +46,7 @@ pub use merkle_state_channel::{
 pub use protocol_insurance::{
     ProtocolInsuranceClaim, UnderwriterStake, RiskTranche, InsurancePoolStats,
     InsuranceClaimStatus, ClaimRiskLevel,
+    JUNIOR_TRANCHE_ID, SENIOR_TRANCHE_ID, SENIOR_TRANCHE_MIN_STAKE,
     stake_as_underwriter, unstake_as_underwriter, submit_insurance_claim,
     certify_insurance_claim, process_insurance_claim, reject_insurance_claim,
     accrue_protocol_fees, claim_underwriter_rewards, get_insurance_pool_stats,
@@ -302,6 +304,8 @@ pub enum Error {
 pub enum OracleProvider {
     Chainlink,
     Band,
+    Pyth,
+    Reflector,
 }
 
 #[contracttype]
@@ -457,9 +461,6 @@ const MIN_CHALLENGER_BOND: i128 = 100;
 
 /// Maximum age in seconds for oracle price feed data before it is considered stale (Issue #1040).
 const MAX_ORACLE_DELAY_SECONDS: u64 = 300;
-
-/// Maximum deviation between oracle feeds in basis points before halting execution (Issue #1041).
-const MAX_ORACLE_DEVIATION_BPS: u32 = 250;
 
 /// Default delay seconds for VRF commit-reveal (Issue #1042). Admin can override.
 /// Defaults to 0 (disabled) to preserve backward compatibility.
@@ -1633,6 +1634,17 @@ pub enum DataKey {
     VestingClaimCounter,
     /// Aggregate governance voting power delegated from vesting schedules
     VestingVotingPower(Address),
+
+/// Current principal in an insurance risk tranche
+    InsuranceTrancheCapital(u32),
+    /// Cumulative loss index, scaled by 1,000,000,000, for underwriter balances
+    InsuranceTrancheIndex(u32),
+    /// Tranche generation, advanced whenever all principal is wiped or withdrawn
+    InsuranceTrancheEpoch(u32),
+    /// Underwriter tranche and loss-index checkpoint
+    InsuranceUnderwriterPosition(Address),
+    /// Capital reserved for approved, not-yet-paid insurance claims
+    InsurancePendingClaimAmount,
 }
 
 /// Call frame representing a single entry in the call stack
@@ -2121,7 +2133,12 @@ pub(crate) fn assert_balance_invariant(env: &Env) {
         let total_invested_task_escrows = get_total_invested_task_escrows(env);
         let total_keeper_stakes = get_total_keeper_stakes(env);
         let total_unclaimed_fees = get_total_unclaimed_fees(env);
-        let insurance_reserve = insurance::funded_balance(env);
+        let insurance_reserve = insurance::funded_balance(env).saturating_add(
+            env.storage()
+                .instance()
+                .get(&DataKey::TotalInsuranceUnderwriterStake)
+                .unwrap_or(0),
+        );
         let private_pool = private_tasks::pool_balance(env);
         let required = total_task_escrows
             + total_keeper_stakes
@@ -3882,6 +3899,13 @@ impl SoroTaskContract {
     ) {
         enter_security_guard(&env);
 
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminAddress)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        admin.require_auth();
+
         let config = OracleConfig {
             address: oracle_address.clone(),
             provider: provider.clone(),
@@ -4085,6 +4109,9 @@ impl SoroTaskContract {
             .ok_or(Error::OracleNotSet)
             .expect("Oracle provider not configured");
 
+        if !config.active {
+            panic_with_error!(&env, Error::OracleNotSet);
+        }
         config.address.require_auth();
 
         if price <= 0 {
@@ -4098,9 +4125,7 @@ impl SoroTaskContract {
             decimals,
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::OracleFeed(provider.clone()), &feed);
+        oracle::set_oracle_feed(&env, provider.clone(), feed);
 
         env.events().publish(
             (Symbol::new(&env, "OracleFeedUpdated"), provider),
@@ -4117,119 +4142,10 @@ impl SoroTaskContract {
             .get(&DataKey::OracleFeed(provider))
     }
 
-    /// Computes the median price across all active non-stale oracle feeds.
-    /// Returns the median price and the number of active feeds.
-    /// Panics with `InsufficientOracleFeeds` if fewer than 1 feed is available.
-    fn compute_median_price(env: &Env) -> (i128, u32) {
-        let providers = [OracleProvider::Chainlink, OracleProvider::Band];
-
-        let mut prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(env);
-        let mut active_count: u32 = 0;
-
-        for provider in providers.iter() {
-            if let Some(feed) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, OracleFeed>(&DataKey::OracleFeed(provider.clone()))
-            {
-                let time_delta = env.ledger().timestamp().saturating_sub(feed.timestamp);
-                if time_delta <= MAX_ORACLE_DELAY_SECONDS && feed.price > 0 {
-                    prices.push_back(feed.price);
-                    active_count += 1;
-                }
-            }
-        }
-
-        if active_count == 0 {
-            panic_with_error!(env, Error::InsufficientOracleFeeds);
-        }
-
-        // Sort prices to find median
-        let len = prices.len();
-        let mut sorted_prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(env);
-        // Simple insertion sort for small array
-        for i in 0..len {
-            let val = prices.get(i).unwrap();
-            let mut inserted = false;
-            let mut j = 0;
-            while j < sorted_prices.len() {
-                if val < sorted_prices.get(j).unwrap() {
-                    sorted_prices.insert(j, val);
-                    inserted = true;
-                    break;
-                }
-                j += 1;
-            }
-            if !inserted {
-                sorted_prices.push_back(val);
-            }
-        }
-
-        let median = if len.is_multiple_of(2) {
-            sorted_prices.get(len / 2 - 1).unwrap()
-        } else {
-            sorted_prices.get(len / 2).unwrap()
-        };
-
-        (median, active_count)
-    }
-
-    /// Checks deviation between oracle feeds and halts if any pair exceeds `MAX_ORACLE_DEVIATION_BPS`.
-    fn check_oracle_deviation(env: &Env) {
-        let providers = [OracleProvider::Chainlink, OracleProvider::Band];
-
-        let mut prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(env);
-
-        for provider in providers.iter() {
-            if let Some(feed) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, OracleFeed>(&DataKey::OracleFeed(provider.clone()))
-            {
-                let time_delta = env.ledger().timestamp().saturating_sub(feed.timestamp);
-                if time_delta <= MAX_ORACLE_DELAY_SECONDS && feed.price > 0 {
-                    prices.push_back(feed.price);
-                }
-            }
-        }
-
-        if prices.len() < 2 {
-            // Cannot check deviation with fewer than 2 feeds
-            return;
-        }
-
-        // Check all pairs for deviation
-        let len = prices.len();
-        for i in 0..len {
-            let mut j = i + 1;
-            while j < len {
-                let price_a = prices.get(i).unwrap();
-                let price_b = prices.get(j).unwrap();
-
-                let diff = if price_a > price_b {
-                    price_a - price_b
-                } else {
-                    price_b - price_a
-                };
-
-                let base = if price_a > price_b { price_a } else { price_b };
-                if base > 0 {
-                    let deviation_bps = ((diff * 10_000) / base) as u32;
-                    if deviation_bps > MAX_ORACLE_DEVIATION_BPS {
-                        panic_with_error!(env, Error::OracleDeviationExceeded);
-                    }
-                }
-                j += 1;
-            }
-        }
-    }
-
-    /// Returns the medianized oracle price for use in conditional execution.
-    /// Also validates freshness and deviation thresholds.
+    /// Returns the 8-decimal median price after outlier rejection and quorum checks.
     pub fn get_medianized_oracle_price(env: Env) -> i128 {
-        Self::check_oracle_deviation(&env);
-        let (median, _count) = Self::compute_median_price(&env);
-        median
+        oracle::get_aggregated_price(&env)
+            .unwrap_or_else(|error| panic_with_error!(&env, error))
     }
 
     // ============================================================================
@@ -5865,38 +5781,25 @@ impl SoroTaskContract {
 
         // ── 8b. Oracle freshness & deviation check (Issues #1040, #1041) ──
         {
-            let has_oracle_feeds = env
-                .storage()
-                .persistent()
-                .has(&DataKey::OracleFeed(OracleProvider::Chainlink))
-                || env
-                    .storage()
-                    .persistent()
-                    .has(&DataKey::OracleFeed(OracleProvider::Band));
+            let providers = [
+                OracleProvider::Chainlink,
+                OracleProvider::Band,
+                OracleProvider::Pyth,
+                OracleProvider::Reflector,
+            ];
+            let has_active_oracles = providers.iter().any(|provider| {
+                env.storage()
+                    .instance()
+                    .get::<DataKey, OracleConfig>(&DataKey::OracleConfig(provider.clone()))
+                    .is_some_and(|config| config.active)
+            });
 
-            if has_oracle_feeds {
-                // Check freshness of all feeds
-                let providers = [OracleProvider::Chainlink, OracleProvider::Band];
-                let mut all_fresh = true;
-                for provider in providers.iter() {
-                    if let Some(feed) = env
-                        .storage()
-                        .persistent()
-                        .get::<DataKey, OracleFeed>(&DataKey::OracleFeed(provider.clone()))
-                    {
-                        let time_delta = env.ledger().timestamp().saturating_sub(feed.timestamp);
-                        if time_delta > MAX_ORACLE_DELAY_SECONDS || feed.timestamp == 0 {
-                            all_fresh = false;
-                            break;
-                        }
-                    }
-                }
-
-                if !all_fresh {
+            if has_active_oracles {
+                if let Err(error) = oracle::get_aggregated_price(env) {
                     trace_steps.push_back(events::ExecutionStepRecord {
                         step: events::ExecutionStep::CheckOracleFreshness,
                         result: StepResult::Failed,
-                        detail: Error::OracleStale as u32,
+                        detail: error as u32,
                     });
                     events::EventLogger::log_execution_step(
                         env,
@@ -5904,7 +5807,7 @@ impl SoroTaskContract {
                         keeper,
                         events::ExecutionStep::CheckOracleFreshness,
                         StepResult::Failed,
-                        Error::OracleStale as u32,
+                        error as u32,
                     );
                     Self::persist_execution_trace(
                         env,
@@ -5913,11 +5816,8 @@ impl SoroTaskContract {
                         trace_steps,
                         ExecutionOutcome::Failed,
                     );
-                    panic_with_error!(env, Error::OracleStale);
+                    panic_with_error!(env, error);
                 }
-
-                // Check deviation across feeds
-                Self::check_oracle_deviation(env);
 
                 trace_steps.push_back(events::ExecutionStepRecord {
                     step: events::ExecutionStep::CheckOracleFreshness,
@@ -6645,7 +6545,12 @@ impl SoroTaskContract {
             let invested_task_escrows = get_total_invested_task_escrows(&env);
             let total_keeper_stakes = get_total_keeper_stakes(&env);
             let total_unclaimed_fees = get_total_unclaimed_fees(&env);
-            let insurance_reserve = insurance::funded_balance(&env);
+            let insurance_reserve = insurance::funded_balance(&env).saturating_add(
+                env.storage()
+                    .instance()
+                    .get(&DataKey::TotalInsuranceUnderwriterStake)
+                    .unwrap_or(0),
+            );
             contract_balance.saturating_add(invested_task_escrows)
                 >= total_task_escrows
                     + total_keeper_stakes
@@ -11537,6 +11442,104 @@ impl SoroTaskContract {
     // Automated Insurance Vault Auto-Refill from Excess Protocol Profits (Issue #891)
     // ============================================================================
 
+    /// Deposits underwriter capital into the Junior or Senior tranche.
+    pub fn stake_as_underwriter(env: Env, underwriter: Address, amount: i128) -> u32 {
+        enter_security_guard(&env);
+        let tranche =
+            protocol_insurance::stake_as_underwriter(&env, &underwriter, amount);
+        exit_security_guard(&env);
+        tranche
+    }
+
+    /// Withdraws underwriter capital that is not locked by claim exposure.
+    pub fn unstake_as_underwriter(env: Env, underwriter: Address, amount: i128) -> i128 {
+        enter_security_guard(&env);
+        let amount = protocol_insurance::unstake_as_underwriter(&env, &underwriter, amount);
+        exit_security_guard(&env);
+        amount
+    }
+
+    /// Submits a task failure claim for admin proof validation.
+    pub fn submit_insurance_claim(
+        env: Env,
+        claimant: Address,
+        task_id: u64,
+        keeper: Address,
+        claim_amount: i128,
+        loss_amount: i128,
+        failure_reason: Bytes,
+        evidence: Vec<Bytes>,
+    ) -> u64 {
+        enter_security_guard(&env);
+        let claim_id = protocol_insurance::submit_insurance_claim(
+            &env,
+            &claimant,
+            task_id,
+            &keeper,
+            claim_amount,
+            loss_amount,
+            failure_reason,
+            evidence,
+        );
+        exit_security_guard(&env);
+        claim_id
+    }
+
+    /// Certifies a claim; if its challenge period has elapsed, it is paid in
+    /// this call. Otherwise any caller may process it after the deadline.
+    pub fn certify_insurance_claim(
+        env: Env,
+        claim_id: u64,
+        certifier: Address,
+        approved_amount: i128,
+        risk_level: ClaimRiskLevel,
+    ) {
+        enter_security_guard(&env);
+        protocol_insurance::certify_insurance_claim(
+            &env,
+            claim_id,
+            &certifier,
+            approved_amount,
+            risk_level,
+        );
+        exit_security_guard(&env);
+    }
+
+    /// Processes a certified claim after its challenge deadline.
+    pub fn process_insurance_claim(env: Env, claim_id: u64) -> i128 {
+        enter_security_guard(&env);
+        let payout = protocol_insurance::process_insurance_claim(&env, claim_id);
+        exit_security_guard(&env);
+        payout
+    }
+
+    /// Rejects a submitted claim.
+    pub fn reject_insurance_claim(env: Env, claim_id: u64, reason: Bytes) {
+        enter_security_guard(&env);
+        protocol_insurance::reject_insurance_claim(&env, claim_id, reason);
+        exit_security_guard(&env);
+    }
+
+    pub fn get_insurance_pool_stats(env: Env) -> InsurancePoolStats {
+        protocol_insurance::get_insurance_pool_stats(&env)
+    }
+
+    pub fn get_insurance_claim(env: Env, claim_id: u64) -> Option<ProtocolInsuranceClaim> {
+        protocol_insurance::get_insurance_claim(&env, claim_id)
+    }
+
+    pub fn get_underwriter_stake(env: Env, underwriter: Address) -> Option<UnderwriterStake> {
+        protocol_insurance::get_underwriter_stake(&env, &underwriter)
+    }
+
+    pub fn get_risk_tranches(env: Env) -> Vec<RiskTranche> {
+        protocol_insurance::get_risk_tranches(&env)
+    }
+
+    pub fn get_insurance_tranche_capital(env: Env, tranche_id: u32) -> i128 {
+        protocol_insurance::get_tranche_capital(&env, tranche_id)
+    }
+
     /// Purchases a task insurance policy for a 1% premium on the task's gas budget.
     /// The premium is transferred into the contract and recorded as funded reserve.
     pub fn purchase_task_insurance(
@@ -15391,6 +15394,9 @@ pub(crate) mod tests {
         let (env, id) = setup();
         let client = SoroTaskContractClient::new(&env, &id);
 
+        let admin = Address::generate(&env);
+        client.init_proxy(&admin, &Address::generate(&env), &1);
+
         let target = env.register_contract(None, MockTarget);
         let task_id = client.register(&base_config(&env, target.clone()));
 
@@ -15457,6 +15463,33 @@ pub(crate) mod tests {
                 .expect("Oracle response not found")
         });
         assert_eq!(second_response.provider, OracleProvider::Band);
+    }
+
+    #[test]
+    fn test_oracle_medianizer_rejects_outlier_and_requires_quorum() {
+        let (env, id) = setup();
+        let client = SoroTaskContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        client.init_proxy(&admin, &Address::generate(&env), &1);
+        set_timestamp(&env, 1_000);
+
+        let providers = [
+            OracleProvider::Chainlink,
+            OracleProvider::Band,
+            OracleProvider::Pyth,
+            OracleProvider::Reflector,
+        ];
+        let prices = [100_000_000, 101_000_000, 102_000_000, 900_000_000];
+        for (provider, price) in providers.iter().zip(prices) {
+            let oracle = Address::generate(&env);
+            client.set_oracle_config(provider, &oracle, &true);
+            client.set_oracle_feed(provider, &price, &8);
+        }
+        assert_eq!(client.get_medianized_oracle_price(), 101_000_000);
+
+        client.set_oracle_feed(&OracleProvider::Pyth, &10_000_000_000, &8);
+        client.set_oracle_feed(&OracleProvider::Reflector, &10_001_000_000, &8);
+        assert!(client.try_get_medianized_oracle_price().is_err());
     }
 
     #[test]
