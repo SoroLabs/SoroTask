@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const promClient = require('prom-client');
 const { _Server } = require('socket.io');
-const { requireAdminAuth } = require('./auth');
+const { constantTimeEqual, requireAdminAuth } = require('./auth');
 const { URL } = require('url');
 const { createLogger } = require('./logger');
 const { ApiGateway } = require('./apiGateway');
@@ -754,6 +754,7 @@ class MetricsServer {
     this.historyManager = options.historyManager || null;
     this.redisClient = options.redisClient || null;
     this.workerPool = options.workerPool || null;
+    this.webhookPaths = new Set();
     this.tmpPath = options.tmpPath || '/tmp';
     this.redisLatencyThresholdMs = options.redisLatencyThresholdMs
       || parseInt(process.env.REDIS_LATENCY_THRESHOLD_MS || '250', 10);
@@ -817,6 +818,9 @@ class MetricsServer {
 
   setApiGateway(gateway) {
     this.apiGateway = gateway;
+    if (gateway && typeof gateway.attachMetricsRegistry === 'function') {
+      gateway.attachMetricsRegistry(this.register);
+    }
   }
 
   setFailurePredictor(predictor) {
@@ -1506,10 +1510,19 @@ class MetricsServer {
     }
 
     this.server = http.createServer(async (req, res) => {
-      const protect = (handler) => () => requireAdminAuth(req, res, handler);
+      const protect = (handler) => () => {
+        if (req.gatewayPrincipal) {
+          handler();
+          return;
+        }
+        requireAdminAuth(req, res, handler);
+      };
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-API-Key, X-SoroTask-Timestamp, X-SoroTask-Nonce, X-SoroTask-Signature',
+      );
 
       if (req.method === 'OPTIONS') {
         res.writeHead(204);
@@ -1518,6 +1531,42 @@ class MetricsServer {
       }
 
       const url = new URL(req.url, `http://127.0.0.1:${this.port}`);
+      const isAdminApi = url.pathname === '/admin' || url.pathname.startsWith('/admin/');
+      if (this.apiGateway && isAdminApi) {
+        let rawBody = Buffer.alloc(0);
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+          try {
+            rawBody = await this.captureRequestBody(req, this.apiGateway.maxBodyBytes);
+            req.rawBody = rawBody;
+          } catch (error) {
+            const statusCode = error.statusCode || 400;
+            res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              error: statusCode === 413 ? 'request_body_too_large' : 'invalid_request_body',
+            }));
+            return;
+          }
+        }
+
+        const authorization = await this.apiGateway.authorizeRequest(req, {
+          route: url.pathname,
+          method: req.method,
+          rawBody,
+        });
+        if (!authorization.allowed) {
+          Object.entries(authorization.headers || {}).forEach(([name, value]) => {
+            res.setHeader(name, value);
+          });
+          res.writeHead(authorization.statusCode, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: authorization.error }));
+          return;
+        }
+        Object.entries(authorization.headers || {}).forEach(([name, value]) => {
+          res.setHeader(name, value);
+        });
+        req.gatewayPrincipal = authorization.principal;
+      }
+
       if (url.pathname === '/healthz' || url.pathname === '/healthz/') {
         this.handleLiveness(res);
 
@@ -1554,8 +1603,8 @@ class MetricsServer {
       } else if (url.pathname === '/metrics/history' || url.pathname === '/metrics/history/') {
         this.handleMetricsHistory(req, res);
 
-      } else if (req.url === '/admin/billing' || req.url === '/admin/billing/') {
-        protect(() => this.handleBilling(res))();
+      } else if (url.pathname === '/admin/billing' || url.pathname === '/admin/billing/') {
+        protect(() => this.handleBilling(res, req.gatewayPrincipal?.projectId))();
 
 
         // 🔐 PROTECTED ROUTES START HERE
@@ -1919,8 +1968,10 @@ class MetricsServer {
     }, null, 2));
   }
 
-  handleBilling(res) {
-    const usage = this.apiGateway?.getUsageSummary ? this.apiGateway.getUsageSummary() : {
+  handleBilling(res, projectId) {
+    const usage = this.apiGateway?.getUsageSummary
+      ? this.apiGateway.getUsageSummary(projectId)
+      : {
       totalRequests: 0,
       totalThrottled: 0,
       totalBilledUnits: 0,
@@ -2088,13 +2139,16 @@ class MetricsServer {
   }
 
   isAuthorized(req) {
+    if (req.gatewayPrincipal?.projectId) {
+      return true;
+    }
     const configuredToken = process.env.KEEPER_ADMIN_TOKEN;
     if (!configuredToken) {
       return false;
     }
     const authHeader = req.headers.authorization || '';
     const token = authHeader.replace(/^Bearer\s+/i, '');
-    return token === configuredToken;
+    return constantTimeEqual(token, configuredToken);
   }
 
   handleAdminState(req, res) {
@@ -2139,6 +2193,20 @@ class MetricsServer {
   }
 
   readJsonBody(req) {
+    if (req.rawBody !== undefined) {
+      const rawBody = Buffer.isBuffer(req.rawBody)
+        ? req.rawBody.toString('utf8')
+        : String(req.rawBody);
+      if (!rawBody) {
+        return Promise.resolve({});
+      }
+      try {
+        return Promise.resolve(JSON.parse(rawBody));
+      } catch (_) {
+        return Promise.resolve({});
+      }
+    }
+
     return new Promise((resolve) => {
       let raw = '';
       req.on('data', (chunk) => {
@@ -2153,6 +2221,42 @@ class MetricsServer {
           resolve(JSON.parse(raw));
         } catch (_) {
           resolve({});
+        }
+      });
+    });
+  }
+
+  captureRequestBody(req, maxBytes) {
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      let totalBytes = 0;
+      let settled = false;
+
+      req.on('data', (chunk) => {
+        if (settled) {
+          return;
+        }
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+          settled = true;
+          chunks.length = 0;
+          const error = new Error('Request body exceeds the configured limit');
+          error.statusCode = 413;
+          reject(error);
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('end', () => {
+        if (!settled) {
+          settled = true;
+          resolve(Buffer.concat(chunks));
+        }
+      });
+      req.on('error', (error) => {
+        if (!settled) {
+          settled = true;
+          reject(error);
         }
       });
     });

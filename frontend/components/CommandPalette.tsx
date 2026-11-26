@@ -76,6 +76,16 @@ export interface CommandPaletteProps {
   contracts?: PaletteContract[];
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  );
+}
+
 export function CommandPalette({ tasks = [], contracts = [] }: CommandPaletteProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -121,6 +131,38 @@ export function CommandPalette({ tasks = [], contracts = [] }: CommandPalettePro
         hint: "/keepers",
         keywords: "bots operators",
         perform: () => router.push("/keepers"),
+      },
+      {
+        id: "nav-keeper-dashboard",
+        title: "Keeper Dashboard",
+        group: "Navigation",
+        hint: "/keeper-dashboard",
+        keywords: "keeper operators monitoring metrics",
+        perform: () => router.push("/keeper-dashboard"),
+      },
+      {
+        id: "nav-marketplace",
+        title: "Keeper Marketplace",
+        group: "Navigation",
+        hint: "/marketplace",
+        keywords: "keepers operators bids marketplace",
+        perform: () => router.push("/marketplace"),
+      },
+      {
+        id: "nav-templates",
+        title: "Browse Task Templates",
+        group: "Navigation",
+        hint: "/marketplace/templates",
+        keywords: "templates starter automation marketplace",
+        perform: () => router.push("/marketplace/templates"),
+      },
+      {
+        id: "nav-settings",
+        title: "Open Settings",
+        group: "Navigation",
+        hint: "/settings",
+        keywords: "preferences account configuration",
+        perform: () => router.push("/settings"),
       },
       {
         id: "nav-dashboard",
@@ -284,13 +326,18 @@ export function CommandPalette({ tasks = [], contracts = [] }: CommandPalettePro
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
+        if (!isOpen && isEditableTarget(e.target)) return;
         e.preventDefault();
-        setIsOpen((open) => !open);
+        if (isOpen) {
+          closePalette();
+        } else {
+          openPalette();
+        }
       }
     };
     document.addEventListener("keydown", down);
     return () => document.removeEventListener("keydown", down);
-  }, []);
+  }, [closePalette, isOpen, openPalette]);
 
   // The `/` shortcut in KeyboardShortcutsProvider falls back to this event when
   // the current page exposes no search input of its own.

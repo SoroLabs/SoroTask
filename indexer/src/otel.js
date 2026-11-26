@@ -94,6 +94,7 @@ function recordFinishedSpan(span) {
 async function withSpan(name, fn, attributes = {}) {
   const parent = traceStorage.getStore();
   const startedAt = Date.now();
+  const startedAtNs = process.hrtime.bigint();
   const spanId = require('node:crypto').randomBytes(8).toString('hex');
   const span = {
     name,
@@ -132,7 +133,10 @@ async function withSpan(name, fn, attributes = {}) {
       }
       throw error;
     } finally {
+      const elapsedNs = Number(process.hrtime.bigint() - startedAtNs);
       span.durationMs = Date.now() - startedAt;
+      span.durationNs = elapsedNs;
+      span.durationUs = elapsedNs / 1000;
       recordFinishedSpan(span);
       if (otelSpan) otelSpan.end();
     }

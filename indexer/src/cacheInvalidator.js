@@ -3,6 +3,7 @@ const EventEmitter = require('events');
 const DEFAULT_EDGE_TTL_SECONDS = 300;
 const DEFAULT_STALE_WHILE_REVALIDATE_SECONDS = 60;
 const DEFAULT_PURGE_SLA_MS = 150;
+const PURGE_EVENTS = new Set(['ContractUpgraded', 'TaskModified']);
 
 class CacheInvalidationEngine extends EventEmitter {
   constructor(options = {}) {
@@ -139,8 +140,9 @@ class CacheInvalidationEngine extends EventEmitter {
    * @param {string|string[]} keys
    * @returns {Promise<{ purgedKeys: string[], latencyMs: number, withinSla: boolean, provider: string }>}
    */
-  async purgeEdgeCache(keys = []) {
+  async purgeEdgeCache(keys = [], timeoutMs = this.purgeSlaMs) {
     const startNs = process.hrtime.bigint();
+    const budget = Number.isFinite(timeoutMs) ? timeoutMs : this.purgeSlaMs;
     const keyArray = Array.from(new Set((Array.isArray(keys) ? keys : [keys]).filter(Boolean).map(String)));
 
     // 1. Purge local and surrogate-indexed edge cache entries immediately
@@ -184,7 +186,7 @@ class CacheInvalidationEngine extends EventEmitter {
     if (remotePromises.length > 0) {
       await Promise.race([
         Promise.allSettled(remotePromises),
-        new Promise((resolve) => setTimeout(resolve, Math.min(100, this.purgeSlaMs - 10))),
+        new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(100, budget - 10)))),
       ]);
     }
 
@@ -196,7 +198,7 @@ class CacheInvalidationEngine extends EventEmitter {
       purgedKeys: keyArray,
       purgedLocal,
       latencyMs,
-      withinSla: latencyMs < this.purgeSlaMs,
+      withinSla: latencyMs < budget,
       provider: this.cdnProvider,
     };
 
@@ -261,6 +263,27 @@ class CacheInvalidationEngine extends EventEmitter {
     keysToInvalidate.push('tasks:active');
 
     return this.invalidateKeys(keysToInvalidate);
+  }
+
+  async purgeForEvent(eventName, data = {}) {
+    if (!PURGE_EVENTS.has(eventName)) {
+      return null;
+    }
+
+    const keys = ['tasks:all', 'tasks:active'];
+    const taskId = data.taskId ?? data.task_id;
+    if (taskId != null) {
+      keys.push(`task:${taskId}`);
+    }
+    const contractKey = data.contractId ?? data.address;
+    if (contractKey != null) {
+      keys.push(`contract:${contractKey}`);
+    }
+    if (data.creator) {
+      keys.push(`creator:${data.creator}`);
+    }
+
+    return this.purgeEdgeCache(keys, data.timeoutMs);
   }
 
   handlePubSubMessage(message) {

@@ -1,4 +1,4 @@
-
+import { auditContractTarget, simulateContractExecution, SecurityAuditResult } from '../../src/lib/security/phishingDefense';
 
 /**
  * Technical Specification Definitions for Sanitizer Limits
@@ -7,13 +7,15 @@ export interface SanitizerConfig {
     maxByteLength: number;
     allowedTypes: string[];
     enableDeepSanitization: boolean;
+    enablePhishingCheck?: boolean;
 }
 
 export interface SanitizationResult<T = any> {
     isValid: boolean;
     sanitizedData: T | null;
+    securityAudit?: SecurityAuditResult;
     error?: {
-        code: 'BYTE_LIMIT_EXCEEDED' | 'MALFORMED_STRUCTURE' | 'UNSUPPORTED_TYPE' | 'INJECTION_RISK';
+        code: 'BYTE_LIMIT_EXCEEDED' | 'MALFORMED_STRUCTURE' | 'UNSUPPORTED_TYPE' | 'INJECTION_RISK' | 'PHISHING_RISK';
         message: string;
         timestamp: number;
     };
@@ -23,6 +25,7 @@ const DEFAULT_CONFIG: SanitizerConfig = {
     maxByteLength: 512 * 1024, // 512KB Max Call Data Limits
     allowedTypes: ['Symbol', 'String', 'Address', 'U32', 'I32', 'U64', 'I64', 'Vec', 'Map'],
     enableDeepSanitization: true,
+    enablePhishingCheck: true,
 };
 
 /**
@@ -77,12 +80,37 @@ export class ContractCalldataSanitizer {
                 };
             }
 
-            // 3. Normalize values into safe operational primitives
+            // 3. Phishing and Malicious Contract Pre-Flight Screening
+            let securityAudit: SecurityAuditResult | undefined;
+            if (this.config.enablePhishingCheck && typeof parsed === 'object' && parsed !== null) {
+                const targetAddress = (parsed as any).contractAddress || (parsed as any).targetContract || (parsed as any).address;
+                const method = (parsed as any).method || (parsed as any).functionName;
+                const args = (parsed as any).args || (parsed as any).parameters;
+
+                if (targetAddress && typeof targetAddress === 'string') {
+                    securityAudit = auditContractTarget(targetAddress, undefined, { method, args });
+                    if (securityAudit.riskLevel === 'CRITICAL') {
+                        return {
+                            isValid: false,
+                            sanitizedData: null,
+                            securityAudit,
+                            error: {
+                                code: 'PHISHING_RISK',
+                                message: `Execution blocked by Web3 Phishing Defense: ${securityAudit.warnings.join(' ')}`,
+                                timestamp: Date.now(),
+                            },
+                        };
+                    }
+                }
+            }
+
+            // 4. Normalize values into safe operational primitives
             const cleanData = this.normalizeNodes(parsed);
 
             return {
                 isValid: true,
                 sanitizedData: cleanData as T,
+                securityAudit,
             };
 
         } catch (error: any) {

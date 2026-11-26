@@ -1,5 +1,8 @@
 'use strict';
 
+const os = require('os');
+const { monitorEventLoopDelay, performance } = require('perf_hooks');
+
 /**
  * resourceEstimator.js - pre-flight Soroban resource limit checks and fee
  * buffering (Issue #1059).
@@ -274,6 +277,172 @@ class ResourceEstimator {
   }
 }
 
+// ── Runtime pressure sampling (BE-FINAL-28) ──────────────────────────────────
+
+/**
+ * Host-level ceilings used by the concurrency governor.
+ *
+ * `maxMemoryBytes` is deliberately below the 1.5 GB keeper memory budget so a
+ * governor reacting at the ceiling still has room to shed in-flight work
+ * before the process is killed.
+ */
+const DEFAULT_RUNTIME_LIMITS = Object.freeze({
+  maxMemoryBytes: Math.floor(1.5 * 1024 * 1024 * 1024),
+  maxEventLoopLagMs: 100,
+  maxCpuUtilization: 1,
+  memoryPerExecutionBytes: 96 * 1024 * 1024,
+  minConcurrency: 1,
+  maxConcurrency: 64,
+  sampleIntervalMs: 500,
+});
+
+function positiveNumber(value, name, fallback) {
+  const resolved = value === undefined || value === null ? fallback : Number(value);
+  if (!Number.isFinite(resolved) || resolved <= 0) {
+    throw new RangeError(`${name} must be a finite positive number, received ${String(value)}`);
+  }
+  return resolved;
+}
+
+function nonNegativeNumber(value, name, fallback) {
+  const resolved = value === undefined || value === null ? fallback : Number(value);
+  if (!Number.isFinite(resolved) || resolved < 0) {
+    throw new RangeError(`${name} must be a finite non-negative number, received ${String(value)}`);
+  }
+  return resolved;
+}
+
+/**
+ * Concurrency ceiling implied by the host, not by a hard-coded constant.
+ *
+ * Memory is the binding constraint for cryptographic batches, so the estimate
+ * is the smaller of the memory budget divided by the per-execution estimate and
+ * a CPU-derived parallelism allowance. It is always clamped to the configured
+ * bounds, and invalid inputs are rejected rather than silently defaulted.
+ */
+function estimateConcurrencyCeiling(options = {}) {
+  const totalMemoryBytes = positiveNumber(
+    options.totalMemoryBytes ?? (typeof os.totalmem === 'function' ? os.totalmem() : undefined),
+    'totalMemoryBytes',
+    DEFAULT_RUNTIME_LIMITS.memoryPerExecutionBytes,
+  );
+  const cpuCount = positiveNumber(
+    options.cpuCount ?? (typeof os.availableParallelism === 'function'
+      ? os.availableParallelism()
+      : os.cpus().length),
+    'cpuCount',
+    1,
+  );
+  const memoryPerExecutionBytes = positiveNumber(
+    options.memoryPerExecutionBytes,
+    'memoryPerExecutionBytes',
+    DEFAULT_RUNTIME_LIMITS.memoryPerExecutionBytes,
+  );
+  const maxMemoryBytes = positiveNumber(
+    options.maxMemoryBytes,
+    'maxMemoryBytes',
+    DEFAULT_RUNTIME_LIMITS.maxMemoryBytes,
+  );
+  const min = positiveNumber(options.minConcurrency, 'minConcurrency', DEFAULT_RUNTIME_LIMITS.minConcurrency);
+  const max = positiveNumber(options.maxConcurrency, 'maxConcurrency', DEFAULT_RUNTIME_LIMITS.maxConcurrency);
+  if (max < min) {
+    throw new RangeError(`maxConcurrency ${max} must be >= minConcurrency ${min}`);
+  }
+
+  const byMemory = Math.floor(Math.min(totalMemoryBytes, maxMemoryBytes) / memoryPerExecutionBytes);
+  const byCpu = Math.max(1, Math.floor(cpuCount) * 4);
+  return Math.max(min, Math.min(max, Math.max(1, Math.min(byMemory, byCpu))));
+}
+
+/**
+ * Samples event-loop lag, RSS and CPU utilisation from the current Node.js
+ * process. Every source is injectable so tests can drive deterministic
+ * pressure without relying on wall-clock scheduling or real memory growth.
+ */
+class RuntimePressureSampler {
+  constructor(options = {}) {
+    this.maxMemoryBytes = positiveNumber(
+      options.maxMemoryBytes,
+      'maxMemoryBytes',
+      DEFAULT_RUNTIME_LIMITS.maxMemoryBytes,
+    );
+    this.maxEventLoopLagMs = positiveNumber(
+      options.maxEventLoopLagMs,
+      'maxEventLoopLagMs',
+      DEFAULT_RUNTIME_LIMITS.maxEventLoopLagMs,
+    );
+    this.maxCpuUtilization = positiveNumber(
+      options.maxCpuUtilization,
+      'maxCpuUtilization',
+      DEFAULT_RUNTIME_LIMITS.maxCpuUtilization,
+    );
+    this.cpuCount = positiveNumber(
+      options.cpuCount ?? (typeof os.availableParallelism === 'function'
+        ? os.availableParallelism()
+        : os.cpus().length),
+      'cpuCount',
+      1,
+    );
+    this.now = options.now ?? (() => performance.now());
+    this.memoryUsage = options.memoryUsage ?? (() => process.memoryUsage());
+    this.cpuUsage = options.cpuUsage ?? (() => process.cpuUsage());
+    this._ownsMonitor = false;
+    this._lastSample = null;
+
+    if (typeof options.eventLoopLag === 'function') {
+      this.eventLoopLag = options.eventLoopLag;
+    } else {
+      this._monitor = monitorEventLoopDelay({ resolution: 10 });
+      this._monitor.enable();
+      this._ownsMonitor = true;
+      this.eventLoopLag = () => {
+        const mean = this._monitor.mean;
+        return Number.isFinite(mean) ? mean / 1e6 : 0;
+      };
+    }
+  }
+
+  /** Take one pressure sample. Never throws on a partial/numeric-free source. */
+  sample() {
+    const memory = this.memoryUsage() || {};
+    const rssBytes = nonNegativeNumber(memory.rss, 'memoryUsage().rss', 0);
+    const cpu = this.cpuUsage() || {};
+    const cpuMicros = nonNegativeNumber(cpu.user + cpu.system, 'cpuUsage total', 0);
+    const timestamp = Number(this.now());
+    const eventLoopLagMs = Math.max(0, Number(this.eventLoopLag()) || 0);
+
+    let cpuUtilization = 0;
+    if (this._lastSample !== null) {
+      const elapsedMs = Math.max(1, timestamp - this._lastSample.timestamp);
+      const deltaMicros = Math.max(0, cpuMicros - this._lastSample.cpuMicros);
+      cpuUtilization = Math.min(
+        this.maxCpuUtilization,
+        deltaMicros / (elapsedMs * 1000 * this.cpuCount),
+      );
+    }
+    this._lastSample = { timestamp, cpuMicros };
+
+    return {
+      timestamp,
+      rssBytes,
+      rssRatio: Math.min(1, rssBytes / this.maxMemoryBytes),
+      eventLoopLagMs,
+      lagRatio: Math.min(1, eventLoopLagMs / this.maxEventLoopLagMs),
+      cpuUtilization,
+      cpuRatio: Math.min(1, cpuUtilization / this.maxCpuUtilization),
+      memoryHeadroomBytes: Math.max(0, this.maxMemoryBytes - rssBytes),
+    };
+  }
+
+  /** Release the event-loop monitor when this sampler created one. */
+  close() {
+    if (this._ownsMonitor && this._monitor) {
+      this._monitor.disable();
+      this._ownsMonitor = false;
+    }
+  }
+}
+
 module.exports = {
   ResourceEstimator,
   ResourceLimitExceededError,
@@ -281,4 +450,7 @@ module.exports = {
   DEFAULT_PROTOCOL_LIMITS,
   DEFAULT_SAFETY_THRESHOLD,
   DEFAULT_FEE_BUFFER,
+  DEFAULT_RUNTIME_LIMITS,
+  RuntimePressureSampler,
+  estimateConcurrencyCeiling,
 };

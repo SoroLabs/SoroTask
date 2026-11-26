@@ -138,6 +138,62 @@ export function filterToNeighbourhood(
   return deps.filter((d) => d.fromId === taskId || d.toId === taskId);
 }
 
+/**
+ * Detects all cycles in a directed graph.
+ * Returns sets of edge keys (`fromId→toId`) and node IDs that form cycles.
+ */
+export function findCyclesInGraph(deps: TaskDependency[]): {
+  cycleEdgeKeys: Set<string>;
+  cycleNodeIds: Set<string>;
+} {
+  const adj = new Map<string, string[]>();
+  for (const { fromId, toId } of deps) {
+    if (!adj.has(fromId)) adj.set(fromId, []);
+    adj.get(fromId)!.push(toId);
+  }
+
+  const visited = new Set<string>();
+  const recursionStack = new Set<string>();
+  const path: string[] = [];
+  const cycleEdgeKeys = new Set<string>();
+  const cycleNodeIds = new Set<string>();
+
+  function dfs(node: string) {
+    visited.add(node);
+    recursionStack.add(node);
+    path.push(node);
+
+    for (const neighbor of adj.get(node) ?? []) {
+      if (!visited.has(neighbor)) {
+        dfs(neighbor);
+      } else if (recursionStack.has(neighbor)) {
+        // Cycle detected: neighbor ... node -> neighbor
+        const cycleStartIndex = path.indexOf(neighbor);
+        if (cycleStartIndex !== -1) {
+          const cycleNodes = path.slice(cycleStartIndex);
+          for (let i = 0; i < cycleNodes.length; i++) {
+            const u = cycleNodes[i];
+            const v = cycleNodes[(i + 1) % cycleNodes.length];
+            cycleNodeIds.add(u);
+            cycleEdgeKeys.add(`${u}→${v}`);
+          }
+        }
+      }
+    }
+
+    path.pop();
+    recursionStack.delete(node);
+  }
+
+  for (const node of adj.keys()) {
+    if (!visited.has(node)) {
+      dfs(node);
+    }
+  }
+
+  return { cycleEdgeKeys, cycleNodeIds };
+}
+
 /** Threshold above which the graph should be virtualized / sliced for performance. */
 export const GRAPH_VIRTUALIZE_THRESHOLD = 200;
 

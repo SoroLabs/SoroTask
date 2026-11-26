@@ -58,7 +58,13 @@ const TaskCreationForm: React.FC<TaskCreationFormProps> = ({ initialConfig }) =>
   };
 
   return (
-    <form onSubmit={handleFormSubmit} className="space-y-6">
+    <form
+      onSubmit={handleFormSubmit}
+      className="space-y-6"
+      aria-label="Create automation task"
+      aria-busy={formState.isSubmitting}
+      noValidate
+    >
       {/* Error Summary */}
       {hasErrors() && (
         <FormErrorSummary
@@ -95,7 +101,11 @@ const TaskCreationForm: React.FC<TaskCreationFormProps> = ({ initialConfig }) =>
       />
 
       {/* Interval and Gas Balance Fields */}
-      <div className="grid grid-cols-2 gap-4">
+      <div
+        role="group"
+        aria-label="Execution schedule and gas settings"
+        className="grid grid-cols-2 gap-4"
+      >
         <FormField
           name="interval"
           label="Interval (seconds)"
@@ -137,7 +147,7 @@ const TaskCreationForm: React.FC<TaskCreationFormProps> = ({ initialConfig }) =>
       />
 
       {/* Form Actions */}
-      <div className="flex gap-4 pt-4">
+      <div role="group" aria-label="Form actions" className="flex gap-4 pt-4">
         <FormSubmitButton
           type="submit"
           isSubmitting={formState.isSubmitting}
@@ -145,6 +155,7 @@ const TaskCreationForm: React.FC<TaskCreationFormProps> = ({ initialConfig }) =>
           isDirty={formState.isDirty}
           loadingText="Creating Task..."
           disabledText="Please fill out required fields"
+          className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950"
         >
           Register Task
         </FormSubmitButton>
@@ -152,7 +163,8 @@ const TaskCreationForm: React.FC<TaskCreationFormProps> = ({ initialConfig }) =>
         <button
           type="button"
           onClick={resetForm}
-          className="px-4 py-2 text-sm font-medium text-neutral-400 hover:text-neutral-300 transition-colors"
+          aria-label="Reset form"
+          className="px-4 py-2 text-sm font-medium text-neutral-400 hover:text-neutral-300 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950"
         >
           Reset Form
         </button>
@@ -160,9 +172,17 @@ const TaskCreationForm: React.FC<TaskCreationFormProps> = ({ initialConfig }) =>
 
       {/* Form Status */}
       {formState.isSubmitted && !hasErrors() && (
-        <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4">
+        <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="bg-green-500/10 border border-green-500/20 rounded-lg p-4"
+        >
           <div className="flex items-center gap-2">
-            <div className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
+            <div
+              aria-hidden="true"
+              className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center"
+            >
               <span className="text-white text-xs">✓</span>
             </div>
             <p className="text-sm text-green-400">Task created successfully!</p>

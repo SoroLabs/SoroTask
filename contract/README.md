@@ -21,8 +21,10 @@ cargo install cargo-fuzz
 
 | Target | What it tests |
 |---|---|
-| `fuzz_register` | `register()` with randomized `interval` and `gas_balance` — verifies zero-interval always panics and valid intervals never panic |
-| `fuzz_execute` | `execute()` with randomized `interval`, ledger timestamp, and `gas_balance` — surfaces unexpected panics in the execution path |
+| `fuzz_register` | `register()` with randomized `interval`, `last_run`, `gas_balance`, `max_runs`, `expiration_timestamp`, and `permissions` |
+| `fuzz_execute` | `execute()` with randomized `interval`, `last_run`, ledger timestamp (`0..=u64::MAX`), `protocol_fee_bps` (`0..=10_000+`), and balances |
+| `fuzz_math` | `FixedPoint128` (`from_whole`, `mul`, `mul_div`, `div_ceil`, `div_floor`), `split_execution_fee`, and `accrue_yield_floor` across `i128::MIN..=i128::MAX` |
+| `fuzz_state_machine` | Arbitrary multi-step sequences of register, deposit, withdraw, execute, pause, resume, cancel, and protocol fee updates with solvency & no-ghost-task assertions |
 
 ## Running Fuzzers Locally
 
