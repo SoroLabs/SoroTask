@@ -568,8 +568,9 @@ pub fn prune_task(env: &Env, task_id: u64, caller: &soroban_sdk::Address) -> (i1
         return (0, 0);
     }
 
-    // Calculate bounty (1% = 100 basis points)
-    let bounty = gas_balance * crate::CLEANUP_BOUNTY_BPS as i128 / 10000;
+    // Calculate bounty (1% = 100 basis points) without overflowing at i128::MAX
+    let bps = crate::CLEANUP_BOUNTY_BPS as i128;
+    let bounty = (gas_balance / 10_000) * bps + ((gas_balance % 10_000) * bps) / 10_000;
     let refund = gas_balance - bounty;
 
     // Remove task storage
