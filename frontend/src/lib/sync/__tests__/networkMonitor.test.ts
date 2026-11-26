@@ -1,5 +1,4 @@
-import { NetworkMonitor, type ConnectionQuality } from "../networkMonitor";
-import { MemoryStorage } from "./mocks";
+import { NetworkMonitor } from "../networkMonitor";
 
 const DEFAULT_CONFIG = {
   rpcEndpoint: "https://api.example.com",
@@ -86,5 +85,50 @@ describe("NetworkMonitor", () => {
     await monitor.probe();
     expect(listener).toHaveBeenCalled();
     jest.useRealTimers();
+  });
+
+  it("starts with a zeroed resilienceId", () => {
+    const monitor = createMonitor();
+
+    expect(monitor.getHealth().resilienceId).toBe(0);
+  });
+
+  it("bumps resilienceId on every observed state change", async () => {
+    jest.useFakeTimers();
+    const monitor = createMonitor({ timeoutMs: 500_000 });
+    const initial = monitor.getHealth();
+
+    global.fetch = jest.fn().mockResolvedValue({ ok: true });
+    await monitor.probe();
+    const afterSuccess = monitor.getHealth();
+    expect(afterSuccess.resilienceId).toBeGreaterThan(initial.resilienceId);
+
+    global.fetch = jest.fn().mockRejectedValue(new Error("network down"));
+    await monitor.probe();
+    const afterFailure = monitor.getHealth();
+    expect(afterFailure.online).toBe(false);
+    expect(afterFailure.resilienceId).toBeGreaterThan(afterSuccess.resilienceId);
+
+    global.fetch = jest.fn().mockResolvedValue({ ok: true });
+    await monitor.probe();
+    const afterRecovery = monitor.getHealth();
+    expect(afterRecovery.online).toBe(true);
+    expect(afterRecovery.resilienceId).toBeGreaterThan(afterFailure.resilienceId);
+
+    jest.useRealTimers();
+  });
+
+  it("reports connectivity restored through the browser online event", () => {
+    const monitor = createMonitor();
+    monitor.attachBrowserListeners();
+
+    window.dispatchEvent(new Event("offline"));
+    expect(monitor.getHealth().online).toBe(false);
+
+    window.dispatchEvent(new Event("online"));
+    expect(monitor.getHealth().online).toBe(true);
+    expect(monitor.getHealth().lastError).toBeNull();
+
+    monitor.destroy();
   });
 });
