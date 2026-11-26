@@ -45,6 +45,45 @@ function hashEvent(event) {
   return sha256(Buffer.from(canonicalizeEvent(event), "utf8")).toString("hex");
 }
 
+function canonicalizeAuditEvent(event) {
+  let data = event.data_json;
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      // Preserve non-JSON payloads as strings.
+    }
+  }
+
+  const normalize = (value) => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === "object" && !(value instanceof Date)) {
+      return Object.fromEntries(
+        Object.keys(value).sort().map((key) => [key, normalize(value[key])]),
+      );
+    }
+    if (value instanceof Date) return value.toISOString();
+    return value;
+  };
+  const processedAt = event.processed_at instanceof Date
+    ? event.processed_at.toISOString()
+    : event.processed_at;
+
+  return JSON.stringify({
+    id: event.id == null ? null : String(event.id),
+    ledger_sequence: event.ledger_sequence == null ? null : String(event.ledger_sequence),
+    contract_id: event.contract_id == null ? null : event.contract_id,
+    event_name: event.event_name == null ? null : event.event_name,
+    task_id: event.task_id == null ? null : String(event.task_id),
+    data_json: normalize(data),
+    processed_at: processedAt == null ? null : new Date(processedAt).toISOString(),
+  });
+}
+
+function hashAuditEvent(event) {
+  return sha256(Buffer.from(canonicalizeAuditEvent(event), "utf8")).toString("hex");
+}
+
 /**
  * Combine two hex node hashes into their parent using sorted-pair hashing.
  * @param {string} a hex
@@ -95,6 +134,10 @@ function buildEventTree(events) {
   return buildTreeFromLeaves((events || []).map(hashEvent));
 }
 
+function buildAuditEventTree(events) {
+  return buildTreeFromLeaves((events || []).map(hashAuditEvent));
+}
+
 /**
  * Produce an inclusion proof (ordered list of sibling hex hashes) for the leaf
  * at `index` within a built tree.
@@ -137,9 +180,12 @@ module.exports = {
   sha256,
   canonicalizeEvent,
   hashEvent,
+  canonicalizeAuditEvent,
+  hashAuditEvent,
   hashPair,
   buildTreeFromLeaves,
   buildEventTree,
+  buildAuditEventTree,
   getProof,
   verifyProof,
 };

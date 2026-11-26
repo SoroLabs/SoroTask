@@ -91,6 +91,14 @@ Execution records older than `EXECUTION_ARCHIVAL_CUTOFF_DAYS` (default 90) are g
 
 Historical executions can be queried with DuckDB over S3 using `GET /executions/archived?taskId=<id>&limit=<n>` (requires a `USER`-role JWT). Optional `year` and `month` parameters narrow the S3 glob to the corresponding monthly partition. The endpoint uses the same `S3_COLD_STORAGE_BUCKET`, AWS region, and credentials as event archival.
 
+## Hourly Merkle Audit Anchors
+
+The ledger auditor builds a SHA-256 Merkle tree for each completed UTC hour of indexed events. Leaves commit to the event ID, ledger sequence, event fields, canonicalized JSON payload, and `processed_at` timestamp. The auditor publishes each root using a Stellar `manage_data` operation and puts the hour in the transaction memo. The root is also retained in the `audit_anchors` table with its transaction hash; later audit runs recompute the tree and verify the corresponding immutable Stellar operation. Divergences are recorded and sent to the configured `onDivergence` hook.
+
+Publishing is disabled unless `AUDIT_SIGNING_SECRET` is set. Configure it with a funded Stellar account, the matching `NETWORK_PASSPHRASE`, and `HORIZON_URL` for the same network. The default Horizon endpoint is Stellar Testnet. Keep the signing secret in a secret manager and do not commit it.
+
+For independent verification, rebuild the root with `buildAuditEventTree(events)` from `src/merkle.js`, then call `verifyStellarAnchor({ horizonUrl, sourcePublicKey, transactionHash, hourStart, root })` from `src/ledgerAuditor.js`. The helper checks the transaction source, UTC-hour memo, and anchored root. `getProof` and `verifyProof` in `src/merkle.js` provide event inclusion proofs against that root.
+
 ## Database Schema
 
 The indexer creates an `events` table with the following structure:
