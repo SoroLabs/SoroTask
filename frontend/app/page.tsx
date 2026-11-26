@@ -1,123 +1,37 @@
-import Link from "next/link";
-import { WalletNavSlot } from "@/app/components/WalletNavSlot";
-import { LanguageSelector } from "@/components/LanguageSelector";
-import { ThemeToggle } from "@/components/ThemeToggle";
-import { ProductTour } from "@/src/components/ProductTour";
-import {
-  FiActivity,
-  FiArrowRight,
-  FiBarChart2,
-  FiCheckCircle,
-  FiClock,
-  FiTerminal,
-  FiCpu,
-  FiGrid,
-  FiLayers,
-  FiPlayCircle,
-  FiShield,
-  FiZap,
-  FiTrendingUp,
-} from "react-icons/fi";
+"use client";
 
-const stats = [
-  { label: "Automation uptime", value: "99.8%" },
-  { label: "Avg execution lag", value: "1.4s" },
-  { label: "Keeper routes", value: "24" },
-];
+import { useCallback, useRef, useState, type FormEvent } from "react";
+import DateInput from "./components/DateInput";
+import { PredictionCard } from "@/src/components/predictive-prefetch/PredictionCard";
 
-const commandRows = [
-  {
-    name: "Harvest vault yield",
-    network: "Stellar",
-    status: "Ready",
-    eta: "32s",
-    tone: "bg-emerald-400",
-  },
-  {
-    name: "Rebalance treasury",
-    network: "Soroban",
-    status: "Queued",
-    eta: "4m",
-    tone: "bg-sky-400",
-  },
-  {
-    name: "Sweep idle liquidity",
-    network: "Cross-chain",
-    status: "Watching",
-    eta: "12m",
-    tone: "bg-amber-300",
-  },
-];
+export default function Home() {
+  const [taskData, setTaskData] = useState({
+    contractAddress: '',
+    functionName: '',
+    interval: '',
+    gasBalance: '',
+    dueDate: '',
+    parsedDueDate: undefined as Date | undefined
+  });
 
-const quickLinks = [
-  {
-    href: "/sandbox",
-    title: "Developer Sandbox",
-    description: "Open the keyboard-driven task CLI and Soroban simulator.",
-    icon: FiTerminal,
-  },
-  {
-    href: "/tasks",
-    title: "Task Console",
-    description: "Create, fund, pause, and inspect recurring contract calls.",
-    icon: FiPlayCircle,
-  },
-  {
-    href: "/board",
-    title: "Execution Board",
-    description: "Triage active automations by status, priority, and owner.",
-    icon: FiGrid,
-  },
-  {
-    href: "/dashboard",
-    title: "Live Dashboard",
-    description:
-      "Track volume, latency, failures, and task health at a glance.",
-    icon: FiBarChart2,
-  },
-  {
-    href: "/keeper-metrics",
-    title: "Keeper Metrics",
-    description: "Monitor nodes, gas pressure, retries, and operational risk.",
-    icon: FiCpu,
-  },
-  {
-    href: "/tokenomics",
-    title: "Tokenomics Flow",
-    description:
-      "Model distribution flows, cycles, and pools inside the network.",
-    icon: FiLayers,
-  },
-  {
-    href: "/yield-calculator",
-    title: "Yield Forecaster",
-    description:
-      "Forecast simple vs compounded yields post keeper execution fees.",
-    icon: FiTrendingUp,
-  },
-  {
-    href: "/gas-optimization",
-    title: "Gas Optimization",
-    description:
-      "Estimate transaction costs, schedule off-peak, and simulate runs.",
-    icon: FiZap,
-  },
-  {
-    href: "/tracing",
-    title: "Distributed Tracing",
-    description:
-      "Timeline waterfall diagnostics across services & block consensus.",
-    icon: FiActivity,
-  },
-];
+  const handleDateChange = (value: string, parsedDate?: Date) => {
+    setTaskData(prev => ({
+      ...prev,
+      dueDate: value,
+      parsedDueDate: parsedDate
+    }));
+  };
 
-const trustSignals = [
-  { icon: FiShield, label: "Non-custodial task control" },
-  { icon: FiClock, label: "Interval-aware execution" },
-  { icon: FiLayers, label: "Dependency-ready workflows" },
-];
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    console.log('Task submitted:', taskData);
+    // Handle task submission logic here
+  };
 
-export default function HomePage() {
+  const onReset = () => {
+    if (confirmDiscard()) setForm(EMPTY_FORM);
+  };
+
   return (
     <main className="min-h-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
       <section className="theme-ambient relative isolate min-h-screen px-5 py-6 sm:px-8 lg:px-12">
@@ -289,10 +203,177 @@ export default function HomePage() {
           </div>
         </div>
 
-        <div className="mx-auto grid w-full max-w-7xl gap-4 pb-16 md:grid-cols-3">
-          {trustSignals.map((item) => {
-            const Icon = item.icon;
-            return (
+      {/* Action buttons – all keyboard-accessible */}
+      <div role="group" aria-label={`Actions for task ${task.id}`} className="flex gap-2 pt-1">
+        <button
+          id={`task-edit-${task.id}`}
+          onClick={() => onEdit(task)}
+          aria-label={`Edit task ${task.id}`}
+          className="flex-1 text-xs bg-neutral-700 hover:bg-neutral-600 text-neutral-200 px-3 py-1.5 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-blue-500"
+        >
+          Edit
+        </button>
+        <button
+          id={`task-toggle-${task.id}`}
+          onClick={() => onToggle(task.id)}
+          aria-label={isPaused ? `Resume task ${task.id}` : `Pause task ${task.id}`}
+          aria-pressed={isPaused}
+          className="flex-1 text-xs bg-neutral-700 hover:bg-neutral-600 text-neutral-200 px-3 py-1.5 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-blue-500"
+        >
+          {isPaused ? "Resume" : "Pause"}
+        </button>
+        <button
+          id={`task-delete-${task.id}`}
+          onClick={() => onDelete(task.id)}
+          aria-label={`Delete task ${task.id}`}
+          className="flex-1 text-xs bg-red-900/40 hover:bg-red-700/50 text-red-400 px-3 py-1.5 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-red-500"
+        >
+          Delete
+        </button>
+      </div>
+    </article>
+  );
+}
+
+/* ─── Live Region for announcements ─────────────────────────────────── */
+function LiveRegion({ message }: { message: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="sr-only"
+    >
+      {message}
+    </div>
+  );
+}
+
+/* ─── Main Page ──────────────────────────────────────────────────────── */
+export default function Home() {
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [logs] = useState<LogEntry[]>(MOCK_LOGS);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+
+  /* ── Create-task form state ── */
+  const [contractAddress, setContractAddress] = useState("");
+  const [functionName, setFunctionName] = useState("");
+  const [interval, setIntervalVal] = useState("");
+  const [gasBalance, setGasBalance] = useState("");
+  const [formError, setFormError] = useState("");
+
+  const nextId = useRef(1);
+
+  /* Helper to announce screen-reader messages */
+  const announce = useCallback((msg: string) => {
+    setAnnouncement("");
+    // Defer to guarantee the aria-live region fires even for identical strings
+    requestAnimationFrame(() => setAnnouncement(msg));
+  }, []);
+
+  /* ── Register task ── */
+  const handleRegister = useCallback(
+    (e: FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      setFormError("");
+
+      if (!contractAddress.trim() || !functionName.trim()) {
+        setFormError("Contract address and function name are required.");
+        return;
+      }
+      if (!Number.isFinite(Number(interval)) || Number(interval) < 60) {
+        setFormError("Interval must be at least 60 seconds.");
+        return;
+      }
+      if (
+        !gasBalance.trim() ||
+        !Number.isFinite(Number(gasBalance)) ||
+        Number(gasBalance) < 0.1
+      ) {
+        setFormError("Gas balance must be at least 0.1 XLM.");
+        return;
+      }
+
+      const newTask: Task = {
+        id: nextId.current++,
+        contractAddress: contractAddress.trim(),
+        functionName: functionName.trim(),
+        interval: Number(interval),
+        gasBalance: Number(gasBalance),
+        status: "active",
+      };
+
+      setTasks((prev) => [newTask, ...prev]);
+      setContractAddress("");
+      setFunctionName("");
+      setIntervalVal("");
+      setGasBalance("");
+      announce(`Task ${newTask.id} registered for ${newTask.functionName}.`);
+    },
+    [contractAddress, functionName, interval, gasBalance, announce]
+  );
+
+  /* ── Edit task ── */
+  const handleSaveEdit = useCallback(
+    (updated: Task) => {
+      setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+      setEditingTask(null);
+      announce(`Task ${updated.id} updated.`);
+    },
+    [announce]
+  );
+
+  /* ── Toggle task status ── */
+  const handleToggle = useCallback(
+    (id: number) => {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === id ? { ...t, status: t.status === "active" ? "paused" : "active" } : t
+        )
+      );
+      const task = tasks.find((t) => t.id === id);
+      if (task) {
+        const next = task.status === "active" ? "paused" : "resumed";
+        announce(`Task ${id} ${next}.`);
+      }
+    },
+    [tasks, announce]
+  );
+
+  /* ── Delete task ── */
+  const handleDelete = useCallback(
+    (id: number) => {
+      setTasks((prev) => prev.filter((t) => t.id !== id));
+      announce(`Task ${id} deleted.`);
+    },
+    [announce]
+  );
+
+  return (
+    <>
+      {/* ── Skip-to-content link (first focusable element on page) ── */}
+      <a href="#main-content" className="skip-nav">
+        Skip to main content
+      </a>
+
+      {/* ── Screen-reader live region ── */}
+      <LiveRegion message={announcement} />
+
+      {/* ── Edit-task dialog (focus-trapped, Escape closes) ── */}
+      {editingTask && (
+        <EditTaskDialog
+          task={editingTask}
+          onSave={handleSaveEdit}
+          onClose={() => setEditingTask(null)}
+        />
+      )}
+
+      <div className="min-h-screen bg-neutral-900 text-neutral-100 font-sans">
+        {/* ── Header ── */}
+        <header className="border-b border-neutral-800 bg-neutral-950/50 backdrop-blur-md sticky top-0 z-10">
+          <div className="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div className="flex items-center gap-2">
               <div
                 key={item.label}
                 className="flex items-center gap-3 border-t border-[var(--border)] pt-5 text-[var(--text-secondary)]"
@@ -337,10 +418,137 @@ export default function HomePage() {
                   href={link.href}
                   className="group rounded-2xl border border-[var(--border)] bg-[var(--bg-surface)] p-5 shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-xl"
                 >
-                  <span
-                    className="flex size-12 items-center justify-center rounded-2xl bg-[var(--accent)] text-xl text-[var(--background)] shadow-lg"
-                  >
-                    <Icon aria-hidden="true" />
+                  {/* Inline form error – visually and announced to screen readers */}
+                  {formError && (
+                    <div
+                      role="alert"
+                      aria-live="assertive"
+                      id="form-error"
+                      className="mb-4 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2"
+                    >
+                      {formError}
+                    </div>
+                  )}
+
+                  <div className="space-y-4">
+                    <div>
+                      <label
+                        htmlFor="contract-address"
+                        className="block text-sm font-medium text-neutral-400 mb-1"
+                      >
+                        Target Contract Address{" "}
+                        <span aria-hidden="true" className="text-red-400">*</span>
+                      </label>
+                      <input
+                        id="contract-address"
+                        type="text"
+                        placeholder="C..."
+                        value={contractAddress}
+                        onChange={(e) => {
+                          setContractAddress(e.target.value);
+                          setFormError("");
+                        }}
+                        required
+                        aria-required="true"
+                        aria-describedby={formError ? "form-error" : undefined}
+                        autoComplete="off"
+                        className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm"
+                      />
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="function-name"
+                        className="block text-sm font-medium text-neutral-400 mb-1"
+                      >
+                        Function Name{" "}
+                        <span aria-hidden="true" className="text-red-400">*</span>
+                      </label>
+                      <input
+                        id="function-name"
+                        type="text"
+                        placeholder="harvest_yield"
+                        value={functionName}
+                        onChange={(e) => {
+                          setFunctionName(e.target.value);
+                          setFormError("");
+                        }}
+                        required
+                        aria-required="true"
+                        autoComplete="off"
+                        className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label
+                          htmlFor="interval-seconds"
+                          className="block text-sm font-medium text-neutral-400 mb-1"
+                        >
+                          Interval (seconds)
+                        </label>
+                        <input
+                          id="interval-seconds"
+                          type="number"
+                          placeholder="3600"
+                          min={60}
+                          value={interval}
+                          onChange={(e) => {
+                            setIntervalVal(e.target.value);
+                            setFormError("");
+                          }}
+                          className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="gas-balance"
+                          className="block text-sm font-medium text-neutral-400 mb-1"
+                        >
+                          Gas Balance (XLM)
+                        </label>
+                        <input
+                          id="gas-balance"
+                          type="number"
+                          placeholder="10"
+                          min={0.1}
+                          step={0.1}
+                          value={gasBalance}
+                          onChange={(e) => {
+                            setGasBalance(e.target.value);
+                            setFormError("");
+                          }}
+                          className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-4">
+                      <PredictionCard
+                        input={{ contractAddress, functionName, interval, gasBalance }}
+                      />
+                    </div>
+
+                    <button
+                      id="register-task-btn"
+                      type="submit"
+                      className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-3 rounded-lg transition-colors mt-2 shadow-lg shadow-blue-600/20"
+                    >
+                      Register Task
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </section>
+
+            {/* ── Your Tasks Section ── */}
+            <section aria-labelledby="your-tasks-heading">
+              <h2 id="your-tasks-heading" className="text-2xl font-bold mb-6">
+                Your Tasks
+                {tasks.length > 0 && (
+                  <span className="ml-2 text-base font-normal text-neutral-500">
+                    ({tasks.length})
                   </span>
                   <h3 className="mt-6 text-xl font-black">{link.title}</h3>
                   <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">

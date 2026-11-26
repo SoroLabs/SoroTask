@@ -54,6 +54,17 @@ export interface HealthStatus {
   uptime: number;
   lastPollAt: string | null;
   rpcConnected: boolean;
+  rpcCircuitState?: 'CLOSED' | 'HALF_OPEN' | 'OPEN';
+  paused?: boolean;
+  pauseReason?: string | null;
+  latestLedgerSequence?: number | null;
+  shard?: {
+    shardIndex: number;
+    shardCount: number;
+    shardLabel: string;
+    ownedTasks: number;
+    skippedTasks: number;
+  };
 }
 
 interface UseSocketOptions {
@@ -63,11 +74,14 @@ interface UseSocketOptions {
   onHealth?: (health: HealthStatus) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
+  onLatency?: (latencyMs: number | null) => void;
 }
 
 export function useSocket(options: UseSocketOptions = {}) {
   const socketRef = useRef<Socket | null>(null);
   const attemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
@@ -79,34 +93,61 @@ export function useSocket(options: UseSocketOptions = {}) {
       reconnection: false, // We manage reconnection manually for back-off control
     });
 
-    // Wrap with error tracking
-    wrapSocketWithTracking(socket);
+    const scheduleReconnect = () => {
+      if (reconnectTimerRef.current !== null) {
+        return;
+      }
+
+      const delay = backoff(attemptsRef.current++);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (socketRef.current === socket && !socket.connected) {
+          socket.close();
+          socketRef.current = connect();
+        }
+      }, delay);
+    };
+
+    const ping = () => {
+      if (!socket.connected) {
+        return;
+      }
+
+      const startedAt = performance.now();
+      socket.timeout(5000).emit('status:ping', (error: Error | null) => {
+        if (error) {
+          optionsRef.current.onLatency?.(null);
+          return;
+        }
+        optionsRef.current.onLatency?.(Math.round(performance.now() - startedAt));
+      });
+    };
 
     socket.on('connect', () => {
       attemptsRef.current = 0;
-      trackSocketSubscription('connect');
+      if (reconnectTimerRef.current !== null) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      ping();
+      if (pingIntervalRef.current === null) {
+        pingIntervalRef.current = setInterval(ping, 10_000);
+      }
       optionsRef.current.onConnect?.();
     });
 
-    socket.on('disconnect', (reason: string) => {
-      trackSocketSubscription('disconnect', { reason });
+    socket.on('disconnect', (reason) => {
       optionsRef.current.onDisconnect?.();
+      if (pingIntervalRef.current !== null) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      if (reason !== 'io client disconnect') {
+        scheduleReconnect();
+      }
     });
 
-    socket.on('connect_error', (error) => {
-      trackSocketSubscription('connect_error', {
-        message: error instanceof Error ? error.message : String(error),
-      });
-      const delay = backoff(attemptsRef.current++);
-      setTimeout(() => {
-        if (socketRef.current && !socketRef.current.connected) {
-          socketRef.current.close();
-          if (connectRef.current) {
-            socketRef.current = connectRef.current();
-          }
-        }
-      }, delay);
-    });
+    socket.on('connect_error', scheduleReconnect);
 
     socket.on('sync:tasks', (tasks: TaskSummary[]) => {
       trackSocketSubscription('sync:tasks', { count: tasks.length });
@@ -136,7 +177,16 @@ export function useSocket(options: UseSocketOptions = {}) {
   useEffect(() => {
     socketRef.current = connect();
     return () => {
+      if (reconnectTimerRef.current !== null) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (pingIntervalRef.current !== null) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
       socketRef.current?.close();
+      socketRef.current = null;
     };
   }, [connect]);
 

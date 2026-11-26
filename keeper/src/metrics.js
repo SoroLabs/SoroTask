@@ -352,8 +352,7 @@ class Metrics {
     );
     this.maxFeeSamples = 100;
     this.lastPollAt = null;
-    this.lastBacklogSize = null;
-    this.retryPressure = 0;
+    this.latestLedgerSequence = null;
     this.rpcConnected = false;
     this.sloThresholds = {
       pollFreshnessMs: parseInt(process.env.SLO_POLL_FRESHNESS_MS || '30000', 10),
@@ -553,11 +552,8 @@ class Metrics {
     if (typeof state.rpcConnected === 'boolean') {
       this.rpcConnected = state.rpcConnected;
     }
-    if (typeof state.backlogSize === 'number') {
-      this.lastBacklogSize = state.backlogSize;
-    }
-    if (typeof state.retryBudgetPressure === 'number') {
-      this.retryPressure = state.retryBudgetPressure;
+    if (Number.isFinite(state.latestLedgerSequence)) {
+      this.latestLedgerSequence = state.latestLedgerSequence;
     }
   }
 
@@ -696,12 +692,10 @@ class Metrics {
       lastPollCompletedAt: this.lastPollCompletedAt ? this.lastPollCompletedAt.toISOString() : null,
       pollFreshnessSeconds: freshnessSeconds,
       rpcConnected: this.rpcConnected,
-      rpcCircuitState: this.gauges.rpcCircuitState === 2 ? 'OPEN' : (this.gauges.rpcCircuitState === 1 ? 'HALF_OPEN' : 'CLOSED'),
-      slo: {
-        pollFreshnessRate: this.gauges.pollFreshnessSloRate,
-        executionTimelinessRate: this.gauges.executionTimelinessSloRate,
-        thresholds: { ...this.sloThresholds },
-      },
+      latestLedgerSequence: this.latestLedgerSequence,
+      rpcCircuitState: this.gauges.rpcCircuitState === 2
+        ? 'OPEN'
+        : (this.gauges.rpcCircuitState === 1 ? 'HALF_OPEN' : 'CLOSED'),
       paused: this.adminState.paused,
       pauseReason: this.adminState.reason,
       shard: { ...this.shardState },
@@ -745,6 +739,8 @@ class MetricsServer {
     this.healthStaleThreshold = options.healthStaleThreshold
       || parseInt(process.env.HEALTH_STALE_THRESHOLD_MS || '60000', 10);
     this.server = null;
+    this.io = null;
+    this.broadcastInterval = null;
     this.registry = null;
     this.metrics = new Metrics();
     // The Prometheus registry is created before the SLO exporter so that
@@ -1658,6 +1654,18 @@ class MetricsServer {
       }
     });
 
+    this.io = new Server(this.server, { cors: { origin: '*' } });
+    this.io.on('connection', (socket) => {
+      this.emitRealtimeSnapshot(socket);
+      socket.on('status:ping', (acknowledge) => {
+        if (typeof acknowledge === 'function') {
+          acknowledge(Date.now());
+        }
+      });
+    });
+    this.broadcastInterval = setInterval(() => this.emitRealtimeSnapshot(), 5000);
+    this.broadcastInterval.unref?.();
+
     this.server.listen(this.port, () => {
       this.logger.info(`Metrics server running on port ${this.port}`);
       this.logger.info(`WebSocket enabled on http://localhost:${this.port}`);
@@ -1669,130 +1677,17 @@ class MetricsServer {
     });
   }
 
-   broadcast(event, data) {
-     if (this.io) {
-       this.io.emit(event, data);
-     }
-   }
-
-   // === SLO Metrics Recording Methods ===
-
-    /**
-     * Record poll cycle completion for freshness tracking.
-     * Call after a poll cycle finishes.
-     * @param {number} pollCycleDurationMs - Duration of the poll cycle in ms
-     * @param {number} intervalMs - Expected polling interval in ms (used for first cycle)
-     */
-    recordPollCycle(pollCycleDurationMs, intervalMs = this.metrics.pollIntervalMs) {
-      const now = Date.now();
-      const previousCompletion = this.metrics.lastPollCompletedAt ? this.metrics.lastPollCompletedAt.getTime() : null;
-      this.metrics.lastPollCompletedAt = new Date(now);
-
-      // Determine actual interval between poll completions
-      let actualIntervalMs = pollCycleDurationMs;
-      if (previousCompletion) {
-        actualIntervalMs = now - previousCompletion;
-      } else {
-        // First cycle: use configured interval as approximation
-        actualIntervalMs = intervalMs;
-      }
-
-      // Record poll interval histogram (seconds)
-      this.promPollInterval.observe(actualIntervalMs / 1000);
-
-      // SLO: Check if poll met freshness threshold (i.e., completed within expected interval)
-      if (actualIntervalMs <= this.metrics.sloThresholds.pollFreshnessMs) {
-        this.metrics.increment('pollFreshnessSloSuccess');
-      } else {
-        this.metrics.increment('pollFreshnessSloFailure');
-      }
-
-      this._computeSloRates();
-      this.broadcast('sync:metrics', this.metrics.snapshot());
+  emitRealtimeSnapshot(socket) {
+    const health = this.metrics.getHealthStatus(this.healthStaleThreshold);
+    const metrics = this.metrics.snapshot();
+    if (socket) {
+      socket.emit('sync:health', health);
+      socket.emit('sync:metrics', metrics);
+      return;
     }
-
-    /**
-     * Record task execution for timeliness SLO.
-     * Call when a task execution completes (success or failure).
-     * @param {number} taskId - The task ID
-     * @param {number} actualExecutionLedger - Ledger when execution completed
-     * @param {number} scheduledDueLedger - Ledger when task was due
-     * @param {boolean} success - Whether execution succeeded
-     */
-    recordTaskExecution({ _taskId, actualExecutionLedger, scheduledDueLedger, _success }) {
-      const latenessLedgers = Math.max(0, actualExecutionLedger - scheduledDueLedger);
-      this.promTaskLateness.observe(latenessLedgers);
-
-      // Convert to milliseconds assuming ~5s per ledger on testnet (configurable)
-      const avgLedgerTimeMs = parseInt(process.env.LEDGER_TIME_MS || '5000', 10);
-      const latenessMs = latenessLedgers * avgLedgerTimeMs;
-
-      // SLO: Check if execution met timeliness threshold
-      if (latenessMs <= this.metrics.sloThresholds.executionTimelinessMs) {
-        this.metrics.increment('executionTimelinessSloSuccess');
-      } else {
-        this.metrics.increment('executionTimelinessSloFailure');
-      }
-
-      this._computeSloRates();
-      this.broadcast('sync:metrics', this.metrics.snapshot());
-    }
-
-   /**
-    * Record retry attempt.
-    * @param {string} outcome - 'success', 'failure', or 'duplicate'
-    */
-   recordRetryAttempt(outcome) {
-     this.metrics.increment('retryAttemptsTotal', { outcome });
-   }
-
-   /**
-    * Record retry scheduling event.
-    * @param {number} delayMs - Delay before retry in milliseconds
-    */
-   recordRetryDelay(delayMs) {
-     this.promRetryDelay.observe(delayMs / 1000);
-   }
-
-   /**
-    * Record task time spent in retry queue before next attempt.
-    * @param {number} timeInQueueMs - Time spent waiting in milliseconds
-    */
-   recordRetryTimeInQueue(timeInQueueMs) {
-     this.promRetryTimeInQueue.observe(timeInQueueMs / 1000);
-   }
-
-   /**
-    * Update retry queue size gauge.
-    * @param {number} size - Current retry queue size
-    */
-   setRetryQueueSize(size) {
-     this.metrics.record('retryQueueSize', size);
-   }
-
-   /**
-    * Update oldest task age (time since last_run).
-    * @param {number} oldestAgeSeconds - Age in seconds of the oldest task
-    */
-   setOldestTaskAge(oldestAgeSeconds) {
-     this.metrics.record('oldestTaskAgeSeconds', oldestAgeSeconds);
-   }
-
-   /**
-    * Compute rolling SLO success rates.
-    * Called internally after each SLO observation.
-    */
-   _computeSloRates() {
-     const totalPoll = this.metrics.counters.pollFreshnessSloSuccess + this.metrics.counters.pollFreshnessSloFailure;
-     if (totalPoll > 0) {
-       this.metrics.record('pollFreshnessSloRate', this.metrics.counters.pollFreshnessSloSuccess / totalPoll);
-     }
-
-     const totalExec = this.metrics.counters.executionTimelinessSloSuccess + this.metrics.counters.executionTimelinessSloFailure;
-     if (totalExec > 0) {
-       this.metrics.record('executionTimelinessSloRate', this.metrics.counters.executionTimelinessSloSuccess / totalExec);
-     }
-   }
+    this.io?.emit('sync:health', health);
+    this.io?.emit('sync:metrics', metrics);
+  }
 
   handleHealth(res) {
     const status = this.metrics.getHealthStatus(this.healthStaleThreshold);
@@ -2329,6 +2224,7 @@ class MetricsServer {
 
   updateHealth(state) {
     this.metrics.updateHealth(state);
+    this.emitRealtimeSnapshot();
   }
 
   increment(key, amount) {
@@ -2373,6 +2269,7 @@ class MetricsServer {
     } else if (key === 'failoverSwitchesTotal') {
       this.promFailoverSwitches.inc(typeof amount === 'number' ? amount : 1);
     }
+    this.emitRealtimeSnapshot();
   }
 
   record(key, value) {
@@ -2398,10 +2295,12 @@ class MetricsServer {
     } else if (key === 'fraudRiskScore') {
       this.promFraudRiskScore.set(value);
     }
+    this.emitRealtimeSnapshot();
   }
 
   updateShardState(state) {
     this.metrics.updateShardState(state);
+    this.emitRealtimeSnapshot();
   }
 
   updateDbShardState(state) {
@@ -2410,6 +2309,7 @@ class MetricsServer {
 
   updateDriftState(state) {
     this.metrics.updateDriftState(state);
+    this.emitRealtimeSnapshot();
   }
 
   updateFraudState(state) {
@@ -2438,6 +2338,7 @@ class MetricsServer {
 
   updateAdminState(state) {
     this.metrics.updateAdminState(state);
+    this.emitRealtimeSnapshot();
   }
 
   updateFailoverState(state) {
@@ -2445,6 +2346,17 @@ class MetricsServer {
   }
 
   stop() {
+    if (this.broadcastInterval) {
+      clearInterval(this.broadcastInterval);
+      this.broadcastInterval = null;
+    }
+    if (this.io) {
+      this.io.close();
+      this.io = null;
+      this.server = null;
+      this.logger.info('Server stopped');
+      return;
+    }
     if (this.server) {
       this.server.close();
       this.server = null;

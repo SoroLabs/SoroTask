@@ -462,8 +462,7 @@ class TaskPoller {
         this.metricsServer.updateHealth({
           lastPollAt: new Date(),
           rpcConnected: true,
-          backlogSize: taskIds.length,
-          retryBudgetPressure: retryStats.global?.percentage || 0,
+          latestLedgerSequence: currentTimestamp,
         });
         this.metricsServer.updateDriftState({
           warning: warningDriftCount,
