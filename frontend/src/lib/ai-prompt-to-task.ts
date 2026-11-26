@@ -68,7 +68,7 @@ const EXAMPLE_PROMPTS = [
   },
 ];
 
-export class AI PromptToTaskEngine {
+export class AIPromptToTaskEngine {
   private apiKey: string;
   private model: string;
 
@@ -258,7 +258,7 @@ Rules:
   }
 }
 
-export function createPromptToTaskEngine(apiKey?: string): AI PromptToTaskEngine {
+export function createPromptToTaskEngine(apiKey?: string): AIPromptToTaskEngine {
   const key = apiKey || process.env.OPENAI_API_KEY;
   if (!key) {
     throw new Error('OpenAI API key is required');
