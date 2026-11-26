@@ -35,4 +35,50 @@ describe('GasPriceTrend', () => {
     expect(multiplier).toBeLessThanOrEqual(1.01);
     trend.maxMultiplier = originalMax;
   });
+
+  it('should fit an ARIMA model and expose multi-step forecasts', () => {
+    Array.from({ length: 12 }, (_, index) => 100 + index * 10).forEach(fee =>
+      trend.recordFee(fee),
+    );
+
+    const forecasts = trend.getMultiStepForecast();
+    const state = trend.getState();
+
+    expect(forecasts).toHaveLength(trend.forecastHorizon);
+    expect(state.arima.trained).toBe(true);
+    expect(state.arima.nextFeeForecast).toBeGreaterThan(100);
+    expect(state.arima.upperBound).toBeGreaterThanOrEqual(state.arima.nextFeeForecast);
+    expect(trend.getDynamicFeeMultiplier()).toBeGreaterThan(1);
+  });
+
+  it('should recommend delaying execution when a fee drop is forecast', () => {
+    Array.from({ length: 12 }, (_, index) => 200 - index * 10).forEach(fee =>
+      trend.recordFee(fee),
+    );
+
+    const recommendation = trend.getExecutionRecommendation();
+
+    expect(recommendation.action).toBe('delay_execution');
+    expect(recommendation.ledgerAhead).toBeGreaterThan(1);
+    expect(recommendation.savingsPercent).toBeGreaterThanOrEqual(18);
+  });
+
+  it('should refit the model as new fee samples arrive', () => {
+    Array.from({ length: 8 }, (_, index) => 100 + index * 10).forEach(fee =>
+      trend.recordFee(fee),
+    );
+    const before = trend.getMultiStepForecast(1)[0].forecast;
+    trend.recordFee(200);
+    const after = trend.getMultiStepForecast(1)[0].forecast;
+
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it('should ignore invalid fee samples', () => {
+    trend.recordFee(-100);
+    trend.recordFee('not-a-number');
+
+    expect(trend.getState().trackedSamples).toBe(0);
+    expect(trend.getState().arima.trained).toBe(false);
+  });
 });

@@ -184,3 +184,136 @@ fn emit_audit(
         (actor.clone(), target.clone(), mask, expires_at),
     );
 }
+
+// ── Explicit Caller Authentication, Expiration & Signature Verification ───────
+
+/// Returns `true` if `expires_at` is `0` (no expiration) or strictly in the future.
+pub fn is_not_expired(env: &Env, expires_at: u64) -> bool {
+    expires_at == 0 || env.ledger().timestamp() < expires_at
+}
+
+/// Returns `true` if `grant` is not expired and contains `required`.
+pub fn has_valid_permission(env: &Env, grant: &PermissionGrant, required: Permission) -> bool {
+    if !is_not_expired(env, grant.expires_at) {
+        return false;
+    }
+    for perm in grant.permissions.iter() {
+        if perm == required {
+            return true;
+        }
+    }
+    false
+}
+
+/// Enforce that `caller` has authenticated via `caller.require_auth()` and is
+/// either the configured `DataKey::AdminAddress` in instance storage or holds a
+/// non-expired `Permission::AdminAccess` grant.
+pub fn require_admin_access(env: &Env, caller: &Address) {
+    caller.require_auth();
+
+    let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
+    if let Some(admin) = admin_address {
+        if admin == *caller {
+            return;
+        }
+    }
+
+    let permission_grant: Option<PermissionGrant> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PermissionGrants(caller.clone()));
+
+    if let Some(grant) = permission_grant {
+        if has_valid_permission(env, &grant, Permission::AdminAccess) {
+            return;
+        }
+    }
+
+    soroban_sdk::panic_with_error!(env, Error::Unauthorized);
+}
+
+/// Enforce that `caller` has authenticated via `caller.require_auth()` and
+/// holds every permission in `required` via either `AdminAddress` or a
+/// non-expired `PermissionGrant`.
+pub fn require_permissions(env: &Env, caller: &Address, required: &soroban_sdk::Vec<Permission>) {
+    caller.require_auth();
+
+    let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
+    if let Some(admin) = admin_address {
+        if admin == *caller {
+            return;
+        }
+    }
+
+    let permission_grant: Option<PermissionGrant> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PermissionGrants(caller.clone()));
+
+    let grant = match permission_grant {
+        Some(g) if is_not_expired(env, g.expires_at) => g,
+        _ => soroban_sdk::panic_with_error!(env, Error::Unauthorized),
+    };
+
+    for perm in required.iter() {
+        if !has_valid_permission(env, &grant, perm) {
+            soroban_sdk::panic_with_error!(env, Error::Unauthorized);
+        }
+    }
+}
+
+/// Check whether `address` currently holds `required` via `AdminAddress`,
+/// a non-expired direct `PermissionGrant`, or a non-expired `Delegation`.
+pub fn has_active_permission(env: &Env, address: &Address, required: Permission) -> bool {
+    let admin_address: Option<Address> = env.storage().instance().get(&DataKey::AdminAddress);
+    if let Some(admin) = admin_address {
+        if admin == *address {
+            return true;
+        }
+    }
+
+    if let Some(grant) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, PermissionGrant>(&DataKey::PermissionGrants(address.clone()))
+    {
+        if has_valid_permission(env, &grant, required) {
+            return true;
+        }
+    }
+
+    if let Some(delegation) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, crate::Delegation>(&DataKey::Delegations(address.clone()))
+    {
+        if is_not_expired(env, delegation.expires_at) {
+            for perm in delegation.permissions.iter() {
+                if perm == required {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Verify an Ed25519 delegator signature over a domain-separated delegation payload
+/// binding the delegatee address and expiration timestamp.
+pub fn verify_delegation_signature(
+    env: &Env,
+    delegator_pubkey: &soroban_sdk::BytesN<32>,
+    delegatee: &Address,
+    expires_at: u64,
+    signature: &soroban_sdk::BytesN<64>,
+) {
+    use soroban_sdk::xdr::ToXdr;
+
+    let mut payload = soroban_sdk::Bytes::from_slice(env, b"SOROTASK_RBAC_DELEGATE");
+    payload.append(&delegatee.clone().to_xdr(env));
+    payload.append(&soroban_sdk::Bytes::from_slice(env, &expires_at.to_be_bytes()));
+
+    env.crypto()
+        .ed25519_verify(delegator_pubkey, &payload, signature);
+}

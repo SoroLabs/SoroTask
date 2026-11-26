@@ -5,6 +5,7 @@ import {
   buildGraphData,
   filterToNeighbourhood,
   shouldVirtualizeGraph,
+  findCyclesInGraph,
   GRAPH_VIRTUALIZE_THRESHOLD,
 } from "@/src/lib/graphUtils";
 import {
@@ -84,6 +85,11 @@ export function useTaskGraph(
     [gEdges, visibleNodeIds]
   );
 
+  const { cycleEdgeKeys, cycleNodeIds } = useMemo(
+    () => findCyclesInGraph(deps),
+    [deps]
+  );
+
   const nodes = useMemo<Node<TaskNodeData>[]>(() => {
     const positioned = layoutGraph(
       visibleNodes.map((n) => ({
@@ -105,21 +111,33 @@ export function useTaskGraph(
         data: {
           label: n.label,
           status: n.selected ? "selected" : "pending",
+          isCycle: cycleNodeIds.has(n.id),
         },
       };
     });
-  }, [visibleNodes, visibleEdges]);
+  }, [visibleNodes, visibleEdges, cycleNodeIds]);
 
   const edges = useMemo<Edge[]>(
     () =>
-      visibleEdges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280" },
-        style: { stroke: "#6b7280" },
-      })),
-    [visibleEdges]
+      visibleEdges.map((e) => {
+        const isCycleEdge =
+          cycleEdgeKeys.has(e.id) || cycleEdgeKeys.has(`${e.source}→${e.target}`);
+        return {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          animated: isCycleEdge,
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: isCycleEdge ? "#ef4444" : "#6b7280",
+          },
+          style: {
+            stroke: isCycleEdge ? "#ef4444" : "#6b7280",
+            strokeWidth: isCycleEdge ? 2.5 : 1.2,
+          },
+        };
+      }),
+    [visibleEdges, cycleEdgeKeys]
   );
 
   return {

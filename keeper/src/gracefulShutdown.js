@@ -259,7 +259,8 @@ class GracefulShutdownManager extends EventEmitter {
       await this._releaseHeldLocks();
 
       // Phase 5: Final summary
-      this._summarizeShutdown();
+      const summary = this._summarizeShutdown();
+      this.emit("shutdown:complete", summary);
 
       // Phase 6: Exit
       this.state = "exiting";
@@ -501,6 +502,7 @@ class GracefulShutdownManager extends EventEmitter {
           .map((r) => ({ name: r.name, error: r.error })),
       });
     }
+    return summary;
   }
 
   /**

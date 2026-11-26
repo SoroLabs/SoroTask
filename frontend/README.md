@@ -79,3 +79,4 @@ enabling the policy in production.
 
 Implementation and interpretation guidance lives in [docs/performance-monitoring.md](./docs/performance-monitoring.md).
 Media rendering patterns for contributors live in [docs/media-rendering.md](./docs/media-rendering.md).
+Deployment setup, post-deploy canaries, and rollback instructions live in [docs/edge-deployments.md](./docs/edge-deployments.md).

@@ -3,6 +3,7 @@ import { DashboardClient } from "./DashboardClient";
 import { StatCardSkeleton, ChartSkeleton, TableSkeleton } from "@/components/skeletons";
 import { getDashboardServerData } from "@/src/lib/rsc/server-data";
 import { DashboardWidgetGrid } from "./DashboardWidgetGrid";
+import { DashboardPortfolioAllocation } from "@/src/components/DashboardPortfolioAllocation";
 
 
 async function DashboardContent() {
@@ -42,6 +43,7 @@ export default function DashboardPage() {
       >
         <DashboardContent />
       </Suspense>
+      <DashboardPortfolioAllocation />
       <DashboardWidgetGrid />
     </main>
   );

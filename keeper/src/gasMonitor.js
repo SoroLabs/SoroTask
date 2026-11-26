@@ -346,13 +346,26 @@ class GasMonitor {
     return this.forecaster.getTaskStats(taskId);
   }
 
-  forecastTaskGas(taskId, gasBalance) {
-    return this.forecaster.forecastTaskGas(taskId, gasBalance);
+  forecastTaskGas(taskId, gasBalance, horizon = 1) {
+    return this.forecaster.forecastTaskGas(taskId, gasBalance, horizon);
+  }
+
+  getTaskExecutionPlan(taskId, horizon) {
+    return this.forecaster.getExecutionPlan(taskId, horizon);
+  }
+
+  getMultiStepForecast(horizon) {
+    return this.priceTrend.getMultiStepForecast(horizon);
+  }
+
+  getExecutionRecommendation() {
+    return this.priceTrend.getExecutionRecommendation();
   }
 
   getForecasterState() {
     return {
       priceState: this.priceTrend.getState(),
+      forecaster: this.forecaster.getState(),
     };
   }
 }

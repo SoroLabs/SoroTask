@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useWallet } from "@/app/context/WalletContext";
 import { WalletButton } from "@/app/components/WalletButton";
 import { KeeperTable, type KeeperRecord } from "@/src/components/KeeperTable";
+import { KeeperIdentityPanel } from "@/src/components/KeeperIdentityPanel";
+import { isVerifiedSocialIdentity, type VerifiedSocialIdentity } from "@/src/lib/auth/keeper-identities";
 
 const KEEPER_URL = process.env.NEXT_PUBLIC_KEEPER_URL ?? "http://localhost:3000";
 const REFRESH_INTERVAL_MS = 15_000;
@@ -47,8 +49,31 @@ function KeeperLeaderboard() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [selectedKeeper, setSelectedKeeper] = useState<KeeperRecord | null>(null);
+  const [identities, setIdentities] = useState<Record<string, VerifiedSocialIdentity[]>>({});
+  const [identityWarning, setIdentityWarning] = useState<string | null>(null);
+  const latestRequest = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+
+  const refreshIdentities = useCallback(async (records: KeeperRecord[], signal?: AbortSignal) => {
+    const addresses = [...new Set([...records.map((keeper) => keeper.address), ...(session?.address ? [session.address] : [])])]
+      .filter((address) => /^G[A-Z2-7]{55}$/.test(address));
+    const next: Record<string, VerifiedSocialIdentity[]> = {};
+    for (let offset = 0; offset < addresses.length; offset += 100) {
+      const batch = addresses.slice(offset, offset + 100);
+      const query = new URLSearchParams(batch.map((address) => ["address", address]));
+      const response = await fetch(`/api/auth/keeper-identities?${query}`, { cache: "no-store", signal });
+      if (!response.ok) throw new Error("Verified social profiles are temporarily unavailable.");
+      const data = await response.json();
+      for (const address of batch) {
+        next[address] = Array.isArray(data.identities?.[address])
+          ? data.identities[address].filter((item: unknown) => isVerifiedSocialIdentity(item, address)) : [];
+      }
+    }
+    return next;
+  }, [session?.address]);
 
   const refreshKeepers = useCallback(async (signal?: AbortSignal) => {
+    const requestId = ++latestRequest.current;
     try {
       const response = await fetch(`${KEEPER_URL.replace(/\/$/, "")}/api/keepers/leaderboard`, {
         cache: "no-store",
@@ -64,26 +89,41 @@ function KeeperLeaderboard() {
       if (!records || !records.every(isKeeperRecord)) {
         throw new Error("Keeper service returned an invalid leaderboard response.");
       }
+      if (requestId !== latestRequest.current) return;
       setKeepers(records);
       setLastUpdated(new Date());
       setError(null);
+      try {
+        const verified = await refreshIdentities(records, signal);
+        if (requestId === latestRequest.current) { setIdentities(verified); setIdentityWarning(null); }
+      } catch (cause) {
+        if (cause instanceof Error && cause.name === "AbortError") return;
+        if (requestId === latestRequest.current) { setIdentities({}); setIdentityWarning("Verified social profiles are temporarily unavailable."); }
+      }
     } catch (cause) {
       if (cause instanceof Error && cause.name === "AbortError") return;
-      setError(cause instanceof Error ? cause.message : "Failed to load keeper metrics.");
+      if (requestId === latestRequest.current) setError(cause instanceof Error ? cause.message : "Failed to load keeper metrics.");
     } finally {
-      setLoading(false);
+      if (requestId === latestRequest.current) setLoading(false);
     }
-  }, []);
+  }, [refreshIdentities]);
+
+  const refresh = useCallback(() => {
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    void refreshKeepers(controller.signal);
+  }, [refreshKeepers]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void refreshKeepers(controller.signal);
-    const interval = window.setInterval(() => void refreshKeepers(), REFRESH_INTERVAL_MS);
+    refresh();
+    const interval = window.setInterval(refresh, REFRESH_INTERVAL_MS);
     return () => {
-      controller.abort();
+      activeRequest.current?.abort();
+      latestRequest.current++;
       window.clearInterval(interval);
     };
-  }, [refreshKeepers]);
+  }, [refresh]);
 
   const handleDelegate = (keeper: KeeperRecord) => {
     if (!session) {
@@ -110,7 +150,7 @@ function KeeperLeaderboard() {
             </p>
             <button
               type="button"
-              onClick={() => void refreshKeepers()}
+              onClick={refresh}
               className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800"
             >
               Refresh
@@ -132,11 +172,14 @@ function KeeperLeaderboard() {
           </p>
         )}
 
+        <KeeperIdentityPanel address={session?.address} identities={session?.address ? identities[session.address] ?? [] : []} onChanged={refresh} />
+        {identityWarning && <p role="status" className="text-sm text-amber-300">{identityWarning}</p>}
         <KeeperTable
           keepers={keepers}
           loading={loading}
           walletAddress={session?.address}
           onDelegate={handleDelegate}
+          verifiedIdentities={identities}
         />
 
         <p className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-4 text-xs leading-relaxed text-neutral-400">

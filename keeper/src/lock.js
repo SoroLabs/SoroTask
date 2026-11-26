@@ -39,6 +39,12 @@ class LockResult {
 
 let redisClient = null;
 
+function getScopedLockKey(kind, taskId) {
+  const networkId = process.env.KEEPER_NETWORK_ID;
+  const networkScope = networkId ? `network:${networkId}:` : '';
+  return `keeper:${networkScope}lock:${kind}:${taskId}`;
+}
+
 function getRedisClient() {
   if (redisClient) return redisClient;
 
@@ -271,8 +277,8 @@ class RedlockManager {
    */
   async acquire(taskId, ttlMs = 60000) {
     const id = String(taskId);
-    const key = `keeper:lock:task:${id}`;
-    const fencingKey = `keeper:lock:fencing:${id}`;
+    const key = getScopedLockKey('task', id);
+    const fencingKey = getScopedLockKey('fencing', id);
     const token = crypto.randomBytes(16).toString('hex');
     const quorum = Math.floor(this.clients.length / 2) + 1;
 
@@ -349,7 +355,7 @@ class RedlockManager {
    */
   async release(taskId, tokenOrHandle) {
     const id = String(taskId);
-    const key = `keeper:lock:task:${id}`;
+    const key = getScopedLockKey('task', id);
     const token = typeof tokenOrHandle === 'object' && tokenOrHandle !== null
       ? (tokenOrHandle.token || String(tokenOrHandle))
       : String(tokenOrHandle);
@@ -390,7 +396,7 @@ class RedlockManager {
    */
   async extend(taskId, tokenOrHandle, ttlMs = 60000) {
     const id = String(taskId);
-    const key = `keeper:lock:task:${id}`;
+    const key = getScopedLockKey('task', id);
     const token = typeof tokenOrHandle === 'object' && tokenOrHandle !== null
       ? (tokenOrHandle.token || String(tokenOrHandle))
       : String(tokenOrHandle);
@@ -430,7 +436,7 @@ class RedlockManager {
    */
   async validateLock(taskId, tokenOrHandle) {
     const id = String(taskId);
-    const key = `keeper:lock:task:${id}`;
+    const key = getScopedLockKey('task', id);
     const token = typeof tokenOrHandle === 'object' && tokenOrHandle !== null
       ? (tokenOrHandle.token || String(tokenOrHandle))
       : String(tokenOrHandle);

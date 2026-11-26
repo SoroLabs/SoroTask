@@ -116,10 +116,13 @@ class FraudDetectionService extends EventEmitter {
     // #1464 — Real-Time Anomaly Detection Engine (Isolation Forest + State Variance + Auto-Pause)
     this.isolationThreshold = Number(options.isolationThreshold ?? 0.65);
     this.stateVarianceZThreshold = Number(options.stateVarianceZThreshold ?? 3.5);
+    this.latencySlaMs = Number(options.latencySlaMs ?? 10);
     this.isolationForest = options.isolationForest || new IsolationForestDetector({
       numTrees: options.numTrees || 25,
       sampleSize: options.sampleSize || 32,
+      cacheMaxSize: options.vectorCacheMaxSize,
     });
+    this._featureBuffer = new Float64Array(6);
     this.taskParameterBaselines = new Map();
     this.contractStateBaselines = new Map();
     this.quarantinedTasks = new Map();
@@ -694,6 +697,8 @@ class FraudDetectionService extends EventEmitter {
 
   /**
    * #1464 — Monitor task gas consumption and execution parameters against rolling baselines.
+   * Uses an incrementally maintained sorted gas array for O(1) median lookup without
+   * per-call array copying or sorting.
    *
    * @param {string|number} taskId
    * @param {object} params - { gasUsed, callDepth, argCount, payloadBytes }
@@ -706,22 +711,49 @@ class FraudDetectionService extends EventEmitter {
     const argCount = clampNonNegative(Number(params.argCount ?? (Array.isArray(params.args) ? params.args.length : 1)), 0);
     const payloadBytes = clampNonNegative(Number(params.payloadBytes ?? 64), 0);
 
-    let history = this.taskParameterBaselines.get(id);
-    if (!history) {
-      history = [];
-      this.taskParameterBaselines.set(id, history);
+    let baseline = this.taskParameterBaselines.get(id);
+    if (!baseline) {
+      baseline = { entries: [], sortedGas: [] };
+      this.taskParameterBaselines.set(id, baseline);
     }
 
-    const baselineGasValues = history.map((h) => h.gasUsed);
-    const baselineGasMedian = baselineGasValues.length > 0 ? median(baselineGasValues) : gasUsed;
+    const { entries, sortedGas } = baseline;
+    const len = sortedGas.length;
+    let baselineGasMedian = gasUsed;
+    if (len > 0) {
+      const mid = len >> 1;
+      baselineGasMedian = (len & 1) === 0
+        ? (sortedGas[mid - 1] + sortedGas[mid]) * 0.5
+        : sortedGas[mid];
+    }
     const gasRatio = baselineGasMedian > 0 ? gasUsed / baselineGasMedian : 1;
 
-    history.push({ gasUsed, callDepth, argCount, payloadBytes, timestamp: this.now() });
-    if (history.length > 50) {
-      history.shift();
+    entries.push({ gasUsed, callDepth, argCount, payloadBytes, timestamp: this.now() });
+    // Binary-insert gasUsed into sortedGas
+    let lo = 0;
+    let hi = sortedGas.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sortedGas[mid] < gasUsed) lo = mid + 1;
+      else hi = mid;
+    }
+    sortedGas.splice(lo, 0, gasUsed);
+
+    if (entries.length > 50) {
+      const removed = entries.shift();
+      let rLo = 0;
+      let rHi = sortedGas.length;
+      while (rLo < rHi) {
+        const mid = (rLo + rHi) >> 1;
+        if (sortedGas[mid] < removed.gasUsed) rLo = mid + 1;
+        else rHi = mid;
+      }
+      if (rLo < sortedGas.length && sortedGas[rLo] === removed.gasUsed) {
+        sortedGas.splice(rLo, 1);
+      }
     }
 
-    const isGasAnomaly = history.length >= 2 && gasRatio >= this.feeSpikeMultiplier;
+    const isGasAnomaly = entries.length >= 2 && gasRatio >= this.feeSpikeMultiplier;
     const isCallDepthAnomaly = callDepth > 6;
 
     return {
@@ -739,6 +771,7 @@ class FraudDetectionService extends EventEmitter {
 
   /**
    * #1464 — Detect sudden variance spikes in contract state variables.
+   * Uses O(1) rolling sum and sum-of-squares statistics per state variable.
    *
    * @param {string|number} taskId
    * @param {object} stateVars - Map of numeric contract state variables (e.g. { escrowBalance, poolReserve })
@@ -756,42 +789,52 @@ class FraudDetectionService extends EventEmitter {
     let maxRelativeDelta = 0;
     const spikedVariables = [];
 
-    for (const [varName, rawVal] of Object.entries(stateVars || {})) {
-      const val = Number(rawVal);
-      if (!Number.isFinite(val)) continue;
+    if (stateVars && typeof stateVars === 'object') {
+      const keys = Object.keys(stateVars);
+      for (let k = 0; k < keys.length; k++) {
+        const varName = keys[k];
+        const val = Number(stateVars[varName]);
+        if (!Number.isFinite(val)) continue;
 
-      let series = varHistory.get(varName);
-      if (!series) {
-        series = [];
-        varHistory.set(varName, series);
-      }
-
-      if (series.length >= 2) {
-        const mean = series.reduce((s, v) => s + v, 0) / series.length;
-        const variance = series.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / series.length;
-        const stdDev = Math.sqrt(variance);
-        const diff = Math.abs(val - mean);
-        const relDelta = Math.abs(mean) > 1e-9 ? diff / Math.abs(mean) : diff;
-        const effectiveSigma = stdDev > 1e-6 ? stdDev : Math.max(1, Math.abs(mean) * 0.05);
-        const zScore = diff / effectiveSigma;
-
-        if (zScore > maxZScore) maxZScore = zScore;
-        if (relDelta > maxRelativeDelta) maxRelativeDelta = relDelta;
-
-        if (zScore >= this.stateVarianceZThreshold && relDelta >= 0.35) {
-          spikedVariables.push({
-            variable: varName,
-            value: val,
-            baselineMean: Number(mean.toFixed(4)),
-            zScore: Number(zScore.toFixed(3)),
-            relativeDelta: Number(relDelta.toFixed(4)),
-          });
+        let series = varHistory.get(varName);
+        if (!series) {
+          series = { values: [], sum: 0, sumSq: 0 };
+          varHistory.set(varName, series);
         }
-      }
 
-      series.push(val);
-      if (series.length > 50) {
-        series.shift();
+        const n = series.values.length;
+        if (n >= 2) {
+          const mean = series.sum / n;
+          const variance = Math.max(0, (series.sumSq / n) - (mean * mean));
+          const stdDev = Math.sqrt(variance);
+          const diff = Math.abs(val - mean);
+          const absMean = Math.abs(mean);
+          const relDelta = absMean > 1e-9 ? diff / absMean : diff;
+          const effectiveSigma = stdDev > 1e-6 ? stdDev : Math.max(1, absMean * 0.05);
+          const zScore = diff / effectiveSigma;
+
+          if (zScore > maxZScore) maxZScore = zScore;
+          if (relDelta > maxRelativeDelta) maxRelativeDelta = relDelta;
+
+          if (zScore >= this.stateVarianceZThreshold && relDelta >= 0.35) {
+            spikedVariables.push({
+              variable: varName,
+              value: val,
+              baselineMean: Number(mean.toFixed(4)),
+              zScore: Number(zScore.toFixed(3)),
+              relativeDelta: Number(relDelta.toFixed(4)),
+            });
+          }
+        }
+
+        series.values.push(val);
+        series.sum += val;
+        series.sumSq += val * val;
+        if (series.values.length > 50) {
+          const oldest = series.values.shift();
+          series.sum -= oldest;
+          series.sumSq -= oldest * oldest;
+        }
       }
     }
 
@@ -831,14 +874,13 @@ class FraudDetectionService extends EventEmitter {
       (payload.marketContext?.correlatedAssetMove && flashLoanBorrowed === 0 && escrowDrainRatio < 0.25 && reentrancyDepth === 0),
     );
 
-    const featureVector = [
-      paramMetrics.gasRatio,
-      paramMetrics.callDepth,
-      Math.min(20, stateMetrics.maxZScore),
-      flashLoanBorrowed > 0 ? Math.log10(flashLoanBorrowed + 1) : 0,
-      escrowDrainRatio * 10,
-      reentrancyDepth * 3,
-    ];
+    const featureVector = this._featureBuffer;
+    featureVector[0] = paramMetrics.gasRatio;
+    featureVector[1] = paramMetrics.callDepth;
+    featureVector[2] = stateMetrics.maxZScore < 20 ? stateMetrics.maxZScore : 20;
+    featureVector[3] = flashLoanBorrowed > 0 ? Math.log10(flashLoanBorrowed + 1) : 0;
+    featureVector[4] = escrowDrainRatio * 10;
+    featureVector[5] = reentrancyDepth * 3;
 
     const rawAnomalyScore = this.isolationForest.score(featureVector);
     const adjustedAnomalyScore = isStandardVolatileMarket
@@ -916,7 +958,7 @@ class FraudDetectionService extends EventEmitter {
       isStandardVolatileMarket,
       anomalyScore: Number(adjustedAnomalyScore.toFixed(4)),
       detectionLatencyMs,
-      withinLatencySla: detectionLatencyMs < 10,
+      withinLatencySla: detectionLatencyMs < this.latencySlaMs,
       reasons,
       exploitReport,
     };
@@ -936,15 +978,27 @@ class FraudDetectionService extends EventEmitter {
 }
 
 /**
- * Lightweight, fast (< 1ms) Isolation Forest model for real-timekeeper execution
+ * Lightweight, fast (< 1ms) Isolation Forest model for real-time keeper execution
  * anomaly scoring (#1464).
+ *
+ * Uses flattened typed-array trees for iterative zero-recursion traversal,
+ * precomputed cFactor constants, and bounded quantized vector caching.
  */
 class IsolationForestDetector {
   constructor(options = {}) {
     this.numTrees = options.numTrees || 25;
     this.sampleSize = options.sampleSize || 32;
     this.maxDepth = Math.ceil(Math.log2(this.sampleSize));
+    this.cacheMaxSize = options.cacheMaxSize ?? 512;
+    this.cachePrecision = options.cachePrecision ?? 1000;
     this.trees = [];
+    this._flatTrees = [];
+    this._invNumTrees = 0;
+    this._cn = IsolationForestDetector.cFactor(this.sampleSize);
+    this._invCn = 1 / this._cn;
+    this._vectorCache = new Map();
+    this._cacheHits = 0;
+    this._cacheMisses = 0;
 
     // Seed baseline normal + standard volatile execution profiles
     const baselineProfiles = options.baselineProfiles || IsolationForestDetector.defaultBaselines();
@@ -972,13 +1026,21 @@ class IsolationForestDetector {
   fit(samples = []) {
     if (!samples.length) return;
     this.trees = [];
+    this._flatTrees = [];
+    this.clearCache();
+
     for (let t = 0; t < this.numTrees; t++) {
       const subset = [];
-      for (let i = 0; i < Math.min(this.sampleSize, samples.length); i++) {
+      const limit = Math.min(this.sampleSize, samples.length);
+      for (let i = 0; i < limit; i++) {
         subset.push(samples[(t * 7 + i * 3) % samples.length]);
       }
-      this.trees.push(this._buildTree(subset, 0, t + 1));
+      const tree = this._buildTree(subset, 0, t + 1);
+      this.trees.push(tree);
+      this._flatTrees.push(this._flattenTree(tree));
     }
+
+    this._invNumTrees = this._flatTrees.length > 0 ? 1 / this._flatTrees.length : 0;
   }
 
   _buildTree(points, depth, seed) {
@@ -1015,6 +1077,53 @@ class IsolationForestDetector {
     };
   }
 
+  _flattenTree(root) {
+    const nodes = [];
+    const flatten = (node) => {
+      const idx = nodes.length;
+      if (!node || node.external) {
+        nodes.push({
+          featureIdx: -1,
+          splitVal: 0,
+          leftIdx: -1,
+          rightIdx: -1,
+          leafPathAdd: IsolationForestDetector.cFactor(node ? node.size : 1),
+        });
+        return idx;
+      }
+      const entry = {
+        featureIdx: node.featureIdx,
+        splitVal: node.splitVal,
+        leftIdx: -1,
+        rightIdx: -1,
+        leafPathAdd: 0,
+      };
+      nodes.push(entry);
+      entry.leftIdx = flatten(node.left);
+      entry.rightIdx = flatten(node.right);
+      return idx;
+    };
+
+    flatten(root);
+    const count = nodes.length;
+    const featureIdx = new Int16Array(count);
+    const splitVal = new Float64Array(count);
+    const leftIdx = new Int32Array(count);
+    const rightIdx = new Int32Array(count);
+    const leafPathAdd = new Float64Array(count);
+
+    for (let i = 0; i < count; i++) {
+      const n = nodes[i];
+      featureIdx[i] = n.featureIdx;
+      splitVal[i] = n.splitVal;
+      leftIdx[i] = n.leftIdx;
+      rightIdx[i] = n.rightIdx;
+      leafPathAdd[i] = n.leafPathAdd;
+    }
+
+    return { featureIdx, splitVal, leftIdx, rightIdx, leafPathAdd };
+  }
+
   _pathLength(point, node, currentDepth) {
     if (!node || node.external) {
       return currentDepth + IsolationForestDetector.cFactor(node ? node.size : 1);
@@ -1026,15 +1135,87 @@ class IsolationForestDetector {
     return this._pathLength(point, node.right, currentDepth + 1);
   }
 
-  score(point) {
-    if (!this.trees.length) return 0;
-    let totalPath = 0;
-    for (let i = 0; i < this.trees.length; i++) {
-      totalPath += this._pathLength(point, this.trees[i], 0);
+  _flatPathLength(point, flatTree) {
+    let idx = 0;
+    let depth = 0;
+    const { featureIdx, splitVal, leftIdx, rightIdx, leafPathAdd } = flatTree;
+    while (true) {
+      const fIdx = featureIdx[idx];
+      if (fIdx === -1) {
+        return depth + leafPathAdd[idx];
+      }
+      const raw = point[fIdx];
+      const val = raw !== undefined ? raw : 0;
+      idx = val < splitVal[idx] ? leftIdx[idx] : rightIdx[idx];
+      depth += 1;
     }
-    const avgPath = totalPath / this.trees.length;
-    const cn = IsolationForestDetector.cFactor(this.sampleSize);
-    return Math.pow(2, -avgPath / cn);
+  }
+
+  _vectorCacheKey(point) {
+    const p = this.cachePrecision;
+    let key = '';
+    for (let i = 0; i < point.length; i++) {
+      const raw = point[i];
+      const q = Math.round((raw !== undefined ? raw : 0) * p);
+      key += i === 0 ? `${q}` : `|${q}`;
+    }
+    return key;
+  }
+
+  clearCache() {
+    this._vectorCache.clear();
+    this._cacheHits = 0;
+    this._cacheMisses = 0;
+  }
+
+  getCacheStats() {
+    return {
+      size: this._vectorCache.size,
+      maxSize: this.cacheMaxSize,
+      hits: this._cacheHits,
+      misses: this._cacheMisses,
+    };
+  }
+
+  score(point) {
+    const treeCount = this._flatTrees.length;
+    if (!treeCount) return 0;
+
+    let cacheKey = null;
+    if (this.cacheMaxSize > 0) {
+      cacheKey = this._vectorCacheKey(point);
+      const cached = this._vectorCache.get(cacheKey);
+      if (cached !== undefined) {
+        this._cacheHits += 1;
+        return cached;
+      }
+      this._cacheMisses += 1;
+    }
+
+    let totalPath = 0;
+    for (let i = 0; i < treeCount; i++) {
+      totalPath += this._flatPathLength(point, this._flatTrees[i]);
+    }
+    const avgPath = totalPath * this._invNumTrees;
+    const result = Math.pow(2, -avgPath * this._invCn);
+
+    if (cacheKey !== null) {
+      if (this._vectorCache.size >= this.cacheMaxSize) {
+        const oldestKey = this._vectorCache.keys().next().value;
+        this._vectorCache.delete(oldestKey);
+      }
+      this._vectorCache.set(cacheKey, result);
+    }
+
+    return result;
+  }
+
+  scoreBatch(points = []) {
+    const results = new Float64Array(points.length);
+    for (let i = 0; i < points.length; i++) {
+      results[i] = this.score(points[i]);
+    }
+    return results;
   }
 }
 

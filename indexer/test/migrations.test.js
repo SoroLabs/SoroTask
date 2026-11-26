@@ -49,6 +49,22 @@ test("004 migration configures TimescaleDB hypertable for executions", () => {
   assert.match(sql, /004_timescaledb_executions_hypertable/);
 });
 
+test("009 migration configures monthly execution chunks with a weekly rollback", () => {
+  const up = fs.readFileSync(
+    path.join(migrationsDir, "009_execution_monthly_partitioning.sql"),
+    "utf8",
+  );
+  const down = fs.readFileSync(
+    path.join(migrationsDir, "009_execution_monthly_partitioning.down.sql"),
+    "utf8",
+  );
+
+  assert.match(up, /set_chunk_time_interval\('executions',\s*INTERVAL '1 month'\)/i);
+  assert.match(up, /009_execution_monthly_partitioning/);
+  assert.match(down, /set_chunk_time_interval\('executions',\s*INTERVAL '7 days'\)/i);
+  assert.match(down, /009_execution_monthly_partitioning/);
+});
+
 test("migration versions are unique and ordered", () => {
   const files = fs
     .readdirSync(migrationsDir)
@@ -64,6 +80,7 @@ test("migration versions are unique and ordered", () => {
     "006_executions_created_at_and_ledger_index.sql",
     "007_keeper_dead_letter_postgres.sql",
     "008_contract_versioning.sql",
+    "009_execution_monthly_partitioning.sql",
   ]);
 
   for (const file of files) {

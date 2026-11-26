@@ -82,6 +82,32 @@ intended for moving control to a multisig, DAO executor, or timelock contract.
    - Execute the upgrade transaction.
    - Verify `get_contract_version()` and `get_upgrade_record(id)`.
 
+## Mainnet Genesis
+
+The local integration setup remains the default. To run the production genesis
+sequence, use `scripts/setup-contracts.sh mainnet-genesis` with:
+
+- `MAINNET_RPC_URL`: a Soroban RPC endpoint whose `getNetwork` response reports
+  the Stellar Mainnet passphrase.
+- `MAINNET_BOOTSTRAP_IDENTITY`: a funded Stellar CLI account identity used only
+  to deploy, initialize, and transfer authority.
+- `MAINNET_GOVERNANCE_ADDRESS`: the approved multisig account or governance
+  contract address.
+- `MAINNET_TOKEN_ID`: the production gas-token contract address.
+- `MAINNET_CONFIRMATION=DEPLOY_TO_STELLAR_MAINNET`: explicit authorization to
+  submit irreversible Mainnet transactions.
+- Optionally, `MAINNET_WASM_PATH`: a prebuilt optimized WASM file. Otherwise,
+  the script builds the release WASM with optimization enabled.
+
+The script deploys once (it does not retry ambiguous transactions), fetches the
+deployed executable and compares its SHA-256 with the local WASM, initializes
+proxy admin as the bootstrap account, transfers authority to governance, then
+checks the on-chain admin and version. A successful transfer revokes the
+bootstrap account's proxy-admin capability; it does not erase the local signing
+key. The sequence verifies the initialized gas-token address as part of the
+genesis audit. Never set the confirmation variable in unattended CI without an
+independently reviewed release and multisig-approved operational procedure.
+
 ## Security Review Notes
 
 - Upgrade authority is explicit and authenticated with `Address::require_auth`.

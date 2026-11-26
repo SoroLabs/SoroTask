@@ -8,6 +8,7 @@ See the centralized [Glossary](../GLOSSARY.md) for definitions of domain-specifi
 
 - [Prerequisites](#prerequisites)
 - [Environment Variables](#environment-variables)
+- [Multi-Network Configuration](#multi-network-configuration)
 - [RPC Load Balancer Configuration](#rpc-load-balancer-configuration)
 - [Setup Instructions](#setup-instructions)
 - [P2P Keeper Discovery](#p2p-keeper-discovery)
@@ -51,6 +52,10 @@ MAX_CONCURRENT_READS=10
 
 # Maximum number of concurrent task executions (default: 3)
 MAX_CONCURRENT_EXECUTIONS=3
+
+# Opt in to adaptive PID concurrency (default: false)
+# See docs/DYNAMIC_CONCURRENCY_GOVERNOR.md
+KEEPER_ADAPTIVE_CONCURRENCY=true
 
 # Maximum task ID to check (default: 100) - or use TASK_IDS for specific tasks
 MAX_TASK_ID=100
@@ -236,6 +241,23 @@ the registry bounty is available and the resulting fee stays below both
 Configure a finite fee cap; if a conflict cannot be safely bumped, the original
 signed transaction is submitted unchanged. HSM-backed keepers use the
 configured HSM signer for the outer fee-bump envelope.
+## Multi-Network Configuration
+
+To run Mainnet, Testnet, and Futurenet keepers under one parent daemon, copy
+[`config/networks.example.yaml`](./config/networks.example.yaml), set
+`KEEPER_CONFIG_FILE` to its path, and provide each network's referenced secret
+as an environment variable (for example, `MAINNET_KEEPER_SECRET`). The
+coordinator starts a separate worker process pool for every configured network;
+each pool receives only that profile's RPC endpoint, passphrase, contract, and
+signing key. Keep secrets in a secret manager or the process environment, never
+in the YAML file.
+
+Each network requires its own `rpcUrl`, `networkPassphrase`, and `contractId`.
+`keeperSecretEnv` names the environment variable containing that network's
+local signing key. `workerCount` can be set globally or per network. The
+coordinator assigns distinct metrics ports from the `METRICS_PORT` base and
+namespaces distributed locks, idempotency state, and realtime streams by
+network.
 
 ## RPC Load Balancer Configuration
 

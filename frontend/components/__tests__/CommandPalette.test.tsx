@@ -118,6 +118,33 @@ describe('CommandPalette opening', () => {
     fireEvent.click(backdrop);
     expect(screen.queryByRole('dialog', { name: /command palette/i })).not.toBeInTheDocument();
   });
+
+  it('restores focus to the control that opened it', async () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    render(<CommandPalette />);
+
+    open();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('combobox')));
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    trigger.remove();
+  });
+
+  it('does not capture Cmd+K while typing in an unrelated input', () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+    render(<CommandPalette />);
+
+    fireEvent.keyDown(input, { key: 'k', metaKey: true });
+
+    expect(screen.queryByRole('dialog', { name: /command palette/i })).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(input);
+    input.remove();
+  });
 });
 
 describe('CommandPalette search', () => {
@@ -174,6 +201,19 @@ describe('CommandPalette search', () => {
       target: { value: 'oracle' },
     });
     await waitFor(() => expect(optionByText('Oracle Feed')).toBeInTheDocument());
+  });
+
+  it('includes real keeper and template destinations', async () => {
+    render(<CommandPalette />);
+    open();
+
+    fireEvent.change(screen.getByPlaceholderText(/type a command/i), {
+      target: { value: 'templates' },
+    });
+    await waitFor(() => expect(optionByText('Browse Task Templates')).toBeInTheDocument());
+
+    fireEvent.keyDown(document, { key: 'Enter' });
+    expect(mockPush).toHaveBeenCalledWith('/marketplace/templates');
   });
 
   it('groups tasks under their own heading', async () => {
