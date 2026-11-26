@@ -10,6 +10,8 @@ const { createLogger } = require("./logger.js");
 const { withSpan } = require("./otel.js");
 const { createStructuredError, fromError } = require("./structuredErrors.js");
 const { getExecutionCoordinator } = require("./coordinator.js");
+const { MempoolTransactionSniffer } = require("./mempoolSniffer.js");
+const { FeeBumpProtection } = require("./mempool.js");
 
 const POLL_ATTEMPTS = 30;
 const POLL_INTERVAL_MS = 2000;
@@ -183,7 +185,7 @@ function normalizeSubmissionError(error, fallbackCode, correlationId) {
 
 async function executeTaskOnce(
   taskId,
-  { server, keypair, account, contractId, networkPassphrase: rawNetworkPassphrase, correlationId, logger: customLogger, dueTime, metricsServer, config, hsmSigner, fencingToken, lockToken, coordinator: customCoordinator },
+  { server, keypair, account, contractId, networkPassphrase: rawNetworkPassphrase, correlationId, logger: customLogger, dueTime, metricsServer, config, hsmSigner, mempoolSniffer, fencingToken, lockToken, coordinator: customCoordinator },
 ) {
   const taskLogger = customLogger || logger;
   const networkPassphrase = rawNetworkPassphrase || config?.networkPassphrase || process.env.NETWORK_PASSPHRASE;
@@ -280,6 +282,61 @@ async function executeTaskOnce(
     taskLogger.debug('Fencing token validated before sendTransaction', { taskId, fencingToken, correlationId });
   }
 
+  let transactionToSubmit = preparedTx;
+  if (config?.mempoolProtection?.enabled) {
+    if (!config.mempoolProtection.rpcUrl) {
+      taskLogger.warn('Mempool protection enabled without STELLAR_MEMPOOL_RPC_URL; submitting without fee bump.');
+    } else {
+      const sniffer = mempoolSniffer || new MempoolTransactionSniffer({
+        rpcUrl: config.mempoolProtection.rpcUrl,
+        method: config.mempoolProtection.rpcMethod,
+        intervalMs: config.mempoolProtection.scanIntervalMs,
+        timeoutMs: config.mempoolProtection.requestTimeoutMs,
+        logger: taskLogger,
+      });
+      const protection = new FeeBumpProtection({
+        sniffer,
+        feeSource: keypair,
+        signer: hsmSigner,
+        networkPassphrase,
+        maxFeeStroops: config.mempoolProtection.maxFeeStroops,
+        minProfitStroops: config.mempoolProtection.minProfitStroops,
+        maxBumpMultiplier: config.mempoolProtection.maxBumpMultiplier,
+        logger: taskLogger,
+      });
+      let protectedTransaction;
+      try {
+        protectedTransaction = await protection.protect(preparedTx, {
+          bountyStroops: config.bountyStroops,
+          contractId,
+          taskId,
+        });
+      } catch (error) {
+        taskLogger.warn('Mempool fee-bump protection failed; submitting the signed transaction unchanged.', {
+          taskId,
+          error: error.message,
+          correlationId,
+        });
+        protectedTransaction = { transaction: preparedTx, bumped: false, reason: 'protection-error' };
+      }
+      transactionToSubmit = protectedTransaction.transaction;
+      if (protectedTransaction.bumped) {
+        taskLogger.info('Protected keeper transaction with a capped fee bump', {
+          taskId,
+          conflicts: protectedTransaction.conflicts,
+          totalFeeStroops: protectedTransaction.totalFeeStroops,
+          correlationId,
+        });
+      } else {
+        taskLogger.info('Submitting keeper transaction without a fee bump', {
+          taskId,
+          reason: protectedTransaction.reason,
+          correlationId,
+        });
+      }
+    }
+  }
+
   let sendResult;
   try {
     taskLogger.debug("Submitting transaction", { taskId, correlationId });
@@ -293,7 +350,7 @@ async function executeTaskOnce(
     // the indexer indexes by txHash, closing the loop.
     sendResult = await withSpan(
       "soroban.send_transaction",
-      () => server.sendTransaction(preparedTx),
+      () => server.sendTransaction(transactionToSubmit),
       { task_id: taskId.toString(), correlation_id: correlationId ?? "" },
     );
   } catch (error) {
@@ -383,7 +440,7 @@ async function executeTaskOnce(
  */
 async function executeTask(
   taskId,
-  { server, keypair, account, contractId, networkPassphrase: rawNetworkPassphrase, correlationId, dueTime, metricsServer, config, hsmSigner },
+  { server, keypair, account, contractId, networkPassphrase: rawNetworkPassphrase, correlationId, dueTime, metricsServer, config, hsmSigner, mempoolSniffer },
 ) {
   /** @type {{taskId, txHash: string|null, status: string, feePaid: number, error: string|null, ledger: number|null, closeTime: number|null}} */
   const taskLogger = correlationId ? logger.childWithTrace(correlationId) : logger;
@@ -413,6 +470,7 @@ async function executeTask(
       metricsServer,
       config,
       hsmSigner,
+      mempoolSniffer,
     });
     result.txHash = executionResult.txHash;
     result.status = executionResult.status;
