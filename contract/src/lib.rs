@@ -37,6 +37,8 @@ pub use merkle_state_channel::{
     challenge_unilateral_exit, submit_merkle_exit_claim, withdraw_merkle_exit,
     apply_timeout_penalty, get_merkle_channel_state, get_channel_substate,
     get_merkle_exit_claim, MERKLE_CHALLENGE_WINDOW_SECONDS,
+    MerkleChallengeConfig, MerkleChallengeStatus, MerkleChallengeTurn,
+    MerkleChallenge, MerkleStateStep,
 };
 pub use protocol_insurance::{
     ProtocolInsuranceClaim, UnderwriterStake, RiskTranche, InsurancePoolStats,
@@ -224,6 +226,21 @@ pub enum Error {
     ChannelNotClosing = 816,
     InvalidChannelParticipants = 817,
     ChannelNotClosed = 818,
+    MerkleChallengeConfigInvalid = 836,
+    MerkleCommitmentNotFound = 837,
+    MerkleCommitmentAlreadyExists = 838,
+    MerkleChallengeWindowActive = 839,
+    MerkleChallengeWindowClosed = 840,
+    MerkleChallengeOutOfTurn = 841,
+    MerkleChallengeInvalidState = 842,
+    MerkleChallengeInvalidRange = 843,
+    MerkleChallengeInvalidProof = 844,
+    MerkleChallengeBondTooLow = 845,
+    MerkleChallengeAlreadyResolved = 846,
+    MerkleChallengeNotChallenged = 847,
+    MerkleChallengeRoundTimeoutActive = 848,
+    MerkleChallengeOwnCommit = 849,
+    MerkleChallengeInvalidStepCount = 850,
     // Governance errors (SC-PROD-37)
     GovernanceProposalNotFound = 820,
     GovernanceProposalNotActive = 821,
@@ -1507,6 +1524,8 @@ pub enum DataKey {
     MerkleExitClaim(u64, Address),
     /// Timeout penalty record
     TimeoutPenalty(u64, Address),
+    MerkleChallengeConfig,
+    MerkleChallenge(u64),
     // ========== SC-PROD-40: Protocol Insurance Fund ==========
     /// Protocol insurance claim (claim_id -> claim)
     ProtocolInsuranceClaim(u64),
@@ -10552,6 +10571,37 @@ impl SoroTaskContract {
         state_hash: BytesN<32>,
     ) -> Bytes {
         state_channel::receipt_payload(&env, channel_id, nonce, &state_hash)
+    }
+
+    pub fn set_merkle_challenge_config(env: Env, config: MerkleChallengeConfig) {
+        merkle_state_channel::set_merkle_challenge_config(&env, config);
+    }
+    pub fn get_merkle_challenge_config(env: Env) -> MerkleChallengeConfig {
+        merkle_state_channel::get_merkle_challenge_config(&env)
+    }
+    pub fn get_merkle_challenge(env: Env, channel_id: u64) -> Option<MerkleChallenge> {
+        merkle_state_channel::get_merkle_challenge(&env, channel_id)
+    }
+    pub fn commit_merkle_state(env: Env, channel_id: u64, submitter: Address, root: BytesN<32>, steps: u64, bond: i128) {
+        merkle_state_channel::commit_merkle_state(&env, channel_id, &submitter, root, steps, bond);
+    }
+    pub fn challenge_merkle_commit(env: Env, channel_id: u64, challenger: Address, bond: i128) {
+        merkle_state_channel::challenge_merkle_commit(&env, channel_id, &challenger, bond);
+    }
+    pub fn submit_merkle_midpoint(env: Env, channel_id: u64, submitter: Address, midpoint: BytesN<32>) {
+        merkle_state_channel::submit_merkle_midpoint(&env, channel_id, &submitter, midpoint);
+    }
+    pub fn respond_merkle_bisection(env: Env, channel_id: u64, challenger: Address, left: bool) {
+        merkle_state_channel::respond_merkle_bisection(&env, channel_id, &challenger, left);
+    }
+    pub fn finalize_merkle_commit(env: Env, channel_id: u64) {
+        merkle_state_channel::finalize_merkle_commit(&env, channel_id);
+    }
+    pub fn resolve_merkle_timeout(env: Env, channel_id: u64) {
+        merkle_state_channel::resolve_merkle_timeout(&env, channel_id);
+    }
+    pub fn execute_merkle_single_step(env: Env, channel_id: u64, step: MerkleStateStep, proof: MerkleProof, pre_root: BytesN<32>, post_claim: BytesN<32>) {
+        merkle_state_channel::execute_merkle_single_step(&env, channel_id, step, proof, pre_root, post_claim);
     }
 
     // ============================================================================
