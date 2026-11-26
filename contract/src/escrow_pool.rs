@@ -627,6 +627,150 @@ pub fn emergency_withdraw(
 }
 
 // =============================================================================
+// SC-FINAL-15: Keeper Bonded Stake Ledger & Slashed Stake Distribution
+// =============================================================================
+
+/// Result of deterministic slashed stake distribution between insurance vault / burn and whistleblower.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeeperSlashingSplit {
+    pub insurance_vault_amount: i128,
+    pub whistleblower_bounty: i128,
+    pub burned_amount: i128,
+}
+
+/// Returns total active bonded stakes across all registered keepers.
+pub fn get_total_active_keeper_bonds(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalActiveKeeperBonds)
+        .unwrap_or(0)
+}
+
+/// Returns total slashed stake burned/locked into the insurance vault.
+pub fn get_total_slashed_burned(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalSlashedBurned)
+        .unwrap_or(0)
+}
+
+/// Records an increase in total active keeper bonded stakes.
+pub fn record_keeper_bond_deposit(env: &Env, amount: i128) {
+    if amount <= 0 {
+        return;
+    }
+    let current = get_total_active_keeper_bonds(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalActiveKeeperBonds, &current.saturating_add(amount));
+}
+
+/// Records a decrease in total active keeper bonded stakes.
+pub fn record_keeper_bond_release(env: &Env, amount: i128) {
+    if amount <= 0 {
+        return;
+    }
+    let current = get_total_active_keeper_bonds(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalActiveKeeperBonds, &current.saturating_sub(amount));
+}
+
+/// Strictly enforces that a keeper's active bonded balance meets the minimum required bond.
+pub fn enforce_bonded_balance_constraint(env: &Env, active_bond: i128, min_required_bond: i128) {
+    if active_bond < min_required_bond || active_bond <= 0 {
+        panic_with_error!(env, Error::KeeperBondInsufficient);
+    }
+}
+
+/// Deterministically distributes slashed keeper stake between the protocol insurance vault
+/// (with optional burn accounting for double-execution offenses) and the whistleblower bounty.
+pub fn distribute_slashed_stake(
+    env: &Env,
+    slashed_amount: i128,
+    whistleblower: &Address,
+    whistleblower_bps: u32,
+    burn_insurance_share: bool,
+) -> KeeperSlashingSplit {
+    if slashed_amount <= 0 {
+        return KeeperSlashingSplit {
+            insurance_vault_amount: 0,
+            whistleblower_bounty: 0,
+            burned_amount: 0,
+        };
+    }
+
+    let capped_bps = whistleblower_bps.min(10_000) as i128;
+    let whistleblower_bounty = slashed_amount.saturating_mul(capped_bps) / 10_000;
+    let insurance_vault_amount = slashed_amount.saturating_sub(whistleblower_bounty);
+    let burned_amount = if burn_insurance_share {
+        insurance_vault_amount
+    } else {
+        0
+    };
+
+    // Reduce active bonded stake totals
+    record_keeper_bond_release(env, slashed_amount);
+    let total_stakes: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TotalKeeperStakes)
+        .unwrap_or(0);
+    env.storage().instance().set(
+        &DataKey::TotalKeeperStakes,
+        &total_stakes.saturating_sub(slashed_amount),
+    );
+
+    // Route insurance share into the funded insurance vault
+    if insurance_vault_amount > 0 {
+        crate::insurance::record_premium(env, insurance_vault_amount);
+    }
+
+    // Track burned stake for double-execution slashing
+    if burned_amount > 0 {
+        let total_burned = get_total_slashed_burned(env);
+        env.storage().instance().set(
+            &DataKey::TotalSlashedBurned,
+            &total_burned.saturating_add(burned_amount),
+        );
+    }
+
+    // Pay whistleblower bounty from contract escrow if token is configured
+    if whistleblower_bounty > 0 {
+        if let Some(token_address) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Token)
+        {
+            let token_client = soroban_sdk::token::Client::new(env, &token_address);
+            token_client.transfer(
+                &env.current_contract_address(),
+                whistleblower,
+                &whistleblower_bounty,
+            );
+        }
+    }
+
+    env.events().publish(
+        (Symbol::new(env, "SlashedStakeDistributed"),),
+        (
+            whistleblower.clone(),
+            slashed_amount,
+            insurance_vault_amount,
+            whistleblower_bounty,
+            burned_amount,
+        ),
+    );
+
+    KeeperSlashingSplit {
+        insurance_vault_amount,
+        whistleblower_bounty,
+        burned_amount,
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
