@@ -1,6 +1,13 @@
 "use client";
 
-import React, { useState, useMemo, useCallback } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { formatStakingNumber } from "@/app/tokenomics/lib/stakingVaultMath";
 
 export type ClaimableItem = {
   id: string;
@@ -16,6 +23,14 @@ export type RewardClaimModalProps = {
   isOpen: boolean;
   onClose: () => void;
   onClaimSuccess?: (claimedTotal: number, txHash: string) => void;
+  /** 1-click compound callback: re-stake claimable rewards onto the vault. */
+  onCompound?: () => void | Promise<void>;
+  /** Projected compounded stake after the 1-click compound. */
+  compoundProjectionXlm?: number;
+  /** Simulated claim transaction latency (ms). */
+  claimDelayMs?: number;
+  /** Async claim simulation; defaults to a delayed promise. Injectable for tests/integrations. */
+  simulateBatchClaim?: () => Promise<void>;
 };
 
 // Canvas-free lightweight SVG confetti particle burst
@@ -66,6 +81,10 @@ export function RewardClaimModal({
   isOpen,
   onClose,
   onClaimSuccess,
+  onCompound,
+  compoundProjectionXlm,
+  claimDelayMs = 1500,
+  simulateBatchClaim,
 }: RewardClaimModalProps) {
   const [items, setItems] = useState<ClaimableItem[]>([
     {
@@ -121,6 +140,28 @@ export function RewardClaimModal({
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [claimCompleted, setClaimCompleted] = useState<boolean>(false);
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
+  const [claimError, setClaimError] = useState<string | null>(null);
+  const [isCompounding, setIsCompounding] = useState<boolean>(false);
+  const [compoundCompleted, setCompoundCompleted] = useState<boolean>(false);
+  const [lastCompoundTxHash, setLastCompoundTxHash] = useState<string | null>(
+    null,
+  );
+  const [compoundError, setCompoundError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  // Escape-key and focus management while the modal is open.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    dialogRef.current?.focus();
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
 
   const pendingItems = useMemo(
     () => items.filter((it) => it.status === "pending"),
@@ -133,28 +174,9 @@ export function RewardClaimModal({
       .reduce((acc, curr) => acc + curr.amountXlm, 0);
   }, [items, selectedIds]);
 
-  const keeperRewardsTotal = useMemo(
-    () =>
-      items
-        .filter((it) => it.type === "keeper_reward" && it.status === "pending")
-        .reduce((acc, c) => acc + c.amountXlm, 0),
-    [items],
-  );
-
-  const gasRefundsTotal = useMemo(
-    () =>
-      items
-        .filter((it) => it.type === "gas_refund" && it.status === "pending")
-        .reduce((acc, c) => acc + c.amountXlm, 0),
-    [items],
-  );
-
-  const stakingYieldTotal = useMemo(
-    () =>
-      items
-        .filter((it) => it.type === "staking_yield" && it.status === "pending")
-        .reduce((acc, c) => acc + c.amountXlm, 0),
-    [items],
+  const compoundProjection = useMemo(
+    () => formatStakingNumber(compoundProjectionXlm ?? 0),
+    [compoundProjectionXlm],
   );
 
   const toggleSelectAll = () => {
@@ -173,13 +195,18 @@ export function RewardClaimModal({
     }
   };
 
+  const defaultSimulateClaim = useCallback(async () => {
+    // Simulate atomic multi-contract batch claim transaction
+    await new Promise((resolve) => setTimeout(resolve, claimDelayMs));
+  }, [claimDelayMs]);
+
   const handleBatchClaim = useCallback(async () => {
     if (selectedTotal <= 0) return;
     setIsSubmitting(true);
+    setClaimError(null);
 
     try {
-      // Simulate atomic multi-contract batch claim transaction
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await (simulateBatchClaim ?? defaultSimulateClaim)();
       const simulatedTxHash = `tx_batch_claim_${Date.now().toString(16)}_99b7f`;
 
       setItems((prev) =>
@@ -191,22 +218,61 @@ export function RewardClaimModal({
       setLastTxHash(simulatedTxHash);
       setClaimCompleted(true);
       onClaimSuccess?.(selectedTotal, simulatedTxHash);
+    } catch (error) {
+      setClaimError(
+        error instanceof Error
+          ? error.message
+          : "Batch claim transaction failed.",
+      );
     } finally {
       setIsSubmitting(false);
     }
-  }, [selectedTotal, selectedIds, onClaimSuccess]);
+  }, [
+    selectedTotal,
+    selectedIds,
+    onClaimSuccess,
+    simulateBatchClaim,
+    defaultSimulateClaim,
+  ]);
+
+  const handleCompound = useCallback(async () => {
+    if (isCompounding) return;
+    setIsCompounding(true);
+    setCompoundError(null);
+
+    try {
+      await onCompound?.();
+      setCompoundCompleted(true);
+      setLastCompoundTxHash(`tx_compound_${Date.now().toString(16)}_c0mp0und`);
+    } catch (error) {
+      setCompoundError(
+        error instanceof Error ? error.message : "Compound transaction failed.",
+      );
+    } finally {
+      setIsCompounding(false);
+    }
+  }, [isCompounding, onCompound]);
 
   if (!isOpen) return null;
 
+  const errorMessage = claimError ?? compoundError;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-      <div className="relative w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 p-6 text-slate-100 shadow-2xl">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reward-claim-modal-title"
+        tabIndex={-1}
+        className="relative w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 p-6 text-slate-100 shadow-2xl outline-none"
+      >
         {claimCompleted && <ConfettiCelebration />}
 
         {/* Modal Header */}
         <div className="flex items-center justify-between border-b border-slate-800 pb-4">
           <div>
-            <h2 className="text-xl font-bold">
+            <h2 id="reward-claim-modal-title" className="text-xl font-bold">
               Reward & Gas Refund Claims Dashboard
             </h2>
             <p className="text-xs text-slate-400">
@@ -224,13 +290,21 @@ export function RewardClaimModal({
         </div>
 
         {/* Aggregate Balances Cards */}
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <div className="mt-4 grid gap-3 sm:grid-cols-4">
           <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-3.5">
             <span className="text-[11px] font-semibold text-blue-300 block">
               Keeper Rewards
             </span>
             <span className="text-lg font-bold font-mono text-white">
-              {keeperRewardsTotal.toFixed(2)} XLM
+              {formatStakingNumber(
+                items
+                  .filter(
+                    (it) =>
+                      it.type === "keeper_reward" && it.status === "pending",
+                  )
+                  .reduce((acc, c) => acc + c.amountXlm, 0),
+              )}{" "}
+              XLM
             </span>
           </div>
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5">
@@ -238,7 +312,14 @@ export function RewardClaimModal({
               Gas Refunds
             </span>
             <span className="text-lg font-bold font-mono text-white">
-              {gasRefundsTotal.toFixed(2)} XLM
+              {formatStakingNumber(
+                items
+                  .filter(
+                    (it) => it.type === "gas_refund" && it.status === "pending",
+                  )
+                  .reduce((acc, c) => acc + c.amountXlm, 0),
+              )}{" "}
+              XLM
             </span>
           </div>
           <div className="rounded-xl border border-purple-500/30 bg-purple-500/10 p-3.5">
@@ -246,10 +327,39 @@ export function RewardClaimModal({
               Staking Accrual
             </span>
             <span className="text-lg font-bold font-mono text-white">
-              {stakingYieldTotal.toFixed(2)} XLM
+              {formatStakingNumber(
+                items
+                  .filter(
+                    (it) =>
+                      it.type === "staking_yield" && it.status === "pending",
+                  )
+                  .reduce((acc, c) => acc + c.amountXlm, 0),
+              )}{" "}
+              XLM
+            </span>
+          </div>
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5">
+            <span className="text-[11px] font-semibold text-amber-300 block">
+              Projected Compounded Stake
+            </span>
+            <span className="text-lg font-bold font-mono text-white">
+              {compoundProjection} XLM
+            </span>
+            <span className="text-[10px] text-amber-200 block">
+              Staked + claimable (1-click compound)
             </span>
           </div>
         </div>
+
+        {/* Error banner */}
+        {errorMessage && (
+          <div
+            role="alert"
+            className="mt-4 rounded-xl border border-red-500/40 bg-red-500/15 p-3 text-xs text-red-300"
+          >
+            {errorMessage}
+          </div>
+        )}
 
         {/* Claim Success Banner with Confetti notice */}
         {claimCompleted && lastTxHash && (
@@ -276,7 +386,7 @@ export function RewardClaimModal({
             <button
               type="button"
               onClick={toggleSelectAll}
-              className="text-blue-400 hover:underline"
+              className="rounded-lg px-2 py-1 text-blue-400 hover:bg-slate-800 hover:underline"
             >
               {selectedIds.length === pendingItems.length
                 ? "Deselect All"
@@ -299,6 +409,7 @@ export function RewardClaimModal({
                   <div className="flex items-center gap-3">
                     <input
                       type="checkbox"
+                      aria-label={`Claim ${item.taskId}`}
                       checked={isSelected && item.status === "pending"}
                       disabled={item.status === "claimed"}
                       onChange={() => toggleSelect(item.id)}
@@ -318,7 +429,7 @@ export function RewardClaimModal({
 
                   <div className="text-right">
                     <span className="font-mono font-bold text-slate-100 block">
-                      +{item.amountXlm.toFixed(2)} XLM
+                      +{formatStakingNumber(item.amountXlm)} XLM
                     </span>
                     <span
                       className={`text-[10px] capitalize ${
@@ -342,16 +453,24 @@ export function RewardClaimModal({
           </div>
         </div>
 
+        {/* Compound completed banner */}
+        {compoundCompleted && lastCompoundTxHash && (
+          <div className="mt-4 rounded-xl border border-purple-500/40 bg-purple-500/15 p-3 text-xs text-purple-200">
+            Compound confirmed — claimable rewards re-staked. Tx:{" "}
+            {lastCompoundTxHash}
+          </div>
+        )}
+
         {/* Modal Actions */}
         <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-800 pt-4">
           <div className="text-xs text-slate-400">
             Total Selected:{" "}
             <span className="font-mono font-bold text-emerald-400 text-sm">
-              {selectedTotal.toFixed(2)} XLM
+              {formatStakingNumber(selectedTotal)} XLM
             </span>
           </div>
 
-          <div className="flex gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={onClose}
@@ -369,9 +488,18 @@ export function RewardClaimModal({
               >
                 {isSubmitting
                   ? "Executing Batch Claim..."
-                  : `Claim ${selectedTotal.toFixed(2)} XLM`}
+                  : `Claim ${formatStakingNumber(selectedTotal)} XLM`}
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={handleCompound}
+              disabled={isCompounding || onCompound === undefined}
+              className="rounded-xl border border-purple-500/50 bg-purple-500/10 px-5 py-2 text-xs font-semibold text-purple-200 hover:bg-purple-500/20 disabled:opacity-50"
+            >
+              {isCompounding ? "Compounding..." : "1-Click Compound"}
+            </button>
           </div>
         </div>
       </div>
