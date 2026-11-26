@@ -10,7 +10,13 @@ function buildSecurityStack(opts = {}) {
   const audit = new AuditLog({ filePath: opts.auditFile });
   const obs = new Observability();
   const hsm = opts.hsm || new MockHSMProvider({ logger });
-  const keyManager = new KeyManager({ hsm, auditLogger: audit, storageDir: opts.storageDir });
+  const keyManager = new KeyManager({
+    hsm,
+    auditLogger: audit,
+    storageDir: opts.storageDir,
+    kmsSigners: opts.kmsSigners,
+    logger,
+  });
   const permissions = new PermissionsEngine({ auditLogger: audit });
   const signing = new SigningService({ keyManager, permissions, audit, metrics: obs, logger });
 
