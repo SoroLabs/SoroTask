@@ -10,19 +10,23 @@
 
 const S3_BUCKET = process.env.S3_COLD_STORAGE_BUCKET || "ignition-cold-storage";
 
-/** Queries archived events for one contract across all S3 Parquet partitions. */
-async function queryArchivedEvents(contractId, limit = 100) {
+async function createS3QueryDatabase() {
   const { Database } = require("duckdb-async");
   const db = await Database.create(":memory:");
-  try {
-    await db.run("INSTALL httpfs;");
-    await db.run("LOAD httpfs;");
-    await db.run(`SET s3_region='${process.env.AWS_REGION || "us-east-1"}';`);
-    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-      await db.run(`SET s3_access_key_id='${process.env.AWS_ACCESS_KEY_ID}';`);
-      await db.run(`SET s3_secret_access_key='${process.env.AWS_SECRET_ACCESS_KEY}';`);
-    }
+  await db.run("INSTALL httpfs;");
+  await db.run("LOAD httpfs;");
+  await db.run(`SET s3_region='${process.env.AWS_REGION || "us-east-1"}';`);
+  if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+    await db.run(`SET s3_access_key_id='${process.env.AWS_ACCESS_KEY_ID}';`);
+    await db.run(`SET s3_secret_access_key='${process.env.AWS_SECRET_ACCESS_KEY}';`);
+  }
+  return db;
+}
 
+/** Queries archived events for one contract across all S3 Parquet partitions. */
+async function queryArchivedEvents(contractId, limit = 100) {
+  const db = await createS3QueryDatabase();
+  try {
     const glob = `s3://${S3_BUCKET}/events/*/*/*.parquet`;
     return await db.all(
       `SELECT id, ledger_sequence, contract_id, event_name, task_id, data_json, processed_at
@@ -37,4 +41,42 @@ async function queryArchivedEvents(contractId, limit = 100) {
   }
 }
 
-module.exports = { queryArchivedEvents };
+/**
+ * Queries archived executions for one task. Supplying year and/or month
+ * narrows the S3 glob to the matching Hive-style partitions.
+ */
+async function queryArchivedExecutions(taskId, limit = 100, { year, month } = {}) {
+  const taskIdText = String(taskId);
+  if (!/^\d+$/.test(taskIdText)) {
+    throw new TypeError("taskId must be a non-negative integer");
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    throw new RangeError("limit must be an integer between 1 and 1000");
+  }
+  if (year !== undefined && (!Number.isInteger(year) || year < 1970 || year > 9999)) {
+    throw new RangeError("year must be an integer between 1970 and 9999");
+  }
+  if (month !== undefined && (!Number.isInteger(month) || month < 1 || month > 12)) {
+    throw new RangeError("month must be an integer between 1 and 12");
+  }
+
+  const yearPartition = year === undefined ? "*" : String(year);
+  const monthPartition = month === undefined ? "*" : String(month).padStart(2, "0");
+  const glob = `s3://${S3_BUCKET}/executions/year=${yearPartition}/month=${monthPartition}/*.parquet`;
+  const db = await createS3QueryDatabase();
+  try {
+    return await db.all(
+      `SELECT id, task_id, keeper_address, tx_hash, status, fee_paid,
+              ledger_sequence, error_message, executed_at, created_at
+       FROM read_parquet(?, hive_partitioning = true)
+       WHERE task_id = CAST(? AS BIGINT)
+       ORDER BY created_at DESC
+       LIMIT ?`,
+      [glob, taskIdText, limit],
+    );
+  } finally {
+    await db.close();
+  }
+}
+
+module.exports = { queryArchivedEvents, queryArchivedExecutions };

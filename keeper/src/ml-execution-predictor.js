@@ -373,6 +373,51 @@ class TaskReadinessPredictor {
   }
 
   /**
+   * Benchmark inference latency using high-resolution performance counters.
+   *
+   * Runs `warmupRuns` iterations first to allow JIT optimisation to settle,
+   * then collects `runs` timed samples with process.hrtime.bigint() for
+   * nanosecond precision. Returns median, p95, and max latency in milliseconds
+   * so callers can assert against percentile thresholds rather than the raw
+   * maximum, eliminating flakiness from isolated GC pauses or OS scheduler
+   * preemptions in CI environments.
+   *
+   * @param {object} taskConfig     – task config passed to predictReadiness
+   * @param {object} ledgerInfo     – ledger info passed to predictReadiness
+   * @param {number} [runs=100]     – number of timed samples to collect
+   * @param {number} [warmupRuns=50] – warm-up iterations before measurement
+   * @returns {{ medianMs: number, p95Ms: number, maxMs: number, samples: number[] }}
+   */
+  benchmarkInferenceLatency(taskConfig, ledgerInfo = {}, runs = 100, warmupRuns = 50) {
+    // Warm-up: allow V8 to JIT-compile the hot path before we measure.
+    for (let i = 0; i < warmupRuns; i++) {
+      this.predictReadiness(taskConfig, ledgerInfo);
+    }
+
+    const latenciesNs = [];
+    for (let i = 0; i < runs; i++) {
+      const t0 = process.hrtime.bigint();
+      this.predictReadiness(taskConfig, ledgerInfo);
+      const t1 = process.hrtime.bigint();
+      latenciesNs.push(Number(t1 - t0));
+    }
+
+    latenciesNs.sort((a, b) => a - b);
+
+    const toMs = (ns) => ns / 1e6;
+    const medianNs = latenciesNs[Math.floor(latenciesNs.length * 0.5)];
+    const p95Ns = latenciesNs[Math.floor(latenciesNs.length * 0.95)];
+    const maxNs = latenciesNs[latenciesNs.length - 1];
+
+    return {
+      medianMs: toMs(medianNs),
+      p95Ms: toMs(p95Ns),
+      maxMs: toMs(maxNs),
+      samples: latenciesNs.map(toMs),
+    };
+  }
+
+  /**
    * Safety guard enforcing ZERO invalid early transaction submissions.
    */
   verifyReadinessGuards(prediction, taskConfig, currentTimestamp, currentLedger) {

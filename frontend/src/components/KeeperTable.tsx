@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { KeeperSocialBadges } from "./KeeperSocialBadges";
+import type { VerifiedSocialIdentity } from "@/src/lib/auth/keeper-identities";
 
 export type KeeperTier = "bronze" | "silver" | "gold" | "platinum";
 
@@ -36,6 +38,7 @@ interface KeeperTableProps {
   loading?: boolean;
   walletAddress?: string;
   onDelegate?: (keeper: KeeperRecord) => void;
+  verifiedIdentities?: Record<string, VerifiedSocialIdentity[]>;
 }
 
 const TIERS: KeeperTier[] = ["bronze", "silver", "gold", "platinum"];
@@ -53,6 +56,7 @@ export function KeeperTable({
   loading = false,
   walletAddress,
   onDelegate,
+  verifiedIdentities = {},
 }: KeeperTableProps) {
   const [tierFilter, setTierFilter] = useState<KeeperTier | "all">("all");
   const [maxLatency, setMaxLatency] = useState("");
@@ -163,6 +167,7 @@ export function KeeperTable({
                     <td className="px-4 py-4">
                       <span className="block font-medium text-neutral-100">{keeper.id}</span>
                       <span className="mt-1 block font-mono text-xs text-neutral-500">{keeper.address}</span>
+                      <KeeperSocialBadges address={keeper.address} identities={verifiedIdentities[keeper.address]} />
                       <span className="mt-1 block text-xs text-neutral-400">{numberFormat.format(successRate)}% successful</span>
                     </td>
                     <td className="px-4 py-4">

@@ -1,10 +1,8 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useStellarWallet } from '@/context/StellarWalletContext';
-import { simulateTaskCall, formatXlm } from '@/src/lib/soroban/task-simulation';
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useStellarWallet } from "@/context/StellarWalletContext";
+import { simulateTaskCall, formatXlm } from "@/src/lib/soroban/task-simulation";
 import {
   TaskWizardFormData,
   WizardStep,
@@ -15,14 +13,9 @@ import { WalletButton } from "@/app/components/WalletButton";
 import { VoiceAssistant } from "@/src/components/VoiceAssistant";
 
 const INITIAL_FORM_DATA: TaskWizardFormData = {
-  targetContractId: '',
-  functionName: '',
-  functionArgs: '[]',
-  cronInterval: '0 * * * *',
-  gasDeposit: '10',
   targetContractId: "",
   functionName: "",
-  functionArgs: "{}",
+  functionArgs: "[]",
   cronInterval: "0 * * * *",
   gasDeposit: "10",
 };
@@ -34,16 +27,44 @@ export default function CreateTaskWizardPage() {
     useState<TaskWizardFormData>(INITIAL_FORM_DATA);
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
   const [simResult, setSimResult] = useState<SimulationResult | null>(null);
+  const [voiceAppliedNotice, setVoiceAppliedNotice] = useState<string | null>(
+    null,
+  );
   const simulationSequence = useRef(0);
-  const sorobanNetwork = network === 'PUBLIC' ? 'mainnet' : 'testnet';
+  const sorobanNetwork = network === "PUBLIC" ? "mainnet" : "testnet";
 
   const updateFormData = (field: keyof TaskWizardFormData, value: string) => {
-    if (field === 'targetContractId' || field === 'functionName' || field === 'functionArgs') {
+    if (
+      field === "targetContractId" ||
+      field === "functionName" ||
+      field === "functionArgs"
+    ) {
       simulationSequence.current += 1;
       setSimResult(null);
     }
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
+
+  const handleApplyVoiceIntent = useCallback(
+    (intent: Partial<TaskWizardFormData>) => {
+      simulationSequence.current += 1;
+      setSimResult(null);
+      setFormData((prev) => ({
+        ...prev,
+        ...(intent.targetContractId
+          ? { targetContractId: intent.targetContractId }
+          : {}),
+        ...(intent.functionName ? { functionName: intent.functionName } : {}),
+        ...(intent.functionArgs ? { functionArgs: intent.functionArgs } : {}),
+        ...(intent.cronInterval ? { cronInterval: intent.cronInterval } : {}),
+        ...(intent.gasDeposit ? { gasDeposit: intent.gasDeposit } : {}),
+      }));
+      setVoiceAppliedNotice(
+        `Voice parameters applied (${intent.functionName || "task"}, ${intent.cronInterval || "schedule"}). Review each step before signing.`,
+      );
+    },
+    [],
+  );
 
   const handleRunSimulation = useCallback(async () => {
     const requestId = ++simulationSequence.current;
@@ -52,13 +73,15 @@ export default function CreateTaskWizardPage() {
 
     try {
       if (!address) {
-        throw new Error('Connect a Stellar wallet before simulating this call.');
-      // Mock RPC call simulating Soroban transaction execution (simulateTransaction)
-      await new Promise((resolve) => setTimeout(resolve, 1200));
+        throw new Error(
+          "Connect a Stellar wallet before simulating this call.",
+        );
+      }
 
       if (!formData.targetContractId.startsWith("C")) {
         throw new Error("Invalid Soroban Contract ID format.");
       }
+
       const result = await simulateTaskCall({
         contractId: formData.targetContractId,
         functionName: formData.functionName,
@@ -79,9 +102,6 @@ export default function CreateTaskWizardPage() {
         readWriteEntries: result.readWriteEntries,
         stateChanges: result.stateChanges,
         trace: result.trace,
-        minResourceFee: "0.05 XLM",
-        estimatedCpuInstructions: 145000,
-        estimatedMemoryBytes: 24500,
       });
     } catch (err) {
       if (requestId !== simulationSequence.current) return;
@@ -89,14 +109,21 @@ export default function CreateTaskWizardPage() {
         success: false,
         minResourceFee: "0",
         estimatedCpuInstructions: 0,
-        errorMessage: err instanceof Error ? err.message : 'Simulation failed unexpectedly.',
-        estimatedMemoryBytes: 0,
-        errorMessage: err.message || "Simulation reverted or failed.",
+        errorMessage:
+          err instanceof Error
+            ? err.message
+            : "Simulation failed unexpectedly.",
       });
     } finally {
       if (requestId === simulationSequence.current) setIsSimulating(false);
     }
-  }, [address, formData.functionArgs, formData.functionName, formData.targetContractId, sorobanNetwork]);
+  }, [
+    address,
+    formData.functionArgs,
+    formData.functionName,
+    formData.targetContractId,
+    sorobanNetwork,
+  ]);
 
   useEffect(() => {
     if (step !== WizardStep.TRIGGER_AND_SIMULATION) return;
@@ -106,7 +133,6 @@ export default function CreateTaskWizardPage() {
 
   const calculateMonthlyEstimate = (): string => {
     const baseDeposit = parseFloat(formData.gasDeposit) || 0;
-    // Estimated executions per month based on interval (simplified for calculation display)
     const estimatedExecutions = 720;
     const estCost = (baseDeposit * 0.05).toFixed(2);
     return `${estCost} XLM (~${estimatedExecutions} executions)`;
@@ -136,27 +162,18 @@ export default function CreateTaskWizardPage() {
       </header>
 
       {/* Voice & NLP Assistant */}
-      <div className="mb-8">
-        <VoiceAssistant
-          onApplyIntent={(intent) => {
-            setFormData((prev) => ({
-              ...prev,
-              ...(intent.targetContractId
-                ? { targetContractId: intent.targetContractId }
-                : {}),
-              ...(intent.functionName
-                ? { functionName: intent.functionName }
-                : {}),
-              ...(intent.functionArgs
-                ? { functionArgs: intent.functionArgs }
-                : {}),
-              ...(intent.cronInterval
-                ? { cronInterval: intent.cronInterval }
-                : {}),
-              ...(intent.gasDeposit ? { gasDeposit: intent.gasDeposit } : {}),
-            }));
-          }}
-        />
+      <div className="mb-8 space-y-3">
+        <VoiceAssistant onApplyIntent={handleApplyVoiceIntent} />
+        {voiceAppliedNotice && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="voice-applied-banner"
+            className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-xs font-medium text-emerald-600 dark:text-emerald-400"
+          >
+            {voiceAppliedNotice}
+          </div>
+        )}
       </div>
 
       {/* Wizard Progress Stepper */}
@@ -207,7 +224,11 @@ export default function CreateTaskWizardPage() {
             <p className="text-sm text-muted-foreground">
               Enter the valid C-address of the deployed Soroban smart contract.
             </p>
+            <label htmlFor="wizard-target-contract" className="sr-only">
+              Target Soroban Contract ID
+            </label>
             <input
+              id="wizard-target-contract"
               type="text"
               placeholder="e.g. CA7Q3...102X"
               value={formData.targetContractId}
@@ -225,10 +246,14 @@ export default function CreateTaskWizardPage() {
               Step 2: Function Selection & Arguments
             </h2>
             <div>
-              <label className="block text-sm font-medium mb-1">
+              <label
+                htmlFor="wizard-function-name"
+                className="block text-sm font-medium mb-1"
+              >
                 Function Name
               </label>
               <input
+                id="wizard-function-name"
                 type="text"
                 placeholder="e.g. execute_cron"
                 value={formData.functionName}
@@ -237,18 +262,23 @@ export default function CreateTaskWizardPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">
+              <label
+                htmlFor="wizard-function-args"
+                className="block text-sm font-medium mb-1"
+              >
                 JSON Arguments
               </label>
               <textarea
+                id="wizard-function-args"
                 rows={4}
                 value={formData.functionArgs}
                 onChange={(e) => updateFormData("functionArgs", e.target.value)}
                 className="w-full p-2.5 border rounded-md bg-background focus:ring-2 focus:ring-primary text-sm font-mono"
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                Provide a JSON array. To specify an address or integer type, use an object such as
-                {" "}{"{\"__type\":\"address\",\"value\":\"G...\"}"}.
+                Provide a JSON array. To specify an address or integer type, use
+                an object such as{" "}
+                {'{"__type":"address","value":"G..."}'}.
               </p>
             </div>
           </div>
@@ -260,10 +290,14 @@ export default function CreateTaskWizardPage() {
               Step 3: Trigger Interval & Pre-flight Simulation
             </h2>
             <div>
-              <label className="block text-sm font-medium mb-1">
+              <label
+                htmlFor="wizard-cron-interval"
+                className="block text-sm font-medium mb-1"
+              >
                 Cron Schedule
               </label>
               <input
+                id="wizard-cron-interval"
                 type="text"
                 value={formData.cronInterval}
                 onChange={(e) => updateFormData("cronInterval", e.target.value)}
@@ -273,7 +307,8 @@ export default function CreateTaskWizardPage() {
 
             <div className="p-4 border rounded-lg bg-muted/40 space-y-3">
               <p className="text-xs text-muted-foreground">
-                Simulation runs automatically and again when the contract call changes. No transaction is signed or submitted.
+                Simulation runs automatically and again when the contract call
+                changes. No transaction is signed or submitted.
               </p>
               <div className="flex justify-between items-center">
                 <span className="text-sm font-semibold">
@@ -301,26 +336,45 @@ export default function CreateTaskWizardPage() {
                     <div>
                       <p className="font-bold">✓ Simulation Successful</p>
                       <p>Resource Fee: {simResult.minResourceFee}</p>
-                      {simResult.networkFee ? <p>Median Network Inclusion Fee: {simResult.networkFee}</p> : null}
-                      {simResult.totalFee ? <p>Total Estimated Fee: {simResult.totalFee}</p> : null}
-                      <p>CPU Instructions: {simResult.estimatedCpuInstructions}</p>
-                      <p>Storage I/O: {simResult.storageReadBytes ?? 0} bytes read / {simResult.storageWriteBytes ?? 0} bytes written</p>
-                      <p>Storage footprint: {simResult.readOnlyEntries ?? 0} read-only / {simResult.readWriteEntries ?? 0} read-write entries</p>
+                      {simResult.networkFee ? (
+                        <p>
+                          Median Network Inclusion Fee: {simResult.networkFee}
+                        </p>
+                      ) : null}
+                      {simResult.totalFee ? (
+                        <p>Total Estimated Fee: {simResult.totalFee}</p>
+                      ) : null}
+                      <p>
+                        CPU Instructions: {simResult.estimatedCpuInstructions}
+                      </p>
+                      <p>
+                        Storage I/O: {simResult.storageReadBytes ?? 0} bytes
+                        read / {simResult.storageWriteBytes ?? 0} bytes written
+                      </p>
+                      <p>
+                        Storage footprint: {simResult.readOnlyEntries ?? 0}{" "}
+                        read-only / {simResult.readWriteEntries ?? 0} read-write
+                        entries
+                      </p>
                       {simResult.stateChanges ? (
-                        <p>Ledger delta: {simResult.stateChanges.created} created / {simResult.stateChanges.updated} updated / {simResult.stateChanges.removed} removed</p>
+                        <p>
+                          Ledger delta: {simResult.stateChanges.created} created
+                          / {simResult.stateChanges.updated} updated /{" "}
+                          {simResult.stateChanges.removed} removed
+                        </p>
                       ) : null}
                       {simResult.trace?.length ? (
                         <ol className="mt-2 space-y-1 border-t border-current/20 pt-2">
                           {simResult.trace.map((item, index) => (
                             <li key={`${item.step}-${index}`}>
-                              <strong>{index + 1}. {item.step}:</strong> {item.detail}
+                              <strong>
+                                {index + 1}. {item.step}:
+                              </strong>{" "}
+                              {item.detail}
                             </li>
                           ))}
                         </ol>
                       ) : null}
-                      <p>
-                        CPU Instructions: {simResult.estimatedCpuInstructions}
-                      </p>
                     </div>
                   ) : (
                     <p>✗ Simulation Error: {simResult.errorMessage}</p>
@@ -337,10 +391,14 @@ export default function CreateTaskWizardPage() {
               Step 4: Gas Deposit & Activation
             </h2>
             <div>
-              <label className="block text-sm font-medium mb-1">
+              <label
+                htmlFor="wizard-gas-deposit"
+                className="block text-sm font-medium mb-1"
+              >
                 Initial XLM Gas Balance
               </label>
               <input
+                id="wizard-gas-deposit"
                 type="number"
                 value={formData.gasDeposit}
                 onChange={(e) => updateFormData("gasDeposit", e.target.value)}

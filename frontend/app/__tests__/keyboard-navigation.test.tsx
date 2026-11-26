@@ -71,8 +71,17 @@ describe('Create Task form – keyboard navigation & submission', () => {
     expect(screen.getByLabelText(/gas balance/i)).toBeInTheDocument()
   })
 
+  it('exposes an accessible form landmark and grouped controls', () => {
+    render(<TaskCreationForm />)
+    expect(screen.getByRole('form', { name: /create automation task/i })).toBeInTheDocument()
+    expect(
+      screen.getByRole('group', { name: /execution schedule and gas settings/i })
+    ).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: /form actions/i })).toBeInTheDocument()
+  })
+
   it('shows a validation error when required fields are empty and register is clicked', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<TaskCreationForm />)
     await user.click(screen.getByRole('button', { name: /register task/i }))
 
@@ -80,10 +89,13 @@ describe('Create Task form – keyboard navigation & submission', () => {
     expect(alert).toHaveTextContent(/required/i)
   })
 
-  it('submits successfully with keyboard-only interaction', async () => {
-    const user = userEvent.setup()
+  it('submits successfully with keyboard-only interaction and announces status to screen readers', async () => {
+    const user = userEvent.setup({ delay: null })
     render(<TaskCreationForm />)
-    await user.type(screen.getByLabelText(/target contract address/i), 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
+    await user.type(
+      screen.getByLabelText(/target contract address/i),
+      'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    )
     await user.type(screen.getByLabelText(/function name/i), 'harvest_yield')
     await user.type(screen.getByLabelText(/interval/i), '3600')
     await user.type(screen.getByLabelText(/gas balance/i), '10')
@@ -91,10 +103,58 @@ describe('Create Task form – keyboard navigation & submission', () => {
 
     await waitFor(
       () => {
-        expect(screen.getByText(/task created successfully!/i)).toBeInTheDocument()
+        const status = screen.getByRole('status')
+        expect(status).toHaveAttribute('aria-live', 'polite')
+        expect(status).toHaveAttribute('aria-atomic', 'true')
+        expect(status).toHaveTextContent(/task created successfully!/i)
       },
-      { timeout: 3000 }
+      { timeout: 1500 }
     )
+  })
+
+  it('supports logical keyboard tab order across inputs and actions without trapping focus', async () => {
+    const user = userEvent.setup({ delay: null })
+    render(<TaskCreationForm />)
+
+    const contractInput = screen.getByLabelText(/target contract address/i)
+    const functionInput = screen.getByLabelText(/function name/i)
+    const intervalInput = screen.getByLabelText(/interval/i)
+    const gasInput = screen.getByLabelText(/gas balance/i)
+    const submitBtn = screen.getByRole('button', { name: /register task/i })
+    const resetBtn = screen.getByRole('button', { name: /reset form/i })
+
+    await user.tab()
+    expect(contractInput).toHaveFocus()
+
+    await user.tab()
+    expect(functionInput).toHaveFocus()
+
+    await user.tab()
+    expect(intervalInput).toHaveFocus()
+
+    await user.tab()
+    expect(gasInput).toHaveFocus()
+
+    // Focus styles are present on form controls and action buttons
+    expect(contractInput.className).toMatch(/focus:ring-2/)
+    expect(submitBtn.className).toMatch(/focus-visible:ring-2/)
+    expect(resetBtn.className).toMatch(/focus-visible:ring-2/)
+  })
+
+  it('resets form values using keyboard activation on the Reset Form button', async () => {
+    const user = userEvent.setup({ delay: null })
+    render(<TaskCreationForm />)
+
+    const contractInput = screen.getByLabelText(/target contract address/i)
+    await user.type(contractInput, 'CABC123')
+    expect(contractInput).toHaveValue('CABC123')
+
+    const resetBtn = screen.getByRole('button', { name: /reset form/i })
+    resetBtn.focus()
+    expect(resetBtn).toHaveFocus()
+    await user.keyboard('{Enter}')
+
+    expect(contractInput).toHaveValue('')
   })
 })
 

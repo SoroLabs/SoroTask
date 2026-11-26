@@ -1,6 +1,12 @@
 const EventEmitter = require('events');
 const { createLogger } = require('./logger');
-const { ResolverRuntime, ResolverRuntimeError } = require('./resolverRuntime');
+const {
+  ResolverRuntime,
+  ResolverRuntimeError,
+  DEFAULT_MAX_WASM_FUEL,
+  DEFAULT_WASM_TIMEOUT_MS,
+  MAX_WASM_MEMORY_BYTES,
+} = require('./resolverRuntime');
 
 const DEFAULT_MAX_STALENESS_MS = 30_000;
 const DEFAULT_OUTLIER_Z_THRESHOLD = 2.5;
@@ -586,6 +592,9 @@ class OracleAggregatorDaemon extends EventEmitter {
 module.exports = {
   ResolverRuntime,
   ResolverRuntimeError,
+  DEFAULT_MAX_WASM_FUEL,
+  DEFAULT_WASM_TIMEOUT_MS,
+  MAX_WASM_MEMORY_BYTES,
   OracleAggregatorDaemon,
   fetchCoinbasePrice,
   fetchBinancePrice,

@@ -1,4 +1,10 @@
 const { createLogger } = require('./logger');
+const {
+  buildForecast,
+  clamp,
+  forecastArima,
+  optimalExecutionWindow,
+} = require('./arimaForecast');
 
 /**
  * Gas Budget Forecaster
@@ -42,10 +48,25 @@ class GasForecaster {
     this.AGGREGATION_WINDOW_SECONDS =
       parseInt(process.env.GAS_FORECAST_WINDOW_SECONDS || '3600', 10);
 
+    this.forecastHorizon = clamp(
+      parseInt(process.env.GAS_FORECAST_HORIZON || '5', 10),
+      1,
+      20,
+    );
+    this.minSamplesForArima = clamp(
+      parseInt(process.env.GAS_FORECAST_ARIMA_MIN_SAMPLES || '8', 10),
+      3,
+      200,
+    );
+    this.arimaModels = new Map();
+    this.arimaDirty = new Set();
+
     this.logger.info('GasForecaster initialized', {
       safetyBufferMultiplier: this.SAFETY_BUFFER_MULTIPLIER,
       aggregationWindowSecs: this.AGGREGATION_WINDOW_SECONDS,
       highConfidenceThreshold: this.HIGH_CONFIDENCE_THRESHOLD,
+      forecastHorizon: this.forecastHorizon,
+      minSamplesForArima: this.minSamplesForArima,
     });
   }
 
@@ -57,6 +78,12 @@ class GasForecaster {
    * @param {number} feePaid - Gas fee paid in stroops or fee units
    */
   recordExecution(taskId, feePaid) {
+    const fee = Number(feePaid);
+    if (!Number.isFinite(fee) || fee <= 0) {
+      this.logger.debug('Skipping invalid gas fee sample', { taskId, feePaid });
+      return;
+    }
+
     if (!this.gasHistory.has(taskId)) {
       this.gasHistory.set(taskId, []);
     }
@@ -64,13 +91,15 @@ class GasForecaster {
     const history = this.gasHistory.get(taskId);
     history.push({
       timestamp: Date.now(),
-      feePaid: Number(feePaid),
+      feePaid: fee,
     });
 
     // Keep only the most recent samples
     if (history.length > this.MAX_SAMPLES_PER_TASK) {
       history.shift();
     }
+
+    this.arimaDirty.add(taskId);
 
     this.logger.debug('Gas execution recorded', {
       taskId,
@@ -131,12 +160,64 @@ class GasForecaster {
     };
   }
 
+  getArimaModel(taskId) {
+    if (!this.arimaDirty.has(taskId) && this.arimaModels.has(taskId)) {
+      return this.arimaModels.get(taskId);
+    }
+
+    const history = this.gasHistory.get(taskId) || [];
+    const model = buildForecast(
+      history.map(sample => sample.feePaid),
+      { horizon: this.forecastHorizon, minSamples: this.minSamplesForArima },
+    ).model;
+
+    this.arimaModels.set(taskId, model);
+    this.arimaDirty.delete(taskId);
+    return model;
+  }
+
+  forecastTaskFees(taskId, horizon = this.forecastHorizon) {
+    const model = this.getArimaModel(taskId);
+    return forecastArima(model, horizon);
+  }
+
+  getExecutionPlan(taskId, horizon = this.forecastHorizon) {
+    const forecasts = this.forecastTaskFees(taskId, horizon);
+    const recommendation = optimalExecutionWindow(forecasts);
+
+    if (!recommendation) {
+      return {
+        taskId: String(taskId),
+        forecasts: [],
+        recommendation: null,
+      };
+    }
+
+    return {
+      taskId: String(taskId),
+      forecasts: forecasts.map(forecast => ({
+        ledgerAhead: forecast.stepsAhead,
+        estimatedCost: Math.ceil(forecast.forecast),
+        lowerBound: Math.ceil(forecast.lowerBound),
+        upperBound: Math.ceil(forecast.upperBound),
+      })),
+      recommendation: {
+        ...recommendation,
+        action:
+          recommendation.savingsPercent >= 18 && recommendation.ledgerAhead > 1
+            ? 'delay_execution'
+            : 'execute_now',
+      },
+    };
+  }
+
   /**
    * Forecast gas demand for a single upcoming task execution.
-   * Uses p95 of historical costs for conservative estimate.
+   * Uses an ARIMA(1,1,1) model with a 99% upper bound for funding checks.
    *
    * @param {number|string} taskId
    * @param {number} gasBalance - Current gas balance for task
+   * @param {number} horizon - Ledgers ahead to forecast
    * @returns {{
    *   taskId: string,
    *   estimatedCost: number,
@@ -148,7 +229,7 @@ class GasForecaster {
    *   stats: object|null
    * }}
    */
-  forecastTaskGas(taskId, gasBalance) {
+  forecastTaskGas(taskId, gasBalance, horizon = 1) {
     const stats = this.getTaskStats(taskId);
 
     if (!stats) {
@@ -166,17 +247,14 @@ class GasForecaster {
       };
     }
 
-    // Use p95 as conservative estimate for single execution
-    const estimatedCost = stats.p95;
-
-    // Calculate recommended balance with safety buffer
-    const buffer = Math.round(estimatedCost * (this.SAFETY_BUFFER_MULTIPLIER - 1));
-    const recommendedBalance = estimatedCost + buffer;
-
-    // High confidence if we have enough samples
+    const model = this.getArimaModel(taskId);
+    const forecast = this.forecastTaskFees(taskId, horizon)[0];
+    const estimatedCost = Math.max(1, Math.ceil(forecast.forecast));
+    const spikeCeiling = Math.max(stats.max * 1.05, stats.p99 * 1.1);
+    const upperBound = Math.ceil(Math.max(forecast.upperBound, spikeCeiling));
+    const recommendedBalance = Math.ceil(upperBound * this.SAFETY_BUFFER_MULTIPLIER);
+    const buffer = recommendedBalance - estimatedCost;
     const confidence = stats.count >= this.HIGH_CONFIDENCE_THRESHOLD ? 'high' : 'low';
-
-    // Underfunded if balance < recommended
     const isUnderfunded = gasBalance < recommendedBalance;
 
     return {
@@ -188,7 +266,17 @@ class GasForecaster {
       recommendedBalance,
       buffer,
       stats,
-      reason: confidence === 'high' ? 'based_on_history' : 'limited_samples',
+      reason: confidence === 'high' ? 'arima_forecast' : 'limited_samples',
+      arima: {
+        order: model.order,
+        trained: model.trained,
+        horizon,
+        upperBound,
+        expectedSavingsPercent: Math.max(
+          0,
+          Math.round(((stats.p95 - estimatedCost) / stats.p95) * 100),
+        ),
+      },
     };
   }
 
@@ -208,9 +296,9 @@ class GasForecaster {
    *   summary: string
    * }}
    */
-  forecastMultipleTasks(upcomingTasks) {
+  forecastMultipleTasks(upcomingTasks, horizon = 1) {
     const forecasts = upcomingTasks.map(task =>
-      this.forecastTaskGas(task.taskId, task.gasBalance),
+      this.forecastTaskGas(task.taskId, task.gasBalance, task.horizon || horizon),
     );
 
     const totalEstimatedCost = forecasts
@@ -321,6 +409,10 @@ class GasForecaster {
       safetyBufferMultiplier: this.SAFETY_BUFFER_MULTIPLIER,
       aggregationWindowSeconds: this.AGGREGATION_WINDOW_SECONDS,
       highConfidenceThreshold: this.HIGH_CONFIDENCE_THRESHOLD,
+      forecastHorizon: this.forecastHorizon,
+      arimaModelsTrained: Array.from(this.arimaModels.values()).filter(
+        model => model.trained,
+      ).length,
       taskSamples: stats,
     };
   }
@@ -394,6 +486,8 @@ class GasForecaster {
   clearTaskHistory(taskId) {
     if (this.gasHistory.has(taskId)) {
       this.gasHistory.delete(taskId);
+      this.arimaModels.delete(taskId);
+      this.arimaDirty.delete(taskId);
       this.logger.info('Task history cleared', { taskId });
     }
   }
@@ -403,6 +497,8 @@ class GasForecaster {
    */
   clearAll() {
     this.gasHistory.clear();
+    this.arimaModels.clear();
+    this.arimaDirty.clear();
     this.logger.info('All forecaster history cleared');
   }
 }

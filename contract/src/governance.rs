@@ -555,6 +555,20 @@ pub fn execute_proposal(env: &Env, keeper: &Address, proposal_id: u64) -> Result
     // Update status to executed
     proposal.status = VoteStatus::Executed;
     proposal.executed_at = env.ledger().timestamp();
+
+    // A successful governance execution is also proof of keeper liveness.
+    if let Some(bond) = env
+        .storage()
+        .persistent()
+        .get::<crate::DataKey, crate::KeeperBond>(&crate::DataKey::KeeperBond(keeper.clone()))
+    {
+        if !bond.is_slashed {
+            env.storage().persistent().set(
+                &crate::DataKey::KeeperLastActive(keeper.clone()),
+                &env.ledger().timestamp(),
+            );
+        }
+    }
     save_proposal(env, &proposal);
 
     // Execute the proposal payload

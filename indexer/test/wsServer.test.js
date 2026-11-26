@@ -101,6 +101,23 @@ test("ws: subscriber receives a matching event; non-matching subscriber does not
   matching.close();
   nonMatching.close();
   await server.close();
+  assert.equal(server.getStats().connectedClients, 0);
+});
+
+test("ws: clients receive no events until subscribing to a topic", async () => {
+  _resetForTests();
+  const server = createWsServer({ port: 0, path: "/ws" });
+  const ws = await connect(server.wss.address().port);
+  const noEvent = nextEvent(ws, 100);
+
+  broadcastEvent({
+    event_name: "TaskRegistered",
+    task_id: 42,
+  });
+
+  assert.equal(await noEvent, null);
+  ws.close();
+  await server.close();
 });
 
 test("eventTopics: derives creator channels for creator-carrying events", () => {

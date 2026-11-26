@@ -46,14 +46,27 @@ describe('StreamHub channel subscriptions (issue #1212)', () => {
     return socketsMap;
   }
 
-  test('sockets without subscriptions receive every event', () => {
+  function registerClient(hub, socket, topics = [], lastPong = Date.now()) {
+    const client = {
+      kind: 'socket',
+      socket,
+      topics: new Set(),
+      lastPong,
+    };
+    hub.clients.set(socket.id, client);
+    hub.clientCount += 1;
+    for (const topic of topics) hub._addSubscription(client, topic);
+    return client;
+  }
+
+  test('sockets without subscriptions receive no firehose events', () => {
     const hub = makeHub();
     const openSocket = makeSocket('open-1');
     attachNamespace(hub, [openSocket]);
 
     const envelope = hub.publish('task:execution:status', { taskId: '7' });
 
-    expect(openSocket.emitted).toContainEqual(['stream:event', envelope]);
+    expect(openSocket.emitted).not.toContainEqual(['stream:event', envelope]);
   });
 
   test('creator channels match creator:{address} subscriptions', () => {
@@ -62,16 +75,8 @@ describe('StreamHub channel subscriptions (issue #1212)', () => {
     const otherSocket = makeSocket('other-1');
     attachNamespace(hub, [creatorSocket, otherSocket]);
 
-    hub.clients.set('creator-1', {
-      socket: creatorSocket,
-      topics: new Set(['creator:GABC']),
-      lastPong: Date.now(),
-    });
-    hub.clients.set('other-1', {
-      socket: otherSocket,
-      topics: new Set(['creator:GXYZ']),
-      lastPong: Date.now(),
-    });
+    registerClient(hub, creatorSocket, ['creator:GABC']);
+    registerClient(hub, otherSocket, ['creator:GXYZ']);
 
     hub.publishTaskEvent('completed', 42, { creatorAddress: 'GABC' });
 
@@ -88,11 +93,7 @@ describe('StreamHub channel subscriptions (issue #1212)', () => {
     const wildcardSocket = makeSocket('wild-1');
     attachNamespace(hub, [wildcardSocket]);
 
-    hub.clients.set('wild-1', {
-      socket: wildcardSocket,
-      topics: new Set(['task:*']),
-      lastPong: Date.now(),
-    });
+    registerClient(hub, wildcardSocket, ['task:*']);
 
     hub.publish('task:execution:status', { taskId: '9' });
 
@@ -100,15 +101,26 @@ describe('StreamHub channel subscriptions (issue #1212)', () => {
 
     // Unrelated channel filter does not match task events.
     const narrowSocket = makeSocket('narrow-1');
-    hub.clients.set('narrow-1', {
-      socket: narrowSocket,
-      topics: new Set(['task:11']),
-      lastPong: Date.now(),
-    });
+    registerClient(hub, narrowSocket, ['task:11']);
     hub.publish('task:execution:status', { taskId: '9' });
 
     const narrowEvent = narrowSocket.emitted.find(([event]) => event === 'stream:event');
     expect(narrowEvent).toBeUndefined();
+  });
+
+  test('disconnects and removes clients whose transport remains backpressured', () => {
+    const hub = makeHub();
+    hub.maxBackpressureEvents = 1;
+    const slowSocket = makeSocket('slow-1');
+    slowSocket.conn = { transport: { writable: false } };
+    slowSocket.disconnect = jest.fn();
+    attachNamespace(hub, [slowSocket]);
+    registerClient(hub, slowSocket, ['task:*']);
+
+    hub.publish('task:execution:status', { taskId: '9' });
+
+    expect(slowSocket.disconnect).toHaveBeenCalledWith(true);
+    expect(hub.clients.has('slow-1')).toBe(false);
   });
 
   test('heartbeat emits pings and terminates clients that stop ponging', () => {
@@ -118,16 +130,8 @@ describe('StreamHub channel subscriptions (issue #1212)', () => {
     const liveSocket = makeSocket('live-1');
     attachNamespace(hub, [staleSocket, liveSocket]);
 
-    hub.clients.set('stale-1', {
-      socket: staleSocket,
-      topics: new Set(),
-      lastPong: Date.now() - 60000,
-    });
-    hub.clients.set('live-1', {
-      socket: liveSocket,
-      topics: new Set(),
-      lastPong: Date.now(),
-    });
+    registerClient(hub, staleSocket, [], Date.now() - 60000);
+    registerClient(hub, liveSocket);
     staleSocket.disconnect = jest.fn();
     liveSocket.disconnect = jest.fn();
 
@@ -143,11 +147,7 @@ describe('StreamHub channel subscriptions (issue #1212)', () => {
     const hub2 = makeHub();
     const deadSocket = makeSocket('dead-1');
     attachNamespace(hub2, [deadSocket]);
-    hub2.clients.set('dead-1', {
-      socket: deadSocket,
-      topics: new Set(),
-      lastPong: Date.now() - hub2.heartbeatTimeoutMs - 1,
-    });
+    registerClient(hub2, deadSocket, [], Date.now() - hub2.heartbeatTimeoutMs - 1);
     deadSocket.disconnect = jest.fn();
 
     hub2._runHeartbeat();
@@ -176,7 +176,7 @@ describe('StreamHub channel subscriptions (issue #1212)', () => {
       headers: null,
       closed: false,
       writeHead(code, headers) { this.statusCode = code; this.headers = headers; },
-      write(chunk) { writes.push(chunk); },
+      write(chunk) { writes.push(chunk); return true; },
       on(event, handler) { if (event === 'close') this._close = handler; },
       end() { this.closed = true; },
     };

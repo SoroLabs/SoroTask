@@ -7,6 +7,7 @@ const errorCodes = require('./errorCodes');
 const Monitor = require('./monitor');
 const { AbiCache } = require('./abiCache');
 const { isValidContractAddress } = require('./registry');
+const { injectTraceHeaders } = require('../scripts/traceContext');
 
 // ---------------------------------------------------------------------------
 // Soroban RPC helpers
@@ -65,10 +66,10 @@ function jsonRpcPost(url, body, timeoutMs = 10_000) {
       port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
       path: parsed.pathname + parsed.search,
       method: 'POST',
-      headers: {
+      headers: injectTraceHeaders({
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
-      },
+      }),
     };
 
     const req = transport.request(options, res => {
@@ -319,8 +320,9 @@ class ABIRegistryService {
     );
 
     return abi;
+  }
 
-getSigner() {
+  getSigner() {
     return this.signer;
   }
 

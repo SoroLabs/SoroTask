@@ -66,4 +66,20 @@ describe('GasMonitor', () => {
     expect(simulation.congestionFactor).toBe(2);
     expect(simulation.priorityFee).toBeGreaterThanOrEqual(100);
   });
+
+  it('should expose ARIMA forecasting through the monitor', () => {
+    Array.from({ length: 12 }, (_, index) => 100 + index * 10).forEach(fee =>
+      gasMonitor.recordExecution('task1', fee),
+    );
+
+    const forecast = gasMonitor.forecastTaskGas('task1', 100);
+    const plan = gasMonitor.getTaskExecutionPlan('task1');
+    const state = gasMonitor.getForecasterState();
+
+    expect(forecast.arima.trained).toBe(true);
+    expect(plan.forecasts.length).toBeGreaterThan(0);
+    expect(state.forecaster.forecastHorizon).toBeGreaterThan(0);
+    expect(state.priceState.arima.trained).toBe(true);
+    expect(gasMonitor.getMultiStepForecast().length).toBeGreaterThan(0);
+  });
 });
