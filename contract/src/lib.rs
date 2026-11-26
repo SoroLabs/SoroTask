@@ -11,6 +11,7 @@ pub use events::*;
 pub mod admin;
 pub mod circuit_breaker;
 pub mod dag;
+pub mod dex_router;
 pub mod dynamic_nft;
 pub mod math;
 pub mod optimistic;
@@ -30,9 +31,11 @@ pub use gas::{get_gas_rates, update_gas_rates, EscrowManager, FeeBreakdown, GasM
 pub use optimistic::{FraudProof, OptimisticClaim, CHALLENGE_WINDOW_LEDGERS};
 pub use state_channel::{ChannelCloseRequest, ChannelReceipt, ChannelState, ChannelStatus};
 pub use trailing_stop_loss::{
-    TrailingOrderConfig, TrailingOrderExecution, TrailingOrderStatus,
-    create_trailing_order, update_trailing_order, cancel_trailing_order,
-    get_trailing_order, get_trailing_order_execution, batch_update_trailing_orders,
+    TrailingOrderConfig, TrailingOrderExecution, TrailingOrderStatus, TrailingSlippageConfig,
+    create_trailing_order, update_trailing_order, update_trailing_order_from_oracle,
+    cancel_trailing_order, get_trailing_order, get_trailing_order_execution,
+    get_trailing_peak_price, get_trailing_slippage_config, set_trailing_pool_depth,
+    batch_update_trailing_orders, calculate_dynamic_slippage_bps, calculate_dynamic_min_out,
 };
 pub use merkle_state_channel::{
     MerkleChannelState, ChannelSubState, MerkleProof, MerkleExitClaim,
@@ -289,6 +292,9 @@ pub enum Error {
     // Congestion surcharge errors (SC-PROD-29)
     InvalidSurchargeConfig = 960,
     InvalidInclusionFee = 961,
+    TrailingSlippageExceeded = 965,
+    TrailingFlashCrashBlocked = 966,
+    TrailingPoolDepthInvalid = 967,
     // Gasless permit registration errors (SC-FINAL-35)
     InvalidPermitSignature = 970,
     PermitExpired = 971,
@@ -1544,6 +1550,8 @@ pub enum DataKey {
     TrailingOrder(u64),
     /// Trailing order execution record
     TrailingOrderExecution(u64),
+    TrailingPeakPrice(u64),
+    TrailingSlippageConfig(u64),
     // ========== SC-PROD-38: Merkle State Channel ==========
     /// Merkle channel counter
     MerkleChannelCounter,
@@ -4169,6 +4177,89 @@ impl SoroTaskContract {
     pub fn get_medianized_oracle_price(env: Env) -> i128 {
         oracle::get_aggregated_price(&env)
             .unwrap_or_else(|error| panic_with_error!(&env, error))
+    }
+
+    pub fn create_trailing_order(
+        env: Env,
+        owner: Address,
+        sell_token: Address,
+        buy_token: Address,
+        amount_in: i128,
+        min_amount_out: i128,
+        initial_price: i128,
+        trailing_bps: u32,
+        take_profit_bps: Option<u32>,
+        router: Address,
+        swap_path: Vec<Address>,
+        expiration: u64,
+    ) -> u64 {
+        trailing_stop_loss::create_trailing_order(
+            &env,
+            &owner,
+            &sell_token,
+            &buy_token,
+            amount_in,
+            min_amount_out,
+            initial_price,
+            trailing_bps,
+            take_profit_bps,
+            &router,
+            swap_path,
+            expiration,
+        )
+    }
+
+    pub fn update_trailing_order(env: Env, order_id: u64, current_price: i128) -> bool {
+        trailing_stop_loss::update_trailing_order(&env, order_id, current_price)
+    }
+
+    pub fn cancel_trailing_order(env: Env, order_id: u64, caller: Address) -> i128 {
+        trailing_stop_loss::cancel_trailing_order(&env, order_id, &caller)
+    }
+
+    pub fn get_trailing_order(env: Env, order_id: u64) -> Option<TrailingOrderConfig> {
+        get_trailing_order(&env, order_id)
+    }
+
+    pub fn get_trailing_order_execution(env: Env, order_id: u64) -> Option<TrailingOrderExecution> {
+        get_trailing_order_execution(&env, order_id)
+    }
+
+    pub fn batch_update_trailing_orders(
+        env: Env,
+        order_ids: Vec<u64>,
+        prices: Vec<i128>,
+    ) -> u32 {
+        batch_update_trailing_orders(&env, order_ids, prices)
+    }
+
+    pub fn set_trailing_pool_depth(
+        env: Env,
+        order_id: u64,
+        reserve_in: i128,
+        reserve_out: i128,
+        max_slippage_bps: u32,
+    ) {
+        trailing_stop_loss::set_trailing_pool_depth(
+            &env,
+            order_id,
+            reserve_in,
+            reserve_out,
+            max_slippage_bps,
+        )
+    }
+
+    pub fn update_trailing_order_from_oracle(env: Env, order_id: u64) -> bool {
+        let price = Self::get_medianized_oracle_price(env.clone());
+        trailing_stop_loss::update_trailing_order(&env, order_id, price)
+    }
+
+    pub fn get_trailing_peak_price(env: Env, order_id: u64) -> i128 {
+        get_trailing_peak_price(&env, order_id)
+    }
+
+    pub fn get_trailing_slippage_config(env: Env, order_id: u64) -> Option<TrailingSlippageConfig> {
+        get_trailing_slippage_config(&env, order_id)
     }
 
     // ============================================================================
@@ -16874,3 +16965,5 @@ mod test_booster;
 
 #[cfg(test)]
 mod test_permit_registration;
+#[cfg(test)]
+mod test_trailing_engine;
