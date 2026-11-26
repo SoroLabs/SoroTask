@@ -8,6 +8,7 @@
  * - NDJSON output in production conforming 100% to structured JSON schema
  */
 
+const crypto = require('crypto');
 const pino = require('pino');
 const { extractOrCreateTraceContext, parseTraceParent } = require('../../scripts/traceContext');
 const { AuditLogger, getAuditLogger } = require('./auditLogger');
@@ -465,6 +466,17 @@ let _currentTraceId = null;
 let _currentSpanId = null;
 let _correlationId = null;
 
+/**
+ * Generate a lowercase hex identifier of `length` characters.
+ * W3C trace ids are 32 hex chars, span ids are 16.
+ *
+ * @param {number} length
+ * @returns {string}
+ */
+function randomHex(length) {
+  return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length);
+}
+
 function createTraceId() {
   return randomHex(32);
 }
@@ -639,7 +651,7 @@ function structured(level, record) {
   const levelRank = LOG_LEVELS[level];
   if (levelRank < LOG_LEVELS[DEFAULT_OPTIONS.level]) return;
   const formatted = formatRecord(level, record);
-  DEFAULT_OPTIONS.exporter.exportLog(fmtLogRecord(formatted));
+  DEFAULT_OPTIONS.exporter.exportLog(formatted);
   return formatted;
 }
 

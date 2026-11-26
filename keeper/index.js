@@ -550,6 +550,11 @@ async function main() {
         correlationId,
         txHash: retryResult.result?.txHash || null,
       });
+      // SLO export: execution latency percentile + MTTR recovery sample.
+      metricsServer.sloMetrics.recordExecutionOutcome({
+        success: true,
+        durationMs: Date.now() - executionStartedAt,
+      });
       if (deadLetterQueue.isQuarantined(taskId)) {
         deadLetterQueue.recover(taskId, "execution_succeeded");
       }
