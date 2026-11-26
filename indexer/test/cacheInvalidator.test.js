@@ -106,3 +106,40 @@ test('CacheInvalidationEngine - Edge CDN surrogate rules, DB mutation hooks, <15
   assert.ok(cdnPurgeCalls[0].body.tags.includes('task:77'));
   assert.equal(engine.get('endpoint:/api/tasks/77'), null);
 });
+
+test('CacheInvalidationEngine - surrogate-key purge on ContractUpgraded / TaskModified with timeout fast path (#1653)', async () => {
+  const calls = [];
+  const engine = new CacheInvalidationEngine({
+    cloudflareZoneId: 'zone-1653',
+    cloudflareApiToken: 'token-1653',
+    httpFetcher: async (_url, init) => {
+      calls.push(JSON.parse(init.body).tags);
+      return { ok: true };
+    },
+  });
+
+  assert.equal(await engine.purgeForEvent('Unrelated'), null);
+  assert.equal(calls.length, 0);
+
+  engine.set('endpoint:/api/tasks/7', { task_id: 7 }, 300000, ['task:7']);
+  const taskPurge = await engine.purgeForEvent('TaskModified', { taskId: 7 });
+  assert.ok(taskPurge.purgedKeys.includes('task:7'));
+  assert.ok(calls[0].includes('task:7'));
+  assert.equal(engine.get('endpoint:/api/tasks/7'), null);
+
+  const contractPurge = await engine.purgeForEvent('ContractUpgraded', { address: 'C1' });
+  assert.ok(contractPurge.purgedKeys.includes('contract:C1'));
+  assert.ok(calls[1].includes('contract:C1'));
+
+  const unconfigured = new CacheInvalidationEngine();
+  const fast = await unconfigured.purgeForEvent('TaskModified', { taskId: 9 });
+  assert.equal(fast.withinSla, true);
+
+  const slow = new CacheInvalidationEngine({
+    cloudflareZoneId: 'zone-1653',
+    cloudflareApiToken: 'token-1653',
+    httpFetcher: () => new Promise(() => {}),
+  });
+  const timed = await slow.purgeForEvent('ContractUpgraded', { address: 'C2', timeoutMs: 80 });
+  assert.equal(timed.withinSla, true);
+});

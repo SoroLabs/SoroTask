@@ -2,13 +2,15 @@
 
 import { useMemo, useState } from "react";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import RichTextEditor from "./RichTextEditor";
+import type { TaskContent } from "@/src/types/task";
 
 type TaskDraft = {
   target: string;
   functionName: string;
   intervalSeconds: string;
   gasBalance: string;
-  description: string;
+  description: TaskContent;
   commentTemplate: string;
 };
 
@@ -23,7 +25,7 @@ const EMPTY_TASK: TaskDraft = {
   functionName: "",
   intervalSeconds: "",
   gasBalance: "",
-  description: "",
+  description: { type: "doc", content: [{ type: "paragraph" }] },
   commentTemplate: "",
 };
 
@@ -157,11 +159,13 @@ export default function TaskWorkspace() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-neutral-400 mb-1">Description</label>
-                <textarea
-                  rows={3}
-                  value={taskDraft.description}
-                  onChange={(event) => setTaskDraft((current) => ({ ...current, description: event.target.value }))}
-                  className="w-full bg-neutral-900 border border-neutral-700/50 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
+                <RichTextEditor
+                  initialContent={taskDraft.description}
+                  placeholder="Describe the task, add code, or use Markdown shortcuts..."
+                  data-testid="task-description-editor"
+                  onChange={(description) =>
+                    setTaskDraft((current) => ({ ...current, description }))
+                  }
                 />
               </div>
               <div>

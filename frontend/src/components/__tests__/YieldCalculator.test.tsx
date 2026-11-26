@@ -2,7 +2,7 @@ import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import YieldCalculator, { STAKING_POOLS } from "../YieldCalculator";
 
-describe("YieldCalculator Component — FE-PROD-25", () => {
+describe("YieldCalculator Component — FE-PROD-25 & FE-FINAL-24", () => {
   it("renders staking pool selection and principal controls", () => {
     render(<YieldCalculator />);
 
@@ -34,5 +34,30 @@ describe("YieldCalculator Component — FE-PROD-25", () => {
     fireEvent.change(select, { target: { value: "aqua-xlm" } });
 
     expect(screen.getByText("24.2%")).toBeInTheDocument();
+  });
+
+  it("renders frequency comparison cards for Daily, Weekly, and Monthly", () => {
+    render(<YieldCalculator />);
+
+    expect(screen.getByText("Frequency Comparison (Daily vs Weekly vs Monthly)")).toBeInTheDocument();
+    expect(screen.getByText("Daily")).toBeInTheDocument();
+    expect(screen.getByText("Weekly")).toBeInTheDocument();
+    expect(screen.getByText("Monthly")).toBeInTheDocument();
+  });
+
+  it("supports 1-click automated setup callback", () => {
+    const handleSetup = jest.fn();
+    render(<YieldCalculator onSetupTask={handleSetup} />);
+
+    const setupButton = screen.getByText(/1-Click Automated Setup/i);
+    fireEvent.click(setupButton);
+
+    expect(handleSetup).toHaveBeenCalledTimes(1);
+    expect(handleSetup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        poolId: "xlm-usdc",
+        intervalDays: 7,
+      })
+    );
   });
 });

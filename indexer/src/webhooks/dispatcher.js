@@ -6,6 +6,7 @@ const { assertPublicHttpUrl, SsrfError } = require("./ssrfGuard");
 
 const SIGNATURE_HEADER = "x-sorotask-signature";
 const SIGNATURE_PREFIX = "sha256=";
+const DEFAULT_DELIVERY_TIMEOUT_MS = 5000;
 
 /**
  * Sign a webhook payload with HMAC-SHA256 using the destination's secret key.
@@ -34,6 +35,7 @@ class WebhookDispatcher {
    * @param {typeof fetch} [options.fetchImpl]
    * @param {CircuitBreakerRegistry} [options.circuitBreaker]
    * @param {number} [options.maxAttempts]
+   * @param {number} [options.timeoutMs]
    * @param {(ms:number)=>Promise<void>} [options.sleep]
    * @param {object} [options.ssrf] - Options forwarded to assertPublicHttpUrl
    *   (e.g. `{ resolve: true }` to also DNS-validate hostnames).
@@ -42,6 +44,7 @@ class WebhookDispatcher {
     this.fetchImpl = options.fetchImpl || global.fetch;
     this.circuitBreaker = options.circuitBreaker || new CircuitBreakerRegistry();
     this.maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_DELIVERY_TIMEOUT_MS;
     this.sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.ssrfOptions = options.ssrf ?? {};
   }
@@ -100,20 +103,35 @@ class WebhookDispatcher {
         await this.sleep(computeBackoffDelayMs(attempt - 1));
       }
 
+      const controller = new AbortController();
+      let timeoutId;
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Webhook timed out after ${this.timeoutMs}ms`));
+        }, this.timeoutMs);
+      });
+
       try {
-        const response = await this.fetchImpl(url, {
-          method: "POST",
-          headers,
-          body: payload,
-        });
+        const response = await Promise.race([
+          this.fetchImpl(url, {
+            method: "POST",
+            headers,
+            body: payload,
+            signal: controller.signal,
+          }),
+          timeout,
+        ]);
         if (!response.ok) {
           throw new Error(`Webhook returned HTTP ${response.status}`);
         }
         this.circuitBreaker.recordSuccess(destinationId);
         return { success: true, attempts: attempt };
       } catch (err) {
-        lastError = err;
+        lastError = err?.name === "AbortError" ? new Error(`Webhook timed out after ${this.timeoutMs}ms`) : err;
         this.circuitBreaker.recordFailure(destinationId);
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 

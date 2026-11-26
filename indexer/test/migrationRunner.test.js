@@ -8,7 +8,7 @@
  * what it refuses to do — not whether Postgres executes DDL correctly.
  */
 
-const { test } = require('node:test');
+const { test, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -17,6 +17,14 @@ const path = require('node:path');
 const { runMigrations, rollbackLast, discoverMigrations } = require('../src/migrations/runner');
 
 const silentLogger = { info() {}, error() {}, warn() {} };
+const temporaryDirs = new Set();
+
+afterEach(() => {
+  for (const dir of temporaryDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  temporaryDirs.clear();
+});
 
 /**
  * Minimal client recording every statement.
@@ -60,6 +68,7 @@ function fakeDb({ failOn = null } = {}) {
 /** Temporary migrations directory. */
 function makeDir(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sorotask-migrations-'));
+  temporaryDirs.add(dir);
   for (const [name, body] of Object.entries(files)) {
     fs.writeFileSync(path.join(dir, name), body);
   }
@@ -207,6 +216,25 @@ test('rollbackLast reverses the most recent migration', async () => {
 
   assert.strictEqual(rolled, '001_a');
   assert.ok(!db.applied.has('001_a'));
+});
+
+test('a rolled-back migration reapplies cleanly without a stale ledger entry', async () => {
+  const dir = makeDir({
+    '001_a.sql': 'CREATE TABLE a (id INT);',
+    '001_a.down.sql': 'DROP TABLE IF EXISTS a;',
+  });
+  const db = fakeDb();
+
+  await runMigrations(db, { dir, logger: silentLogger });
+  await rollbackLast(db, { dir, logger: silentLogger });
+  assert.ok(!db.applied.has('001_a'), 'rollback must remove the migration ledger row');
+
+  const reapplied = await runMigrations(db, { dir, logger: silentLogger });
+
+  assert.deepStrictEqual(reapplied, [{ id: '001_a', status: 'applied' }]);
+  assert.ok(db.applied.has('001_a'), 'forward migration must restore the ledger row');
+  assert.equal(db.statements.filter((sql) => sql === 'CREATE TABLE a (id INT);').length, 2);
+  assert.equal(db.statements.filter((sql) => sql === 'DROP TABLE IF EXISTS a;').length, 1);
 });
 
 test('discoverMigrations pairs up and down scripts in order', () => {

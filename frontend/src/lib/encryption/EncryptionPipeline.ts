@@ -1,5 +1,22 @@
 import { EncryptionKeyManager } from './EncryptionKeyManager';
-import { EncryptedPayload, EncryptionError, KeyDerivationOptions, RotationResult } from './types';
+import {
+  EncryptedEnvelope,
+  EncryptedPayload,
+  EncryptionError,
+  KeyDerivationOptions,
+  RotationResult,
+} from './types';
+
+/**
+ * Only transient Web Crypto failures are worth retrying. Authentication
+ * failures, missing/revoked keys, a locked manager, and malformed envelopes are
+ * deterministic: retrying them only burns CPU and delays the error.
+ */
+const RETRYABLE_CODES = new Set(['ENCRYPT_FAILED']);
+
+function isRetryable(err: unknown): boolean {
+  return !(err instanceof EncryptionError) || RETRYABLE_CODES.has(err.code);
+}
 
 export interface PipelineOptions {
   manager: EncryptionKeyManager;
@@ -36,7 +53,7 @@ export class EncryptionPipeline {
       } catch (err) {
         lastError = err;
         this.trackError('encrypt', err, attempt);
-        if (err instanceof EncryptionError && err.code === 'KEY_NOT_FOUND') break; // no point retrying
+        if (!isRetryable(err)) break; // no point retrying
       }
     }
     return { success: false, error: this.errorMessage(lastError), retries: this.maxRetries };
@@ -53,23 +70,32 @@ export class EncryptionPipeline {
       } catch (err) {
         lastError = err;
         this.trackError('decrypt', err, attempt);
-        if (err instanceof EncryptionError && err.code === 'KEY_NOT_FOUND') break;
+        if (!isRetryable(err)) break;
       }
     }
     return { success: false, error: this.errorMessage(lastError), retries: this.maxRetries };
   }
 
-  // ── Bootstrap pipeline (derive + make first key) ──────────────────────
+  // ── Bootstrap pipeline (unlock master + ensure a derived data key) ───────
 
+  /**
+   * Unlock the creator's master key (PBKDF2 → HKDF) and make sure an active,
+   * re-derivable data key exists. On a returning device the existing active
+   * derived key is reused, so previously encrypted envelopes stay decryptable.
+   * Resolves to the active data key id.
+   */
   async bootstrap(opts: KeyDerivationOptions): Promise<PipelineResult<string>> {
     try {
-      const derived = await this.manager.deriveKey(opts);
-      const encryption = await this.manager.generateKey('encrypt', 'AES-GCM', 'data-key');
-      await this.manager.wrapKey(encryption.id, derived.id);
-      this.manager.setActiveKeyId(encryption.id);
-      return { success: true, data: encryption.id };
+      await this.manager.unlock(opts);
+      const activeId = this.manager.getActiveKeyId();
+      const activeMeta = activeId ? this.manager.getKeyMetadata(activeId) : undefined;
+      if (activeId && activeMeta?.status === 'active' && activeMeta.purpose === 'encrypt' && activeMeta.derivation) {
+        return { success: true, data: activeId };
+      }
+      const dataKey = await this.manager.deriveDataKey('data-key');
+      this.manager.setActiveKeyId(dataKey.id);
+      return { success: true, data: dataKey.id };
     } catch (err) {
-      console.error('BOOTSTRAP_ERR', err);
       this.trackError('bootstrap', err, 0);
       return { success: false, error: this.errorMessage(err) };
     }
@@ -97,12 +123,31 @@ export class EncryptionPipeline {
     return this.safeEncrypt(decryptResult.data);
   }
 
+  /**
+   * Migrate an envelope to the current active key (e.g. after rotation)
+   * without the plaintext ever leaving this function.
+   */
+  async reEncryptEnvelope(
+    envelope: EncryptedEnvelope,
+    context: string,
+  ): Promise<PipelineResult<EncryptedEnvelope>> {
+    try {
+      const plaintext = await this.manager.decryptEnvelope(envelope, context);
+      const data = await this.manager.encryptEnvelope(plaintext, context);
+      return { success: true, data };
+    } catch (err) {
+      this.trackError('reEncryptEnvelope', err, 0);
+      return { success: false, error: this.errorMessage(err) };
+    }
+  }
+
   // ── Internals ─────────────────────────────────────────────────────────
 
   private trackError(operation: string, err: unknown, attempt: number): void {
     if (!this.enableErrorTracking) return;
-    const message = this.errorMessage(err);
-    console.error(`[EncryptionPipeline:${operation}] attempt=${attempt} error=${message}`);
+    // Log only the error code/message — never payloads, keys, or the raw cause.
+    const code = err instanceof EncryptionError ? err.code : 'UNKNOWN';
+    console.error(`[EncryptionPipeline:${operation}] attempt=${attempt} code=${code} error=${this.errorMessage(err)}`);
   }
 
   private errorMessage(err: unknown): string {

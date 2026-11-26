@@ -9,6 +9,7 @@ describe('ContractCalldataSanitizer Unit Test Suite', () => {
 
     it('should successfully pass normal compliant calldata payloads', () => {
         const healthyPayload = {
+            contractAddress: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
             method: 'distribute_rewards',
             args: {
                 pool_id: 1045,
@@ -21,6 +22,19 @@ describe('ContractCalldataSanitizer Unit Test Suite', () => {
         expect(result.isValid).toBe(true);
         expect(result.sanitizedData).toBeDefined();
         expect(result.sanitizedData.args.title).toBe("Incentive Rewards Pool");
+    });
+
+    it('should reject payloads targeting known malicious phishing contracts', () => {
+        const maliciousPayload = {
+            contractAddress: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD999",
+            method: 'deposit',
+            args: { amount: 100 }
+        };
+
+        const result = sanitizer.sanitize(maliciousPayload);
+        expect(result.isValid).toBe(false);
+        expect(result.error?.code).toBe('PHISHING_RISK');
+        expect(result.error?.message).toContain('Web3 Phishing Defense');
     });
 
     it('should reject payloads that exceed structural size caps', () => {
