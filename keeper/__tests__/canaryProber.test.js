@@ -1,9 +1,19 @@
 const {
   STAGE_NAMES,
   CANARY_STATUS,
+  DEFAULT_SYNTHETIC_INTERVAL_MS,
   runCanaryCycle,
   createCanaryMonitor,
+  LatencyTracker,
+  createSreAlertDispatcher,
+  createSyntheticCanaryService,
 } = require('../src/canaryProber');
+const {
+  parseArgs,
+  buildSimulatedStages,
+  buildHttpStages,
+  runSyntheticMonitoring,
+} = require('../../scripts/synthetic-monitoring');
 
 function fakeClock() {
   let t = 0;
@@ -183,5 +193,169 @@ describe('canary monitor alerting (#1467)', () => {
     expect(() => createCanaryMonitor({ probe: healthyProbe, alert: async () => {}, failuresBeforeAlert: 0 })).toThrow(
       'failuresBeforeAlert'
     );
+  });
+});
+
+describe('synthetic canary service, latency graphing & SRE alerting (BE-FINAL-42)', () => {
+  it('propagates stage context across register -> discover -> execute -> settle', async () => {
+    const clock = fakeClock();
+    const result = await runCanaryCycle({
+      stages: {
+        register: async (ctx) => {
+          clock.advance(10);
+          return { taskId: `task-${ctx.cycleId}` };
+        },
+        discover: async (ctx) => {
+          clock.advance(15);
+          expect(ctx.taskId).toBe('task-c1');
+          return { keeperId: 'keeper-1' };
+        },
+        execute: async (ctx) => {
+          clock.advance(20);
+          expect(ctx.keeperId).toBe('keeper-1');
+          return { txHash: '0xabc' };
+        },
+        settle: async (ctx) => {
+          clock.advance(5);
+          expect(ctx.txHash).toBe('0xabc');
+          return { indexed: true };
+        },
+      },
+      now: clock.now,
+      context: { cycleId: 'c1' },
+    });
+
+    expect(result.healthy).toBe(true);
+    expect(result.totalMs).toBe(50);
+    expect(result.context).toMatchObject({ taskId: 'task-c1', keeperId: 'keeper-1', txHash: '0xabc', indexed: true });
+  });
+
+  it('tracks rolling end-to-end latency percentiles and exports Prometheus metrics', () => {
+    const tracker = new LatencyTracker({ maxSamples: 5, network: 'mainnet' });
+    for (const ms of [100, 200, 300, 400, 500]) {
+      tracker.record({
+        status: CANARY_STATUS.OK,
+        healthy: true,
+        totalMs: ms,
+        stageMs: { register: ms * 0.2, discover: ms * 0.2, execute: ms * 0.4, settle: ms * 0.2 },
+      });
+    }
+
+    const summary = tracker.getSummary();
+    expect(summary.totalCycles).toBe(5);
+    expect(summary.successRate).toBe(1);
+    expect(summary.latencyMs).toMatchObject({ min: 100, max: 500, avg: 300, p50: 300, p95: 500, p99: 500 });
+
+    const prom = tracker.toPrometheusMetrics();
+    expect(prom).toContain('sorotask_canary_cycles_total{network="mainnet",status="ok"} 5');
+    expect(prom).toContain('sorotask_canary_roundtrip_ms{network="mainnet",quantile="0.95"} 500');
+    expect(prom).toContain('sorotask_canary_stage_avg_ms{network="mainnet",stage="execute"} 120');
+  });
+
+  it('retries SRE webhook delivery on transient failures and never throws', async () => {
+    let attempts = 0;
+    const fetchFn = jest.fn(async () => {
+      attempts += 1;
+      if (attempts < 2) return { ok: false, status: 503 };
+      return { ok: true, status: 200 };
+    });
+
+    const dispatcher = createSreAlertDispatcher({
+      webhookUrl: 'https://sre.example.com/hook',
+      fetchFn,
+      maxRetries: 2,
+      retryDelayMs: 0,
+      sleepFn: async () => {},
+      logger: { error: () => {} },
+    });
+
+    const res = await dispatcher.send({ type: 'canary_failing', network: 'mainnet', stage: 'execute' });
+    expect(res.delivered).toBe(true);
+    expect(res.attempts).toBe(2);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('fires instant SRE alert on first cycle failure and recovers when healthy', async () => {
+    const clock = fakeClock();
+    let shouldFail = true;
+    const alerts = [];
+
+    const service = createSyntheticCanaryService({
+      network: 'mainnet',
+      intervalMs: DEFAULT_SYNTHETIC_INTERVAL_MS,
+      failuresBeforeAlert: 1,
+      now: clock.now,
+      onAlert: (evt) => alerts.push(evt),
+      stages: {
+        register: async () => { clock.advance(10); return { taskId: 't1' }; },
+        discover: async () => { clock.advance(10); return { pickedUp: true }; },
+        execute: async () => {
+          clock.advance(10);
+          if (shouldFail) throw new Error('rpc timeout');
+          return { txHash: '0x1' };
+        },
+        settle: async () => { clock.advance(10); return { indexed: true }; },
+      },
+    });
+
+    const failRes = await service.tick();
+    expect(failRes.status).toBe(CANARY_STATUS.FAILED);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ type: 'canary_failing', severity: 'critical', stage: 'execute' });
+
+    shouldFail = false;
+    const okRes = await service.tick();
+    expect(okRes.healthy).toBe(true);
+    expect(alerts).toHaveLength(2);
+    expect(alerts[1]).toMatchObject({ type: 'recovered', severity: 'info' });
+  });
+
+  it('integrates synthetic-monitoring script CLI args, HTTP stages, and --once execution', async () => {
+    const parsed = parseArgs(['--once', '--simulate', '--network', 'mainnet', '--interval-ms', '300000'], {});
+    expect(parsed).toMatchObject({ once: true, simulate: true, network: 'mainnet', intervalMs: 300000 });
+
+    const fetchFn = jest.fn(async (url) => {
+      if (url.endsWith('/tasks/micro')) return { ok: true, json: async () => ({ taskId: 'micro-42' }) };
+      if (url.endsWith('/tasks/micro-42')) return { ok: true, json: async () => ({ pickedUp: true, keeperId: 'k1' }) };
+      if (url.endsWith('/tasks/micro-42/execution')) return { ok: true, json: async () => ({ status: 'executed', txHash: '0x99' }) };
+      if (url.endsWith('/events/micro-42')) return { ok: true, json: async () => ({ indexed: true }) };
+      return { ok: false, status: 404 };
+    });
+
+    const httpStages = buildHttpStages({
+      rpcUrl: 'http://rpc.local',
+      keeperUrl: 'http://keeper.local',
+      indexerUrl: 'http://indexer.local',
+      fetchFn,
+    });
+
+    const silentLogger = { info: () => {}, error: () => {} };
+    const { firstResult, service } = await runSyntheticMonitoring({ once: true, stages: httpStages }, silentLogger);
+    expect(firstResult.healthy).toBe(true);
+    expect(service.getMetrics().totalCycles).toBe(1);
+  });
+
+  it('handles 500 continuous canary cycles under stress with bounded history', async () => {
+    const clock = fakeClock();
+    const stages = buildSimulatedStages({ delayMs: 0 });
+    const service = createSyntheticCanaryService({
+      stages,
+      now: () => {
+        clock.advance(2);
+        return clock.now();
+      },
+      historyLimit: 100,
+    });
+
+    for (let i = 0; i < 500; i += 1) {
+      const res = await service.tick();
+      expect(res.healthy).toBe(true);
+    }
+
+    const summary = service.getMetrics();
+    expect(summary.totalCycles).toBe(500);
+    expect(summary.healthyCycles).toBe(500);
+    expect(summary.windowSize).toBe(100);
+    expect(service.getHistory()).toHaveLength(100);
   });
 });
