@@ -14,7 +14,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1100.0",
     "@graphql-tools/schema": "^10.0.38",
-    "@stellar/stellar-sdk": "^15.0.1",
+    "@stellar/stellar-sdk": "^17.4.0",
     "apollo-server-express": "^3.13.0",
     "cors": "^2.8.6",
     "duckdb-async": "^1.4.2",
