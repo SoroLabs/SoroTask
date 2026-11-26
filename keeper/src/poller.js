@@ -9,6 +9,7 @@ const { SimulationCache } = require('./simulationCache');
 const { TaskMetadataCache } = require('./taskMetadataCache');
 const { ReadBatcher } = require('./readBatcher');
 const { TaskReadinessPredictor } = require('./ml-execution-predictor');
+const { wrapRpcServer } = require('./rpcWrapper');
 const crypto = require('crypto');
 
 function normalizeLogger(logger) {
@@ -35,9 +36,20 @@ function normalizeLogger(logger) {
  */
 class TaskPoller {
   constructor(server, contractId, options = {}) {
-    this.server = server;
+    // Support passing an array of RPC endpoints/servers or options.rpcEndpoints for multi-RPC failover
+    const configuredEndpoints = Array.isArray(server)
+      ? server
+      : (Array.isArray(options.rpcEndpoints) && options.rpcEndpoints.length > 0 ? options.rpcEndpoints : null);
+
+    this.server = configuredEndpoints
+      ? wrapRpcServer(configuredEndpoints, options.metricsServer || null, {
+          logger: options.logger,
+          ...(options.rpcPoolOptions || {}),
+        })
+      : server;
     this.contractId = contractId;
     this.mempoolSniffer = options.mempoolSniffer || null;
+    this.lastObservedLedger = 0;
 
     // Structured logger for poller module
     this.logger = normalizeLogger(options.logger);
@@ -255,6 +267,9 @@ class TaskPoller {
     try {
       // Fetch current ledger timestamp
       const ledgerInfo = await this.server.getLatestLedger();
+      if (ledgerInfo && Number.isFinite(Number(ledgerInfo.sequence))) {
+        this.lastObservedLedger = Math.max(this.lastObservedLedger || 0, Number(ledgerInfo.sequence));
+      }
       const currentTimestamp = this.resolveLedgerTimestamp(ledgerInfo);
 
       // Note: In production, you'd want to use the actual ledger timestamp
@@ -556,23 +571,37 @@ class TaskPoller {
       }
     }
 
-    // 2. Hot-reload RPC endpoints
+    // 2. Hot-reload RPC endpoints (supports multi-RPC failover pool)
     if (changes.rpcUrl || (Array.isArray(changes.rpcUrls) && changes.rpcUrls.length > 0)) {
-      const newRpc = changes.rpcUrl || changes.rpcUrls[0];
-      if (typeof newRpc === 'string' && (newRpc.startsWith('http://') || newRpc.startsWith('https://'))) {
+      const candidateUrls = Array.isArray(changes.rpcUrls) && changes.rpcUrls.length > 0
+        ? changes.rpcUrls.filter((u) => typeof u === 'string' && (u.startsWith('http://') || u.startsWith('https://')))
+        : (typeof changes.rpcUrl === 'string' && (changes.rpcUrl.startsWith('http://') || changes.rpcUrl.startsWith('https://'))
+            ? [changes.rpcUrl]
+            : []);
+
+      if (candidateUrls.length > 0) {
         const old = this.rpcUrl;
+        const newRpc = candidateUrls[0];
         this.rpcUrl = newRpc;
         try {
-          const { rpc } = require('@stellar/stellar-sdk');
-          const Server = rpc?.Server;
-          if (Server) {
-            this.server = new Server(newRpc, { allowHttp: newRpc.startsWith('http://') });
+          if (this.server && typeof this.server.updateEndpoints === 'function') {
+            this.server.updateEndpoints(candidateUrls);
+          } else if (candidateUrls.length > 1) {
+            this.server = wrapRpcServer(candidateUrls, this.metricsServer || null, {
+              logger: this.logger,
+            });
+          } else {
+            const { rpc } = require('@stellar/stellar-sdk');
+            const Server = rpc?.Server;
+            if (Server) {
+              this.server = new Server(newRpc, { allowHttp: newRpc.startsWith('http://') });
+            }
           }
         } catch (_err) {
           // ignore
         }
-        appliedChanges.rpcUrl = { old, new: newRpc };
-        this.logger.info('Hot-reloaded keeper RPC endpoint', { old, newRpc });
+        appliedChanges.rpcUrl = { old, new: newRpc, endpoints: candidateUrls };
+        this.logger.info('Hot-reloaded keeper RPC endpoint', { old, newRpc, endpointCount: candidateUrls.length });
       }
     }
 
@@ -1268,6 +1297,19 @@ class TaskPoller {
 
   getCycleInsights() {
     return { ...this.lastCycleInsights };
+  }
+
+  /**
+   * Get real-time multi-RPC pool health, latency weights, and failover metrics.
+   * Returns null if the underlying server does not expose pool status.
+   *
+   * @returns {Object|null}
+   */
+  getRpcPoolStatus() {
+    if (this.server && typeof this.server.getPoolStatus === 'function') {
+      return this.server.getPoolStatus();
+    }
+    return null;
   }
 
   /**

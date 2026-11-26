@@ -16,6 +16,172 @@ const WRAPPED_METHODS = [
   'getHealth',
 ];
 
+const WRAPPED_RPC_METHODS = [
+  'getNetwork',
+  'getLatestLedger',
+  'getAccount',
+  'simulateTransaction',
+  'sendTransaction',
+  'getTransaction',
+  'getEvents',
+  'getLedgerEntries',
+  'getHealth',
+];
+
+const FAILOVER_HTTP_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
+const INSTANT_TRIP_HTTP_STATUS_CODES = new Set([429, 503]);
+const FAILOVER_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'ABORT_ERR',
+]);
+
+/**
+ * Extract an HTTP status code from a variety of error shapes (fetch, axios, Stellar SDK, custom).
+ *
+ * @param {Error|Object} error
+ * @returns {number|null}
+ */
+function extractStatusCode(error) {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  const directCandidates = [
+    error.status,
+    error.statusCode,
+    error.httpStatus,
+    error.response && error.response.status,
+    error.response && error.response.statusCode,
+    error.data && error.data.status,
+  ];
+
+  for (const candidate of directCandidates) {
+    const code = Number(candidate);
+    if (Number.isInteger(code) && code >= 100 && code <= 599) {
+      return code;
+    }
+  }
+
+  const message = String(error.message || '');
+  const match = message.match(/\b(429|500|502|503|504)\b/);
+  if (match) {
+    return parseInt(match[1], 10);
+  }
+
+  return null;
+}
+
+/**
+ * Determine whether an RPC error should trigger immediate failover to another node.
+ *
+ * @param {Error|Object} error
+ * @returns {boolean}
+ */
+function isFailoverError(error) {
+  if (!error) {
+    return false;
+  }
+
+  const statusCode = extractStatusCode(error);
+  if (statusCode !== null && FAILOVER_HTTP_STATUS_CODES.has(statusCode)) {
+    return true;
+  }
+
+  const code = String(error.code || (error.cause && error.cause.code) || '').toUpperCase();
+  if (code && FAILOVER_ERROR_CODES.has(code)) {
+    return true;
+  }
+
+  if (error.name === 'AbortError' || error.name === 'TimeoutError') {
+    return true;
+  }
+
+  const message = String(error.message || '').toLowerCase();
+  if (
+    message.includes('rate limit') ||
+    message.includes('too many requests') ||
+    message.includes('service unavailable') ||
+    message.includes('bad gateway') ||
+    message.includes('gateway timeout') ||
+    message.includes('fetch failed') ||
+    message.includes('network error') ||
+    message.includes('socket hang up') ||
+    message.includes('timeout') ||
+    message.includes('econnrefused') ||
+    message.includes('econnreset') ||
+    message.includes('circuit breaker')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Parse Retry-After header or error property in milliseconds, if present.
+ *
+ * @param {Error|Object} error
+ * @returns {number|null}
+ */
+function extractRetryAfterMs(error) {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  const raw =
+    error.retryAfterMs ??
+    error.retryAfter ??
+    (error.headers && (error.headers['retry-after'] || error.headers['Retry-After'])) ??
+    (error.response &&
+      error.response.headers &&
+      (error.response.headers['retry-after'] || error.response.headers['Retry-After']));
+
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+
+  if (error.retryAfterMs !== undefined && Number.isFinite(Number(error.retryAfterMs))) {
+    return Math.max(0, Number(error.retryAfterMs));
+  }
+
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric >= 0) {
+    return numeric * 1000;
+  }
+
+  const dateMs = Date.parse(String(raw));
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return null;
+}
+
+/**
+ * Default factory to create a Soroban RPC Server from a URL string.
+ *
+ * @param {string} url
+ * @returns {Object}
+ */
+function defaultServerFactory(url) {
+  const sdk = require('@stellar/stellar-sdk');
+  const Server = (sdk.rpc && sdk.rpc.Server) || (sdk.SorobanRpc && sdk.SorobanRpc.Server);
+  if (!Server) {
+    throw new Error('Soroban RPC Server constructor is unavailable in @stellar/stellar-sdk');
+  }
+  return new Server(url, { allowHttp: url.startsWith('http://') });
+}
+
 /**
  * Wraps a SorobanRpc.Server, load-balanced RPC instance, or multi-endpoint pool
  * with circuit breaking, background RPC benchmarking, and latency-weighted traffic steering.
@@ -358,6 +524,13 @@ class RPCWrapper {
    * Get the current circuit breaker state.
    */
   getCircuitState() {
+    if (this.isMultiNodePool && this.pool.nodes.length > 0) {
+      const anyClosed = this.pool.nodes.some((n) => n.breaker.getState() === State.CLOSED);
+      if (anyClosed) return State.CLOSED;
+      const anyHalfOpen = this.pool.nodes.some((n) => n.breaker.getState() === State.HALF_OPEN);
+      if (anyHalfOpen) return State.HALF_OPEN;
+      return State.OPEN;
+    }
     return this.breaker.getState();
   }
 
@@ -454,30 +627,36 @@ class RPCWrapper {
    * Get load balancer metrics (for load-balanced RPC servers).
    */
   getLoadBalancerMetrics() {
-    if (this.server.loadBalancer && typeof this.server.loadBalancer.getMetrics === 'function') {
+    if (this.server && this.server.loadBalancer && typeof this.server.loadBalancer.getMetrics === 'function') {
       return this.server.loadBalancer.getMetrics();
     }
-    return null;
+    return this.isMultiNodePool ? this.pool.getPoolStatus() : null;
   }
 
   /**
    * Get endpoint registry status (for load-balanced RPC servers).
    */
   getEndpointRegistryStatus() {
-    if (this.server.endpointRegistry && typeof this.server.endpointRegistry.getHealthSummary === 'function') {
+    if (
+      this.server &&
+      this.server.endpointRegistry &&
+      typeof this.server.endpointRegistry.getHealthSummary === 'function'
+    ) {
       return this.server.endpointRegistry.getHealthSummary();
     }
-    return null;
+    return this.isMultiNodePool ? this.pool.getPoolStatus() : null;
   }
 
   /**
    * Get health monitor status (for load-balanced RPC servers).
    */
   getHealthMonitorStatus() {
-    if (this.server.healthMonitor && typeof this.server.healthMonitor.getStatus === 'function') {
+    if (this.server && this.server.healthMonitor && typeof this.server.healthMonitor.getStatus === 'function') {
       return this.server.healthMonitor.getStatus();
     }
-    return null;
+    return this.isMultiNodePool
+      ? { isRunning: this.pool.isMonitoring, intervalMs: this.pool.healthCheckIntervalMs }
+      : null;
   }
 
   /**
@@ -527,4 +706,11 @@ function wrapRpcServer(serverOrEndpoints, metrics, options = {}) {
   });
 }
 
-module.exports = { wrapRpcServer, RPCWrapper };
+module.exports = {
+  wrapRpcServer,
+  RPCWrapper,
+  RPCPoolManager,
+  isFailoverError,
+  extractStatusCode,
+  extractRetryAfterMs,
+};
