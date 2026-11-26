@@ -124,6 +124,7 @@ async function main() {
   // tasks that aren't yet ready for their backoff retry).
   const deadLetterQueue = new DeadLetterQueue({
     logger: createLogger("dead-letter-queue"),
+    alertManager,
   });
   // Issue #781 — profitability gate. gasForecaster accumulates per-task fee
   // history (fed by executeTask below) so profitabilityEstimator can compare
@@ -575,11 +576,16 @@ async function main() {
         correlationId,
         classification: error.classification || null,
       });
+      const taskConfig = registry.tasks.get(taskId) || registry.tasks.get(String(taskId)) || null;
       deadLetterQueue.recordFailure(taskId, {
         error: error.error || error,
         errorClassification: error.classification || undefined,
-        txHash: error.result?.txHash || null,
-        phase: "execution",
+        attempt: error.attempts || context.attempt || 1,
+        txHash: error.result?.txHash || error.error?.txHash || null,
+        phase: error.context?.phase || error.error?.phase || "execution",
+        attemptId: context.attemptId || null,
+        correlationId,
+        taskConfig,
       });
       throw error;
     }
