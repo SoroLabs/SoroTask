@@ -6,7 +6,7 @@ import { useEncryptionStore } from '@/src/store/encryptionStore';
 // Provide Node.js webcrypto for the underlying EncryptionKeyManager
 beforeAll(() => {
   if (typeof globalThis.crypto === 'undefined') {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { webcrypto } = require('crypto');
     Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
   }
@@ -159,5 +159,58 @@ describe('EncryptionKeyManagerPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /initialize/i }));
     const alert = await screen.findByRole('alert');
     expect(alert).toBeInTheDocument();
+  });
+
+  // ── accessibility (#1748) ─────────────────────────────────────────────
+
+  it('associates a real <label> with the password input and describes it', () => {
+    render(<EncryptionKeyManagerPanel />);
+    const input = screen.getByLabelText('Master password');
+    expect(input.tagName).toBe('INPUT');
+    expect(input).toHaveAttribute('autocomplete', 'current-password');
+    expect(input.getAttribute('aria-describedby')).toBeTruthy();
+  });
+
+  it('exposes a polite live region and labels the region', () => {
+    render(<EncryptionKeyManagerPanel />);
+    const region = screen.getByRole('region', { name: 'Encryption Key Manager' });
+    expect(region).toBeInTheDocument();
+    const live = screen.getAllByRole('status').find((el) => el.getAttribute('aria-live') === 'polite');
+    expect(live).toBeDefined();
+  });
+
+  it('marks the input invalid and links the error when empty', async () => {
+    render(<EncryptionKeyManagerPanel />);
+    fireEvent.click(screen.getByRole('button', { name: /initialize/i }));
+    const alert = await screen.findByRole('alert');
+    const input = screen.getByLabelText('Master password');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input.getAttribute('aria-describedby')).toContain(alert.id);
+  });
+
+  it('announces readiness and gives revoke buttons distinct accessible names', async () => {
+    render(<EncryptionKeyManagerPanel />);
+    fireEvent.change(screen.getByLabelText('Master password'), { target: { value: 'pass' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /initialize/i }));
+    });
+    await waitFor(() => expect(screen.getByText(/encryption ready/i)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /revoke key data-key/i })).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: /active encryption keys/i })).toBeInTheDocument();
+  });
+
+  it('Lock button locks the manager and offers Unlock', async () => {
+    render(<EncryptionKeyManagerPanel />);
+    fireEvent.change(screen.getByLabelText('Master password'), { target: { value: 'pass' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /initialize/i }));
+    });
+    await waitFor(() => screen.getByRole('button', { name: /^lock$/i }));
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /^lock$/i }));
+    });
+    await waitFor(() => expect(screen.getByTestId('enc-status-badge').textContent).toBe('locked'));
+    expect(screen.getByRole('button', { name: /^unlock$/i })).toBeInTheDocument();
+    expect(screen.getByLabelText('Master password')).toHaveValue('');
   });
 });

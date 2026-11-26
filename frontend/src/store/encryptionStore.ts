@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { EncryptionKey, EncryptedPayload, RotationResult } from '@/src/lib/encryption/types';
 
-export type EncryptionStatus = 'idle' | 'initializing' | 'ready' | 'error' | 'rotating';
+export type EncryptionStatus = 'idle' | 'initializing' | 'ready' | 'error' | 'rotating' | 'locked';
 
 export interface EncryptionState {
   status: EncryptionStatus;

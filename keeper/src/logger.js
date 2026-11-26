@@ -15,14 +15,162 @@ const { AuditLogger, getAuditLogger } = require('./auditLogger');
 const SENSITIVE_FIELDS = [
   'secret',
   'secretKey',
+  'secret_key',
   'privateKey',
+  'private_key',
   'password',
+  'passwd',
   'token',
+  'accessToken',
+  'access_token',
+  'refreshToken',
+  'refresh_token',
   'apiKey',
+  'api_key',
   'keeperSecret',
   'KEEPER_SECRET',
   'keypair',
+  'jwt',
+  'authorization',
+  'Authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'webhookUrl',
+  'webhook_url',
+  'seed',
+  'mnemonic',
 ];
+
+const REDACTION_MASK = '[REDACTED]';
+
+const SENSITIVE_KEY_SET = new Set(SENSITIVE_FIELDS.map((k) => k.toLowerCase()));
+
+/**
+ * High-performance pre-compiled regex redaction filters (ReDoS-safe, linear-time).
+ * Masks Stellar seed keys, JWT bearer tokens, private IPv4/IPv6 addresses,
+ * sensitive webhook URLs, URL credentials/query secrets, and email PII.
+ */
+const REDACTION_PATTERNS = [
+  // Stellar StrKey secret seed (56 chars starting with 'S', base32 alphabet A-Z2-7)
+  { name: 'stellar_seed', regex: /\bS[A-Z2-7]{55}\b/g, replacement: '[REDACTED_STELLAR_SEED]' },
+  // Bearer tokens (JWT or opaque)
+  { name: 'bearer_token', regex: /\bBearer\s+[A-Za-z0-9\-._~+/]+=*/gi, replacement: 'Bearer [REDACTED_TOKEN]' },
+  // Raw JWTs (header.payload.signature)
+  { name: 'jwt', regex: /\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b/g, replacement: '[REDACTED_JWT]' },
+  // Webhook URLs (Slack, Discord, Teams, generic /webhook(s)/ endpoints)
+  { name: 'webhook_url', regex: /https?:\/\/(?:hooks\.slack\.com\/services\/[^\s"'<>]+|discord(?:app)?\.com\/api\/webhooks\/[^\s"'<>]+|[^\s"'<>]*\/webhooks?\/[^\s"'<>]+)/gi, replacement: '[REDACTED_WEBHOOK_URL]' },
+  // URLs with embedded user:pass@ credentials
+  { name: 'url_credentials', regex: /(https?:\/\/)([^:@\s/]+):([^@\s/]+)@/gi, replacement: '$1[REDACTED_CREDENTIALS]@' },
+  // Sensitive URL query parameters (token, api_key, apikey, secret, sig, signature, key, auth)
+  { name: 'url_query_secret', regex: /([?&](?:token|api_key|apikey|secret|sig|signature|access_token|auth|key)=)([^&\s"'<>]+)/gi, replacement: '$1[REDACTED]' },
+  // Private IPv4 addresses (RFC 1918 + loopback 127.0.0.0/8 + link-local 169.254.0.0/16)
+  { name: 'private_ipv4', regex: /\b(?:10\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|172\.(?:1[6-9]|2\d|3[01])\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|192\.168\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|169\.254\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d))\b/g, replacement: '[REDACTED_PRIVATE_IP]' },
+  // Private / loopback IPv6 addresses (::1, fc00::/7, fd00::/8, fe80::/10)
+  { name: 'private_ipv6', regex: /(?:^|[\s"'(,=[:])(?:(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f]):[0-9a-f:]+|::1)(?=$|[\s"'),\]}])/gi, replacement: (match) => {
+    const prefix = match.length > 0 && /[\s"'(,=[:]/.test(match[0]) ? match[0] : '';
+    return `${prefix}[REDACTED_PRIVATE_IP]`;
+  } },
+  // Email addresses (GDPR PII)
+  { name: 'email_pii', regex: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, replacement: '[REDACTED_EMAIL]' },
+];
+
+/**
+ * Redact sensitive patterns from a string in linear time.
+ */
+function redactString(input) {
+  if (typeof input !== 'string' || input.length < 3) {
+    return input;
+  }
+  let output = input;
+  for (let i = 0; i < REDACTION_PATTERNS.length; i++) {
+    const pattern = REDACTION_PATTERNS[i];
+    output = output.replace(pattern.regex, pattern.replacement);
+  }
+  return output;
+}
+
+/**
+ * Recursively redact sensitive keys and pattern-matched string values from any value.
+ * Protects against circular references and deep nesting.
+ */
+function redactValue(value, seen, depth = 0) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  const type = typeof value;
+  if (type === 'string') {
+    return redactString(value);
+  }
+  if (type !== 'object') {
+    return value;
+  }
+  if (depth > 12) {
+    return '[REDACTED_MAX_DEPTH]';
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  if (value instanceof Error) {
+    const redactedErr = {
+      type: value.name || 'Error',
+      message: redactString(value.message || ''),
+    };
+    if (value.stack) {
+      redactedErr.stack = redactString(value.stack);
+    }
+    if (value.code !== undefined) {
+      redactedErr.code = value.code;
+    }
+    return redactedErr;
+  }
+  const visited = seen || new WeakSet();
+  if (visited.has(value)) {
+    return '[Circular]';
+  }
+  visited.add(value);
+
+  if (Array.isArray(value)) {
+    const arr = new Array(value.length);
+    for (let i = 0; i < value.length; i++) {
+      arr[i] = redactValue(value[i], visited, depth + 1);
+    }
+    return arr;
+  }
+
+  const out = {};
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (SENSITIVE_KEY_SET.has(key.toLowerCase())) {
+      out[key] = REDACTION_MASK;
+    } else {
+      out[key] = redactValue(value[key], visited, depth + 1);
+    }
+  }
+  return out;
+}
+
+function redactObject(obj) {
+  if (!obj || typeof obj !== 'object') {
+    return typeof obj === 'string' ? redactString(obj) : obj;
+  }
+  return redactValue(obj, null, 0);
+}
+
+/**
+ * Wrap any writable pino destination so every serialized JSON line is redacted
+ * before hitting stdout or disk.
+ */
+function createRedactingDestination(targetDestination) {
+  const dest = targetDestination || process.stdout;
+  return {
+    write(chunk) {
+      const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      return dest.write(redactString(str));
+    },
+  };
+}
 
 const VALID_LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
 
@@ -64,15 +212,17 @@ function createBaseLogger(overrides = {}, destination) {
         return { level: label };
       },
       log(object) {
-        const formatted = { ...object };
-        if (formatted.traceId && !formatted.trace_id) {
-          formatted.trace_id = formatted.traceId;
-        }
-        if (formatted.taskId && !formatted.task_id) {
-          formatted.task_id = formatted.taskId;
-        }
-        if (formatted.ledgerSequence && !formatted.ledger_sequence) {
-          formatted.ledger_sequence = formatted.ledgerSequence;
+        const formatted = redactObject(object);
+        if (formatted && typeof formatted === 'object') {
+          if (formatted.traceId && !formatted.trace_id) {
+            formatted.trace_id = formatted.traceId;
+          }
+          if (formatted.taskId && !formatted.task_id) {
+            formatted.task_id = formatted.taskId;
+          }
+          if (formatted.ledgerSequence && !formatted.ledger_sequence) {
+            formatted.ledger_sequence = formatted.ledgerSequence;
+          }
         }
         return formatted;
       },
@@ -80,8 +230,8 @@ function createBaseLogger(overrides = {}, destination) {
     messageKey: 'message',
     timestamp: () => `,"timestamp":"${new Date().toISOString()}"`,
     serializers: {
-      err: pino.stdSerializers.err,
-      error: pino.stdSerializers.err,
+      err: (e) => redactObject(pino.stdSerializers.err(e)),
+      error: (e) => redactObject(pino.stdSerializers.err(e)),
     },
     ...overrides,
   };
@@ -98,7 +248,10 @@ function createBaseLogger(overrides = {}, destination) {
     };
   }
 
-  const logger = destination ? pino(loggerOptions, destination) : pino(loggerOptions);
+  const redactingDest = destination
+    ? createRedactingDestination(destination)
+    : (shouldUsePrettyTransport() ? undefined : createRedactingDestination(process.stdout));
+  const logger = redactingDest ? pino(loggerOptions, redactingDest) : pino(loggerOptions);
   logger.logFormat = shouldUsePrettyTransport() ? 'pretty' : 'json';
   return logger;
 }
@@ -118,22 +271,22 @@ function createLogger(module) {
 
   return {
     trace: (msg, meta = {}) => {
-      child.trace(meta, msg);
+      child.trace(redactObject(meta), redactString(msg));
     },
     debug: (msg, meta = {}) => {
-      child.debug(meta, msg);
+      child.debug(redactObject(meta), redactString(msg));
     },
     info: (msg, meta = {}) => {
-      child.info(meta, msg);
+      child.info(redactObject(meta), redactString(msg));
     },
     warn: (msg, meta = {}) => {
-      child.warn(meta, msg);
+      child.warn(redactObject(meta), redactString(msg));
     },
     error: (msg, meta = {}) => {
-      child.error(meta, msg);
+      child.error(redactObject(meta), redactString(msg));
     },
     fatal: (msg, meta = {}) => {
-      child.fatal(meta, msg);
+      child.fatal(redactObject(meta), redactString(msg));
     },
     audit: async (action, details = {}) => {
       return await getAuditLogger().logAuditEntry(action, details);
@@ -181,22 +334,22 @@ function createLogger(module) {
 function createTracedLogger(child, module) {
   return {
     trace: (msg, meta = {}) => {
-      child.trace(meta, msg);
+      child.trace(redactObject(meta), redactString(msg));
     },
     debug: (msg, meta = {}) => {
-      child.debug(meta, msg);
+      child.debug(redactObject(meta), redactString(msg));
     },
     info: (msg, meta = {}) => {
-      child.info(meta, msg);
+      child.info(redactObject(meta), redactString(msg));
     },
     warn: (msg, meta = {}) => {
-      child.warn(meta, msg);
+      child.warn(redactObject(meta), redactString(msg));
     },
     error: (msg, meta = {}) => {
-      child.error(meta, msg);
+      child.error(redactObject(meta), redactString(msg));
     },
     fatal: (msg, meta = {}) => {
-      child.fatal(meta, msg);
+      child.fatal(redactObject(meta), redactString(msg));
     },
     audit: async (action, details = {}) => {
       return await getAuditLogger().logAuditEntry(action, details);
@@ -274,6 +427,11 @@ module.exports = {
   setLogLevel,
   normalizeLogLevel,
   SENSITIVE_FIELDS,
+  REDACTION_PATTERNS,
+  REDACTION_MASK,
+  redactString,
+  redactObject,
+  createRedactingDestination,
   injectW3CTraceContext,
   AuditLogger,
   getAuditLogger,
@@ -561,7 +719,7 @@ class ConsoleExporter {
   }
   export(span) {
     if (span._ended) {
-      console.log(JSON.stringify({
+      console.log(redactString(JSON.stringify(redactObject({
         resourceLogs: [{
           resource: span.resource,
           scopeLogs: [{
@@ -575,11 +733,11 @@ class ConsoleExporter {
           }],
         }],
         schemaUrl: 'https://opentelemetry.io/schemas/1.21.0',
-      }));
+      }))));
     }
   }
   exportLog(record) {
-    console.log(JSON.stringify(record));
+    console.log(redactString(JSON.stringify(redactObject(record))));
   }
 }
 

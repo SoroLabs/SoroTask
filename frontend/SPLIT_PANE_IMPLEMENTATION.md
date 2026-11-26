@@ -198,3 +198,25 @@ frontend/
 - Implement pane collapse/expand animation
 - Add detail pane toolbar with actions
 - Support pinning the pane open
+
+
+---
+
+## Split-Pane IDE & Smart Contract ABI Testing Sandbox (`/sandbox`)
+
+### Overview
+The Split-Pane Developer Sandbox provides an integrated in-browser IDE for inspecting Soroban smart contract ABIs, editing condition resolver code, and simulating execution traces before creating live automated tasks.
+
+### Architecture & Key Features
+1. **Dynamic Split-Pane Layout**:
+   - Left Pane: Interactive parameter configuration (Target Soroban Contract address, function ABI entrypoint, condition resolver source code, JSON calldata).
+   - Draggable Resize Divider: Allows adjusting pane widths dynamically (30% to 75% range) via smooth mouse event listeners.
+   - Right Pane: Real-time simulation console displaying timestamped execution traces, host function invocations, gas usage, and decoded return values.
+
+2. **In-Browser Simulated Invocation**:
+   - Evaluates smart contract inputs without broadcasting to Stellar mainnet.
+   - Accurately tracks simulated CPU instructions and ledger storage operations.
+   - Displays structured JSON output and decoded return status.
+
+3. **1-Click Export to Production Task Creation**:
+   - Exports the tested ABI parameters, contract address, and calldata arguments directly to the production task creation workflow (`/?createTask=true`).

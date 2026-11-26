@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState, useMemo, useEffect } from "react";
-import { FiTrendingUp, FiSettings, FiDollarSign, FiZap } from "react-icons/fi";
+import React, { useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import { FiTrendingUp, FiSettings, FiDollarSign, FiZap, FiCheckCircle, FiPlay } from "react-icons/fi";
 
 export interface StakingPoolOption {
   id: string;
@@ -52,13 +53,24 @@ export interface CompoundingScheduleOutcome {
   isOptimal: boolean;
 }
 
-export default function YieldCalculator() {
+export interface YieldCalculatorProps {
+  onSetupTask?: (taskConfig: {
+    poolId: string;
+    intervalDays: number;
+    principal: number;
+    projectedApy: number;
+  }) => void;
+}
+
+export default function YieldCalculator({ onSetupTask }: YieldCalculatorProps = {}) {
+  const router = useRouter();
   const [selectedPoolId, setSelectedPoolId] = useState<string>("xlm-usdc");
   const [principal, setPrincipal] = useState<number>(1000);
   const [customApr, setCustomApr] = useState<number | null>(null);
   const [gasPriceGstroop, setGasPriceGstroop] = useState<number>(100); // base gas fee
   const [keeperFeeUsd, setKeeperFeeUsd] = useState<number>(0.15); // automated keeper fee
   const [compoundDaysInterval, setCompoundDaysInterval] = useState<number>(7); // weekly default
+  const [taskSetupSuccess, setTaskSetupSuccess] = useState<boolean>(false);
 
   const selectedPool = useMemo(
     () =>
@@ -70,7 +82,6 @@ export default function YieldCalculator() {
 
   // Calculate real-time gas fee per compounding execution in USD
   const gasCostPerTxUsd = useMemo(() => {
-    // 1 XLM ~ $0.12, gas price in stroops
     const xlmPriceUsd = 0.12;
     const estimatedGasXlm = selectedPool.baseFeeXlm * (gasPriceGstroop / 100);
     return estimatedGasXlm * xlmPriceUsd + keeperFeeUsd;
@@ -95,10 +106,8 @@ export default function YieldCalculator() {
 
     const list = candidateFrequencies.map((f) => {
       const n = f.timesPerYear;
-      // Compounded gross value before gas
       const grossFinal = principal * Math.pow(1 + r / n, n);
       const grossGain = grossFinal - principal;
-      // Total fee cost over 1 year = n * gasCostPerTxUsd
       const totalFees = n * gasCostPerTxUsd;
       const netGain = grossGain - totalFees;
       const netFinal = principal + netGain;
@@ -115,7 +124,6 @@ export default function YieldCalculator() {
       };
     });
 
-    // Find optimal frequency maximizing netReturn
     let maxNet = -Infinity;
     let optimalIdx = -1;
     list.forEach((item, idx) => {
@@ -136,6 +144,14 @@ export default function YieldCalculator() {
     () => outcomes.find((o) => o.isOptimal),
     [outcomes],
   );
+
+  // Dedicated comparisons for Daily vs Weekly vs Monthly
+  const quickComparisons = useMemo(() => {
+    const daily = outcomes.find((o) => o.timesPerYear === 365);
+    const weekly = outcomes.find((o) => o.timesPerYear === 52);
+    const monthly = outcomes.find((o) => o.timesPerYear === 12);
+    return { daily, weekly, monthly };
+  }, [outcomes]);
 
   // 1-year monthly projection curve data points for interactive chart
   const monthlyChartData = useMemo(() => {
@@ -174,16 +190,58 @@ export default function YieldCalculator() {
     return points;
   }, [principal, activeApr, compoundDaysInterval, gasCostPerTxUsd]);
 
+  const handle1ClickSetupTask = () => {
+    const taskConfig = {
+      poolId: selectedPool.id,
+      intervalDays: compoundDaysInterval,
+      principal,
+      projectedApy: optimalSchedule?.effectiveApy || activeApr,
+    };
+
+    if (onSetupTask) {
+      onSetupTask(taskConfig);
+    }
+
+    setTaskSetupSuccess(true);
+    setTimeout(() => {
+      setTaskSetupSuccess(false);
+      try {
+        router.push(
+          `/?createTask=true&strategy=yield-compound&pool=${selectedPool.id}&intervalDays=${compoundDaysInterval}`
+        );
+      } catch {
+        // Fallback for isolated test environments
+      }
+    }, 1000);
+  };
+
   return (
     <div className="rounded-2xl border border-white/10 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-md">
       <div className="grid gap-8 lg:grid-cols-12">
         {/* Controls Column */}
         <div className="lg:col-span-5 space-y-5 border-b lg:border-b-0 lg:border-r border-white/10 pb-6 lg:pb-0 lg:pr-6">
-          <div className="flex items-center gap-2">
-            <FiTrendingUp className="text-emerald-400 size-5" />
-            <h2 className="text-lg font-bold text-white">
-              Yield Farming Controls
-            </h2>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FiTrendingUp className="text-emerald-400 size-5" />
+              <h2 className="text-lg font-bold text-white">
+                Yield Farming Controls
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={handle1ClickSetupTask}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-black transition hover:bg-emerald-400 active:scale-95 shadow-md"
+            >
+              {taskSetupSuccess ? (
+                <>
+                  <FiCheckCircle className="size-3.5" /> Task Ready!
+                </>
+              ) : (
+                <>
+                  <FiPlay className="size-3.5" /> 1-Click Automated Setup
+                </>
+              )}
+            </button>
           </div>
 
           {/* Staking Pool Selector */}
@@ -271,6 +329,65 @@ export default function YieldCalculator() {
             />
           </div>
 
+          {/* Side-by-Side Comparison: Daily vs Weekly vs Monthly */}
+          <div className="rounded-xl border border-white/10 bg-slate-950/70 p-3">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block mb-2">
+              Frequency Comparison (Daily vs Weekly vs Monthly)
+            </span>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div
+                onClick={() => setCompoundDaysInterval(1)}
+                className={`cursor-pointer rounded-lg p-2 border transition ${
+                  compoundDaysInterval === 1
+                    ? "border-emerald-500 bg-emerald-500/10"
+                    : "border-white/5 bg-white/5 hover:border-white/20"
+                }`}
+              >
+                <div className="text-[10px] uppercase text-slate-400">Daily</div>
+                <div className="text-xs font-mono font-bold text-white mt-0.5">
+                  {quickComparisons.daily?.effectiveApy.toFixed(1)}%
+                </div>
+                <div className="text-[9px] text-emerald-400 font-mono">
+                  +${quickComparisons.daily?.netReturn.toFixed(0)}
+                </div>
+              </div>
+
+              <div
+                onClick={() => setCompoundDaysInterval(7)}
+                className={`cursor-pointer rounded-lg p-2 border transition ${
+                  compoundDaysInterval === 7
+                    ? "border-emerald-500 bg-emerald-500/10"
+                    : "border-white/5 bg-white/5 hover:border-white/20"
+                }`}
+              >
+                <div className="text-[10px] uppercase text-slate-400">Weekly</div>
+                <div className="text-xs font-mono font-bold text-white mt-0.5">
+                  {quickComparisons.weekly?.effectiveApy.toFixed(1)}%
+                </div>
+                <div className="text-[9px] text-emerald-400 font-mono">
+                  +${quickComparisons.weekly?.netReturn.toFixed(0)}
+                </div>
+              </div>
+
+              <div
+                onClick={() => setCompoundDaysInterval(30)}
+                className={`cursor-pointer rounded-lg p-2 border transition ${
+                  compoundDaysInterval === 30
+                    ? "border-emerald-500 bg-emerald-500/10"
+                    : "border-white/5 bg-white/5 hover:border-white/20"
+                }`}
+              >
+                <div className="text-[10px] uppercase text-slate-400">Monthly</div>
+                <div className="text-xs font-mono font-bold text-white mt-0.5">
+                  {quickComparisons.monthly?.effectiveApy.toFixed(1)}%
+                </div>
+                <div className="text-[9px] text-emerald-400 font-mono">
+                  +${quickComparisons.monthly?.netReturn.toFixed(0)}
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Real-time Gas & Keeper Fee Settings */}
           <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 text-xs space-y-2">
             <div className="flex items-center justify-between text-slate-400">
@@ -342,7 +459,6 @@ export default function YieldCalculator() {
                 viewBox="0 0 500 200"
                 preserveAspectRatio="none"
               >
-                {/* Horizontal grid lines */}
                 {[0, 50, 100, 150].map((y) => (
                   <line
                     key={y}
@@ -355,7 +471,6 @@ export default function YieldCalculator() {
                   />
                 ))}
 
-                {/* Plot curves */}
                 {(() => {
                   const maxVal =
                     Math.max(...monthlyChartData.map((d) => d.grossCompound)) *

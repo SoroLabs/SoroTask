@@ -14,6 +14,9 @@ const { safeFetch } = require('./ssrfGuard');
  */
 const FailureCategory = Object.freeze({
   INSUFFICIENT_ESCROW: 'InsufficientEscrow',
+  GAS_DEPLETION: 'GasDepletion',
+  NETWORK_TIMEOUT: 'NetworkTimeout',
+  CONTRACT_PANIC: 'ContractPanic',
   TARGET_REVERTED: 'TargetReverted',
   CONDITION_UNMET: 'ConditionUnmet',
   UNKNOWN: 'Unknown',
@@ -22,11 +25,23 @@ const FailureCategory = Object.freeze({
 const FAILURE_CATEGORY_PATTERNS = [
   {
     category: FailureCategory.INSUFFICIENT_ESCROW,
-    pattern: /insufficient[_ -]?escrow|escrow[_ -]?(?:balance|funding|funded|missing|too low|empty)|not enough gas/i,
+    pattern: /insufficient[_ -]?escrow|escrow[_ -]?(?:balance|funding|funded|missing|too low|empty)/i,
+  },
+  {
+    category: FailureCategory.GAS_DEPLETION,
+    pattern: /insufficient[_ -]?(?:gas|balance)|out of gas|gas[_ -]?(?:depleted|exhausted|low)|not enough gas/i,
+  },
+  {
+    category: FailureCategory.NETWORK_TIMEOUT,
+    pattern: /timeout|timed out|network[_ -]?(?:error|failure)|econnreset|econnrefused|etimedout|eai_again/i,
+  },
+  {
+    category: FailureCategory.CONTRACT_PANIC,
+    pattern: /contract[_ -]?panic|wasm[_ -]?trap|\bpanic\b/i,
   },
   {
     category: FailureCategory.TARGET_REVERTED,
-    pattern: /revert(?:ed|s|ion)?\b|contract[_ -]?error|host[_ -]?error|wasm[_ -]?trap|\btrap\b|panic/i,
+    pattern: /revert(?:ed|s|ion)?\b|contract[_ -]?error|host[_ -]?error|\btrap\b/i,
   },
   {
     category: FailureCategory.CONDITION_UNMET,
@@ -79,6 +94,7 @@ class DeadLetterQueue extends EventEmitter {
       
       // Whether to enable automatic quarantine
       autoQuarantine: process.env.DLQ_AUTO_QUARANTINE !== 'false',
+      autoReconcile: process.env.DLQ_AUTO_RECONCILE !== 'false',
       
       // Maximum number of dead-letter records to keep
       maxRecords: parseInt(process.env.DLQ_MAX_RECORDS, 10) || 1000,
@@ -86,6 +102,8 @@ class DeadLetterQueue extends EventEmitter {
       // Exponential backoff configuration
       baseDelayMs: parseInt(process.env.DLQ_BASE_DELAY_MS, 10) || 5000, // 5 seconds base
       maxDelayMs: parseInt(process.env.DLQ_MAX_DELAY_MS, 10) || 3600000, // 1 hour max
+      maxAutoReconcileAttempts:
+        parseInt(process.env.DLQ_AUTO_RECONCILE_MAX_ATTEMPTS, 10) || 5,
       
       // Webhook notification configuration
       webhookUrl: process.env.DLQ_WEBHOOK_URL || null,
@@ -129,7 +147,9 @@ class DeadLetterQueue extends EventEmitter {
 
     this._ensureDataDir();
     this._loadFromDisk();
-    this._hydrateFromPgStore().catch(() => {});
+    this._hydrateFromPgStore().catch((err) => {
+      this.logger.error('Unexpected dead-letter hydration failure', { error: err.message });
+    });
   }
 
   /**
@@ -222,6 +242,9 @@ class DeadLetterQueue extends EventEmitter {
       attempt: context.attempt || 1,
       txHash: context.txHash || null,
       phase: context.phase || 'execution',
+      attemptId: context.attemptId || null,
+      correlationId: context.correlationId || context.pollCorrelationId || null,
+      traceId: context.traceId || context.correlationId || context.pollCorrelationId || null,
       taskConfig: context.taskConfig ? this._sanitizeTaskConfig(context.taskConfig) : null,
     };
 
@@ -235,19 +258,47 @@ class DeadLetterQueue extends EventEmitter {
 
     // Clean up old failures outside the window
     this._cleanupFailureHistory(taskId);
+    const recentHistory = this.failureHistory.get(taskId) || [];
+
+    const record = this.deadLetterRecords.get(taskId);
+    if (record && this.quarantinedTasks.has(taskId)) {
+      record.failureCount = recentHistory.length;
+      record.failureCategory = this._dominantFailureCategory(recentHistory);
+      record.failureHistory = recentHistory.slice(-10);
+      record.lastFailure = recentHistory[recentHistory.length - 1].timestamp;
+      record.errorPattern = this._analyzeErrorPattern(recentHistory);
+    }
 
     // Save to disk to persist failure history across restarts
     this._saveToDisk();
     this._persistToPgStore();
 
     // Check if task should be quarantined
-    if (this.config.autoQuarantine && this._shouldQuarantine(taskId)) {
+    if (
+      this.config.autoQuarantine &&
+      !this.quarantinedTasks.has(taskId) &&
+      this._shouldQuarantine(taskId)
+    ) {
       this.quarantine(taskId, 'max_failures_exceeded');
+    }
+
+    const retryState = this.backoffState.get(taskId);
+    const activeRecord = this.deadLetterRecords.get(taskId);
+    if (
+      activeRecord?.status === 'quarantined' &&
+      retryState?.attempt >= this.config.maxAutoReconcileAttempts
+    ) {
+      activeRecord.status = 'reconciliation_required';
+      activeRecord.reconciliationRequiredAt = Date.now();
+      activeRecord.reconciliationReason = 'automatic_retry_limit_exceeded';
+      this._saveToDisk();
+      this._persistToPgStore();
+      this._notifyUnresolved(activeRecord, 'automatic_retry_limit_exceeded');
     }
 
     this.logger.debug('Recorded task failure', {
       taskId,
-      failureCount: history.length,
+      failureCount: recentHistory.length,
       errorClassification: failureRecord.errorClassification,
       phase: failureRecord.phase,
     });
@@ -335,24 +386,77 @@ class DeadLetterQueue extends EventEmitter {
         lastTxHash: lastFailure?.txHash || null,
       },
       taskConfig: lastFailure?.taskConfig || null,
+      executionTrace: lastFailure,
+      failureHistory: deadLetterRecord.failureHistory,
       quarantinedAt: new Date(now).toISOString(),
     };
 
-    // Send webhook notification (async, non-blocking)
-    this.sendNotification(creatorAlert).catch(() => {}); // Fire and forget
+    // Send webhook notification (async, non-blocking).
+    this.sendNotification(creatorAlert)
+      .then((delivered) => {
+        if (!delivered && !this.alertManager?.notify) {
+          this.logger.warn('DLQ quarantine has no configured alert destination', { taskId });
+        }
+      })
+      .catch((err) => {
+        this.stats.notificationsFailed++;
+        this.logger.error('DLQ quarantine notification failed', { taskId, error: err.message });
+      });
 
-    // Fan out through the shared keeper alert manager when one is wired up
-    // (Slack/Discord/PagerDuty/Telegram, issue #1204).
+    // Fan out through the shared keeper alert manager when one is wired up.
     if (this.alertManager?.notify) {
       this.alertManager
         .notify(
-          'dlq_quarantine',
+          `dlq_quarantine_${taskId}`,
           `Task ${taskId} quarantined after ${history.length} consecutive failures (${failureCategory}).`,
-          { taskId, failureCategory, reason, ...creatorAlert.diagnostics },
+          {
+            taskId,
+            failureCategory,
+            reason,
+            ...creatorAlert.diagnostics,
+            executionTrace: lastFailure,
+            failureHistory: deadLetterRecord.failureHistory,
+          },
           'critical'
         )
-        .catch(() => {}); // Fire and forget
+        .catch((err) => {
+          this.logger.error('DLQ operator alert dispatch failed', { taskId, error: err.message });
+        });
     }
+  }
+
+  _notifyUnresolved(record, reason) {
+    this.logger.error('DLQ automatic reconciliation exhausted', {
+      taskId: record.taskId,
+      reason,
+      failureCategory: record.failureCategory,
+      failureCount: record.failureCount,
+    });
+    if (!this.alertManager?.notify) {
+      return;
+    }
+
+    const lastFailure = record.failureHistory[record.failureHistory.length - 1] || null;
+    this.alertManager
+      .notify(
+        `dlq_reconciliation_exhausted_${record.taskId}`,
+        `Task ${record.taskId} requires operator reconciliation after automatic retries were exhausted.`,
+        {
+          taskId: record.taskId,
+          reason,
+          failureCategory: record.failureCategory,
+          failureCount: record.failureCount,
+          executionTrace: lastFailure,
+          failureHistory: record.failureHistory,
+        },
+        'critical',
+      )
+      .catch((err) => {
+        this.logger.error('DLQ reconciliation escalation failed', {
+          taskId: record.taskId,
+          error: err.message,
+        });
+      });
   }
 
   /**
@@ -493,13 +597,43 @@ class DeadLetterQueue extends EventEmitter {
     if (!this.quarantinedTasks.has(taskId)) {
       return true; // Not quarantined, always ready
     }
-    
+
+    const record = this.deadLetterRecords.get(taskId);
+    if (
+      !this.config.autoReconcile ||
+      !record ||
+      record.status !== 'quarantined' ||
+      !this._isAutomaticallyRetryable(record)
+    ) {
+      return false;
+    }
+
     const state = this.backoffState.get(taskId);
-    if (!state || !state.nextRetryAt) {
+    if (!state) {
       return true; // No backoff state, ready to retry
     }
-    
+    if (state.attempt >= this.config.maxAutoReconcileAttempts) {
+      return false;
+    }
     return Date.now() >= state.nextRetryAt;
+  }
+
+  _isAutomaticallyRetryable(record) {
+    if (
+      record.failureCategory === FailureCategory.CONTRACT_PANIC ||
+      record.failureCategory === FailureCategory.TARGET_REVERTED ||
+      record.failureCategory === FailureCategory.CONDITION_UNMET
+    ) {
+      return false;
+    }
+
+    return (
+      record.failureCategory === FailureCategory.NETWORK_TIMEOUT ||
+      record.failureCategory === FailureCategory.GAS_DEPLETION ||
+      record.failureCategory === FailureCategory.INSUFFICIENT_ESCROW ||
+      (record.failureCategory === FailureCategory.UNKNOWN &&
+        record.errorPattern?.classification === ErrorClassification.RETRYABLE)
+    );
   }
 
   /**
@@ -508,6 +642,10 @@ class DeadLetterQueue extends EventEmitter {
    * @param {number} taskId - The task ID
    */
   recordRetryAttempt(taskId) {
+    if (!this.isReadyForRetry(taskId)) {
+      return false;
+    }
+
     const state = this.backoffState.get(taskId) || { attempt: 0 };
     state.attempt++;
     
@@ -526,6 +664,7 @@ class DeadLetterQueue extends EventEmitter {
     
     this._saveToDisk();
     this._persistToPgStore();
+    return true;
   }
 
   /**

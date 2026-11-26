@@ -8,18 +8,29 @@ const {
   DistributedIdempotencyEngine,
   BloomFilter,
   buildIdempotencyKey,
+  computeTransactionFingerprint,
+  canonicalizePayload,
   bloomParameters,
   DispatchStatus,
 } = require('../src/distributedIdempotency');
+const { ExecutionIdempotencyGuard } = require('../src/idempotency');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
-/** Minimal ioredis-shaped fake: only `get` and `set` are used. */
+/** ioredis-shaped fake supporting `get` and `set(key, val, 'PX', ttl, ['NX'])`. */
 function makeFakeRedis() {
   const store = new Map();
   return {
     store,
     get: async (key) => store.get(key) ?? null,
-    set: async (key, value) => {
+    set: async (key, value, ...args) => {
+      const hasNx = args.includes('NX');
+      if (hasNx && store.has(key)) {
+        return null;
+      }
       store.set(key, value);
+      return 'OK';
     },
   };
 }
@@ -209,5 +220,145 @@ describe('DistributedIdempotencyEngine', () => {
       buildIdempotencyKey(EXECUTION.taskId, EXECUTION.targetLedger, EXECUTION.scheduledTimestamp)
     );
     expect(engine.records.get(key).status).toBe(DispatchStatus.PENDING);
+  });
+});
+
+describe('computeTransactionFingerprint & canonicalizePayload', () => {
+  it('produces a deterministic 256-bit hex fingerprint independent of payload key order', () => {
+    const fp1 = computeTransactionFingerprint({
+      taskId: 'task-42',
+      interval: 60,
+      blockHeight: 120050,
+      payload: { b: 2, a: { z: true, y: [1, 2] } },
+    });
+    const fp2 = computeTransactionFingerprint({
+      taskId: 'task-42',
+      interval: 60,
+      blockHeight: 120050,
+      payload: { a: { y: [1, 2], z: true }, b: 2 },
+    });
+    expect(fp1).toBe(fp2);
+    expect(fp1).toHaveLength(64);
+  });
+
+  it('changes when any fingerprint component changes', () => {
+    const base = { taskId: 10, interval: 30, blockHeight: 500, payload: { amount: '100' } };
+    const hBase = computeTransactionFingerprint(base);
+    expect(computeTransactionFingerprint({ ...base, taskId: 11 })).not.toBe(hBase);
+    expect(computeTransactionFingerprint({ ...base, interval: 31 })).not.toBe(hBase);
+    expect(computeTransactionFingerprint({ ...base, blockHeight: 501 })).not.toBe(hBase);
+    expect(computeTransactionFingerprint({ ...base, payload: { amount: '101' } })).not.toBe(hBase);
+  });
+
+  it('prevents boundary collisions across fields', () => {
+    const h1 = computeTransactionFingerprint({ taskId: '1', interval: '23', blockHeight: 4, payload: null });
+    const h2 = computeTransactionFingerprint({ taskId: '12', interval: '3', blockHeight: 4, payload: null });
+    expect(h1).not.toBe(h2);
+  });
+
+  it('throws when taskId is missing', () => {
+    expect(() => computeTransactionFingerprint({ interval: 10, blockHeight: 100 })).toThrow(/taskId/i);
+  });
+
+  it('canonicalizes BigInt and Buffer payloads deterministically', () => {
+    const a = canonicalizePayload({ n: BigInt(999), buf: Buffer.from('ab', 'hex') });
+    const b = canonicalizePayload({ buf: Buffer.from('ab', 'hex'), n: BigInt(999) });
+    expect(a).toBe(b);
+  });
+});
+
+describe('DistributedIdempotencyEngine - Receipts, Multi-Worker & Stress', () => {
+  const TX_DESCRIPTOR = {
+    taskId: 'swap-task-1',
+    interval: 300,
+    blockHeight: 550100,
+    payload: { pair: 'XLM/USDC', amount: '5000000' },
+  };
+
+  it('returns the original receipt on idempotent retries after confirmation', async () => {
+    const redis = makeFakeRedis();
+    const engine = new DistributedIdempotencyEngine({ redis, now: () => 1000 });
+    const originalReceipt = { txHash: '0xabc123', ledger: 550101, fee: 100 };
+
+    const execFn = jest.fn(async () => originalReceipt);
+
+    const first = await engine.executeIdempotent(TX_DESCRIPTOR, execFn);
+    expect(first.executed).toBe(true);
+    expect(first.duplicate).toBe(false);
+    expect(first.receipt).toEqual(originalReceipt);
+    expect(execFn).toHaveBeenCalledTimes(1);
+
+    // Retry with identical fingerprint (even with reordered payload keys)
+    const retry = await engine.executeIdempotent(
+      { ...TX_DESCRIPTOR, payload: { amount: '5000000', pair: 'XLM/USDC' } },
+      execFn
+    );
+    expect(retry.executed).toBe(false);
+    expect(retry.duplicate).toBe(true);
+    expect(retry.receipt).toEqual(originalReceipt);
+    expect(execFn).toHaveBeenCalledTimes(1);
+    expect(await engine.getReceipt(first.key)).toEqual(originalReceipt);
+  });
+
+  it('blocks duplicates across independent worker instances even without shared Bloom filter', async () => {
+    const redis = makeFakeRedis();
+    const workerA = new DistributedIdempotencyEngine({ redis, now: () => 5000 });
+    const workerB = new DistributedIdempotencyEngine({ redis, now: () => 5000 });
+    const receipt = { txHash: '0xdef456', status: 'SUCCESS' };
+
+    const resA = await workerA.executeIdempotent(TX_DESCRIPTOR, async () => receipt);
+    expect(resA.executed).toBe(true);
+
+    // workerB has a cold local Bloom filter, but Redis SET NX catches the duplicate
+    const resB = await workerB.executeIdempotent(TX_DESCRIPTOR, async () => {
+      throw new Error('should never double-execute');
+    });
+    expect(resB.executed).toBe(false);
+    expect(resB.duplicate).toBe(true);
+    expect(resB.receipt).toEqual(receipt);
+  });
+
+  it('stress test: 50 concurrent workers racing on the same fingerprint produce exactly 1 execution', async () => {
+    const redis = makeFakeRedis();
+    const workers = Array.from({ length: 50 }, () => new DistributedIdempotencyEngine({ redis, now: () => 10000 }));
+    let executionCount = 0;
+
+    const results = await Promise.all(
+      workers.map((worker) =>
+        worker.executeIdempotent(TX_DESCRIPTOR, async () => {
+          executionCount += 1;
+          await new Promise((r) => setTimeout(r, 5));
+          return { txHash: '0xstress-unique', executionCount };
+        })
+      )
+    );
+
+    const executed = results.filter((r) => r.executed);
+    const duplicates = results.filter((r) => r.duplicate);
+
+    expect(executionCount).toBe(1);
+    expect(executed).toHaveLength(1);
+    expect(duplicates).toHaveLength(49);
+  });
+
+  it('integrates with ExecutionIdempotencyGuard for distributed fingerprint locking and receipt return', async () => {
+    const redis = makeFakeRedis();
+    const engine = new DistributedIdempotencyEngine({ redis, now: () => 20000 });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'keeper-dist-idem-'));
+    const guard = new ExecutionIdempotencyGuard({
+      stateFile: path.join(dir, 'locks.json'),
+      distributedEngine: engine,
+    });
+
+    const first = await guard.acquireDistributed(TX_DESCRIPTOR);
+    expect(first.acquired).toBe(true);
+    expect(first.fingerprint).toHaveLength(64);
+
+    const receipt = { txHash: '0xguard-receipt', ledger: 550105 };
+    await guard.confirmDistributed(first.fingerprint, { receipt });
+
+    const second = await guard.acquireDistributed(TX_DESCRIPTOR);
+    expect(second.acquired).toBe(false);
+    expect(second.receipt).toEqual(receipt);
   });
 });
