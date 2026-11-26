@@ -17,7 +17,17 @@ import {
   getNetworkDetails,
   WatchWalletChanges,
 } from "@stellar/freighter-api";
-import { FreighterWalletProvider, AlbedoWalletProvider, XBullWalletProvider, LobstrWalletProvider } from "./wallet-providers";
+import {
+  FreighterWalletProvider,
+  AlbedoWalletProvider,
+  XBullWalletProvider,
+  LobstrWalletProvider,
+} from "./wallet-providers";
+import type {
+  WalletProvider,
+  WalletSignOptions,
+  WalletSignResult,
+} from "./wallet-provider";
 
 export type NetworkDetails = {
   network: string;
@@ -29,12 +39,17 @@ export type NetworkDetails = {
 export type WalletSession = {
   address: string;
   network: NetworkDetails;
+  /** Provider that produced this session. */
+  providerId?: SupportedWallet;
+  /** BIP-44 path for hardware wallets (Ledger). */
+  derivationPath?: string;
 };
 
 export type WalletError =
   | "NOT_INSTALLED"
   | "USER_REJECTED"
   | "WRONG_NETWORK"
+  | "HARDWARE_ERROR"
   | "UNKNOWN";
 
 export class WalletConnectionError extends Error {
@@ -47,9 +62,8 @@ export class WalletConnectionError extends Error {
   }
 }
 
-/** Expected network passphrase for SoroTask (Futurenet, matching keeper config). */
-export const EXPECTED_NETWORK_PASSPHRASE =
-  "Test SDF Future Network ; October 2022";
+export { EXPECTED_NETWORK_PASSPHRASE } from "./wallet-constants";
+import { EXPECTED_NETWORK_PASSPHRASE } from "./wallet-constants";
 
 const E2E_MOCK_ADDRESS =
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -144,9 +158,9 @@ export async function connectWallet(): Promise<WalletSession> {
   // 3. Fetch network details
   // Add a small delay to prevent race conditions in the Freighter extension's internal state
   await new Promise((resolve) => setTimeout(resolve, 500));
-  
+
   let networkResult = await getNetworkDetails();
-  
+
   // Retry once if it fails, just in case Freighter's message port isn't fully ready
   if (networkResult.error) {
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -181,7 +195,9 @@ export async function connectWallet(): Promise<WalletSession> {
 const withTimeout = <T>(promise: Promise<T>, ms: number = 3000): Promise<T> => {
   return Promise.race([
     promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms))
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms),
+    ),
   ]);
 };
 
@@ -193,7 +209,7 @@ const withTimeout = <T>(promise: Promise<T>, ms: number = 3000): Promise<T> => {
 export async function restoreSession(): Promise<WalletSession | null> {
   if (isE2EMockWalletEnabled()) return null;
   if (typeof window === "undefined") return null;
-  
+
   // If the user explicitly disconnected, do not auto-rehydrate.
   if (localStorage.getItem("sorotask_wallet_disconnected") === "true") {
     return null;
@@ -276,70 +292,172 @@ export function truncateAddress(address: string, chars = 4): string {
 // Multi-wallet unified adapter
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type SupportedWallet = "freighter" | "albedo" | "xbull" | "lobstr";
+export type SupportedWallet =
+  "freighter" | "albedo" | "xbull" | "lobstr" | "ledger";
+
+/** Wallets that connect through a browser extension or web popup. */
+export type BrowserWalletId = Exclude<SupportedWallet, "ledger">;
+
+export interface WalletProviderMeta {
+  id: SupportedWallet;
+  name: string;
+  description: string;
+  installUrl?: string;
+  kind: "browser" | "web" | "hardware";
+}
+
+/**
+ * Single source of truth for the wallet hub UI. Order is intentional: the
+ * extension wallets most users already have come first, with Ledger last.
+ */
+export const WALLET_PROVIDERS_META: readonly WalletProviderMeta[] = [
+  {
+    id: "freighter",
+    name: "Freighter",
+    description: "Browser extension for Stellar",
+    installUrl: "https://www.freighter.app/",
+    kind: "browser",
+  },
+  {
+    id: "xbull",
+    name: "xBull",
+    description: "Stellar browser extension",
+    installUrl: "https://xbull.app/",
+    kind: "browser",
+  },
+  {
+    id: "albedo",
+    name: "Albedo",
+    description: "Web-based Stellar wallet",
+    installUrl: "https://albedo.link/",
+    kind: "web",
+  },
+  {
+    id: "lobstr",
+    name: "LOBSTR",
+    description: "Mobile & web Stellar wallet (WalletConnect)",
+    installUrl: "https://lobstr.co/",
+    kind: "web",
+  },
+  {
+    id: "ledger",
+    name: "Ledger",
+    description: "Hardware wallet via WebUSB / WebHID",
+    installUrl: "https://www.ledger.com/ledger-live",
+    kind: "hardware",
+  },
+] as const;
 
 const STORAGE_KEY = "sorotask_wallet_session";
 const DISCONNECT_KEY = "sorotask_wallet_disconnected";
 
-interface StoredSession {
+export interface StoredWalletSession {
   providerId: SupportedWallet;
   address: string;
   networkPassphrase: string;
   network: string;
   networkUrl: string;
   sorobanRpcUrl?: string;
+  /** BIP-44 path persisted for Ledger session reconnection. */
+  derivationPath?: string;
   timestamp: number;
 }
 
-function saveSession(session: StoredSession): void {
-  if (typeof window !== "undefined") {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+/**
+ * Persist the active wallet session. Metadata only — private keys never leave
+ * the wallet or hardware device.
+ */
+export function saveWalletSession(
+  session: WalletSession,
+  providerId: SupportedWallet,
+  derivationPath?: string,
+): void {
+  if (typeof window === "undefined") return;
+  const stored: StoredWalletSession = {
+    providerId,
+    address: session.address,
+    network: session.network.network,
+    networkUrl: session.network.networkUrl,
+    networkPassphrase: session.network.networkPassphrase,
+    sorobanRpcUrl: session.network.sorobanRpcUrl,
+    derivationPath,
+    timestamp: Date.now(),
+  };
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
+    localStorage.removeItem(DISCONNECT_KEY);
+  } catch {
+    // Storage can be unavailable (private mode); session still works in-memory.
   }
 }
 
-function loadSession(): StoredSession | null {
+export function loadWalletSession(): StoredWalletSession | null {
   if (typeof window === "undefined") return null;
   const data = localStorage.getItem(STORAGE_KEY);
   if (!data) return null;
   try {
-    return JSON.parse(data) as StoredSession;
+    return JSON.parse(data) as StoredWalletSession;
   } catch {
     return null;
   }
 }
 
-function clearSession(): void {
+export function clearWalletSession(): void {
   if (typeof window !== "undefined") {
     localStorage.removeItem(STORAGE_KEY);
   }
 }
 
-const walletProviders = {
+const walletProviders: Record<BrowserWalletId, WalletProvider> = {
   freighter: new FreighterWalletProvider(),
   albedo: new AlbedoWalletProvider(),
   xbull: new XBullWalletProvider(),
   lobstr: new LobstrWalletProvider(),
 };
 
-export async function checkWalletAvailability(walletId: SupportedWallet): Promise<boolean> {
+function isBrowserWallet(
+  walletId: SupportedWallet,
+): walletId is BrowserWalletId {
+  return walletId !== "ledger";
+}
+
+export async function checkWalletAvailability(
+  walletId: SupportedWallet,
+): Promise<boolean> {
+  if (walletId === "ledger") {
+    const { detectLedgerSupport } = await import("./hardwareWallet");
+    return detectLedgerSupport();
+  }
   const provider = walletProviders[walletId];
   return provider?.isAvailable() ?? false;
 }
 
 export async function getAvailableWallets(): Promise<SupportedWallet[]> {
   const available: SupportedWallet[] = [];
-  for (const [id, provider] of Object.entries(walletProviders)) {
-    if (await provider.isAvailable()) {
-      available.push(id as SupportedWallet);
+  for (const meta of WALLET_PROVIDERS_META) {
+    if (await checkWalletAvailability(meta.id)) {
+      available.push(meta.id);
     }
   }
   return available;
 }
 
-export async function connectWalletWith(walletId: SupportedWallet): Promise<WalletSession> {
+export async function connectWalletWith(
+  walletId: SupportedWallet,
+): Promise<WalletSession> {
+  if (!isBrowserWallet(walletId)) {
+    throw new WalletConnectionError(
+      "UNKNOWN",
+      "Ledger connections must go through the hardware wallet flow.",
+    );
+  }
+
   const provider = walletProviders[walletId];
   if (!provider) {
-    throw new WalletConnectionError("UNKNOWN", `Wallet ${walletId} not supported`);
+    throw new WalletConnectionError(
+      "UNKNOWN",
+      `Wallet ${walletId} not supported`,
+    );
   }
 
   const result = await provider.connect();
@@ -351,30 +469,47 @@ export async function connectWalletWith(walletId: SupportedWallet): Promise<Wall
       networkPassphrase: result.networkPassphrase,
       sorobanRpcUrl: result.sorobanRpcUrl,
     },
-  };
-
-  const stored: StoredSession = {
     providerId: walletId,
-    address: session.address,
-    ...session.network,
-    timestamp: Date.now(),
   };
-  saveSession(stored);
-  localStorage.removeItem(DISCONNECT_KEY);
 
+  saveWalletSession(session, walletId);
   return session;
 }
 
+/**
+ * Sign a transaction through the active browser/web wallet adapter.
+ * Ledger signing is handled by WalletContext, which owns the device bridge.
+ */
+export async function signTransactionWith(
+  walletId: BrowserWalletId,
+  xdr: string,
+  options: WalletSignOptions = {},
+): Promise<WalletSignResult> {
+  const provider = walletProviders[walletId];
+  if (!provider?.signTransaction) {
+    throw new WalletConnectionError(
+      "UNKNOWN",
+      `Wallet ${walletId} does not support transaction signing.`,
+    );
+  }
+  return provider.signTransaction(xdr, options);
+}
+
 export async function restoreWalletSession(): Promise<WalletSession | null> {
-  if (typeof window !== "undefined" && localStorage.getItem(DISCONNECT_KEY) === "true") {
+  if (
+    typeof window !== "undefined" &&
+    localStorage.getItem(DISCONNECT_KEY) === "true"
+  ) {
     return null;
   }
 
-  const stored = loadSession();
+  const stored = loadWalletSession();
   if (!stored) return null;
 
-  const provider = walletProviders[stored.providerId];
-  if (!provider || !(await provider.isAvailable())) return null;
+  if (stored.providerId !== "ledger") {
+    const provider = walletProviders[stored.providerId];
+    if (!provider || !(await provider.isAvailable())) return null;
+  }
 
   if (stored.networkPassphrase !== EXPECTED_NETWORK_PASSPHRASE) return null;
 
@@ -386,13 +521,19 @@ export async function restoreWalletSession(): Promise<WalletSession | null> {
       networkPassphrase: stored.networkPassphrase,
       sorobanRpcUrl: stored.sorobanRpcUrl,
     },
+    providerId: stored.providerId,
+    derivationPath: stored.derivationPath,
   };
 }
 
 export function disconnectWallet(): void {
-  clearSession();
+  clearWalletSession();
   if (typeof window !== "undefined") {
-    localStorage.setItem(DISCONNECT_KEY, "true");
+    try {
+      localStorage.setItem(DISCONNECT_KEY, "true");
+    } catch {
+      // Ignore storage failures; in-memory state is still cleared by callers.
+    }
   }
 }
 

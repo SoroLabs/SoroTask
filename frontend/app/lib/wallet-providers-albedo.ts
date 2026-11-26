@@ -5,7 +5,11 @@
  * Albedo works via popup-based auth (no extension install required).
  */
 
-import type { WalletProvider } from "./wallet-provider";
+import type {
+  WalletProvider,
+  WalletSignOptions,
+  WalletSignResult,
+} from "./wallet-provider";
 import { WalletProviderError } from "./wallet-provider";
 
 export class AlbedoWalletProvider implements WalletProvider {
@@ -27,7 +31,7 @@ export class AlbedoWalletProvider implements WalletProvider {
       throw new WalletProviderError(
         "albedo",
         "NOT_INSTALLED",
-        "Albedo wallet is not available. Please install the Albedo browser extension or visit albedo.link."
+        "Albedo wallet is not available. Please install the Albedo browser extension or visit albedo.link.",
       );
     }
 
@@ -40,7 +44,7 @@ export class AlbedoWalletProvider implements WalletProvider {
         throw new WalletProviderError(
           "albedo",
           "USER_REJECTED",
-          "User rejected the connection request."
+          "User rejected the connection request.",
         );
       }
 
@@ -56,7 +60,7 @@ export class AlbedoWalletProvider implements WalletProvider {
       throw new WalletProviderError(
         "albedo",
         "CONNECTION_FAILED",
-        `Failed to connect to Albedo: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to connect to Albedo: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -67,5 +71,48 @@ export class AlbedoWalletProvider implements WalletProvider {
 
   watchChanges(cb: (address: string | null) => void): () => void {
     return () => {};
+  }
+
+  async signTransaction(
+    xdr: string,
+    options: WalletSignOptions = {},
+  ): Promise<WalletSignResult> {
+    const albedo = (window as any).albedo;
+    if (!albedo || typeof albedo.tx !== "function") {
+      throw new WalletProviderError(
+        "albedo",
+        "NOT_INSTALLED",
+        "Albedo is not available to sign this transaction.",
+      );
+    }
+
+    try {
+      const result = await albedo.tx({
+        xdr,
+        network: "futurenet",
+        pubkey: options.address,
+        networkPassphrase: options.networkPassphrase,
+      });
+      const signedTxXdr =
+        result?.signed_envelope_xdr ??
+        result?.signedEnvelopeXdr ??
+        result?.signedXdr ??
+        result?.signed_xdr;
+      if (!signedTxXdr) {
+        throw new WalletProviderError(
+          "albedo",
+          "SIGN_FAILED",
+          "Albedo did not return a signed transaction.",
+        );
+      }
+      return { signedTxXdr, signature: result?.signature };
+    } catch (err) {
+      if (err instanceof WalletProviderError) throw err;
+      throw new WalletProviderError(
+        "albedo",
+        "SIGN_FAILED",
+        `Albedo signing failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }

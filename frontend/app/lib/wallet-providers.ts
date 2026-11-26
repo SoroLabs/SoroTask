@@ -4,11 +4,16 @@ import {
   requestAccess,
   getAddress,
   getNetworkDetails,
+  signTransaction as freighterSignTransaction,
   WatchWalletChanges,
 } from "@stellar/freighter-api";
-import type { WalletProvider } from "./wallet-provider";
+import type {
+  WalletProvider,
+  WalletSignOptions,
+  WalletSignResult,
+} from "./wallet-provider";
 import { WalletProviderError } from "./wallet-provider";
-import { EXPECTED_NETWORK_PASSPHRASE } from "./wallet";
+import { EXPECTED_NETWORK_PASSPHRASE } from "./wallet-constants";
 
 // Re-export all wallet providers
 export { AlbedoWalletProvider } from "./wallet-providers-albedo";
@@ -32,21 +37,37 @@ export class FreighterWalletProvider implements WalletProvider {
   async connect() {
     const available = await this.isAvailable();
     if (!available) {
-      throw new WalletProviderError("freighter", "NOT_INSTALLED", "Freighter is not installed.");
+      throw new WalletProviderError(
+        "freighter",
+        "NOT_INSTALLED",
+        "Freighter is not installed.",
+      );
     }
 
     const accessResult = await requestAccess();
     if (accessResult.error || !accessResult.address) {
-      throw new WalletProviderError("freighter", "USER_REJECTED", accessResult.error?.message ?? "User rejected.");
+      throw new WalletProviderError(
+        "freighter",
+        "USER_REJECTED",
+        accessResult.error?.message ?? "User rejected.",
+      );
     }
 
     const netResult = await getNetworkDetails();
     if (netResult.error) {
-      throw new WalletProviderError("freighter", "NETWORK_ERROR", netResult.error.message ?? "Network error.");
+      throw new WalletProviderError(
+        "freighter",
+        "NETWORK_ERROR",
+        netResult.error.message ?? "Network error.",
+      );
     }
 
     if (netResult.networkPassphrase !== EXPECTED_NETWORK_PASSPHRASE) {
-      throw new WalletProviderError("freighter", "WRONG_NETWORK", `Expected Futurenet but got "${netResult.network}".`);
+      throw new WalletProviderError(
+        "freighter",
+        "WRONG_NETWORK",
+        `Expected Futurenet but got "${netResult.network}".`,
+      );
     }
 
     return {
@@ -66,6 +87,25 @@ export class FreighterWalletProvider implements WalletProvider {
     const watcher = new WatchWalletChanges(3000);
     watcher.watch(({ address }) => cb(address || null));
     return () => watcher.stop();
+  }
+
+  async signTransaction(
+    xdr: string,
+    options: WalletSignOptions = {},
+  ): Promise<WalletSignResult> {
+    const result = await freighterSignTransaction(xdr, {
+      networkPassphrase: options.networkPassphrase,
+      address: options.address,
+    });
+    if (result.error || !result.signedTxXdr) {
+      throw new WalletProviderError(
+        "freighter",
+        "SIGN_FAILED",
+        result.error?.message ??
+          "Freighter did not return a signed transaction.",
+      );
+    }
+    return { signedTxXdr: result.signedTxXdr };
   }
 }
 
@@ -100,6 +140,17 @@ export class MockWalletProvider implements WalletProvider {
     this._listeners.push(cb);
     return () => {
       this._listeners = this._listeners.filter((l) => l !== cb);
+    };
+  }
+
+  async signTransaction(
+    xdr: string,
+    options: WalletSignOptions = {},
+  ): Promise<WalletSignResult> {
+    return {
+      signedTxXdr: `${xdr}:signed`,
+      signature: "mock-signature",
+      publicKey: options.address,
     };
   }
 }

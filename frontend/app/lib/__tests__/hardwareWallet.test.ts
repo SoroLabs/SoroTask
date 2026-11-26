@@ -12,8 +12,10 @@ import {
   encodeSignatureForRpc,
   encodeStellarAddress,
   framePackets,
+  normalizeHash,
   openLedgerDevice,
   parseResponsePackets,
+  reconnectLedgerDevice,
   statusWordToState,
   LEDGER_LOCK_TIMEOUT_MS,
   DEFAULT_LEDGER_TIMEOUT_MS,
@@ -106,9 +108,9 @@ describe("hardwareWallet", () => {
       open: jest.fn(async function open(this: { opened: boolean }) {
         this.opened = true;
       }),
-      selectConfiguration: jest.fn(async function selectConfiguration(
-        this: { configuration: unknown },
-      ) {
+      selectConfiguration: jest.fn(async function selectConfiguration(this: {
+        configuration: unknown;
+      }) {
         this.configuration = { configurationValue: 1 };
       }),
       claimInterface: jest.fn(),
@@ -147,7 +149,9 @@ describe("hardwareWallet", () => {
       value: {
         requestDevice: jest
           .fn()
-          .mockRejectedValue(new DOMException("No device selected", "NotFoundError")),
+          .mockRejectedValue(
+            new DOMException("No device selected", "NotFoundError"),
+          ),
       },
     });
 
@@ -199,15 +203,21 @@ describe("BIP-44 Stellar key derivation", () => {
   });
 
   it("rejects a non-Stellar coin type", () => {
-    expect(() => encodeDerivationPath("m/44'/1'/0'")).toThrow(/not a Stellar BIP-44 path/);
+    expect(() => encodeDerivationPath("m/44'/1'/0'")).toThrow(
+      /not a Stellar BIP-44 path/,
+    );
   });
 
   it("rejects a path with the wrong number of levels", () => {
-    expect(() => encodeDerivationPath("m/44'/148'")).toThrow(/Unsupported derivation path/);
+    expect(() => encodeDerivationPath("m/44'/148'")).toThrow(
+      /Unsupported derivation path/,
+    );
   });
 
   it("rejects a non-numeric level", () => {
-    expect(() => encodeDerivationPath("m/44'/148'/abc'")).toThrow(/Invalid derivation path/);
+    expect(() => encodeDerivationPath("m/44'/148'/abc'")).toThrow(
+      /Invalid derivation path/,
+    );
   });
 
   it("uses coin type 148", () => {
@@ -243,7 +253,9 @@ describe("APDU framing", () => {
   });
 
   it("frames a short APDU into one 64-byte packet with the Ledger header", () => {
-    const packets = framePackets(buildApdu(0x11, 0x01, 1, 0, new Uint8Array(3)));
+    const packets = framePackets(
+      buildApdu(0x11, 0x01, 1, 0, new Uint8Array(3)),
+    );
     expect(packets).toHaveLength(1);
     expect(packets[0]).toHaveLength(64);
     expect(packets[0][0]).toBe(0x01);
@@ -252,7 +264,9 @@ describe("APDU framing", () => {
   });
 
   it("splits a large APDU and increments the packet sequence", () => {
-    const packets = framePackets(buildApdu(0x11, 0x02, 0, 0, new Uint8Array(200)));
+    const packets = framePackets(
+      buildApdu(0x11, 0x02, 0, 0, new Uint8Array(200)),
+    );
     expect(packets).toHaveLength(4);
     expect(packets.every((p) => p.length === 64)).toBe(true);
     expect(packets[1][4]).toBe(1);
@@ -262,7 +276,9 @@ describe("APDU framing", () => {
 
 describe("APDU response parsing", () => {
   it("splits the status word off the payload", () => {
-    const parsed = parseResponsePackets(responsePackets(new Uint8Array([1, 2, 3, 4]), 0x9000));
+    const parsed = parseResponsePackets(
+      responsePackets(new Uint8Array([1, 2, 3, 4]), 0x9000),
+    );
     expect(parsed.statusWord).toBe(0x9000);
     expect(Array.from(parsed.data)).toEqual([1, 2, 3, 4]);
   });
@@ -275,7 +291,10 @@ describe("APDU response parsing", () => {
   });
 
   it("surfaces a non-success status word", () => {
-    expect(parseResponsePackets(responsePackets(new Uint8Array(0), 0x6b0c)).statusWord).toBe(0x6b0c);
+    expect(
+      parseResponsePackets(responsePackets(new Uint8Array(0), 0x6b0c))
+        .statusWord,
+    ).toBe(0x6b0c);
   });
 
   it("rejects an empty response", () => {
@@ -283,7 +302,9 @@ describe("APDU response parsing", () => {
   });
 
   it("rejects a response with no status word", () => {
-    expect(() => parseResponsePackets([new Uint8Array(64)])).toThrow(/missing a status word/);
+    expect(() => parseResponsePackets([new Uint8Array(64)])).toThrow(
+      /missing a status word/,
+    );
   });
 });
 
@@ -309,13 +330,14 @@ describe("Ledger device states", () => {
   });
 });
 
-
 describe("LedgerStellarBridge", () => {
   it("derives the account address for a path", async () => {
     const device = new FakeLedger();
     device.queueOk(new Uint8Array([0x00, ...PUBLIC_KEY]));
 
-    const result = await bridgeFor(device).getAddress({ path: buildStellarPath(0) });
+    const result = await bridgeFor(device).getAddress({
+      path: buildStellarPath(0),
+    });
 
     expect(result.address).toBe(PUBLIC_KEY_ADDRESS);
     expect(result.path).toBe("m/44'/148'/0'");
@@ -367,14 +389,18 @@ describe("LedgerStellarBridge", () => {
     const device = new FakeLedger();
     device.queueStatus(0x6e00);
 
-    await expect(bridgeFor(device).getAddress()).rejects.toThrow(/Open the Stellar app/);
+    await expect(bridgeFor(device).getAddress()).rejects.toThrow(
+      /Open the Stellar app/,
+    );
   });
 
   it("turns a hung exchange into a lock error", async () => {
     const device = new FakeLedger();
     device.hangForever = true;
 
-    await expect(bridgeFor(device).getAddress({ timeoutMs: 20 })).rejects.toMatchObject({
+    await expect(
+      bridgeFor(device).getAddress({ timeoutMs: 20 }),
+    ).rejects.toMatchObject({
       code: "device_locked",
     });
   });
@@ -383,11 +409,17 @@ describe("LedgerStellarBridge", () => {
     const device = new FakeLedger();
     device.queueOk(new Uint8Array([1, 2, 3]));
 
-    await expect(bridgeFor(device).getAddress()).rejects.toThrow(/malformed public key/);
+    await expect(bridgeFor(device).getAddress()).rejects.toThrow(
+      /malformed public key/,
+    );
   });
 
   it("rejects a device with no transfer interface", async () => {
-    const bare = { opened: true, configuration: {}, claimInterface: async () => {} };
+    const bare = {
+      opened: true,
+      configuration: {},
+      claimInterface: async () => {},
+    };
     const bridge = new LedgerStellarBridge(
       bare as unknown as ConstructorParameters<typeof LedgerStellarBridge>[0],
       "Bare",
@@ -396,11 +428,12 @@ describe("LedgerStellarBridge", () => {
     await expect(bridge.getAddress()).rejects.toThrow(/transfer interface/);
   });
 
-
   it("signs an envelope and surfaces an on-device prompt", async () => {
     const device = new FakeLedger();
     const signature = new Uint8Array(64).fill(9);
-    device.queueOk(new Uint8Array([...signature, ...new Uint8Array(32).fill(4)]));
+    device.queueOk(
+      new Uint8Array([...signature, ...new Uint8Array(32).fill(4)]),
+    );
 
     const onPrompt = jest.fn();
     const result = await bridgeFor(device).signTransaction("AAAAQUJD", {
@@ -410,7 +443,9 @@ describe("LedgerStellarBridge", () => {
 
     expect(result.signature).toHaveLength(64);
     expect(Array.from(result.signature)).toEqual(Array.from(signature));
-    expect(onPrompt).toHaveBeenCalledWith(expect.stringMatching(/verify the network/));
+    expect(onPrompt).toHaveBeenCalledWith(
+      expect.stringMatching(/verify the network/),
+    );
   });
 
   it("flags the network passphrase in the sign APDU", async () => {
@@ -452,12 +487,16 @@ describe("LedgerStellarBridge", () => {
     const device = new FakeLedger();
     device.queueOk(new Uint8Array(64));
 
-    await expect(bridgeFor(device).signTransaction("AAAA")).rejects.toThrow(/truncated signature/);
+    await expect(bridgeFor(device).signTransaction("AAAA")).rejects.toThrow(
+      /truncated signature/,
+    );
   });
 
   it("requires an envelope to sign", async () => {
     const device = new FakeLedger();
-    await expect(bridgeFor(device).signTransaction("")).rejects.toThrow(/envelope is required/);
+    await expect(bridgeFor(device).signTransaction("")).rejects.toThrow(
+      /envelope is required/,
+    );
   });
 
   it("describes the connected device", () => {
@@ -493,9 +532,14 @@ describe("claimLedgerDevice", () => {
   });
 
   it("reports unsupported when the browser has no WebUSB", async () => {
-    Object.defineProperty(global.navigator, "usb", { configurable: true, value: undefined });
+    Object.defineProperty(global.navigator, "usb", {
+      configurable: true,
+      value: undefined,
+    });
 
-    await expect(claimLedgerDevice()).rejects.toMatchObject({ code: "unsupported" });
+    await expect(claimLedgerDevice()).rejects.toMatchObject({
+      code: "unsupported",
+    });
   });
 });
 
@@ -507,7 +551,120 @@ describe("signature encoding", () => {
 
   it("exposes a named helper for RPC transport", () => {
     const signature = new Uint8Array(64).fill(7);
-    expect(encodeSignatureForRpc(signature)).toBe(Buffer.from(signature).toString("base64"));
+    expect(encodeSignatureForRpc(signature)).toBe(
+      Buffer.from(signature).toString("base64"),
+    );
   });
 });
 
+describe("hash signing", () => {
+  const HASH = new Uint8Array(32).fill(0xab);
+
+  it("normalises raw bytes, 0x-hex and plain hex", () => {
+    expect(Array.from(normalizeHash(HASH))).toEqual(Array.from(HASH));
+    const hex = Array.from(HASH)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    expect(Array.from(normalizeHash(hex))).toEqual(Array.from(HASH));
+    expect(Array.from(normalizeHash(`0x${hex}`))).toEqual(Array.from(HASH));
+  });
+
+  it("rejects hashes that are not exactly 32 bytes", () => {
+    expect(() => normalizeHash(new Uint8Array(31))).toThrow(/32-byte/);
+    expect(() => normalizeHash("abcd")).toThrow(/32-byte/);
+    expect(() => normalizeHash("z".repeat(64))).toThrow(/32-byte/);
+  });
+
+  it("signs a hash with the hash-mode APDU", async () => {
+    const device = new FakeLedger();
+    const signature = new Uint8Array(64).fill(6);
+    const publicKey = new Uint8Array(32).fill(7);
+    device.queueOk(new Uint8Array([...signature, ...publicKey]));
+
+    const onPrompt = jest.fn();
+    const result = await bridgeFor(device).signHash(HASH, { onPrompt });
+
+    const apdu = device.outPackets[0].slice(5);
+    expect(apdu[1]).toBe(0x03);
+    expect(apdu[3]).toBe(0x02);
+    expect(Array.from(apdu.slice(5 + 1 + 12, 5 + 1 + 12 + 32))).toEqual(
+      Array.from(HASH),
+    );
+    expect(Array.from(result.signature)).toEqual(Array.from(signature));
+    expect(Array.from(result.publicKey)).toEqual(Array.from(publicKey));
+    expect(onPrompt).toHaveBeenCalledWith(expect.stringMatching(/hash/i));
+  });
+
+  it("rejects a truncated hash signature", async () => {
+    const device = new FakeLedger();
+    device.queueOk(new Uint8Array(10));
+
+    await expect(bridgeFor(device).signHash(HASH)).rejects.toThrow(
+      /truncated signature/,
+    );
+  });
+});
+
+describe("silent Ledger reconnection", () => {
+  it("returns null when WebUSB or getDevices is unavailable", async () => {
+    Object.defineProperty(global.navigator, "usb", {
+      configurable: true,
+      value: undefined,
+    });
+    expect(await reconnectLedgerDevice()).toBeNull();
+
+    Object.defineProperty(global.navigator, "usb", {
+      configurable: true,
+      value: { requestDevice: jest.fn() },
+    });
+    expect(await reconnectLedgerDevice()).toBeNull();
+  });
+
+  it("re-opens a previously authorised device without a picker", async () => {
+    const device = new FakeLedger();
+    const getDevices = jest.fn().mockResolvedValue([device]);
+    Object.defineProperty(global.navigator, "usb", {
+      configurable: true,
+      value: { requestDevice: jest.fn(), getDevices },
+    });
+
+    const bridge = await reconnectLedgerDevice();
+
+    expect(getDevices).toHaveBeenCalled();
+    expect(device.opened).toBe(true);
+    expect(bridge?.describe()).toBe("Ledger Nano X");
+  });
+
+  it("returns null when no authorised device is present", async () => {
+    Object.defineProperty(global.navigator, "usb", {
+      configurable: true,
+      value: {
+        requestDevice: jest.fn(),
+        getDevices: jest.fn().mockResolvedValue([]),
+      },
+    });
+
+    expect(await reconnectLedgerDevice()).toBeNull();
+  });
+});
+
+describe("bridge lifecycle", () => {
+  it("closes the underlying USB device", async () => {
+    const device = new FakeLedger();
+    const close = jest.fn().mockResolvedValue(undefined);
+    (device as unknown as { close: typeof close }).close = close;
+
+    await bridgeFor(device).close();
+
+    expect(close).toHaveBeenCalled();
+  });
+
+  it("swallows close failures", async () => {
+    const device = new FakeLedger();
+    (device as unknown as { close: () => Promise<void> }).close = jest
+      .fn()
+      .mockRejectedValue(new Error("unplugged"));
+
+    await expect(bridgeFor(device).close()).resolves.toBeUndefined();
+  });
+});
