@@ -141,3 +141,107 @@ describe('WalletBalanceMonitor burn-rate & liquidity pressure (issue #1215)', ()
     expect('runwayHours' in status).toBe(true);
   });
 });
+
+describe('WalletBalanceMonitor multi-sig treasury relaying & reserve alerts (BE-FINAL-21)', () => {
+  const { TreasuryRefillChannel } = require('./gasVaultRefill');
+
+  test('requests multi-sig cold-to-hot treasury top-off when below low-water mark', async () => {
+    const sendAlertFn = jest.fn().mockResolvedValue(undefined);
+    const treasuryChannel = new TreasuryRefillChannel({
+      server: {},
+      keeperPublicKey: 'GKEEPER',
+      signerSecrets: ['S1', 'S2', 'S3'],
+      minSignatures: 2,
+      treasuryContractId: 'CTREASURY',
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    });
+    treasuryChannel._submit = jest.fn().mockResolvedValue({ requested: true, txHash: 'msig-tx-1', signers: 2 });
+
+    const monitor = new WalletBalanceMonitor(
+      baseOptions({
+        getBalanceFn: async () => 12,
+        lowWaterMarkXlm: 25,
+        sendAlertFn,
+        treasuryChannel,
+      }),
+    );
+
+    const result = await monitor.checkNow();
+    expect(result.level).toBe('critical');
+    expect(result.treasuryTopUpTriggered).toBe(true);
+    expect(treasuryChannel._submit).toHaveBeenCalledWith(
+      expect.objectContaining({ amountXlm: 88 }),
+    );
+    expect(sendAlertFn).toHaveBeenCalledWith(
+      'info',
+      expect.objectContaining({ type: 'TREASURY_TOPUP_REQUESTED' }),
+    );
+  });
+
+  test('triggers automated alert when treasury reserves drop below warning threshold', async () => {
+    const sendAlertFn = jest.fn().mockResolvedValue(undefined);
+    const monitor = new WalletBalanceMonitor(
+      baseOptions({
+        getBalanceFn: async () => 100,
+        getTreasuryBalanceFn: async () => 300,
+        treasuryWarningThresholdXlm: 500,
+        sendAlertFn,
+      }),
+    );
+
+    await monitor.checkNow();
+
+    expect(sendAlertFn).toHaveBeenCalledWith(
+      'warning',
+      expect.objectContaining({
+        type: 'TREASURY_RESERVE_LOW',
+        reserveBalance: 300,
+        threshold: 500,
+      }),
+    );
+    expect(monitor.getStatus().treasuryReserve).toBe(300);
+    expect(monitor.getStatus().treasuryReserveWarningActive).toBe(true);
+  });
+
+  test('integration/stress: hot wallet never runs out of gas during heavy execution spree', async () => {
+    let hotBalance = 80;
+    let treasuryReserve = 2000;
+    const sendAlertFn = jest.fn().mockResolvedValue(undefined);
+
+    const treasuryChannel = new TreasuryRefillChannel({
+      server: {},
+      keeperPublicKey: 'GKEEPER',
+      signerSecrets: ['S1', 'S2', 'S3'],
+      minSignatures: 2,
+      treasuryContractId: 'CTREASURY',
+      getTreasuryBalance: async () => treasuryReserve,
+      treasuryWarningThresholdXlm: 500,
+      sendAlertFn,
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    });
+    treasuryChannel._submit = jest.fn().mockImplementation(async ({ amountXlm }) => {
+      treasuryReserve -= amountXlm;
+      hotBalance += amountXlm;
+      return { requested: true, txHash: `tx-${hotBalance}`, signers: 2 };
+    });
+
+    const monitor = new WalletBalanceMonitor(
+      baseOptions({
+        getBalanceFn: async () => hotBalance,
+        lowWaterMarkXlm: 25,
+        sendAlertFn,
+        treasuryChannel,
+      }),
+    );
+
+    // Simulate 50 high-frequency execution ticks burning 10 XLM each
+    for (let i = 0; i < 50; i += 1) {
+      hotBalance -= 10;
+      await monitor.checkNow();
+      expect(hotBalance).toBeGreaterThan(0);
+    }
+
+    expect(treasuryChannel._submit).toHaveBeenCalled();
+    expect(treasuryReserve).toBeLessThan(2000);
+  });
+});

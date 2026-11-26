@@ -302,6 +302,7 @@ class DistributedIdempotencyEngine {
     return true;
   }
 
+
   /**
    * Decide whether this execution may be dispatched.
    *
@@ -470,7 +471,6 @@ class DistributedIdempotencyEngine {
     this.records.set(key, record);
     return { won: true, record };
   }
-
   /**
    * Mark a reserved execution confirmed on-chain and persist its receipt so
    * subsequent idempotent retries return the original receipt.

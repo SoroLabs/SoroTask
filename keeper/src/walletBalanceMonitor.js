@@ -92,6 +92,16 @@ class WalletBalanceMonitor {
     this.burnRateWindowMs = parseInt(process.env.WALLET_BURN_RATE_WINDOW_MS, 10) || DEFAULT_BURN_RATE_WINDOW_MS;
     this.runwayPauseHours = parseFloat(process.env.WALLET_RUNWAY_PAUSE_HOURS) || DEFAULT_RUNWAY_PAUSE_HOURS;
     this._balanceSamples = []; // [{ timestamp, balance }]
+
+    // Multi-sig cold-to-hot treasury relaying & reserve monitoring (BE-FINAL-21)
+    this.treasuryChannel = options.treasuryChannel || null;
+    this._lowWaterMarkXlm = options.lowWaterMarkXlm ?? null;
+    this.treasuryWarningThresholdXlm =
+      options.treasuryWarningThresholdXlm ??
+      (parseFloat(process.env.TREASURY_WARNING_THRESHOLD_XLM) || 500);
+    this.getTreasuryBalanceFn = options.getTreasuryBalanceFn || null;
+    this._lastTreasuryReserve = null;
+    this._treasuryRefillInProgress = false;
   }
 
   /**
@@ -159,6 +169,13 @@ class WalletBalanceMonitor {
       runwayHours: this.getRunwayHours(),
       liquidityPressure: this.getLiquidityPressure(),
       lowLiquidityPauseActive: this.isLowLiquidityPauseActive(),
+      lowWaterMarkXlm: this._lowWaterMarkXlm ?? this.criticalThreshold,
+      treasuryConfigured: Boolean(this.treasuryChannel && this.treasuryChannel.isConfigured),
+      treasuryReserve: this._lastTreasuryReserve,
+      treasuryWarningThresholdXlm: this.treasuryWarningThresholdXlm,
+      treasuryReserveWarningActive:
+        this._lastTreasuryReserve !== null &&
+        this._lastTreasuryReserve <= this.treasuryWarningThresholdXlm,
     };
   }
 
@@ -271,6 +288,109 @@ class WalletBalanceMonitor {
   }
 
   /**
+   * Check treasury vault reserves and fire automated alerting if reserves
+   * reach or fall below `treasuryWarningThresholdXlm` (BE-FINAL-21).
+   *
+   * @returns {Promise<{ checked: boolean, reserveBalance?: number, warning?: boolean }>}
+   */
+  async checkTreasuryReserve() {
+    if (this.getTreasuryBalanceFn) {
+      const reserveBalance = await this.getTreasuryBalanceFn(this.server);
+      this._lastTreasuryReserve = reserveBalance;
+
+      if (reserveBalance <= this.treasuryWarningThresholdXlm) {
+        logger.warn('WARNING: Treasury vault reserve reached warning threshold', {
+          reserveBalance,
+          threshold: this.treasuryWarningThresholdXlm,
+        });
+        await this.sendAlertFn('warning', {
+          type: 'TREASURY_RESERVE_LOW',
+          reserveBalance,
+          threshold: this.treasuryWarningThresholdXlm,
+          message: `Treasury vault reserve low: ${reserveBalance} XLM (threshold: ${this.treasuryWarningThresholdXlm} XLM)`,
+        });
+        return { checked: true, reserveBalance, warning: true };
+      }
+
+      return { checked: true, reserveBalance, warning: false };
+    }
+
+    if (this.treasuryChannel && typeof this.treasuryChannel.checkTreasuryReserve === 'function') {
+      const res = await this.treasuryChannel.checkTreasuryReserve();
+      if (res.checked) {
+        this._lastTreasuryReserve = res.reserveBalance;
+        if (res.warning && !res.alerted) {
+          await this.sendAlertFn('warning', {
+            type: 'TREASURY_RESERVE_LOW',
+            reserveBalance: res.reserveBalance,
+            threshold: this.treasuryChannel.treasuryWarningThresholdXlm,
+            message: `Treasury vault reserve low: ${res.reserveBalance} XLM (threshold: ${this.treasuryChannel.treasuryWarningThresholdXlm} XLM)`,
+          });
+        }
+      }
+      return res;
+    }
+
+    return { checked: false };
+  }
+
+  /**
+   * Request a multi-sig cold-to-hot treasury top-off transfer when hot wallet
+   * balance drops below the low-water mark (BE-FINAL-21).
+   *
+   * @param {number} currentBalance
+   * @returns {Promise<{ triggered: boolean, result?: object, reason?: string }>}
+   * @private
+   */
+  async _triggerTreasuryTopUp(currentBalance) {
+    if (!this.treasuryChannel || !this.treasuryChannel.isConfigured) {
+      return { triggered: false, reason: 'treasury_not_configured' };
+    }
+    if (this._treasuryRefillInProgress) {
+      return { triggered: false, reason: 'refill_in_progress' };
+    }
+
+    const amountXlm = Math.max(this.sweepTargetAmount - currentBalance, 0);
+    if (amountXlm <= 0) {
+      return { triggered: false, reason: 'above_target' };
+    }
+
+    this._treasuryRefillInProgress = true;
+    try {
+      const result = await this.treasuryChannel.requestTopUp({
+        amountXlm,
+        reason: `hot_wallet_low_water_mark_${currentBalance.toFixed(2)}_xlm`,
+      });
+      if (!result || !result.requested) {
+        logger.warn('Treasury top-up rejected', { reason: result?.reason });
+        return { triggered: false, reason: result?.reason || 'treasury_rejected', result };
+      }
+
+      logger.info('Multi-sig treasury top-up requested', {
+        currentBalance,
+        amountXlm,
+        txHash: result.txHash,
+        signers: result.signers,
+      });
+      await this.sendAlertFn('info', {
+        type: 'TREASURY_TOPUP_REQUESTED',
+        message: `Multi-sig treasury top-up requested: ${amountXlm} XLM (tx: ${result.txHash})`,
+        topUpResult: result,
+      });
+      return { triggered: true, result };
+    } catch (err) {
+      logger.error('Multi-sig treasury top-up failed', { error: err.message });
+      await this.sendAlertFn('error', {
+        type: 'TREASURY_TOPUP_FAILED',
+        message: `Multi-sig treasury top-up failed: ${err.message}`,
+      });
+      return { triggered: false, reason: 'treasury_request_failed', error: err.message };
+    } finally {
+      this._treasuryRefillInProgress = false;
+    }
+  }
+
+  /**
    * Internal balance check loop iteration.
    * @private
    */
@@ -280,10 +400,15 @@ class WalletBalanceMonitor {
       this._lastBalance = balance;
       this._recordBalanceSample(balance);
 
-      if (balance < this.criticalThreshold) {
-        logger.warn('CRITICAL: XLM balance below critical threshold', {
+      await this.checkTreasuryReserve();
+
+      const lowWaterMark = this._lowWaterMarkXlm ?? this.criticalThreshold;
+      const belowLowWater = balance < lowWaterMark || balance < this.criticalThreshold;
+      if (belowLowWater) {
+        logger.warn('CRITICAL: XLM balance below critical/low-water threshold', {
           balance,
           threshold: this.criticalThreshold,
+          lowWaterMarkXlm: this._lowWaterMarkXlm ?? this.criticalThreshold,
         });
 
         // Fire critical alert
@@ -294,12 +419,32 @@ class WalletBalanceMonitor {
           message: `Keeper XLM balance critically low: ${balance} XLM (threshold: ${this.criticalThreshold} XLM)`,
         });
 
-        // Trigger auto-sweep if enabled
-        if (this.sweepEnabled && !this._sweepInProgress) {
+        // Prefer multi-sig cold-to-hot treasury relaying when configured
+        let treasuryTriggered = false;
+        if (this.treasuryChannel && this.treasuryChannel.isConfigured) {
+          const topUp = await this._triggerTreasuryTopUp(balance);
+          treasuryTriggered = topUp.triggered;
+        } else if (this.sweepEnabled && !this._sweepInProgress) {
           await this._triggerAutoSweep(balance);
         }
 
-        return { balance, level: 'critical', sweepTriggered: this._sweepInProgress };
+        return {
+          balance,
+          level: 'critical',
+          sweepTriggered: this._sweepInProgress || treasuryTriggered,
+          treasuryTopUpTriggered: treasuryTriggered,
+        };
+      }
+
+      // Proactive multi-sig top-off during heavy execution sprees when runway is critical
+      if (this.isLowLiquidityPauseActive() && this.treasuryChannel && this.treasuryChannel.isConfigured) {
+        const topUp = await this._triggerTreasuryTopUp(balance);
+        return {
+          balance,
+          level: balance < this.warningThreshold ? 'warning' : 'ok',
+          sweepTriggered: topUp.triggered,
+          treasuryTopUpTriggered: topUp.triggered,
+        };
       }
 
       if (balance < this.warningThreshold) {
