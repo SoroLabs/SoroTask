@@ -1,7 +1,14 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import Link from "next/link";
 import { KeeperMarketplace } from "./components/KeeperMarketplace";
 import { TradingChart } from "@/src/components/TradingChart";
+
+
+export const viewport: Viewport = {
+  themeColor: '#0f172a',
+  width: 'device-width',
+  initialScale: 1,
+};
 
 export const metadata: Metadata = {
   title: "Marketplace & Autonomous Trading | SoroTask",

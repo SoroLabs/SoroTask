@@ -1,219 +1,190 @@
 import { ImageResponse } from "next/og";
-import { NextRequest } from "next/server";
+import { type NextRequest } from "next/server";
 
 export const runtime = "edge";
 
-export async function GET(req: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url);
+    const { searchParams } = new URL(request.url);
 
-    // Extract dynamic milestone parameters
-    const taskId = searchParams.get("taskId") || "task-def-001";
-    const title = searchParams.get("title") || "Yield Compounding Automation";
-    const runs = searchParams.get("runs") || "100";
-    const volume = searchParams.get("volume") || "1,000 XLM";
-    const gasSaved = searchParams.get("gasSaved") || "42.5 XLM";
-    const date =
-      searchParams.get("date") || new Date().toISOString().split("T")[0];
+    const title = searchParams.get("title") || "Automated Soroban Task";
+    const id = searchParams.get("id") || "task-preview";
+    const status = (searchParams.get("status") || "active").toUpperCase();
+    const executions = searchParams.get("executions") || "1,420";
+    const contract = searchParams.get("contract") || "CCBD...72F1";
+    const bounty = searchParams.get("bounty") || "25 XLM";
+
+    const statusBg =
+      status === "ACTIVE"
+        ? "#10b981"
+        : status === "COMPLETED"
+        ? "#3b82f6"
+        : status === "PAUSED"
+        ? "#f59e0b"
+        : "#ef4444";
 
     return new ImageResponse(
-      <div
-        style={{
-          height: "100%",
-          width: "100%",
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "space-between",
-          backgroundColor: "#090d16",
-          backgroundImage:
-            "radial-gradient(circle at 25% 25%, rgba(99, 102, 241, 0.15) 0%, transparent 50%), radial-gradient(circle at 75% 75%, rgba(16, 185, 129, 0.1) 0%, transparent 50%)",
-          padding: "50px 60px",
-          fontFamily: "sans-serif",
-          color: "#ffffff",
-        }}
-      >
-        {/* Top Brand Bar */}
+      (
         <div
           style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
+            height: "100%",
             width: "100%",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+            backgroundColor: "#090d16",
+            backgroundImage:
+              "radial-gradient(circle at 25px 25px, #1e293b 2%, transparent 0%), radial-gradient(circle at 75px 75px, #1e293b 2%, transparent 0%)",
+            backgroundSize: "100px 100px",
+            color: "#f8fafc",
+            padding: "50px 60px",
+            fontFamily: "system-ui, -apple-system, sans-serif",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-            <div
-              style={{
-                width: "44px",
-                height: "44px",
-                borderRadius: "12px",
-                backgroundColor: "#4f46e5",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: "24px",
-                fontWeight: "bold",
-              }}
-            >
-              ⚡
-            </div>
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              <span
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+              <div
                 style={{
+                  width: "48px",
+                  height: "48px",
+                  borderRadius: "12px",
+                  background: "linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                   fontSize: "24px",
                   fontWeight: "bold",
-                  letterSpacing: "-0.5px",
+                  color: "#ffffff",
                 }}
               >
-                SoroTask
-              </span>
-              <span
+                ✦
+              </div>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <span style={{ fontSize: "28px", fontWeight: "800", letterSpacing: "-0.5px" }}>
+                  SoroTask
+                </span>
+                <span style={{ fontSize: "14px", color: "#94a3b8" }}>
+                  Autonomous Soroban Automation Protocol
+                </span>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                backgroundColor: "rgba(30, 41, 59, 0.8)",
+                padding: "8px 18px",
+                borderRadius: "9999px",
+                border: "1px solid #334155",
+                gap: "8px",
+              }}
+            >
+              <div
                 style={{
-                  fontSize: "12px",
-                  color: "#9ca3af",
-                  letterSpacing: "1px",
+                  width: "10px",
+                  height: "10px",
+                  borderRadius: "50%",
+                  backgroundColor: statusBg,
                 }}
-              >
-                ON-CHAIN AUTOMATION PROTOCOL
+              />
+              <span style={{ fontSize: "16px", fontWeight: "700", color: statusBg }}>
+                {status}
               </span>
             </div>
           </div>
 
+          {/* Main Title / Body */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+            <span
+              style={{
+                fontSize: "16px",
+                color: "#60a5fa",
+                fontFamily: "monospace",
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+              }}
+            >
+              ID: {id}
+            </span>
+            <div
+              style={{
+                fontSize: "52px",
+                fontWeight: "900",
+                lineHeight: "1.15",
+                color: "#ffffff",
+                display: "-webkit-box",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {title}
+            </div>
+          </div>
+
+          {/* Metrics Footer */}
           <div
             style={{
               display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              padding: "8px 18px",
-              backgroundColor: "rgba(99, 102, 241, 0.15)",
-              border: "1px solid rgba(99, 102, 241, 0.3)",
-              borderRadius: "9999px",
-              color: "#a5b4fc",
-              fontSize: "14px",
-              fontWeight: "600",
+              justifyContent: "space-between",
+              backgroundColor: "rgba(15, 23, 42, 0.9)",
+              border: "1px solid #1e293b",
+              borderRadius: "16px",
+              padding: "24px 32px",
             }}
           >
-            <span>Verified Proof-of-Automation</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+              <span style={{ fontSize: "14px", color: "#94a3b8", textTransform: "uppercase" }}>
+                Executions
+              </span>
+              <span style={{ fontSize: "28px", fontWeight: "800", color: "#38bdf8" }}>
+                {executions}
+              </span>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+              <span style={{ fontSize: "14px", color: "#94a3b8", textTransform: "uppercase" }}>
+                Target Contract
+              </span>
+              <span
+                style={{
+                  fontSize: "24px",
+                  fontWeight: "700",
+                  fontFamily: "monospace",
+                  color: "#cbd5e1",
+                }}
+              >
+                {contract}
+              </span>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+              <span style={{ fontSize: "14px", color: "#94a3b8", textTransform: "uppercase" }}>
+                Bounty / Gas
+              </span>
+              <span style={{ fontSize: "28px", fontWeight: "800", color: "#a855f7" }}>
+                {bounty}
+              </span>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+              <span style={{ fontSize: "14px", color: "#94a3b8", textTransform: "uppercase" }}>
+                Network
+              </span>
+              <span style={{ fontSize: "28px", fontWeight: "800", color: "#10b981" }}>
+                Stellar Mainnet
+              </span>
+            </div>
           </div>
         </div>
-
-        {/* Main Content / Milestone */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          <span
-            style={{
-              fontSize: "16px",
-              fontWeight: "600",
-              color: "#10b981",
-              textTransform: "uppercase",
-              letterSpacing: "1.5px",
-            }}
-          >
-            Milestone Achievement Unlocked
-          </span>
-          <span
-            style={{
-              fontSize: "44px",
-              fontWeight: "800",
-              lineHeight: "1.15",
-              color: "#f3f4f6",
-              letterSpacing: "-1px",
-            }}
-          >
-            {title}
-          </span>
-          <span style={{ fontSize: "16px", color: "#9ca3af" }}>
-            Task ID: {taskId} • Recorded on Stellar Soroban Network
-          </span>
-        </div>
-
-        {/* Metrics Grid */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            backgroundColor: "rgba(17, 24, 39, 0.75)",
-            border: "1px solid rgba(55, 65, 81, 0.8)",
-            borderRadius: "18px",
-            padding: "24px 32px",
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-            <span
-              style={{
-                fontSize: "13px",
-                color: "#9ca3af",
-                textTransform: "uppercase",
-              }}
-            >
-              Total Executions
-            </span>
-            <span
-              style={{ fontSize: "28px", fontWeight: "bold", color: "#818cf8" }}
-            >
-              {runs} runs
-            </span>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-            <span
-              style={{
-                fontSize: "13px",
-                color: "#9ca3af",
-                textTransform: "uppercase",
-              }}
-            >
-              Volume Automated
-            </span>
-            <span
-              style={{ fontSize: "28px", fontWeight: "bold", color: "#34d399" }}
-            >
-              {volume}
-            </span>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-            <span
-              style={{
-                fontSize: "13px",
-                color: "#9ca3af",
-                textTransform: "uppercase",
-              }}
-            >
-              Gas Optimized
-            </span>
-            <span
-              style={{ fontSize: "28px", fontWeight: "bold", color: "#fbbf24" }}
-            >
-              {gasSaved}
-            </span>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-            <span
-              style={{
-                fontSize: "13px",
-                color: "#9ca3af",
-                textTransform: "uppercase",
-              }}
-            >
-              Date Verified
-            </span>
-            <span
-              style={{ fontSize: "24px", fontWeight: "600", color: "#d1d5db" }}
-            >
-              {date}
-            </span>
-          </div>
-        </div>
-      </div>,
+      ),
       {
         width: 1200,
         height: 630,
-      },
+      }
     );
   } catch (e: any) {
-    return new Response(`Failed to generate the image: ${e.message}`, {
-      status: 500,
-    });
+    return new Response(`Failed to generate OG image: ${e.message}`, { status: 500 });
   }
 }
