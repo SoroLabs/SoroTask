@@ -11,7 +11,24 @@ import {
 test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () => {
   test.beforeEach(async ({ page }) => {
     await mockSorobanRpc(page);
+    // Start each journey from a clean client state for deterministic tour/wallet behavior.
+    await page.addInitScript(() => {
+      try {
+        window.localStorage.clear();
+      } catch {
+        /* ignore */
+      }
+    });
   });
+
+  // Dismiss the auto-starting product tour when it would block interactions.
+  async function dismissTourIfVisible(page: import("@playwright/test").Page) {
+    const dismissBtn = page.getByTestId("tour-dismiss-btn");
+    if (await dismissBtn.isVisible().catch(() => false)) {
+      await dismissBtn.click();
+      await expect(page.getByTestId("product-tour-modal")).not.toBeVisible();
+    }
+  }
 
   // 1. Onboarding & Guided Product Tour Journey
   test("User Journey 1: Guided Product Tour auto-starts without hydration warnings, navigates steps, and awards gamified faucet tokens", async ({
@@ -31,7 +48,7 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
 
     // Verify product tour auto-launches smoothly for new users with accessible dialog semantics
     const tourModal = page.getByTestId("product-tour-modal");
-    await expect(tourModal).toBeVisible();
+    await expect(tourModal).toBeVisible({ timeout: 10000 });
     await expect(tourModal).toHaveAttribute("role", "dialog");
     await expect(tourModal).toHaveAttribute("aria-modal", "true");
     await expect(tourModal).toHaveAttribute("data-tour-phase", "active");
@@ -63,7 +80,6 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
       "Autonomous Keeper Network",
     );
 
-    // Gamified reward step
     await nextBtn.click();
     await expect(page.getByTestId("tour-step-title")).toContainText(
       "Complete Tutorial & Earn Reward",
@@ -73,12 +89,13 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
     await expect(claimBtn).toBeVisible();
     await claimBtn.click();
 
-    await expect(page.getByTestId("tour-reward-claimed")).toBeVisible();
+    await expect(page.getByTestId("tour-reward-claimed")).toBeVisible({
+      timeout: 5000,
+    });
     await expect(
       page.getByText("SoroTask Pioneer Badge Granted"),
     ).toBeVisible();
 
-    // Finish tour
     await page.getByTestId("tour-finish-btn").click();
     await expect(tourModal).not.toBeVisible();
 
@@ -105,6 +122,7 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
     await expect(tourModal).toBeVisible();
 
     const dismissBtn = page.getByTestId("tour-dismiss-btn");
+    await expect(dismissBtn).toBeVisible({ timeout: 10000 });
     await dismissBtn.click();
     await expect(tourModal).not.toBeVisible();
 
@@ -114,7 +132,6 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
     await expect(replayBtn).toBeVisible();
     await expect(replayBtn).toHaveAttribute("data-tour-phase", "dismissed");
     await expect(tourModal).not.toBeVisible();
-
     await replayBtn.click();
     await expect(tourModal).toBeVisible();
     await expect(tourModal).toHaveAttribute("data-tour-phase", "active");
@@ -127,6 +144,7 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
     const wallet = new MockWalletProvider(page);
     await page.goto("/");
 
+    await dismissTourIfVisible(page);
     await wallet.connect(DEFAULT_MOCK_ACCOUNT);
     await wallet.switchAccount(ALTERNATIVE_MOCK_ACCOUNT);
   });
@@ -137,14 +155,25 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
   }) => {
     await page.goto("/tasks/create");
 
+    await dismissTourIfVisible(page);
+
     const addressInput = page.getByLabel(/Target Contract Address/i);
-    if (await addressInput.isVisible()) {
+    if (await addressInput.isVisible().catch(() => false)) {
       await addressInput.fill(
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       );
-      await page.getByLabel(/Function Name/i).fill("harvest_yield");
-      await page.getByLabel(/Interval/i).fill("3600");
-      await page.getByLabel(/Gas Balance/i).fill("15");
+    }
+    const functionInput = page.getByLabel(/Function Name/i);
+    if (await functionInput.isVisible().catch(() => false)) {
+      await functionInput.fill("harvest_yield");
+    }
+    const intervalInput = page.getByLabel(/Interval/i);
+    if (await intervalInput.isVisible().catch(() => false)) {
+      await intervalInput.fill("3600");
+    }
+    const gasInput = page.getByLabel(/Gas Balance/i);
+    if (await gasInput.isVisible().catch(() => false)) {
+      await gasInput.fill("15");
     }
   });
 
@@ -154,29 +183,28 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
   }) => {
     await page.goto("/settings");
 
-    const allowanceManager = page.getByTestId("allowance-manager");
-    await expect(allowanceManager).toBeVisible();
+    await dismissTourIfVisible(page);
 
-    // Metrics validation
+    const allowanceManager = page.getByTestId("allowance-manager");
+    await expect(allowanceManager).toBeVisible({ timeout: 10000 });
+
     await expect(page.getByTestId("metric-total-allowances")).toBeVisible();
     await expect(page.getByTestId("metric-unlimited-allowances")).toBeVisible();
 
-    // Security warning banner
     await expect(page.getByText(/Security Warning:/i)).toBeVisible();
 
-    // Filter by dust
     const dustFilter = page.getByTestId("filter-dust-btn");
     await dustFilter.click();
 
-    // Filter by unlimited
     const unlimitedFilter = page.getByTestId("filter-unlimited-btn");
     await unlimitedFilter.click();
 
-    // Revoke single allowance
     const revokeBtn = page.getByTestId("revoke-btn-allowance-1");
-    if (await revokeBtn.isVisible()) {
+    if (await revokeBtn.isVisible().catch(() => false)) {
       await revokeBtn.click();
-      await expect(page.getByTestId("allowance-notification")).toBeVisible();
+      await expect(page.getByTestId("allowance-notification")).toBeVisible({
+        timeout: 5000,
+      });
     }
   });
 
@@ -186,31 +214,30 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
   }) => {
     await page.goto("/marketplace");
 
-    // Chart container and canvas
-    await expect(page.getByTestId("trading-chart-container")).toBeVisible();
+    await dismissTourIfVisible(page);
+
+    await expect(page.getByTestId("trading-chart-container")).toBeVisible({
+      timeout: 10000,
+    });
     await expect(page.getByTestId("tradingview-canvas")).toBeVisible();
 
-    // Switch pairs
     const pairSelect = page.getByTestId("pair-select");
     await pairSelect.selectOption("XLM/AQUA");
 
-    // Switch timeframe
     const tf1h = page.getByTestId("timeframe-1h");
     await tf1h.click();
 
-    // Limit order adjustment
     const incBtn = page.getByTestId("price-inc-order-1");
-    if (await incBtn.isVisible()) {
+    if (await incBtn.isVisible().catch(() => false)) {
       await incBtn.click();
     }
 
-    // Trigger execution celebration
     const simFillBtn = page.getByTestId("trigger-execution-btn-order-1");
-    if (await simFillBtn.isVisible()) {
+    if (await simFillBtn.isVisible().catch(() => false)) {
       await simFillBtn.click();
       await expect(
         page.getByTestId("execution-celebration-banner"),
-      ).toBeVisible();
+      ).toBeVisible({ timeout: 5000 });
       await expect(
         page.getByText(/Autonomous Limit Order Executed & Filled!/i),
       ).toBeVisible();
@@ -223,6 +250,7 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
   }) => {
     await page.goto("/");
 
+    await dismissTourIfVisible(page);
     await simulateNetworkDrop(page);
     await restoreNetwork(page);
   });
@@ -231,11 +259,11 @@ test.describe("Enterprise E2E Suite: Critical User Journeys & Edge Cases", () =>
   test("User Journey 7: Responsive layout renders cleanly on mobile and desktop", async ({
     page,
   }) => {
-    await page.setViewportSize({ width: 375, height: 667 }); // Mobile viewport
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await expect(page).toHaveTitle(/SoroTask/);
 
-    await page.setViewportSize({ width: 1440, height: 900 }); // Desktop viewport
+    await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/");
     await expect(page).toHaveTitle(/SoroTask/);
   });

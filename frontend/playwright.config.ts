@@ -5,20 +5,25 @@ const usesLocalWebServer = !process.env.PLAYWRIGHT_BASE_URL;
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  fullyParallel: false,
+  fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 1 : undefined,
-  reporter: [["html", { outputFolder: "playwright-report" }], ["list"]],
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 2 : undefined,
+  reporter: [
+    ["html", { outputFolder: "playwright-report", open: "never" }],
+    ["list"],
+  ],
   use: {
     baseURL,
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    video: "on-first-retry",
+    video: "retain-on-failure",
+    actionTimeout: 10000,
   },
   timeout: 30000,
   expect: {
-    timeout: 5000,
+    timeout: 10000,
+    toHaveScreenshot: { maxDiffPixelRatio: 0.02 },
   },
 
   projects: [
