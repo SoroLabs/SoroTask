@@ -4,7 +4,7 @@
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node init && node server.js",
+    "start": "node server.js",
     "test": "jest"
   },
   "type": "commonjs",
