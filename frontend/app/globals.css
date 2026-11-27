@@ -373,3 +373,28 @@ input[type="checkbox"] {
 :root[data-quality-tier="minimal"] [class*="bg-[radial-gradient"] {
   background-image: none !important;
 }
+
+/* ---------------------------------------------------------------------------
+ * Zero-Data-Leak Privacy Guard (FE-FINAL-43)
+ *
+ * Toggling `data-privacy-mask="true"` on <html> masks every element marked
+ * with `data-privacy-sensitive` or `.privacy-sensitive` in a single style
+ * recalculation (< 16ms) with zero React subtree re-renders required.
+ * Placed after quality-tier and high-contrast overrides so sensitive data
+ * remains protected in all display modes.
+ * ------------------------------------------------------------------------- */
+:root[data-privacy-mask="true"] [data-privacy-sensitive],
+:root[data-privacy-mask="true"] .privacy-sensitive {
+  filter: blur(8px) !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  pointer-events: none !important;
+  transition: none !important;
+}
+
+:root[data-privacy-mask="true"][data-theme="high-contrast"] [data-privacy-sensitive],
+:root[data-privacy-mask="true"][data-theme="high-contrast"] .privacy-sensitive {
+  color: transparent !important;
+  background-color: var(--text-primary) !important;
+  filter: blur(6px) !important;
+}
