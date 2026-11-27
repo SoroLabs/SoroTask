@@ -168,4 +168,83 @@ describe('TreasuryRefillChannel (issue #1215)', () => {
     const result = await monitor.checkAndRefill();
     expect(result).toEqual({ triggered: false, reason: 'no_usable_source_balance', xlmBalance: 10 });
   });
+
+  test('enforces distinct multi-sig signers and rejects duplicate signer spoofing', async () => {
+    const channel = new TreasuryRefillChannel(
+      channelOptions({ signerSecrets: ['S1', 'S1'], minSignatures: 2 }),
+    );
+    const result = await channel.requestTopUp({ amountXlm: 50 });
+    expect(result).toEqual({ requested: false, reason: 'insufficient_signers' });
+  });
+
+  test('caps single refill amount to maxSingleRefillXlm for security', async () => {
+    const channel = new TreasuryRefillChannel(
+      channelOptions({ maxSingleRefillXlm: 100 }),
+    );
+    channel._submit = jest.fn().mockResolvedValue({ requested: true, txHash: 'capped-tx', signers: 2 });
+
+    await channel.requestTopUp({ amountXlm: 5000 });
+    expect(channel._submit).toHaveBeenCalledWith(
+      expect.objectContaining({ amountXlm: 100 }),
+    );
+  });
+
+  test('triggers automated alerting when treasury reserves reach warning threshold', async () => {
+    const sendAlertFn = jest.fn().mockResolvedValue(undefined);
+    const channel = new TreasuryRefillChannel(
+      channelOptions({
+        getTreasuryBalance: async () => 400,
+        treasuryWarningThresholdXlm: 500,
+        sendAlertFn,
+      }),
+    );
+    channel._submit = jest.fn().mockResolvedValue({ requested: true, txHash: 'low-res-tx', signers: 2 });
+
+    const result = await channel.requestTopUp({ amountXlm: 50 });
+    expect(result.requested).toBe(true);
+    expect(result.reserveWarning).toBe(true);
+    expect(sendAlertFn).toHaveBeenCalledWith(
+      'warning',
+      expect.objectContaining({ type: 'TREASURY_RESERVE_LOW', reserveBalance: 400, threshold: 500 }),
+    );
+    expect(channel.getTreasuryStatus().reserveWarningActive).toBe(true);
+  });
+
+  test('allows direct cold-to-hot treasury relaying without swap router configured', async () => {
+    const treasuryChannel = new TreasuryRefillChannel(channelOptions({}));
+    treasuryChannel.requestTopUp = jest.fn().mockResolvedValue({ requested: true, txHash: 'direct-tx', signers: 2 });
+
+    const monitor = new GasVaultRefillMonitor(
+      baseOptions({
+        routerContractId: null,
+        xlmContractId: null,
+        sourceAssetContractIds: [],
+        lowWaterMarkXlm: 25,
+        getXlmBalance: async () => 15,
+        treasuryChannel,
+      }),
+    );
+
+    const result = await monitor.checkAndRefill();
+    expect(result.triggered).toBe(true);
+    expect(result.reason).toBe('treasury_refill_requested');
+    expect(result.treasury.txHash).toBe('direct-tx');
+  });
+
+  test('stress test: prevents duplicate in-flight top-up requests under concurrent load', async () => {
+    const channel = new TreasuryRefillChannel(channelOptions({}));
+    channel._submit = jest.fn().mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({ requested: true, txHash: 'concurrent-tx', signers: 2 }), 20)),
+    );
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => channel.requestTopUp({ amountXlm: 50 })),
+    );
+
+    const succeeded = results.filter((r) => r.requested);
+    const rejected = results.filter((r) => r.reason === 'request_in_flight');
+    expect(succeeded).toHaveLength(1);
+    expect(rejected).toHaveLength(9);
+    expect(channel._submit).toHaveBeenCalledTimes(1);
+  });
 });

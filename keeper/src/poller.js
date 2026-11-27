@@ -1,5 +1,5 @@
 const { Contract, xdr, TransactionBuilder, BASE_FEE, Networks, scValToNative } = require('@stellar/stellar-sdk');
-const { createRateLimiter } = require('./concurrency');
+const { createRateLimiter, createConcurrencyLimit } = require('./concurrency');
 const { DistributedRateLimiter } = require('./distributedRateLimiter');
 const { createLogger } = require('./logger');
 const { validateTaskPayload } = require('./taskValidator');
@@ -9,6 +9,7 @@ const { SimulationCache } = require('./simulationCache');
 const { TaskMetadataCache } = require('./taskMetadataCache');
 const { ReadBatcher } = require('./readBatcher');
 const { TaskReadinessPredictor } = require('./ml-execution-predictor');
+const { wrapRpcServer } = require('./rpcWrapper');
 const crypto = require('crypto');
 
 function normalizeLogger(logger) {
@@ -35,9 +36,20 @@ function normalizeLogger(logger) {
  */
 class TaskPoller {
   constructor(server, contractId, options = {}) {
-    this.server = server;
+    // Support passing an array of RPC endpoints/servers or options.rpcEndpoints for multi-RPC failover
+    const configuredEndpoints = Array.isArray(server)
+      ? server
+      : (Array.isArray(options.rpcEndpoints) && options.rpcEndpoints.length > 0 ? options.rpcEndpoints : null);
+
+    this.server = configuredEndpoints
+      ? wrapRpcServer(configuredEndpoints, options.metricsServer || null, {
+          logger: options.logger,
+          ...(options.rpcPoolOptions || {}),
+        })
+      : server;
     this.contractId = contractId;
     this.mempoolSniffer = options.mempoolSniffer || null;
+    this.lastObservedLedger = 0;
 
     // Structured logger for poller module
     this.logger = normalizeLogger(options.logger);
@@ -113,6 +125,7 @@ class TaskPoller {
         }
       },
     });
+    this.checkLimit = createConcurrencyLimit(this.maxConcurrentReads);
 
     // Cluster-wide (distributed) RPC rate limiter — Issue #849.
     // This gates RPC reads across ALL keeper processes via Redis, enforcing a
@@ -168,20 +181,36 @@ class TaskPoller {
 
     // Optional read batcher — coalesces per-task reads into bulk getLedgerEntries
     // calls, reducing RPC round-trips from O(n) to O(ceil(n/batchSize)).
-    // Enabled when options.batcher is provided OR when options.batchReadsEnabled
-    // is true (in which case this constructor creates one internally).
+    // Enabled when options.batcher is provided or the resolved configuration
+    // enables it (in which case this constructor creates one internally).
     if (options.batcher instanceof ReadBatcher) {
       this.batcher = options.batcher;
-    } else if (options.batchReadsEnabled || process.env.BATCH_READS_ENABLED === 'true') {
+    } else if (
+      options.batchReadsEnabled
+      ?? options.config?.batchReadsEnabled
+      ?? (process.env.BATCH_READS_ENABLED === 'true')
+    ) {
       this.batcher = new ReadBatcher(
         this.server,
         this.contractId,
         scVal => this.decodeTaskConfig(scVal),
         {
-          batchWindowMs: parseInt(options.batchWindowMs || process.env.BATCH_WINDOW_MS || '10', 10),
-          maxBatchSize: parseInt(options.readBatchSize || process.env.READ_BATCH_SIZE || '50', 10),
-          batchConcurrency: parseInt(options.batchConcurrency || process.env.BATCH_CONCURRENCY || '2', 10),
-          batchRps: parseInt(options.batchRps || process.env.BATCH_RPS || '10', 10),
+          batchWindowMs: parseInt(
+            options.batchWindowMs ?? options.config?.batchWindowMs ?? process.env.BATCH_WINDOW_MS ?? '10',
+            10,
+          ),
+          maxBatchSize: parseInt(
+            options.readBatchSize ?? options.config?.readBatchSize ?? process.env.READ_BATCH_SIZE ?? '100',
+            10,
+          ),
+          batchConcurrency: parseInt(
+            options.batchConcurrency ?? options.config?.batchConcurrency ?? process.env.BATCH_CONCURRENCY ?? '2',
+            10,
+          ),
+          batchRps: parseInt(
+            options.batchRps ?? options.config?.batchRps ?? process.env.BATCH_RPS ?? '10',
+            10,
+          ),
           logger: this.logger,
           metricsServer: this.metricsServer,
         },
@@ -255,6 +284,9 @@ class TaskPoller {
     try {
       // Fetch current ledger timestamp
       const ledgerInfo = await this.server.getLatestLedger();
+      if (ledgerInfo && Number.isFinite(Number(ledgerInfo.sequence))) {
+        this.lastObservedLedger = Math.max(this.lastObservedLedger || 0, Number(ledgerInfo.sequence));
+      }
       const currentTimestamp = this.resolveLedgerTimestamp(ledgerInfo);
 
       // Note: In production, you'd want to use the actual ledger timestamp
@@ -316,14 +348,22 @@ class TaskPoller {
         }
       }
 
-      const taskChecks = candidateIds.map(taskId =>
-        this.readLimit(async () => {
+      const taskChecks = candidateIds.map(taskId => {
+        const hasPreloadedConfig = preloadedConfigs?.has(Number(taskId)) || false;
+        const check = async () => {
           const startedAt = Date.now();
           const correlationId = `poll-${taskId}-${crypto.randomBytes(4).toString('hex')}`;
-          // Cluster-wide gate: wait for a global RPC token before issuing the
-          // per-task read. No-op passthrough when Redis is not configured.
-          await this.distributedReadLimit.acquire();
-          const preloaded = preloadedConfigs ? preloadedConfigs.get(Number(taskId)) : undefined;
+          if (!hasPreloadedConfig) {
+            // Batch reads have already passed through the batcher's limiter.
+            // Gate only fallback per-task RPC reads here.
+            const rateLimitAcquired = await this.distributedReadLimit.acquire();
+            if (!rateLimitAcquired) {
+              throw new Error('Distributed RPC rate limit unavailable; skipping task read');
+            }
+          }
+          const preloaded = hasPreloadedConfig
+            ? preloadedConfigs.get(Number(taskId))
+            : undefined;
           const result = await this.checkTask(
             taskId,
             currentTimestamp,
@@ -332,8 +372,11 @@ class TaskPoller {
           );
           rpcLatencies.push(Date.now() - startedAt);
           return { ...result, correlationId };
-        }),
-      );
+        };
+        return this.checkLimit(() => (
+          hasPreloadedConfig ? check() : this.readLimit(check)
+        ));
+      });
 
       const results = await Promise.allSettled(taskChecks);
 
@@ -419,8 +462,7 @@ class TaskPoller {
         this.metricsServer.updateHealth({
           lastPollAt: new Date(),
           rpcConnected: true,
-          backlogSize: taskIds.length,
-          retryBudgetPressure: retryStats.global?.percentage || 0,
+          latestLedgerSequence: currentTimestamp,
         });
         this.metricsServer.updateDriftState({
           warning: warningDriftCount,
@@ -553,23 +595,37 @@ class TaskPoller {
       }
     }
 
-    // 2. Hot-reload RPC endpoints
+    // 2. Hot-reload RPC endpoints (supports multi-RPC failover pool)
     if (changes.rpcUrl || (Array.isArray(changes.rpcUrls) && changes.rpcUrls.length > 0)) {
-      const newRpc = changes.rpcUrl || changes.rpcUrls[0];
-      if (typeof newRpc === 'string' && (newRpc.startsWith('http://') || newRpc.startsWith('https://'))) {
+      const candidateUrls = Array.isArray(changes.rpcUrls) && changes.rpcUrls.length > 0
+        ? changes.rpcUrls.filter((u) => typeof u === 'string' && (u.startsWith('http://') || u.startsWith('https://')))
+        : (typeof changes.rpcUrl === 'string' && (changes.rpcUrl.startsWith('http://') || changes.rpcUrl.startsWith('https://'))
+            ? [changes.rpcUrl]
+            : []);
+
+      if (candidateUrls.length > 0) {
         const old = this.rpcUrl;
+        const newRpc = candidateUrls[0];
         this.rpcUrl = newRpc;
         try {
-          const { rpc } = require('@stellar/stellar-sdk');
-          const Server = rpc?.Server;
-          if (Server) {
-            this.server = new Server(newRpc, { allowHttp: newRpc.startsWith('http://') });
+          if (this.server && typeof this.server.updateEndpoints === 'function') {
+            this.server.updateEndpoints(candidateUrls);
+          } else if (candidateUrls.length > 1) {
+            this.server = wrapRpcServer(candidateUrls, this.metricsServer || null, {
+              logger: this.logger,
+            });
+          } else {
+            const { rpc } = require('@stellar/stellar-sdk');
+            const Server = rpc?.Server;
+            if (Server) {
+              this.server = new Server(newRpc, { allowHttp: newRpc.startsWith('http://') });
+            }
           }
         } catch (_err) {
           // ignore
         }
-        appliedChanges.rpcUrl = { old, new: newRpc };
-        this.logger.info('Hot-reloaded keeper RPC endpoint', { old, newRpc });
+        appliedChanges.rpcUrl = { old, new: newRpc, endpoints: candidateUrls };
+        this.logger.info('Hot-reloaded keeper RPC endpoint', { old, newRpc, endpointCount: candidateUrls.length });
       }
     }
 
@@ -641,8 +697,8 @@ class TaskPoller {
         // Use config pre-fetched by ReadBatcher — no extra RPC call needed.
         // preloadedConfig is null when the task was not found in the batch response.
         taskConfig = options.preloadedConfig || null;
+        cacheSource = 'batch_preload';
         if (taskConfig) {
-          cacheSource = 'batch_preload';
           this.simulationCache.set(taskId, taskConfig);
           if (this.taskMetadataCache) {
             this.taskMetadataCache.set(taskId, taskConfig);
@@ -651,7 +707,7 @@ class TaskPoller {
       }
 
       // L4: RPC fallback — read task configuration from contract via view call
-      if (!taskConfig) {
+      if (!taskConfig && cacheSource !== 'batch_preload') {
         taskConfig = await this.getTaskConfig(taskId);
         cacheSource = 'rpc';
 
@@ -1265,6 +1321,19 @@ class TaskPoller {
 
   getCycleInsights() {
     return { ...this.lastCycleInsights };
+  }
+
+  /**
+   * Get real-time multi-RPC pool health, latency weights, and failover metrics.
+   * Returns null if the underlying server does not expose pool status.
+   *
+   * @returns {Object|null}
+   */
+  getRpcPoolStatus() {
+    if (this.server && typeof this.server.getPoolStatus === 'function') {
+      return this.server.getPoolStatus();
+    }
+    return null;
   }
 
   /**

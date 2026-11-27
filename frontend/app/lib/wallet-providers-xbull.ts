@@ -5,7 +5,11 @@
  * xBull is a popular Stellar wallet extension for Chrome/Firefox.
  */
 
-import type { WalletProvider } from "./wallet-provider";
+import type {
+  WalletProvider,
+  WalletSignOptions,
+  WalletSignResult,
+} from "./wallet-provider";
 import { WalletProviderError } from "./wallet-provider";
 
 export class XBullWalletProvider implements WalletProvider {
@@ -30,7 +34,7 @@ export class XBullWalletProvider implements WalletProvider {
       throw new WalletProviderError(
         "xbull",
         "NOT_INSTALLED",
-        "xBull wallet is not installed. Please install the xBull browser extension."
+        "xBull wallet is not installed. Please install the xBull browser extension.",
       );
     }
 
@@ -46,7 +50,7 @@ export class XBullWalletProvider implements WalletProvider {
           throw new WalletProviderError(
             "xbull",
             "USER_REJECTED",
-            "User rejected the connection request."
+            "User rejected the connection request.",
           );
         }
 
@@ -62,14 +66,14 @@ export class XBullWalletProvider implements WalletProvider {
       throw new WalletProviderError(
         "xbull",
         "CONNECTION_FAILED",
-        "xBull SDK not properly initialized."
+        "xBull SDK not properly initialized.",
       );
     } catch (err) {
       if (err instanceof WalletProviderError) throw err;
       throw new WalletProviderError(
         "xbull",
         "CONNECTION_FAILED",
-        `Failed to connect to xBull: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to connect to xBull: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -80,5 +84,45 @@ export class XBullWalletProvider implements WalletProvider {
 
   watchChanges(cb: (address: string | null) => void): () => void {
     return () => {};
+  }
+
+  async signTransaction(
+    xdr: string,
+    options: WalletSignOptions = {},
+  ): Promise<WalletSignResult> {
+    const sdk = (window as any).xBullSDK || (window as any).xBull;
+    if (!sdk || typeof sdk.sign !== "function") {
+      throw new WalletProviderError(
+        "xbull",
+        "NOT_INSTALLED",
+        "xBull is not available to sign this transaction.",
+      );
+    }
+
+    try {
+      const result = await sdk.sign({
+        xdr,
+        network: "futurenet",
+        publicKey: options.address,
+        networkPassphrase: options.networkPassphrase,
+      });
+      const signedTxXdr =
+        result?.signedXDR ?? result?.signedXdr ?? result?.signed_xdr;
+      if (!signedTxXdr) {
+        throw new WalletProviderError(
+          "xbull",
+          "SIGN_FAILED",
+          "xBull did not return a signed transaction.",
+        );
+      }
+      return { signedTxXdr, signature: result?.signature };
+    } catch (err) {
+      if (err instanceof WalletProviderError) throw err;
+      throw new WalletProviderError(
+        "xbull",
+        "SIGN_FAILED",
+        `xBull signing failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }

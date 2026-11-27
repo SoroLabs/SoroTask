@@ -67,7 +67,7 @@ jest.mock('@sentry/react', () => ({
 }))
 
 // Mock scrollIntoView for jsdom (used by ZKProofLogStream)
-Element.prototype.scrollIntoView = jest.fn()
+if (typeof Element !== 'undefined') Element.prototype.scrollIntoView = jest.fn()
 
 // Suppress known Tiptap duplicate-extension warning in tests
 const originalWarn = console.warn.bind(console)

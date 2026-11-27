@@ -1,8 +1,14 @@
-import { User, UserRole } from '@/types/auth';
+import { User } from '@/types/auth';
 import { AuthResult, IdentityResolutionResult } from './types';
+import type { VerifiedSocialIdentity } from './keeper-identities';
 
 export class IdentityManager {
   private userStore: Map<string, User> = new Map();
+
+  /** Read verified keeper links through the server service; AuthResult is not proof. */
+  async getKeeperIdentities(addresses: string[], source: { list(addresses: string[]): Promise<Record<string, VerifiedSocialIdentity[]>> }) {
+    return source.list(addresses);
+  }
 
   /**
    * Normalizes an auth result into a unified User model.

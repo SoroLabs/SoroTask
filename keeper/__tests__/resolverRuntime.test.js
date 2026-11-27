@@ -103,4 +103,55 @@ describe('ResolverRuntime', () => {
       code: 'PAYLOAD_TOO_LARGE',
     });
   });
+
+  it('executes metered WebAssembly resolvers in an isolated worker', async () => {
+    const bytes = Buffer.from([
+      0, 97, 115, 109, 1, 0, 0, 0,
+      1, 5, 1, 96, 0, 1, 127,
+      3, 2, 1, 0,
+      7, 11, 1, 7, 114, 101, 115, 111, 108, 118, 101, 0, 0,
+      10, 6, 1, 4, 0, 65, 1, 11,
+    ]);
+    const runtime = createRuntime({
+      ready: { runtime: 'wasm', bytesBase64: bytes.toString('base64') },
+    });
+
+    await expect(runtime.evaluate('ready', { wasmArgs: [] })).resolves.toMatchObject({
+      isReady: true,
+      runtime: 'wasm',
+    });
+  });
+
+  it('halts WebAssembly loops when the fuel budget is exhausted', async () => {
+    const bytes = Buffer.from([
+      0, 97, 115, 109, 1, 0, 0, 0,
+      1, 4, 1, 96, 0, 0,
+      3, 2, 1, 0,
+      7, 11, 1, 7, 114, 101, 115, 111, 108, 118, 101, 0, 0,
+      10, 9, 1, 7, 0, 3, 64, 12, 0, 11, 11,
+    ]);
+    const runtime = createRuntime({
+      loop: { runtime: 'wasm', maxFuel: 50, bytesBase64: bytes.toString('base64') },
+    });
+
+    await expect(runtime.evaluate('loop', { wasmArgs: [] })).rejects.toMatchObject({
+      code: 'FUEL_EXHAUSTED',
+    });
+  });
+
+  it('rejects imported host capabilities in WebAssembly modules', async () => {
+    const bytes = Buffer.from([
+      0, 97, 115, 109, 1, 0, 0, 0,
+      1, 5, 1, 96, 0, 1, 127,
+      2, 15, 1, 3, 101, 110, 118, 7, 110, 101, 116, 119, 111, 114, 107, 0, 0,
+      7, 11, 1, 7, 114, 101, 115, 111, 108, 118, 101, 0, 0,
+    ]);
+    const runtime = createRuntime({
+      unsafe: { runtime: 'wasm', bytesBase64: bytes.toString('base64') },
+    });
+
+    await expect(runtime.evaluate('unsafe', { wasmArgs: [] })).rejects.toMatchObject({
+      code: 'BLOCKED_CAPABILITY',
+    });
+  });
 });

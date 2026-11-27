@@ -1,6 +1,34 @@
 import type { PluginManifest, PluginRegistryEntry } from "./types";
 
+declare global {
+  interface Window {
+    __SOROTASK_PLUGIN_REGISTRY__?: PluginRegistryEntry[];
+  }
+}
+
 const REGISTRY_STORAGE_KEY = "sorotask_plugin_registry";
+
+/**
+ * Verified marketplace plugins are identified by a signed-off manifest that
+ * declares which origins are allowed to serve them. Entries that do not pass
+ * validation are discarded rather than trusted.
+ */
+function isValidEntry(value: unknown): value is PluginRegistryEntry {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.id === "string" &&
+    typeof v.name === "string" &&
+    typeof v.version === "string" &&
+    typeof v.entry === "string" &&
+    typeof v.scope === "string" &&
+    typeof v.registeredAt === "string" &&
+    typeof v.enabled === "boolean" &&
+    (v.permissions === undefined ||
+      (Array.isArray(v.permissions) &&
+        v.permissions.every((p) => typeof p === "string")))
+  );
+}
 
 function readStorage(): PluginRegistryEntry[] {
   if (typeof window === "undefined") {
@@ -10,13 +38,16 @@ function readStorage(): PluginRegistryEntry[] {
   try {
     const stored = window.localStorage.getItem(REGISTRY_STORAGE_KEY);
     if (stored) {
-      return JSON.parse(stored) as PluginRegistryEntry[];
+      const parsed: unknown = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(isValidEntry);
+      }
     }
   } catch {
     // Ignore storage failures
   }
 
-  return window.__SOROTASK_PLUGIN_REGISTRY__ ?? [];
+  return (window.__SOROTASK_PLUGIN_REGISTRY__ ?? []).filter(isValidEntry);
 }
 
 function writeStorage(entries: PluginRegistryEntry[]): void {

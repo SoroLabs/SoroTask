@@ -16,25 +16,17 @@
 
 "use client";
 
-import React, {
-  createContext,
-  useState,
-  useEffect,
-  useCallback,
-  useMemo,
-} from "react";
-import { useRouter } from "next/navigation";
-import type { Locale } from "../i18n/index";
+import React, { createContext, useState, useEffect, useCallback } from 'react';
 import {
   DEFAULT_LOCALE,
   SUPPORTED_LOCALES,
   getStoredLocalePreference,
   saveLocale,
   detectLocale,
-  getTextDirection,
-  isRtlLocale,
-} from "../i18n/index";
-import { loadDictionary, type Dictionary } from "../i18n/loader";
+  LOCALE_STORAGE_KEY,
+  type Locale,
+} from '@/i18n';
+import { getTextDirection as getDirection } from '@/i18n/formatting';
 
 interface LocaleContextType {
   locale: Locale;
@@ -71,10 +63,13 @@ export function LocaleProvider({
     setIsLoading(true);
 
     try {
-      // Try to get stored locale, otherwise detect from browser
-      const storedLocale = getStoredLocalePreference();
-      const detectedLocale = detectLocale();
-      const initialLocale = storedLocale || detectedLocale || DEFAULT_LOCALE;
+      // Browser storage takes precedence; otherwise prefer server/cookie locale,
+      // or detect the browser locale for a first-time visitor.
+      const explicitlyStored = typeof window !== 'undefined'
+        ? window.localStorage.getItem(LOCALE_STORAGE_KEY)
+        : null;
+      const storedLocale = explicitlyStored ? getStoredLocale() : null;
+      const initialLocale = storedLocale || defaultLocale || detectLocale() || DEFAULT_LOCALE;
 
       if (SUPPORTED_LOCALES.includes(initialLocale)) {
         setLocaleState(initialLocale);
@@ -110,18 +105,10 @@ export function LocaleProvider({
     if (!SUPPORTED_LOCALES.includes(newLocale)) return;
     if (newLocale === locale) return;
 
-    // State first: this is what makes the switch instant. Persistence and the
-    // <html> attributes follow, and neither is on the render path.
-    setLocaleState(newLocale);
-    saveLocale(newLocale);
-
-    if (typeof document !== "undefined") {
-      document.cookie = `sorotask_locale=${newLocale}; path=/; max-age=31536000; samesite=lax`;
-      const root = document.documentElement;
-      root.lang = newLocale;
-      // RTL locales need `dir` for correct text and control ordering; without
-      // it the browser still lays out LTR and the UI reads backwards.
-      root.dir = getTextDirection(newLocale);
+      if (typeof document !== 'undefined') {
+        document.documentElement.lang = newLocale;
+        document.documentElement.dir = getDirection(newLocale);
+      }
     }
     router.refresh();
   }, [locale, router]);
@@ -139,6 +126,14 @@ export function LocaleProvider({
     }),
     [locale, setLocale, isLoading, dictionary, direction],
   );
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    document.documentElement.lang = locale;
+    document.documentElement.dir = getDirection(locale);
+  }, [locale]);
 
   return (
     <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>

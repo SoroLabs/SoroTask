@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useId, useState } from 'react';
 import { useEncryptionKeyManager } from '@/src/hooks/useEncryptionKeyManager';
 import type { EncryptionKey } from '@/src/lib/encryption/types';
 
@@ -27,7 +27,7 @@ function KeyRow({
   onRevoke: (id: string) => void;
 }) {
   return (
-    <li className="flex items-center gap-3 rounded-lg border border-neutral-700 bg-neutral-800/50 px-4 py-3">
+    <li aria-current={isActive ? 'true' : undefined} className="flex items-center gap-3 rounded-lg border border-neutral-700 bg-neutral-800/50 px-4 py-3">
       <div className="min-w-0 flex-1">
         <p className="truncate font-mono text-sm text-neutral-100">
           {keyMeta.label ?? keyMeta.id.slice(0, 16) + '…'}
@@ -46,6 +46,7 @@ function KeyRow({
         {keyMeta.status === 'active' && (
           <button
             type="button"
+            aria-label={`Revoke key ${keyMeta.label ?? keyMeta.id.slice(0, 8)}`}
             onClick={() => onRevoke(keyMeta.id)}
             className="rounded border border-neutral-600 px-2 py-0.5 text-xs text-neutral-400 hover:border-rose-500 hover:text-rose-300"
           >
@@ -61,6 +62,8 @@ export function EncryptionKeyManagerPanel() {
   const {
     status,
     isReady,
+    isLocked,
+    isProcessing,
     activeKeyId,
     allActiveKeys,
     error,
@@ -70,7 +73,12 @@ export function EncryptionKeyManagerPanel() {
     rotateActiveKey,
     revokeKey,
     reset,
+    lock,
   } = useEncryptionKeyManager();
+
+  const passwordId = useId();
+  const helpId = useId();
+  const errorId = useId();
 
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -83,9 +91,13 @@ export function EncryptionKeyManagerPanel() {
     }
     setBusy(true);
     setLocalError(null);
-    await initialize({ password });
-    setBusy(false);
-    setPassword('');
+    try {
+      await initialize({ password });
+    } finally {
+      setBusy(false);
+      // Never keep the passphrase in component state longer than needed.
+      setPassword('');
+    }
   }, [initialize, password]);
 
   const handleInitializeClick = useCallback(() => {
@@ -112,6 +124,11 @@ export function EncryptionKeyManagerPanel() {
     revokeKey(id);
   }, [revokeKey]);
 
+  const handleLock = useCallback(() => {
+    lock();
+    setPassword('');
+  }, [lock]);
+
   const handleReset = useCallback(() => {
     reset();
     setPassword('');
@@ -119,21 +136,36 @@ export function EncryptionKeyManagerPanel() {
   }, [reset]);
 
   const displayError = localError ?? error;
+  const isBusy = busy || isProcessing;
+  const statusMessage = isBusy
+    ? 'Working…'
+    : status === 'ready'
+    ? 'Encryption ready. Keys never leave this device.'
+    : status === 'locked'
+    ? 'Encryption locked. Enter your master password to unlock.'
+    : status === 'rotating'
+    ? 'Rotating encryption key…'
+    : status === 'initializing'
+    ? 'Deriving encryption key…'
+    : '';
 
   return (
     <section
       data-testid="encryption-key-manager-panel"
+      aria-labelledby={`${passwordId}-title`}
+      aria-busy={isBusy}
       className="rounded-xl border border-neutral-700 bg-neutral-900/60 p-5 space-y-5"
     >
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-neutral-100">Encryption Key Manager</h2>
+          <h2 id={`${passwordId}-title`} className="text-lg font-semibold text-neutral-100">Encryption Key Manager</h2>
           <p className="mt-1 text-sm text-neutral-400">
             Manage client-side encryption keys. Keys never leave your device.
           </p>
         </div>
         <span
           data-testid="enc-status-badge"
+          aria-label={`Encryption status: ${status}`}
           className={`rounded-full px-3 py-1 text-xs font-medium capitalize ${
             status === 'ready'
               ? 'bg-emerald-900/50 text-emerald-300'
@@ -148,14 +180,19 @@ export function EncryptionKeyManagerPanel() {
         </span>
       </header>
 
+      {/* Polite live region announcing lifecycle changes to screen readers. */}
+      <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {statusMessage}
+      </p>
+
       {displayError && (
-        <p role="alert" className="rounded-lg bg-rose-900/30 border border-rose-700 px-4 py-2 text-sm text-rose-300">
+        <p id={errorId} role="alert" className="rounded-lg bg-rose-900/30 border border-rose-700 px-4 py-2 text-sm text-rose-300">
           {displayError}
         </p>
       )}
 
       {lastRotation && (
-        <p className="rounded-lg bg-yellow-900/20 border border-yellow-700 px-4 py-2 text-xs text-yellow-300">
+        <p role="status" className="rounded-lg bg-yellow-900/20 border border-yellow-700 px-4 py-2 text-xs text-yellow-300">
           Key rotated at {new Date(lastRotation.rotatedAt).toLocaleString()} —{' '}
           new key: {lastRotation.newKeyId.slice(0, 12)}…
         </p>
@@ -163,14 +200,22 @@ export function EncryptionKeyManagerPanel() {
 
       {!isReady && (
         <div className="space-y-3">
-          <p className="text-sm text-neutral-300">
-            Enter a master password to derive your encryption key and initialize the key manager.
+          <p id={helpId} className="text-sm text-neutral-300">
+            {isLocked
+              ? 'Your keys are locked. Enter your master password to re-derive them on this device.'
+              : 'Enter a master password to derive your encryption key and initialize the key manager.'}
           </p>
           <div className="flex gap-2">
+            <label htmlFor={passwordId} className="sr-only">
+              Master password
+            </label>
             <input
+              id={passwordId}
               type="password"
-              aria-label="Master password"
+              autoComplete="current-password"
               placeholder="Master password…"
+              aria-describedby={displayError ? `${helpId} ${errorId}` : helpId}
+              aria-invalid={localError ? true : undefined}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleInitializeClick()}
@@ -178,11 +223,11 @@ export function EncryptionKeyManagerPanel() {
             />
             <button
               type="button"
-              disabled={busy}
+              disabled={isBusy}
               onClick={handleInitializeClick}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-40"
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
             >
-              {busy ? 'Initializing…' : 'Initialize'}
+              {isLocked ? (isBusy ? 'Unlocking…' : 'Unlock') : (isBusy ? 'Initializing…' : 'Initialize')}
             </button>
           </div>
         </div>
@@ -193,7 +238,7 @@ export function EncryptionKeyManagerPanel() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              disabled={busy || !activeKeyId}
+              disabled={isBusy || !activeKeyId}
               onClick={handleRotate}
               className="rounded-lg border border-neutral-600 px-3 py-2 text-sm text-neutral-200 hover:border-yellow-500 disabled:opacity-40"
             >
@@ -201,11 +246,18 @@ export function EncryptionKeyManagerPanel() {
             </button>
             <button
               type="button"
-              disabled={busy}
+              disabled={isBusy}
               onClick={handleGenerateKey}
               className="rounded-lg border border-neutral-600 px-3 py-2 text-sm text-neutral-200 hover:border-blue-500 disabled:opacity-40"
             >
               Generate New Key
+            </button>
+            <button
+              type="button"
+              onClick={handleLock}
+              className="rounded-lg border border-neutral-600 px-3 py-2 text-sm text-neutral-200 hover:border-neutral-400"
+            >
+              Lock
             </button>
             <button
               type="button"
@@ -217,7 +269,7 @@ export function EncryptionKeyManagerPanel() {
           </div>
 
           {allActiveKeys.length > 0 ? (
-            <ul className="space-y-2">
+            <ul aria-label="Active encryption keys" className="space-y-2">
               {allActiveKeys.map((k) => (
                 <KeyRow
                   key={k.id}

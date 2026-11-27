@@ -15,6 +15,7 @@
     "bundle:audit": "tsx scripts/bundle-audit.ts",
     "build": "node init && npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:stress": "node tests/stress/run.js",
     "lint": "npm run lint --workspaces --if-present"
   },
   "devDependencies": {

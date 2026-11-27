@@ -1,4 +1,5 @@
 import { WorkerPool } from "./worker-pool";
+import { BrowserProver } from "./browser-prover";
 import { VerifierClient } from "./verifier-client";
 import { ErrorTracker } from "./error-tracker";
 import { ZkProofPipeline } from "./pipeline";
@@ -8,6 +9,7 @@ import type {
   ZkProofGenerationOptions,
   ZkVerificationResult,
   ZkEngineConfig,
+  DiagnosticError,
 } from "./types";
 
 export interface ProverEngineOptions {
@@ -20,6 +22,7 @@ export class ProverEngine {
   readonly errorTracker: ErrorTracker;
   private workerPool: WorkerPool;
   private verifierClient: VerifierClient;
+  private browserProver: BrowserProver;
   private config: ZkEngineConfig;
   private tasks: ZkTask[] = [];
 
@@ -39,6 +42,9 @@ export class ProverEngine {
       congestionMultiplier: this.config.congestionMultiplier,
       now: this.config.now,
       schedule: this.config.schedule,
+    });
+    this.browserProver = new BrowserProver({
+      workerCount: this.config.workerCount,
     });
     this.verifierClient = new VerifierClient({
       baseDelayMs: this.config.baseDelayMs,
@@ -67,7 +73,7 @@ export class ProverEngine {
     this.pipeline.addLog("initializing", "Initializing off-chain proof generation pipeline...");
 
     try {
-      const proof = await this.workerPool.execute(
+      const proof = await this.browserProver.generateProof(
         options.taskCondition,
         options.secretData,
         options.simulateFailure,
@@ -143,6 +149,7 @@ export class ProverEngine {
   }
 
   shutdown(): void {
+    this.browserProver.shutdown();
     this.workerPool.shutdown();
     this.pipeline.reset();
     this.errorTracker.clear();
@@ -155,7 +162,7 @@ export class ProverEngine {
     return "Check proof generation parameters and retry with valid inputs.";
   }
 
-  private isDiagnosticError(error: unknown): error is import("./types").DiagnosticError {
+  private isDiagnosticError(error: unknown): error is DiagnosticError {
     return (
       typeof error === "object" &&
       error !== null &&

@@ -172,8 +172,18 @@ export function DashboardClient({ initialData }: DashboardClientProps) {
                 </span>
               </div>
               <div className="space-y-2">
-                <p className="text-3xl font-semibold text-slate-100">{widget.value}</p>
-                <p className="text-sm text-slate-300">{widget.detail}</p>
+                <p
+                  data-privacy-sensitive="true"
+                  className="text-3xl font-semibold text-slate-100"
+                >
+                  {widget.value}
+                </p>
+                <p
+                  data-privacy-sensitive="true"
+                  className="text-sm text-slate-300"
+                >
+                  {widget.detail}
+                </p>
               </div>
             </article>
           );

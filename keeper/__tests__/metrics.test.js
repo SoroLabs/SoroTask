@@ -52,4 +52,10 @@ describe('Metrics', () => {
     expect(snapshot.failover.activeRegion).toBe('us-west');
     expect(snapshot.failover.totalEndpoints).toBe(3);
   });
+
+  it('should include the latest observed ledger sequence in health status', () => {
+    metrics.updateHealth({ latestLedgerSequence: 12345 });
+
+    expect(metrics.getHealthStatus(60_000).latestLedgerSequence).toBe(12345);
+  });
 });

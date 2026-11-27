@@ -1,4 +1,4 @@
-/*
+/**
  * Calendar formatting & display utilities
  * Common helpers for consistent calendar rendering
  */

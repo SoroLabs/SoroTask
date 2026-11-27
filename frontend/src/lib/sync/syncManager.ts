@@ -63,6 +63,7 @@ export class SyncManager {
   private startTs: number | null = null;
   private destroyed = false;
   private inFlight: Set<string> = new Set();
+  private failedActionIds: Set<string> = new Set();
 
   constructor(
     network: NetworkMonitor,
@@ -151,6 +152,11 @@ export class SyncManager {
 
   retry(actionId: string): void {
     this.queue.retry(actionId);
+    // Track this action as potentially failed if it was in flight
+    if (this.inFlight.has(actionId)) {
+      this.failedActionIds.add(actionId);
+      logger.warn("Retry initiated for in-flight action, marking for rollback", { actionId });
+    }
     this.recordEvent("queue_flushed");
     void this.flush();
   }
@@ -190,10 +196,17 @@ export class SyncManager {
       await this.queue.flush();
       this.state.lastSyncAt = Date.now();
       this.recordEvent("sync_completed");
+      // Clear any previously failed action IDs on successful sync
+      this.failedActionIds.clear();
     } catch (err) {
       logger.error("Flush failed", { error: err });
       this.captureSentry(err);
-      this.recordEvent("sync_paused");
+      // Track failed actions for rollback prevention
+      const failedActions = this.queue.getActions().filter((a) => a.status === "failed");
+      failedActions.forEach((action) => this.failedActionIds.add(action.id));
+      this.recordEvent("sync_paused", undefined, (err as Error).message);
+      // Set status to indicate potential data corruption risk
+      this.setStatus("paused");
     }
 
     this.refresh();
@@ -240,6 +253,23 @@ export class SyncManager {
   private setStatus(status: SyncManagerState["status"]): void {
     this.state.status = status;
     this.notify();
+  }
+
+  requestRollback(): void {
+    const failedActions = this.queue.getActions().filter((a) => a.status === "failed");
+    failedActions.forEach((action) => {
+      this.failedActionIds.add(action.id);
+      logger.info("Requesting rollback for failed action", { actionId: action.id });
+    });
+    this.recordEvent("rollback_requested");
+    this.refresh();
+  }
+
+  /**
+   * Check if an action ID is marked as failed and should be rolled back.
+   */
+  isActionFailed(actionId: string): boolean {
+    return this.failedActionIds.has(actionId);
   }
 
   private notify(): void {

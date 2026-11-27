@@ -6,6 +6,7 @@ declare module "next-auth" {
       id: string;
       provider?: string;
       providerAccountId?: string;
+      keeperGithub?: { id: string; username: string };
     } & DefaultSession["user"];
   }
 
@@ -19,5 +20,6 @@ declare module "next-auth/jwt" {
     id: string;
     provider?: string;
     providerAccountId?: string;
+    keeperGithub?: { id: string; username: string };
   }
 }

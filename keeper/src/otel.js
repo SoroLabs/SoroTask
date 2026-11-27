@@ -36,6 +36,7 @@ const { trace, context, SpanStatusCode } = require('@opentelemetry/api');
 const { NodeTracerProvider, SimpleSpanProcessor, ConsoleSpanExporter } = require('@opentelemetry/sdk-trace-node');
 const resources = require('@opentelemetry/resources');
 const { SemanticResourceAttributes } = require('@opentelemetry/semantic-conventions');
+const { formatTraceParent } = require('../../scripts/traceContext');
 
 const SERVICE_NAME = 'sorotask-keeper';
 
@@ -89,9 +90,15 @@ function getTracer() {
  * @param {Record<string, string|number|boolean>} [attributes]
  */
 async function withSpan(name, fn, attributes = {}) {
+  const startedAtNs = process.hrtime.bigint();
   const span = getTracer().startSpan(name, { attributes });
+  const spanContext = span.spanContext();
   try {
-    return await context.with(trace.setSpan(context.active(), span), () => fn(span));
+    const result = await context.with(trace.setSpan(context.active(), span), () => fn(span));
+    const elapsedNs = Number(process.hrtime.bigint() - startedAtNs);
+    span.setAttribute('sorotask.duration_ns', elapsedNs);
+    span.setAttribute('sorotask.duration_us', elapsedNs / 1000);
+    return result;
   } catch (error) {
     span.recordException(error);
     span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
@@ -101,8 +108,23 @@ async function withSpan(name, fn, attributes = {}) {
   }
 }
 
+function currentTraceContext() {
+  const spanContext = trace.getSpan(context.active())?.spanContext?.();
+  if (!spanContext?.traceId || !spanContext?.spanId) return null;
+  return {
+    traceId: spanContext.traceId,
+    spanId: spanContext.spanId,
+    traceFlags: spanContext.traceFlags?.toString(16).padStart(2, '0') || '01',
+    traceparent: formatTraceParent(
+      spanContext.traceId,
+      spanContext.spanId,
+      Boolean(spanContext.traceFlags & 1)
+    ),
+  };
+}
+
 async function shutdown() {
   if (provider) await provider.shutdown();
 }
 
-module.exports = { withSpan, getTracer, shutdown };
+module.exports = { withSpan, getTracer, currentTraceContext, shutdown };

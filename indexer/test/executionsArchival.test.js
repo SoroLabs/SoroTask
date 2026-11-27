@@ -112,3 +112,49 @@ test("archiveExecutions writes to Parquet, uploads, and prunes the archived rows
   assert.equal(deps.table.length, 1);
   assert.equal(deps.table[0].id, 2);
 });
+
+test("archiveExecutions writes separate idempotent archives for each created_at month", async () => {
+  const now = Date.parse("2026-04-01T00:00:00.000Z");
+  const deps = fakeExecutionDeps([
+    { id: 21, created_at: "2025-01-05 00:00:00" },
+    { id: 22, created_at: "2025-02-05 00:00:00" },
+  ]);
+  const writtenGroups = [];
+  const uploadedPartitions = [];
+
+  const result = await archiveExecutions(deps, {
+    now,
+    writeParquet: async (executions, filePath) => {
+      writtenGroups.push(executions.map((execution) => execution.id));
+      require("fs").writeFileSync(filePath, "fake-parquet");
+    },
+    upload: async (filePath, _now, partition) => {
+      uploadedPartitions.push(partition);
+      return `executions/year=${partition.slice(0, 4)}/month=${partition.slice(5)}/${require("path").basename(filePath)}`;
+    },
+  });
+
+  assert.deepEqual(writtenGroups, [[21], [22]]);
+  assert.deepEqual(uploadedPartitions, ["2025-01", "2025-02"]);
+  assert.equal(result.archived, 2);
+  assert.equal(result.s3Key, result.s3Keys[0]);
+  assert.equal(result.s3Keys.length, 2);
+  assert.equal(deps.table.length, 0);
+});
+
+test("archiveExecutions does not prune rows when an upload fails", async () => {
+  const deps = fakeExecutionDeps([{ id: 31, created_at: "2025-01-05 00:00:00" }]);
+  await assert.rejects(
+    archiveExecutions(deps, {
+      now: Date.parse("2026-04-01T00:00:00.000Z"),
+      writeParquet: async (_executions, filePath) => {
+        require("fs").writeFileSync(filePath, "fake-parquet");
+      },
+      upload: async () => {
+        throw new Error("S3 unavailable");
+      },
+    }),
+    /S3 unavailable/,
+  );
+  assert.deepEqual(deps.table.map((row) => row.id), [31]);
+});

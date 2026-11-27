@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const promClient = require('prom-client');
 const { _Server } = require('socket.io');
-const { requireAdminAuth } = require('./auth');
+const { constantTimeEqual, requireAdminAuth } = require('./auth');
 const { URL } = require('url');
 const { createLogger } = require('./logger');
 const { ApiGateway } = require('./apiGateway');
@@ -352,8 +352,7 @@ class Metrics {
     );
     this.maxFeeSamples = 100;
     this.lastPollAt = null;
-    this.lastBacklogSize = null;
-    this.retryPressure = 0;
+    this.latestLedgerSequence = null;
     this.rpcConnected = false;
     this.sloThresholds = {
       pollFreshnessMs: parseInt(process.env.SLO_POLL_FRESHNESS_MS || '30000', 10),
@@ -553,11 +552,8 @@ class Metrics {
     if (typeof state.rpcConnected === 'boolean') {
       this.rpcConnected = state.rpcConnected;
     }
-    if (typeof state.backlogSize === 'number') {
-      this.lastBacklogSize = state.backlogSize;
-    }
-    if (typeof state.retryBudgetPressure === 'number') {
-      this.retryPressure = state.retryBudgetPressure;
+    if (Number.isFinite(state.latestLedgerSequence)) {
+      this.latestLedgerSequence = state.latestLedgerSequence;
     }
   }
 
@@ -696,12 +692,10 @@ class Metrics {
       lastPollCompletedAt: this.lastPollCompletedAt ? this.lastPollCompletedAt.toISOString() : null,
       pollFreshnessSeconds: freshnessSeconds,
       rpcConnected: this.rpcConnected,
-      rpcCircuitState: this.gauges.rpcCircuitState === 2 ? 'OPEN' : (this.gauges.rpcCircuitState === 1 ? 'HALF_OPEN' : 'CLOSED'),
-      slo: {
-        pollFreshnessRate: this.gauges.pollFreshnessSloRate,
-        executionTimelinessRate: this.gauges.executionTimelinessSloRate,
-        thresholds: { ...this.sloThresholds },
-      },
+      latestLedgerSequence: this.latestLedgerSequence,
+      rpcCircuitState: this.gauges.rpcCircuitState === 2
+        ? 'OPEN'
+        : (this.gauges.rpcCircuitState === 1 ? 'HALF_OPEN' : 'CLOSED'),
       paused: this.adminState.paused,
       pauseReason: this.adminState.reason,
       shard: { ...this.shardState },
@@ -745,19 +739,26 @@ class MetricsServer {
     this.healthStaleThreshold = options.healthStaleThreshold
       || parseInt(process.env.HEALTH_STALE_THRESHOLD_MS || '60000', 10);
     this.server = null;
+    this.io = null;
+    this.broadcastInterval = null;
     this.registry = null;
     this.metrics = new Metrics();
-    this.sloMetrics = options.sloMetrics || new _SloMetrics();
+    // The Prometheus registry is created before the SLO exporter so that
+    // SloMetrics registers its keeper_slo_* series into the same registry the
+    // /metrics/prometheus endpoint scrapes. Without this the SLO exporter
+    // collects data into a private registry that no scrape ever reads.
+    this.register = new promClient.Registry();
+    this.sloMetrics = options.sloMetrics || new _SloMetrics({ register: this.register });
     this.config = options.config || null;
     this.controlStateProvider = options.controlStateProvider || null;
     this.controlActionHandler = options.controlActionHandler || null;
     this.historyManager = options.historyManager || null;
     this.redisClient = options.redisClient || null;
     this.workerPool = options.workerPool || null;
+    this.webhookPaths = new Set();
     this.tmpPath = options.tmpPath || '/tmp';
     this.redisLatencyThresholdMs = options.redisLatencyThresholdMs
       || parseInt(process.env.REDIS_LATENCY_THRESHOLD_MS || '250', 10);
-    this.register = new promClient.Registry();
 
     // Instantiate IndicatorRegistry for SLO observability.
     // When metrics are disabled (no port configured), recordXxx() calls become no-ops
@@ -817,6 +818,9 @@ class MetricsServer {
 
   setApiGateway(gateway) {
     this.apiGateway = gateway;
+    if (gateway && typeof gateway.attachMetricsRegistry === 'function') {
+      gateway.attachMetricsRegistry(this.register);
+    }
   }
 
   setFailurePredictor(predictor) {
@@ -1506,10 +1510,19 @@ class MetricsServer {
     }
 
     this.server = http.createServer(async (req, res) => {
-      const protect = (handler) => () => requireAdminAuth(req, res, handler);
+      const protect = (handler) => () => {
+        if (req.gatewayPrincipal) {
+          handler();
+          return;
+        }
+        requireAdminAuth(req, res, handler);
+      };
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-API-Key, X-SoroTask-Timestamp, X-SoroTask-Nonce, X-SoroTask-Signature',
+      );
 
       if (req.method === 'OPTIONS') {
         res.writeHead(204);
@@ -1518,6 +1531,42 @@ class MetricsServer {
       }
 
       const url = new URL(req.url, `http://127.0.0.1:${this.port}`);
+      const isAdminApi = url.pathname === '/admin' || url.pathname.startsWith('/admin/');
+      if (this.apiGateway && isAdminApi) {
+        let rawBody = Buffer.alloc(0);
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+          try {
+            rawBody = await this.captureRequestBody(req, this.apiGateway.maxBodyBytes);
+            req.rawBody = rawBody;
+          } catch (error) {
+            const statusCode = error.statusCode || 400;
+            res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              error: statusCode === 413 ? 'request_body_too_large' : 'invalid_request_body',
+            }));
+            return;
+          }
+        }
+
+        const authorization = await this.apiGateway.authorizeRequest(req, {
+          route: url.pathname,
+          method: req.method,
+          rawBody,
+        });
+        if (!authorization.allowed) {
+          Object.entries(authorization.headers || {}).forEach(([name, value]) => {
+            res.setHeader(name, value);
+          });
+          res.writeHead(authorization.statusCode, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: authorization.error }));
+          return;
+        }
+        Object.entries(authorization.headers || {}).forEach(([name, value]) => {
+          res.setHeader(name, value);
+        });
+        req.gatewayPrincipal = authorization.principal;
+      }
+
       if (url.pathname === '/healthz' || url.pathname === '/healthz/') {
         this.handleLiveness(res);
 
@@ -1551,11 +1600,14 @@ class MetricsServer {
       } else if (req.url === '/metrics/slo' || req.url === '/metrics/slo/') {
         this.handleSloMetrics(res);
 
+      } else if (url.pathname === '/metrics/slo/report' || url.pathname === '/metrics/slo/report/') {
+        this.handleSloComplianceReport(res);
+
       } else if (url.pathname === '/metrics/history' || url.pathname === '/metrics/history/') {
         this.handleMetricsHistory(req, res);
 
-      } else if (req.url === '/admin/billing' || req.url === '/admin/billing/') {
-        protect(() => this.handleBilling(res))();
+      } else if (url.pathname === '/admin/billing' || url.pathname === '/admin/billing/') {
+        protect(() => this.handleBilling(res, req.gatewayPrincipal?.projectId))();
 
 
         // 🔐 PROTECTED ROUTES START HERE
@@ -1602,6 +1654,18 @@ class MetricsServer {
       }
     });
 
+    this.io = new Server(this.server, { cors: { origin: '*' } });
+    this.io.on('connection', (socket) => {
+      this.emitRealtimeSnapshot(socket);
+      socket.on('status:ping', (acknowledge) => {
+        if (typeof acknowledge === 'function') {
+          acknowledge(Date.now());
+        }
+      });
+    });
+    this.broadcastInterval = setInterval(() => this.emitRealtimeSnapshot(), 5000);
+    this.broadcastInterval.unref?.();
+
     this.server.listen(this.port, () => {
       this.logger.info(`Metrics server running on port ${this.port}`);
       this.logger.info(`WebSocket enabled on http://localhost:${this.port}`);
@@ -1613,130 +1677,17 @@ class MetricsServer {
     });
   }
 
-   broadcast(event, data) {
-     if (this.io) {
-       this.io.emit(event, data);
-     }
-   }
-
-   // === SLO Metrics Recording Methods ===
-
-    /**
-     * Record poll cycle completion for freshness tracking.
-     * Call after a poll cycle finishes.
-     * @param {number} pollCycleDurationMs - Duration of the poll cycle in ms
-     * @param {number} intervalMs - Expected polling interval in ms (used for first cycle)
-     */
-    recordPollCycle(pollCycleDurationMs, intervalMs = this.metrics.pollIntervalMs) {
-      const now = Date.now();
-      const previousCompletion = this.metrics.lastPollCompletedAt ? this.metrics.lastPollCompletedAt.getTime() : null;
-      this.metrics.lastPollCompletedAt = new Date(now);
-
-      // Determine actual interval between poll completions
-      let actualIntervalMs = pollCycleDurationMs;
-      if (previousCompletion) {
-        actualIntervalMs = now - previousCompletion;
-      } else {
-        // First cycle: use configured interval as approximation
-        actualIntervalMs = intervalMs;
-      }
-
-      // Record poll interval histogram (seconds)
-      this.promPollInterval.observe(actualIntervalMs / 1000);
-
-      // SLO: Check if poll met freshness threshold (i.e., completed within expected interval)
-      if (actualIntervalMs <= this.metrics.sloThresholds.pollFreshnessMs) {
-        this.metrics.increment('pollFreshnessSloSuccess');
-      } else {
-        this.metrics.increment('pollFreshnessSloFailure');
-      }
-
-      this._computeSloRates();
-      this.broadcast('sync:metrics', this.metrics.snapshot());
+  emitRealtimeSnapshot(socket) {
+    const health = this.metrics.getHealthStatus(this.healthStaleThreshold);
+    const metrics = this.metrics.snapshot();
+    if (socket) {
+      socket.emit('sync:health', health);
+      socket.emit('sync:metrics', metrics);
+      return;
     }
-
-    /**
-     * Record task execution for timeliness SLO.
-     * Call when a task execution completes (success or failure).
-     * @param {number} taskId - The task ID
-     * @param {number} actualExecutionLedger - Ledger when execution completed
-     * @param {number} scheduledDueLedger - Ledger when task was due
-     * @param {boolean} success - Whether execution succeeded
-     */
-    recordTaskExecution({ _taskId, actualExecutionLedger, scheduledDueLedger, _success }) {
-      const latenessLedgers = Math.max(0, actualExecutionLedger - scheduledDueLedger);
-      this.promTaskLateness.observe(latenessLedgers);
-
-      // Convert to milliseconds assuming ~5s per ledger on testnet (configurable)
-      const avgLedgerTimeMs = parseInt(process.env.LEDGER_TIME_MS || '5000', 10);
-      const latenessMs = latenessLedgers * avgLedgerTimeMs;
-
-      // SLO: Check if execution met timeliness threshold
-      if (latenessMs <= this.metrics.sloThresholds.executionTimelinessMs) {
-        this.metrics.increment('executionTimelinessSloSuccess');
-      } else {
-        this.metrics.increment('executionTimelinessSloFailure');
-      }
-
-      this._computeSloRates();
-      this.broadcast('sync:metrics', this.metrics.snapshot());
-    }
-
-   /**
-    * Record retry attempt.
-    * @param {string} outcome - 'success', 'failure', or 'duplicate'
-    */
-   recordRetryAttempt(outcome) {
-     this.metrics.increment('retryAttemptsTotal', { outcome });
-   }
-
-   /**
-    * Record retry scheduling event.
-    * @param {number} delayMs - Delay before retry in milliseconds
-    */
-   recordRetryDelay(delayMs) {
-     this.promRetryDelay.observe(delayMs / 1000);
-   }
-
-   /**
-    * Record task time spent in retry queue before next attempt.
-    * @param {number} timeInQueueMs - Time spent waiting in milliseconds
-    */
-   recordRetryTimeInQueue(timeInQueueMs) {
-     this.promRetryTimeInQueue.observe(timeInQueueMs / 1000);
-   }
-
-   /**
-    * Update retry queue size gauge.
-    * @param {number} size - Current retry queue size
-    */
-   setRetryQueueSize(size) {
-     this.metrics.record('retryQueueSize', size);
-   }
-
-   /**
-    * Update oldest task age (time since last_run).
-    * @param {number} oldestAgeSeconds - Age in seconds of the oldest task
-    */
-   setOldestTaskAge(oldestAgeSeconds) {
-     this.metrics.record('oldestTaskAgeSeconds', oldestAgeSeconds);
-   }
-
-   /**
-    * Compute rolling SLO success rates.
-    * Called internally after each SLO observation.
-    */
-   _computeSloRates() {
-     const totalPoll = this.metrics.counters.pollFreshnessSloSuccess + this.metrics.counters.pollFreshnessSloFailure;
-     if (totalPoll > 0) {
-       this.metrics.record('pollFreshnessSloRate', this.metrics.counters.pollFreshnessSloSuccess / totalPoll);
-     }
-
-     const totalExec = this.metrics.counters.executionTimelinessSloSuccess + this.metrics.counters.executionTimelinessSloFailure;
-     if (totalExec > 0) {
-       this.metrics.record('executionTimelinessSloRate', this.metrics.counters.executionTimelinessSloSuccess / totalExec);
-     }
-   }
+    this.io?.emit('sync:health', health);
+    this.io?.emit('sync:metrics', metrics);
+  }
 
   handleHealth(res) {
     const status = this.metrics.getHealthStatus(this.healthStaleThreshold);
@@ -1919,8 +1870,10 @@ class MetricsServer {
     }, null, 2));
   }
 
-  handleBilling(res) {
-    const usage = this.apiGateway?.getUsageSummary ? this.apiGateway.getUsageSummary() : {
+  handleBilling(res, projectId) {
+    const usage = this.apiGateway?.getUsageSummary
+      ? this.apiGateway.getUsageSummary(projectId)
+      : {
       totalRequests: 0,
       totalThrottled: 0,
       totalBilledUnits: 0,
@@ -1948,6 +1901,20 @@ class MetricsServer {
     const snapshot = this.sloMetrics.getSnapshot();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(snapshot, null, 2));
+  }
+
+  /**
+   * GET /metrics/slo/report — SLO compliance report in JSON.
+   *
+   * Evaluates every committed objective (freshness, timeliness, error budget,
+   * MTTR, uptime) against its target and returns a `compliant` verdict. The
+   * payload is self-contained so a scheduled job can archive it as the
+   * automated compliance artifact. Unauthenticated (read-only, no secrets).
+   */
+  handleSloComplianceReport(res) {
+    const report = this.sloMetrics.getComplianceReport();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(report, null, 2));
   }
 
   handleDrift(res) {
@@ -2088,13 +2055,16 @@ class MetricsServer {
   }
 
   isAuthorized(req) {
+    if (req.gatewayPrincipal?.projectId) {
+      return true;
+    }
     const configuredToken = process.env.KEEPER_ADMIN_TOKEN;
     if (!configuredToken) {
       return false;
     }
     const authHeader = req.headers.authorization || '';
     const token = authHeader.replace(/^Bearer\s+/i, '');
-    return token === configuredToken;
+    return constantTimeEqual(token, configuredToken);
   }
 
   handleAdminState(req, res) {
@@ -2139,6 +2109,20 @@ class MetricsServer {
   }
 
   readJsonBody(req) {
+    if (req.rawBody !== undefined) {
+      const rawBody = Buffer.isBuffer(req.rawBody)
+        ? req.rawBody.toString('utf8')
+        : String(req.rawBody);
+      if (!rawBody) {
+        return Promise.resolve({});
+      }
+      try {
+        return Promise.resolve(JSON.parse(rawBody));
+      } catch (_) {
+        return Promise.resolve({});
+      }
+    }
+
     return new Promise((resolve) => {
       let raw = '';
       req.on('data', (chunk) => {
@@ -2153,6 +2137,42 @@ class MetricsServer {
           resolve(JSON.parse(raw));
         } catch (_) {
           resolve({});
+        }
+      });
+    });
+  }
+
+  captureRequestBody(req, maxBytes) {
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      let totalBytes = 0;
+      let settled = false;
+
+      req.on('data', (chunk) => {
+        if (settled) {
+          return;
+        }
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+          settled = true;
+          chunks.length = 0;
+          const error = new Error('Request body exceeds the configured limit');
+          error.statusCode = 413;
+          reject(error);
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('end', () => {
+        if (!settled) {
+          settled = true;
+          resolve(Buffer.concat(chunks));
+        }
+      });
+      req.on('error', (error) => {
+        if (!settled) {
+          settled = true;
+          reject(error);
         }
       });
     });
@@ -2204,6 +2224,7 @@ class MetricsServer {
 
   updateHealth(state) {
     this.metrics.updateHealth(state);
+    this.emitRealtimeSnapshot();
   }
 
   increment(key, amount) {
@@ -2248,6 +2269,7 @@ class MetricsServer {
     } else if (key === 'failoverSwitchesTotal') {
       this.promFailoverSwitches.inc(typeof amount === 'number' ? amount : 1);
     }
+    this.emitRealtimeSnapshot();
   }
 
   record(key, value) {
@@ -2273,10 +2295,12 @@ class MetricsServer {
     } else if (key === 'fraudRiskScore') {
       this.promFraudRiskScore.set(value);
     }
+    this.emitRealtimeSnapshot();
   }
 
   updateShardState(state) {
     this.metrics.updateShardState(state);
+    this.emitRealtimeSnapshot();
   }
 
   updateDbShardState(state) {
@@ -2285,6 +2309,7 @@ class MetricsServer {
 
   updateDriftState(state) {
     this.metrics.updateDriftState(state);
+    this.emitRealtimeSnapshot();
   }
 
   updateFraudState(state) {
@@ -2313,6 +2338,7 @@ class MetricsServer {
 
   updateAdminState(state) {
     this.metrics.updateAdminState(state);
+    this.emitRealtimeSnapshot();
   }
 
   updateFailoverState(state) {
@@ -2320,6 +2346,17 @@ class MetricsServer {
   }
 
   stop() {
+    if (this.broadcastInterval) {
+      clearInterval(this.broadcastInterval);
+      this.broadcastInterval = null;
+    }
+    if (this.io) {
+      this.io.close();
+      this.io = null;
+      this.server = null;
+      this.logger.info('Server stopped');
+      return;
+    }
     if (this.server) {
       this.server.close();
       this.server = null;

@@ -12,6 +12,61 @@ const DATABASE_URL =
   process.env.POSTGRES_URL ||
   'postgresql://postgres:postgres@localhost:5432/sorotask_indexer';
 
+const DATABASE_CLIENT = String(
+  process.env.INDEXER_DATABASE_CLIENT || process.env.DATABASE_CLIENT || 'pg',
+).toLowerCase();
+const SQLITE_CLIENTS = new Set(['sqlite', 'sqlite3']);
+const POSTGRES_CLIENTS = new Set(['pg', 'postgres', 'postgresql']);
+
+if (!SQLITE_CLIENTS.has(DATABASE_CLIENT) && !POSTGRES_CLIENTS.has(DATABASE_CLIENT)) {
+  throw new Error(
+    `Unsupported indexer database client "${DATABASE_CLIENT}". Use "pg" or "sqlite3".`,
+  );
+}
+
+const USE_SQLITE = SQLITE_CLIENTS.has(DATABASE_CLIENT);
+const SQLITE_DATABASE = process.env.INDEXER_SQLITE_PATH || process.env.SQLITE_DATABASE_PATH;
+const SQLITE_DEFAULT_PATH = path.join(__dirname, 'indexer.db');
+
+function databaseConfig(environment) {
+  if (!USE_SQLITE) {
+    return {
+      client: 'pg',
+      connection: environment === 'test'
+        ? process.env.TEST_DATABASE_URL || DATABASE_URL
+        : DATABASE_URL,
+      pool: environment === 'production'
+        ? {
+          min: parseInt(process.env.DATABASE_POOL_MIN || '5', 10),
+          max: parseInt(process.env.DATABASE_WRITE_POOL_MAX || '50', 10),
+          idleTimeoutMillis: parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS || '30000', 10),
+          acquireTimeoutMillis: parseInt(process.env.DATABASE_CONN_TIMEOUT_MS || '10000', 10),
+        }
+        : environment === 'test'
+          ? { min: 1, max: 10, idleTimeoutMillis: 10000 }
+          : {
+            min: parseInt(process.env.DATABASE_POOL_MIN || '2', 10),
+            max: parseInt(process.env.DATABASE_WRITE_POOL_MAX || '20', 10),
+            idleTimeoutMillis: parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS || '30000', 10),
+            acquireTimeoutMillis: parseInt(process.env.DATABASE_CONN_TIMEOUT_MS || '10000', 10),
+          },
+    };
+  }
+
+  return {
+    client: 'sqlite3',
+    connection: {
+      filename: environment === 'test'
+        ? process.env.TEST_SQLITE_DATABASE_PATH || ':memory:'
+        : SQLITE_DATABASE || SQLITE_DEFAULT_PATH,
+    },
+    useNullAsDefault: true,
+    // A single connection is required for SQLite in-memory databases, and
+    // avoids lock contention for the file-backed local/embedded deployment.
+    pool: { min: 1, max: 1 },
+  };
+}
+
 const migrationsConfig = {
   directory: path.join(__dirname, 'migrations'),
   tableName: 'knex_migrations',
@@ -20,37 +75,17 @@ const migrationsConfig = {
 
 module.exports = {
   development: {
-    client: 'pg',
-    connection: DATABASE_URL,
-    pool: {
-      min: parseInt(process.env.DATABASE_POOL_MIN || '2', 10),
-      max: parseInt(process.env.DATABASE_WRITE_POOL_MAX || '20', 10),
-      idleTimeoutMillis: parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS || '30000', 10),
-      acquireTimeoutMillis: parseInt(process.env.DATABASE_CONN_TIMEOUT_MS || '10000', 10),
-    },
+    ...databaseConfig('development'),
     migrations: migrationsConfig,
   },
 
   test: {
-    client: 'pg',
-    connection: process.env.TEST_DATABASE_URL || DATABASE_URL,
-    pool: {
-      min: 1,
-      max: 10,
-      idleTimeoutMillis: 10000,
-    },
+    ...databaseConfig('test'),
     migrations: migrationsConfig,
   },
 
   production: {
-    client: 'pg',
-    connection: DATABASE_URL,
-    pool: {
-      min: parseInt(process.env.DATABASE_POOL_MIN || '5', 10),
-      max: parseInt(process.env.DATABASE_WRITE_POOL_MAX || '50', 10),
-      idleTimeoutMillis: parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS || '30000', 10),
-      acquireTimeoutMillis: parseInt(process.env.DATABASE_CONN_TIMEOUT_MS || '10000', 10),
-    },
+    ...databaseConfig('production'),
     migrations: migrationsConfig,
   },
 };

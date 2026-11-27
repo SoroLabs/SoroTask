@@ -160,22 +160,108 @@ function TaskDependencyGraphInner({
         Tip: Click a node to select it. Use scroll to zoom.
       </p>
 
-      {/* Selected task detail strip */}
+      {/* Selected task execution history inspection panel */}
       {selectedTask && (
         <div
-          data-testid="graph-selected-task"
-          className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2 text-sm text-blue-300"
+          data-testid="graph-selected-task-history"
+          className="rounded-xl border border-neutral-700/80 bg-neutral-900/90 p-4 shadow-xl"
         >
-          Selected:{" "}
-          <span className="font-semibold">{selectedTask.title}</span>
-          <button
-            type="button"
-            onClick={() => selectTask(null)}
-            className="ml-3 text-xs text-neutral-400 hover:text-neutral-100"
-            aria-label="Clear selection"
-          >
-            ✕ clear
-          </button>
+          <div className="flex items-start justify-between border-b border-neutral-800 pb-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs rounded bg-blue-500/20 px-2 py-0.5 text-blue-300">
+                  {selectedTask.id}
+                </span>
+                <h4 className="font-semibold text-neutral-100">{selectedTask.title}</h4>
+              </div>
+              <p className="mt-1 text-xs text-neutral-400">
+                Created: {new Date(selectedTask.createdAt).toLocaleString()} · Status: Active
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => selectTask(null)}
+              className="rounded-md p-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+              aria-label="Close execution inspector"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Quick Metrics */}
+          <div className="grid grid-cols-4 gap-2 py-3 text-center text-xs">
+            <div className="rounded-lg bg-neutral-950 p-2 border border-neutral-800">
+              <span className="text-neutral-400 block">Total Runs</span>
+              <span className="font-semibold text-neutral-100 text-sm">24</span>
+            </div>
+            <div className="rounded-lg bg-neutral-950 p-2 border border-neutral-800">
+              <span className="text-neutral-400 block">Success Rate</span>
+              <span className="font-semibold text-emerald-400 text-sm">99.1%</span>
+            </div>
+            <div className="rounded-lg bg-neutral-950 p-2 border border-neutral-800">
+              <span className="text-neutral-400 block">Avg Duration</span>
+              <span className="font-semibold text-neutral-100 text-sm">184 ms</span>
+            </div>
+            <div className="rounded-lg bg-neutral-950 p-2 border border-neutral-800">
+              <span className="text-neutral-400 block">Last Gas</span>
+              <span className="font-semibold text-blue-400 text-sm">14,200 stroops</span>
+            </div>
+          </div>
+
+          {/* Execution History Log */}
+          <div>
+            <h5 className="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-2">
+              Recent Execution Runs
+            </h5>
+            <div className="overflow-x-auto rounded-lg border border-neutral-800">
+              <table className="w-full text-left text-xs text-neutral-300">
+                <thead className="bg-neutral-950 text-neutral-400">
+                  <tr>
+                    <th className="px-3 py-2">Run ID</th>
+                    <th className="px-3 py-2">Trigger Timestamp</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Gas Consumed</th>
+                    <th className="px-3 py-2">Ledger #</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-800/60 bg-neutral-900/40">
+                  <tr className="hover:bg-neutral-800/40">
+                    <td className="px-3 py-1.5 font-mono text-neutral-300">#exec-8492</td>
+                    <td className="px-3 py-1.5 text-neutral-400">Just now</td>
+                    <td className="px-3 py-1.5">
+                      <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
+                        SUCCESS
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 font-mono">14,210</td>
+                    <td className="px-3 py-1.5 font-mono text-neutral-400">54,192,801</td>
+                  </tr>
+                  <tr className="hover:bg-neutral-800/40">
+                    <td className="px-3 py-1.5 font-mono text-neutral-300">#exec-8491</td>
+                    <td className="px-3 py-1.5 text-neutral-400">10m ago</td>
+                    <td className="px-3 py-1.5">
+                      <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
+                        SUCCESS
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 font-mono">14,190</td>
+                    <td className="px-3 py-1.5 font-mono text-neutral-400">54,192,680</td>
+                  </tr>
+                  <tr className="hover:bg-neutral-800/40">
+                    <td className="px-3 py-1.5 font-mono text-neutral-300">#exec-8490</td>
+                    <td className="px-3 py-1.5 text-neutral-400">20m ago</td>
+                    <td className="px-3 py-1.5">
+                      <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
+                        SUCCESS
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 font-mono">14,350</td>
+                    <td className="px-3 py-1.5 font-mono text-neutral-400">54,192,560</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </div>

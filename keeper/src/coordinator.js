@@ -38,6 +38,14 @@ class HotReloadMasterCoordinator extends EventEmitter {
       options.shutdownDrainTimeoutMs || process.env.SHUTDOWN_DRAIN_TIMEOUT_MS || '10000',
       10
     );
+    this.workerStartupTimeoutMs = parseInt(
+      options.workerStartupTimeoutMs || (options.requireWorkerReady ? '60000' : '50'),
+      10
+    );
+    this.workerEnv = options.workerEnv || {};
+    this.workerEnvFactory = options.workerEnvFactory || null;
+    this.requireWorkerReady = options.requireWorkerReady === true;
+    this.registerSignals = options.registerSignalHandlers !== false;
     this.coordinator = options.coordinator || null;
     this.logger = options.logger || createLogger('hot-reload-master');
     this.workerFactory = options.workerFactory || ((workerId, generation) => this._createDefaultWorker(workerId, generation));
@@ -60,6 +68,8 @@ class HotReloadMasterCoordinator extends EventEmitter {
       const child = fork(this.workerScript, [], {
         env: {
           ...process.env,
+          ...this.workerEnv,
+          ...(this.workerEnvFactory ? this.workerEnvFactory(workerId, generation) : {}),
           KEEPER_WORKER_ID: String(workerId),
           KEEPER_GENERATION: String(generation),
         },
@@ -139,22 +149,46 @@ class HotReloadMasterCoordinator extends EventEmitter {
       inFlightTasks,
       locks: new Set(),
       start: () =>
-        new Promise((resolve) => {
-          const onReady = (msg) => {
-            if (msg && msg.type === 'ready') {
+        new Promise((resolve, reject) => {
+          let settled = false;
+          const finish = (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(startupTimer);
+            child.removeListener('message', onReady);
+            child.removeListener('error', onError);
+            child.removeListener('exit', onExit);
+            if (err) {
+              worker.status = 'stopped';
+              reject(err);
+            } else {
               worker.status = 'ready';
-              child.removeListener('message', onReady);
               resolve(worker);
             }
           };
-          child.on('message', onReady);
-          setTimeout(() => {
-            if (worker.status === 'starting') {
-              worker.status = 'ready';
-              child.removeListener('message', onReady);
-              resolve(worker);
+          const onReady = (msg) => {
+            if (msg && msg.type === 'ready') {
+              finish();
+            } else if (msg && msg.type === 'worker:error') {
+              finish(new Error(msg.error || `Worker ${workerId} failed to start`));
             }
-          }, 50);
+          };
+          const onError = (err) => finish(err);
+          const onExit = (code, signal) => {
+            if (worker.status === 'starting') {
+              finish(new Error(`Worker ${workerId} exited before readiness (code=${code}, signal=${signal})`));
+            }
+          };
+          const startupTimer = setTimeout(() => {
+            if (this.requireWorkerReady) {
+              finish(new Error(`Worker ${workerId} did not become ready within ${this.workerStartupTimeoutMs}ms`));
+            } else {
+              finish();
+            }
+          }, this.workerStartupTimeoutMs);
+          child.on('message', onReady);
+          child.once('error', onError);
+          child.once('exit', onExit);
         }),
       executeTask: async (task) => {
         const taskId = String(typeof task === 'object' ? task.taskId ?? task.id : task);
@@ -195,7 +229,21 @@ class HotReloadMasterCoordinator extends EventEmitter {
           };
           child.on('message', onDrained);
           if (child.connected) {
-            child.send({ type: 'drain', timeoutMs });
+            child.send({ type: 'drain', timeoutMs }, (err) => {
+              if (!err) return;
+              clearTimeout(timer);
+              child.removeListener('message', onDrained);
+              worker.status = 'stopped';
+              child.kill('SIGTERM');
+              resolve({
+                workerId,
+                generation,
+                drained: false,
+                durationMs: Date.now() - start,
+                remainingInFlight: inFlightTasks.size,
+                error: err.message,
+              });
+            });
           } else {
             clearTimeout(timer);
             worker.status = 'stopped';
@@ -222,7 +270,9 @@ class HotReloadMasterCoordinator extends EventEmitter {
       await worker.start();
       this.activeWorkers.set(workerId, worker);
     }
-    this.registerSignalHandlers();
+    if (this.registerSignals) {
+      this.registerSignalHandlers();
+    }
     this.emit('cluster:started', {
       generation: this.generation,
       activeWorkerIds: Array.from(this.activeWorkers.keys()),
@@ -860,6 +910,156 @@ class ExecutionCoordinator {
   }
 }
 
+class MultiNetworkCoordinator extends EventEmitter {
+  constructor(options = {}) {
+    super();
+    if (!Array.isArray(options.networks) || options.networks.length === 0) {
+      throw new Error('MultiNetworkCoordinator requires at least one network profile.');
+    }
+    if (!options.workerScript) {
+      throw new Error('MultiNetworkCoordinator requires a workerScript.');
+    }
+    this.logger = options.logger || createLogger('multi-network-coordinator');
+    this.networks = new Map();
+    this.managers = new Map();
+    this.signalHandlers = new Map();
+    this.shuttingDown = false;
+    const metricsPortBase = Number(process.env.METRICS_PORT) || 3000;
+    const networkCount = options.networks.length;
+    options.networks.forEach((network, networkIndex) => {
+      if (!network || typeof network.id !== 'string' || !network.id.trim()) {
+        throw new Error('Every network profile must have a non-empty id.');
+      }
+      if (this.networks.has(network.id)) {
+        throw new Error(`Duplicate network profile "${network.id}".`);
+      }
+      if (network.workerCount !== undefined &&
+          (!Number.isInteger(Number(network.workerCount)) || Number(network.workerCount) < 1)) {
+        throw new Error(`Network "${network.id}" workerCount must be a positive integer.`);
+      }
+      this.networks.set(network.id, network);
+      this.managers.set(network.id, new HotReloadMasterCoordinator({
+        ...options,
+        workerCount: network.workerCount || options.workerCount || 1,
+        workerEnv: network.workerEnv || {},
+        workerEnvFactory: (workerId) => {
+          const metricsPort = metricsPortBase + ((workerId - 1) * networkCount) + networkIndex;
+          if (metricsPort > 65535) {
+            throw new Error(`No available metrics port for network "${network.id}" worker ${workerId}.`);
+          }
+          return { METRICS_PORT: String(metricsPort) };
+        },
+        workerScript: options.workerScript,
+        registerSignalHandlers: false,
+        requireWorkerReady: true,
+        logger: options.logger || createLogger(`network-${network.id}`),
+      }));
+    });
+  }
+
+  async start() {
+    try {
+      for (const [networkId, manager] of this.managers) {
+        await manager.start();
+        this.logger.info('Network worker pool started', {
+          networkId,
+          workerCount: manager.activeWorkers.size,
+        });
+      }
+      for (const [networkId, manager] of this.managers) {
+        manager.on('reload:complete', (summary) => this.emit('network:reload:complete', { networkId, ...summary }));
+        manager.on('shutdown:complete', (summary) => this.emit('network:shutdown:complete', { networkId, ...summary }));
+      }
+      this._registerSignalHandlers();
+      this.emit('cluster:started', { networks: Array.from(this.managers.keys()) });
+      return this;
+    } catch (err) {
+      await Promise.allSettled(
+        Array.from(this.managers.values(), (manager) => manager.gracefulShutdown('STARTUP_FAILURE'))
+      );
+      throw err;
+    }
+  }
+
+  dispatchTask(networkId, task) {
+    const manager = this.managers.get(networkId);
+    if (!manager) {
+      throw new Error(`Cannot dispatch task: unknown network "${networkId}".`);
+    }
+    if (task && typeof task === 'object' && task.networkId && task.networkId !== networkId) {
+      throw new Error(`Task network "${task.networkId}" does not match target network "${networkId}".`);
+    }
+    const networkTask = task && typeof task === 'object'
+      ? { ...task, networkId }
+      : { taskId: task, networkId };
+    return manager.dispatchTask(networkTask);
+  }
+
+  async triggerHotReload(networkId) {
+    if (networkId && !this.managers.has(networkId)) {
+      throw new Error(`Cannot reload unknown network "${networkId}".`);
+    }
+    const entries = networkId
+      ? [[networkId, this.managers.get(networkId)]]
+      : Array.from(this.managers.entries());
+    const results = await Promise.all(entries.map(async ([id, manager]) => ({
+      networkId: id,
+      result: await manager.triggerHotReload(),
+    })));
+    return results;
+  }
+
+  async gracefulShutdown(signal = 'SIGTERM', options = {}) {
+    if (this.shuttingDown) {
+      return { alreadyShuttingDown: true };
+    }
+    this.shuttingDown = true;
+    this._unregisterSignalHandlers();
+    const results = await Promise.all(
+      Array.from(this.managers, async ([networkId, manager]) => ({
+        networkId,
+        result: await manager.gracefulShutdown(signal, options),
+      }))
+    );
+    const summary = {
+      signal,
+      networks: results,
+      drained: results.every((entry) => entry.result.drained),
+    };
+    this.emit('shutdown:complete', summary);
+    return summary;
+  }
+
+  _registerSignalHandlers() {
+    this._unregisterSignalHandlers();
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      const handler = () => {
+        this.gracefulShutdown(signal).catch((err) => {
+          this.logger.error('Multi-network shutdown failed', { signal, error: err.message });
+        });
+      };
+      process.on(signal, handler);
+      this.signalHandlers.set(signal, handler);
+    }
+    for (const signal of ['SIGUSR2', 'SIGHUP']) {
+      const handler = () => {
+        this.triggerHotReload().catch((err) => {
+          this.logger.error('Multi-network hot reload failed', { signal, error: err.message });
+        });
+      };
+      process.on(signal, handler);
+      this.signalHandlers.set(signal, handler);
+    }
+  }
+
+  _unregisterSignalHandlers() {
+    for (const [signal, handler] of this.signalHandlers) {
+      process.removeListener(signal, handler);
+    }
+    this.signalHandlers.clear();
+  }
+}
+
 let defaultCoordinator = null;
 
 function getExecutionCoordinator(lockManager) {
@@ -872,5 +1072,6 @@ function getExecutionCoordinator(lockManager) {
 module.exports = {
   ExecutionCoordinator,
   HotReloadMasterCoordinator,
+  MultiNetworkCoordinator,
   getExecutionCoordinator,
 };

@@ -1324,8 +1324,10 @@ class ParquetExporter {
   }
 }
 
-module.exports = {
-  HistoryManager,
-  PostgresPartitionManager,
-  ParquetExporter,
-};
+// The module exports the HistoryManager class directly (callers such as
+// keeper/index.js do `new require('./history')({...})`) while still exposing the
+// ancillary classes as named properties.
+module.exports = HistoryManager;
+module.exports.HistoryManager = HistoryManager;
+module.exports.PostgresPartitionManager = PostgresPartitionManager;
+module.exports.ParquetExporter = ParquetExporter;

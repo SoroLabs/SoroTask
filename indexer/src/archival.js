@@ -13,6 +13,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 
 const ARCHIVAL_CUTOFF_DAYS = Number(process.env.ARCHIVAL_CUTOFF_DAYS || 90);
 const ARCHIVAL_BATCH_LIMIT = Number(process.env.ARCHIVAL_BATCH_LIMIT || 50000);
@@ -189,6 +190,11 @@ async function writeExecutionsParquetFile(executions, filePath) {
     compression: "SNAPPY",
   });
   for (const row of executions) {
+    const executedAt = new Date(row.executed_at);
+    const createdAt = new Date(row.created_at);
+    if (Number.isNaN(executedAt.getTime()) || Number.isNaN(createdAt.getTime())) {
+      throw new Error(`Execution ${row.id} has an invalid timestamp`);
+    }
     await writer.appendRow({
       id: BigInt(row.id),
       task_id: BigInt(row.task_id),
@@ -198,20 +204,23 @@ async function writeExecutionsParquetFile(executions, filePath) {
       fee_paid: Number(row.fee_paid),
       ledger_sequence: row.ledger_sequence === null ? BigInt(0) : BigInt(row.ledger_sequence),
       error_message: row.error_message,
-      executed_at: String(row.executed_at),
-      created_at: String(row.created_at),
+      executed_at: executedAt.toISOString(),
+      created_at: createdAt.toISOString(),
     });
   }
   await writer.close();
 }
 
 /** Uploads an executions Parquet file to S3 and returns the stored key. */
-async function uploadExecutionsToS3(filePath, now = Date.now()) {
+async function uploadExecutionsToS3(
+  filePath,
+  now = Date.now(),
+  partition = null,
+  archiveFileName = path.basename(filePath),
+) {
   const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
-  const date = new Date(now);
-  const key = `executions/year=${date.getUTCFullYear()}/month=${String(
-    date.getUTCMonth() + 1,
-  ).padStart(2, "0")}/${path.basename(filePath)}`;
+  const [year, month] = (partition || executionMonth({ created_at: new Date(now) })).split("-");
+  const key = `executions/year=${year}/month=${month}/${archiveFileName}`;
 
   const client = new S3Client({ region: process.env.AWS_REGION || "us-east-1" });
   await client.send(
@@ -223,6 +232,15 @@ async function uploadExecutionsToS3(filePath, now = Date.now()) {
     }),
   );
   return key;
+}
+
+function executionMonth(execution) {
+  const createdAt = execution.created_at;
+  const date = createdAt instanceof Date ? createdAt : new Date(createdAt);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Execution ${execution.id} has an invalid created_at timestamp`);
+  }
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 /**
@@ -240,21 +258,46 @@ async function archiveExecutions(
     return { archived: 0, s3Key: null };
   }
 
-  const tempFilePath = path.join(os.tmpdir(), `executions_archive_${now}.parquet`);
-  await writeParquet(executions, tempFilePath);
-
-  let s3Key;
-  try {
-    s3Key = await upload(tempFilePath, now);
-  } finally {
-    if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+  const monthlyGroups = new Map();
+  for (const execution of executions) {
+    const month = executionMonth(execution);
+    const group = monthlyGroups.get(month) || [];
+    group.push(execution);
+    monthlyGroups.set(month, group);
   }
 
-  const ids = executions.map((e) => e.id);
-  const placeholders = ids.map(() => "?").join(",");
-  await deps.queryRun(`DELETE FROM executions WHERE id IN (${placeholders})`, ids);
+  const uploadedKeys = [];
+  const tempFiles = [];
+  try {
+    for (const [month, monthlyExecutions] of monthlyGroups) {
+      const digest = crypto
+        .createHash("sha256")
+        .update(monthlyExecutions.map((execution) => execution.id).join(","))
+        .digest("hex")
+        .slice(0, 16);
+      const fileName = `executions_${digest}.parquet`;
+      const tempFilePath = path.join(
+        os.tmpdir(),
+        `executions_archive_${process.pid}_${now}_${crypto.randomUUID()}_${fileName}`,
+      );
+      tempFiles.push(tempFilePath);
+      await writeParquet(monthlyExecutions, tempFilePath);
+      const key = await upload(tempFilePath, now, month, fileName);
+      uploadedKeys.push(key);
+    }
 
-  return { archived: executions.length, s3Key };
+    const ids = executions.map((e) => e.id);
+    const placeholders = ids.map(() => "?").join(",");
+    await deps.queryRun(`DELETE FROM executions WHERE id IN (${placeholders})`, ids);
+  } finally {
+    for (const tempFilePath of tempFiles) {
+      if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+    }
+  }
+
+  const result = { archived: executions.length, s3Key: uploadedKeys[0] };
+  if (uploadedKeys.length > 1) result.s3Keys = uploadedKeys;
+  return result;
 }
 
 /**
@@ -281,3 +324,7 @@ module.exports = {
   archiveExecutions,
   scheduleExecutionsArchival,
 };
+
+// NOTE: Stale task purge & auto-cancel daemon (BE-FINAL-26) is implemented in
+// indexer/src/staleTasks.js and keeper/src/taskValidator.js; this archival
+// module is intentionally left unchanged by that issue.

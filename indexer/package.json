@@ -3,8 +3,12 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "engines": {
+    "node": ">=20.17.0"
+  },
   "scripts": {
-    "test": "jest test/api.test.js && node --test src/graphql/__tests__/api.test.js test/migrationRunner.test.js test/migrations.test.js test/dbRouter.test.js test/reconciliation.test.js test/staleTasks.test.js test/archival.test.js test/graphqlSubscriptions.test.js test/graphqlComplexity.test.js test/postgresPoolBenchmark.test.js test/webhooks.dispatcher.test.js test/webhooks.ssrf.test.js test/otel.middleware.test.js"
+    "test": "jest test/api.test.js && npm run test:node",
+    "test:node": "node --test src/graphql/__tests__/api.test.js test/archival.test.js test/cacheInvalidator.test.js test/crossChain.indexing.test.js test/dbRouter.test.js test/executionsArchival.test.js test/graphqlComplexity.test.js test/graphqlComplexityCode.test.js test/graphqlSubscriptions.test.js test/ha.test.js test/ha_mock.test.js test/kafka.ingestion.test.js test/ledgerAuditor.test.js test/merkle.test.js test/migrationConsistency.test.js test/migrationRunner.test.js test/migrations.test.js test/otel.middleware.test.js test/parallelParser.test.js test/postgresPoolBenchmark.test.js test/reconciliation.test.js test/staleTasks.test.js test/webhook.register.test.js test/webhooks.dispatcher.test.js test/webhooks.ssrf.test.js test/wsServer.test.js"
   },
   "keywords": [],
   "author": "",

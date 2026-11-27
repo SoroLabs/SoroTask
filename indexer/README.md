@@ -83,6 +83,22 @@ This requires `S3_COLD_STORAGE_BUCKET` (defaults to `ignition-cold-storage`) and
 
 Archived events remain queryable without re-hydrating them into the primary database via `GET /events/archived?contractId=<id>&limit=<n>` (requires a `USER`-role JWT), which runs a DuckDB query directly over the S3 Parquet files using the `httpfs` extension. See `src/archivalQuery.js`.
 
+## Execution Partitioning and Cold Storage (Issue #1714)
+
+The `009_execution_monthly_partitioning` migration configures the `executions` TimescaleDB hypertable to create monthly range chunks on `executed_at`. TimescaleDB creates future chunks as records arrive; existing weekly chunks are left intact. The down migration restores the prior weekly interval for future chunks.
+
+Execution records older than `EXECUTION_ARCHIVAL_CUTOFF_DAYS` (default 90) are grouped by their UTC `created_at` month, exported to SNAPPY Parquet, and uploaded under `executions/year=YYYY/month=MM/`. Rows are deleted from PostgreSQL only after every monthly object has uploaded successfully. Archive object names are content-stable for a batch, so retrying after an incomplete run overwrites already-uploaded objects instead of adding duplicate files.
+
+Historical executions can be queried with DuckDB over S3 using `GET /executions/archived?taskId=<id>&limit=<n>` (requires a `USER`-role JWT). Optional `year` and `month` parameters narrow the S3 glob to the corresponding monthly partition. The endpoint uses the same `S3_COLD_STORAGE_BUCKET`, AWS region, and credentials as event archival.
+
+## Hourly Merkle Audit Anchors
+
+The ledger auditor builds a SHA-256 Merkle tree for each completed UTC hour of indexed events. Leaves commit to the event ID, ledger sequence, event fields, canonicalized JSON payload, and `processed_at` timestamp. The auditor publishes each root using a Stellar `manage_data` operation and puts the hour in the transaction memo. The root is also retained in the `audit_anchors` table with its transaction hash; later audit runs recompute the tree and verify the corresponding immutable Stellar operation. Divergences are recorded and sent to the configured `onDivergence` hook.
+
+Publishing is disabled unless `AUDIT_SIGNING_SECRET` is set. Configure it with a funded Stellar account, the matching `NETWORK_PASSPHRASE`, and `HORIZON_URL` for the same network. The default Horizon endpoint is Stellar Testnet. Keep the signing secret in a secret manager and do not commit it.
+
+For independent verification, rebuild the root with `buildAuditEventTree(events)` from `src/merkle.js`, then call `verifyStellarAnchor({ horizonUrl, sourcePublicKey, transactionHash, hourStart, root })` from `src/ledgerAuditor.js`. The helper checks the transaction source, UTC-hour memo, and anchored root. `getProof` and `verifyProof` in `src/merkle.js` provide event inclusion proofs against that root.
+
 ## Database Schema
 
 The indexer creates an `events` table with the following structure:

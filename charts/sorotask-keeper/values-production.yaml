@@ -1,0 +1,15 @@
+replicaCount: 3
+
+secrets:
+  create: false
+  existingSecret: sorotask-keeper-secrets
+
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 50
+
+keda:
+  enabled: true
+  minReplicaCount: 3
+  maxReplicaCount: 50

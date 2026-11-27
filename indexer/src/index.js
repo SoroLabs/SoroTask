@@ -8,7 +8,11 @@ const { runStaleTaskCleanup } = require("./staleTasks");
 const { startApiServer } = require("./api");
 const { broadcastEvent } = require("./wsServer");
 const { computeAndStoreLedgerMerkle } = require("./merkleStore");
-const { LedgerAuditor, ensureAuditSchema } = require("./ledgerAuditor");
+const {
+  LedgerAuditor,
+  ensureAuditSchema,
+  createStellarPublisher,
+} = require("./ledgerAuditor");
 const { scheduleArchival, scheduleExecutionsArchival } = require("./archival");
 const { pubsub, EVENT_ADDED } = require("./graphql/pubsub");
 const { LedgerHashValidator } = require("./ledgerHashValidator");
@@ -690,9 +694,19 @@ if (!handleCLI()) {
   const ledgerAuditor = new LedgerAuditor({
     deps: dbDeps,
     rpc,
+    publisher: process.env.AUDIT_SIGNING_SECRET
+      ? createStellarPublisher({
+          secretKey: process.env.AUDIT_SIGNING_SECRET,
+          horizonUrl: process.env.HORIZON_URL || "https://horizon-testnet.stellar.org",
+          networkPassphrase: process.env.NETWORK_PASSPHRASE,
+        })
+      : null,
     intervalMs: Number(process.env.AUDIT_INTERVAL_MS || 15 * 60 * 1000),
     maxLedgers: Number(process.env.AUDIT_MAX_LEDGERS || 64),
   });
+  if (!process.env.AUDIT_SIGNING_SECRET) {
+    console.warn("[LedgerAuditor] On-chain hourly root publishing is disabled; set AUDIT_SIGNING_SECRET to enable it.");
+  }
   ledgerAuditor.start();
 
   // Start synthetic transaction monitoring for end-to-end ingestion health

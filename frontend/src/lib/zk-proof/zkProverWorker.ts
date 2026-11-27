@@ -12,6 +12,19 @@ interface ZkWorkerScope {
 
 const workerScope = self as unknown as ZkWorkerScope;
 
+const artifactCache = new Map<string, Promise<Response>>();
+
+function fetchArtifact(url: string): Promise<Response> {
+  const cached = artifactCache.get(url);
+  if (cached) return cached;
+  const request = fetch(url, {
+    credentials: "omit",
+    cache: "force-cache",
+  });
+  artifactCache.set(url, request);
+  return request;
+}
+
 workerScope.onmessage = async (event: MessageEvent<ZkProverWorkerRequest>) => {
   const request = event.data;
   const startedAt = performance.now();
@@ -34,11 +47,7 @@ workerScope.onmessage = async (event: MessageEvent<ZkProverWorkerRequest>) => {
     }
     await Promise.all(
       Object.entries(request.artifacts).map(async ([name, url]) => {
-        const response = await fetch(url, {
-          method: "HEAD",
-          credentials: "omit",
-          cache: "force-cache",
-        });
+        const response = await fetchArtifact(url);
         if (!response.ok) {
           throw new Error(
             `Circuit ${name} is unavailable (${response.status}). Install the generated ${request.circuitId} circuit artifacts under public/zk-proofs.`,
@@ -46,10 +55,7 @@ workerScope.onmessage = async (event: MessageEvent<ZkProverWorkerRequest>) => {
         }
       }),
     );
-    const verificationKeyResponse = await fetch(request.artifacts.verificationKey, {
-      credentials: "omit",
-      cache: "force-cache",
-    });
+    const verificationKeyResponse = await fetchArtifact(request.artifacts.verificationKey);
     if (!verificationKeyResponse.ok) {
       throw new Error(
         `Circuit verification key is unavailable (${verificationKeyResponse.status}). Install the generated ${request.circuitId} circuit artifacts under public/zk-proofs.`,
@@ -75,7 +81,7 @@ workerScope.onmessage = async (event: MessageEvent<ZkProverWorkerRequest>) => {
       proofId: crypto.randomUUID(),
       status: "success" as const,
       pi_a: proof.pi_a.slice(0, 2).map(String),
-      pi_b: proof.pi_b.slice(0, 2).map((point) => point.slice(0, 2).map(String)),
+      pi_b: proof.pi_b.slice(0, 2).map((point: unknown[]) => point.slice(0, 2).map(String)),
       pi_c: proof.pi_c.slice(0, 2).map(String),
       publicSignals: publicSignals.map(String),
       proof,

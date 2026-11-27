@@ -45,3 +45,85 @@ groups:
         annotations:
           summary: "ZK prover queue latency high"
           description: "ZK prover queue wait time is {{ $value }}ms, exceeding the 60 second SLA limit."
+
+  - name: sorotask-escrow-alerts
+    rules:
+      - alert: EscrowBalanceLow
+        expr: sorotask_escrow_balance_xlm < 500 or escrow_balance_xlm < 500
+        for: 5m
+        labels:
+          severity: warning
+          service: keeper
+          component: escrow
+        annotations:
+          summary: "Escrow balance below warning threshold"
+          description: "Escrow balance is {{ $value }} XLM, below the 500 XLM warning threshold."
+          runbook: "https://github.com/SoroLabs/SoroTask/wiki/Runbook-Escrow-Depletion"
+          action: "Top up the escrow account and verify pending task payouts."
+
+      - alert: EscrowDepletionBurnRateHigh
+        expr: rate(sorotask_escrow_balance_xlm[5m]) < -10 or rate(escrow_balance_xlm[5m]) < -10
+        for: 2m
+        labels:
+          severity: warning
+          service: keeper
+          component: escrow
+        annotations:
+          summary: "Escrow balance depleting rapidly"
+          description: "Escrow is burning at {{ $value }} XLM/s over the last 5 minutes, which may exhaust funds before the next top-up."
+          runbook: "https://github.com/SoroLabs/SoroTask/wiki/Runbook-Escrow-Depletion"
+          action: "Inspect task payout volume and schedule an immediate escrow top-up."
+
+      - alert: EscrowCriticallyDepleted
+        expr: sorotask_escrow_balance_xlm < 100 or escrow_balance_xlm < 100
+        for: 1m
+        labels:
+          severity: critical
+          service: keeper
+          component: escrow
+        annotations:
+          summary: "Escrow balance critically depleted"
+          description: "Escrow balance is {{ $value }} XLM, below the 100 XLM critical threshold; task execution may stop."
+          runbook: "https://github.com/SoroLabs/SoroTask/wiki/Runbook-Escrow-Depletion"
+          action: "Top up escrow immediately and pause non-essential keeper tasks."
+
+  - name: sorotask-consensus-alerts
+    rules:
+      - alert: ConsensusHeightLag
+        expr: (sorotask_consensus_ledger_height - sorotask_consensus_synced_height) > 5 or indexer_ledger_lag_ledgers > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: indexer
+          component: consensus
+        annotations:
+          summary: "Consensus height lag exceeds threshold"
+          description: "Node is {{ $value }} ledgers behind consensus height for more than 2 minutes."
+          runbook: "https://github.com/SoroLabs/SoroTask/wiki/Runbook-Consensus-Drift"
+          action: "Check network connectivity and catch-up progress on lagging nodes."
+
+      - alert: ConsensusSyncDrift
+        expr: max(sorotask_consensus_node_height) - min(sorotask_consensus_node_height) > 3
+        for: 2m
+        labels:
+          severity: warning
+          service: keeper
+          component: consensus
+        annotations:
+          summary: "Consensus sync drift across nodes"
+          description: "Node heights differ by {{ $value }} ledgers, indicating sync drift across validators."
+          runbook: "https://github.com/SoroLabs/SoroTask/wiki/Runbook-Consensus-Drift"
+          action: "Identify lagging validators and restart or resync them."
+
+      - alert: ConsensusRoundStalled
+        expr: sorotask_consensus_round_duration_seconds > 120 or sorotask_consensus_stalled_rounds_total > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: keeper
+          component: consensus
+        annotations:
+          summary: "Consensus round stalled"
+          description: "Consensus has not completed a round within 120 seconds ({{ $value }})."
+          runbook: "https://github.com/SoroLabs/SoroTask/wiki/Runbook-Consensus-Drift"
+          action: "Check validator quorum and restart stalled consensus participants."
