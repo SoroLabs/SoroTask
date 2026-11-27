@@ -32,6 +32,8 @@ const BOUNDED_LABELS = new Set([
   //   attempt  — '1' | '2' | '3' | '4+'
   'severity',
   'attempt',
+  // blue | green | none, normalized in MetricsServer (Issue #1657).
+  'deployment_color',
 ]);
 
 /** Label names that are unbounded by nature — one series per value, forever. */

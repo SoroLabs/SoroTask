@@ -6,12 +6,20 @@ on:
       - main
     paths:
       - "frontend/**"
+      - "terraform/**"
+      - "charts/sorotask-keeper/**"
+      - "keeper/src/deploy/**"
+      - "keeper/scripts/blue-green-deploy.js"
       - ".github/workflows/deploy.yml"
   pull_request:
     branches:
       - main
     paths:
       - "frontend/**"
+      - "terraform/**"
+      - "charts/sorotask-keeper/**"
+      - "keeper/src/deploy/**"
+      - "keeper/scripts/blue-green-deploy.js"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
@@ -20,12 +28,55 @@ permissions:
 
 concurrency:
   group: deploy-${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a production rollout half-way through a traffic shift.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Detect Changed Areas
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.diff.outputs.frontend }}
+      backend: ${{ steps.diff.outputs.backend }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Diff Against Base
+        id: diff
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          # New branch, force-push or unknown base: run everything.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          FILES=$(git diff --name-only "$BASE" "${{ github.sha }}")
+          echo "$FILES"
+          if echo "$FILES" | grep -qE '^(frontend/|\.github/workflows/deploy\.yml$)'; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$FILES" | grep -qE '^(terraform/|charts/sorotask-keeper/|keeper/src/deploy/|keeper/scripts/blue-green-deploy\.js$|\.github/workflows/deploy\.yml$)'; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
   verify:
     name: Build & Unit Tests
-    if: github.event_name != 'workflow_dispatch'
+    needs: changes
+    if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -290,3 +341,188 @@ jobs:
             --scope "$VERCEL_ORG_ID" \
             --project "$VERCEL_PROJECT_ID" \
             --non-interactive
+
+  # ── Keeper backend: Blue/Green with automated canary routing (#1657) ───────
+  blue-green-validate:
+    name: Blue/Green Pipeline Validation (terraform + canary controller)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Terraform Format
+        run: terraform -chdir=terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        run: |
+          terraform -chdir=terraform init -backend=false -input=false
+          terraform -chdir=terraform validate
+
+      - name: Terraform Tests (mocked providers, no cloud access)
+        run: terraform -chdir=terraform test
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Install Keeper Dependencies
+        working-directory: keeper
+        run: npm install --workspaces=false --no-save --no-package-lock --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+
+      - name: Canary Controller Unit, Drain Integration & Stress Tests
+        working-directory: keeper
+        run: >-
+          npx jest --coverage=false
+          __tests__/canaryController.test.js
+          __tests__/blueGreenDrain.test.js
+          __tests__/canaryStress.test.js
+
+      - name: Simulated Rollout (healthy candidate must promote)
+        working-directory: keeper
+        run: node scripts/blue-green-deploy.js --simulate --stable blue --candidate green
+
+      - name: Simulated Rollout (faulty candidate must roll back)
+        working-directory: keeper
+        run: |
+          set +e
+          node scripts/blue-green-deploy.js --simulate --stable blue --candidate green --fault-rate 0.05
+          code=$?
+          if [ "$code" -ne 2 ]; then
+            echo "::error::expected automated rollback (exit 2), got exit $code"
+            exit 1
+          fi
+          echo "Automated rollback verified."
+
+  keeper-blue-green-deploy:
+    name: Keeper Blue/Green Canary Rollout (10% -> 50% -> 100%)
+    needs: blue-green-validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # The EKS API endpoint and Prometheus are private: point this at a runner
+    # inside the VPC with the KEEPER_DEPLOY_RUNNER repository variable.
+    runs-on: ${{ vars.KEEPER_DEPLOY_RUNNER || 'ubuntu-latest' }}
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME || 'sorotask-production' }}
+      K8S_NAMESPACE: ${{ vars.KEEPER_NAMESPACE || 'sorotask' }}
+      ALB_LISTENER_ARN: ${{ vars.KEEPER_LISTENER_ARN }}
+      BLUE_TARGET_GROUP_ARN: ${{ vars.KEEPER_BLUE_TARGET_GROUP_ARN }}
+      GREEN_TARGET_GROUP_ARN: ${{ vars.KEEPER_GREEN_TARGET_GROUP_ARN }}
+      PROMETHEUS_URL: ${{ vars.KEEPER_PROMETHEUS_URL }}
+      DEPLOY_ROLE_ARN: ${{ secrets.KEEPER_DEPLOY_ROLE_ARN }}
+      IMAGE_REPOSITORY: ghcr.io/sorolabs/sorotask-keeper
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Check Deployment Configuration
+        id: cfg
+        run: |
+          if [ -z "$DEPLOY_ROLE_ARN" ] || [ -z "$ALB_LISTENER_ARN" ] || [ -z "$PROMETHEUS_URL" ]; then
+            echo "::notice::Blue/green deploy is not configured (KEEPER_DEPLOY_ROLE_ARN / KEEPER_LISTENER_ARN / KEEPER_PROMETHEUS_URL); skipping live rollout."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        if: steps.cfg.outputs.enabled == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Configure AWS Credentials (OIDC)
+        if: steps.cfg.outputs.enabled == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Helm
+        if: steps.cfg.outputs.enabled == 'true'
+        uses: azure/setup-helm@v4
+
+      - name: Determine Live and Candidate Colors
+        if: steps.cfg.outputs.enabled == 'true'
+        id: colors
+        run: |
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          LIVE_TG=$(aws elbv2 describe-listeners --listener-arns "$ALB_LISTENER_ARN" \
+            --query 'Listeners[0].DefaultActions[0].ForwardConfig.TargetGroups[?Weight==`100`].TargetGroupArn | [0]' \
+            --output text)
+          if [ "$LIVE_TG" = "$GREEN_TARGET_GROUP_ARN" ]; then LIVE=green; CANDIDATE=blue; \
+          elif [ "$LIVE_TG" = "$BLUE_TARGET_GROUP_ARN" ]; then LIVE=blue; CANDIDATE=green; \
+          else echo "::error::listener is not at a clean 100/0 split (a rollout may be in progress)"; exit 1; fi
+          echo "live=$LIVE" >> "$GITHUB_OUTPUT"
+          echo "candidate=$CANDIDATE" >> "$GITHUB_OUTPUT"
+          echo "Live: $LIVE, candidate: $CANDIDATE"
+
+      - name: Deploy Candidate Color (no traffic yet)
+        if: steps.cfg.outputs.enabled == 'true'
+        run: |
+          CANDIDATE=${{ steps.colors.outputs.candidate }}
+          TG_VAR=$( [ "$CANDIDATE" = blue ] && echo "$BLUE_TARGET_GROUP_ARN" || echo "$GREEN_TARGET_GROUP_ARN" )
+          helm upgrade --install "sorotask-keeper-$CANDIDATE" charts/sorotask-keeper \
+            --namespace "$K8S_NAMESPACE" --create-namespace \
+            --set image.repository="$IMAGE_REPOSITORY" \
+            --set image.tag="$IMAGE_TAG" \
+            --set blueGreen.enabled=true \
+            --set blueGreen.color="$CANDIDATE" \
+            --set blueGreen.targetGroupArn="$TG_VAR" \
+            --set secrets.create=false \
+            --set secrets.existingSecret=sorotask-keeper-secrets \
+            --wait --timeout 10m
+          # Every candidate target must pass the ALB /readyz health check
+          # before it receives any traffic.
+          for i in $(seq 1 60); do
+            UNHEALTHY=$(aws elbv2 describe-target-health --target-group-arn "$TG_VAR" \
+              --query 'length(TargetHealthDescriptions[?TargetHealth.State!=`healthy`])' --output text)
+            TOTAL=$(aws elbv2 describe-target-health --target-group-arn "$TG_VAR" \
+              --query 'length(TargetHealthDescriptions)' --output text)
+            if [ "$TOTAL" -gt 0 ] && [ "$UNHEALTHY" -eq 0 ]; then echo "All $TOTAL targets healthy"; exit 0; fi
+            sleep 5
+          done
+          echo "::error::candidate targets never became healthy"; exit 1
+
+      - name: Canary Traffic Shift with Automated Rollback
+        if: steps.cfg.outputs.enabled == 'true'
+        id: canary
+        working-directory: keeper
+        run: |
+          node scripts/blue-green-deploy.js \
+            --stable ${{ steps.colors.outputs.live }} \
+            --candidate ${{ steps.colors.outputs.candidate }}
+
+      - name: Retire Previous Color (graceful drain)
+        if: steps.cfg.outputs.enabled == 'true' && steps.canary.outputs.outcome == 'promoted'
+        run: |
+          # Traffic is already 100% on the new color. Uninstalling the old
+          # release deletes its pods with their full termination grace period:
+          # preStop sleep -> SIGTERM -> readiness 503 -> in-flight transactions
+          # finish -> exit, while the ALB drains open connections. (Uninstall
+          # rather than scale-to-zero so KEDA/HPA cannot scale it back up.)
+          helm uninstall "sorotask-keeper-${{ steps.colors.outputs.live }}" \
+            --namespace "$K8S_NAMESPACE" --wait --timeout 5m
+
+      - name: Retire Failed Candidate After Rollback
+        # Only when traffic is known to be 100% on the previous color: the
+        # controller rolled back, or the canary never started shifting.
+        if: >-
+          failure() && steps.cfg.outputs.enabled == 'true' && steps.colors.outputs.candidate != '' &&
+          (steps.canary.outputs.outcome == 'rolled_back' || steps.canary.conclusion == 'skipped')
+        run: |
+          helm uninstall "sorotask-keeper-${{ steps.colors.outputs.candidate }}" \
+            --namespace "$K8S_NAMESPACE" --wait --timeout 5m || true
+          echo "::error::Canary rolled back; ${{ steps.colors.outputs.live }} remains live."

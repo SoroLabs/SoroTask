@@ -21,7 +21,7 @@ resource "aws_subnet" "primary_public" {
   count                   = 2
   vpc_id                  = aws_vpc.primary.id
   cidr_block              = cidrsubnet(var.vpc_cidr, 4, count.index)
-  availability_zone       = "${var.primary_region}${char(97 + count.index)}"
+  availability_zone       = "${var.primary_region}${element(["a", "b", "c"], count.index)}"
   map_public_ip_on_launch = false
 
   tags = {
@@ -34,7 +34,7 @@ resource "aws_subnet" "primary_private" {
   count             = 2
   vpc_id            = aws_vpc.primary.id
   cidr_block        = cidrsubnet(var.vpc_cidr, 4, count.index + 8)
-  availability_zone = "${var.primary_region}${char(97 + count.index)}"
+  availability_zone = "${var.primary_region}${element(["a", "b", "c"], count.index)}"
 
   tags = {
     Name = "sorotask-primary-private-${count.index}"
@@ -61,7 +61,7 @@ resource "aws_subnet" "dr_private" {
   count             = 2
   vpc_id            = aws_vpc.dr.id
   cidr_block        = cidrsubnet(var.dr_vpc_cidr, 4, count.index + 8)
-  availability_zone = "${var.dr_region}${char(97 + count.index)}"
+  availability_zone = "${var.dr_region}${element(["a", "b", "c"], count.index)}"
 
   tags = {
     Name = "sorotask-dr-private-${count.index}"

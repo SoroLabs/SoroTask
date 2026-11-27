@@ -307,6 +307,9 @@ async function main() {
   metricsServer.setReadinessProviders({
     redisClient: getRedisClient(),
     workerPool: queue,
+    // Fail readiness the moment SIGTERM arrives so the blue/green target
+    // group stops routing new requests while in-flight work drains.
+    drainStateProvider: () => shutdownManager.isShuttingDown,
   });
   metricsServer.start();
 

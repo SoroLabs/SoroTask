@@ -79,11 +79,7 @@ pub(crate) fn try_invoke_target(
     args: Vec<Val>,
 ) -> Result<Val, u32> {
     match crate::security::try_invoke_contract_with_guard::<Val>(
-        env,
-        target,
-        function,
-        args,
-        false, // target call is state-changing
+        env, target, function, args, false, // target call is state-changing
     ) {
         Ok(val) => Ok(val),
         Err(_) => Err(TARGET_INVOKE_REJECTED),

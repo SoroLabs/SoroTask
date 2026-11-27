@@ -179,8 +179,7 @@ pub fn committee(env: &Env) -> Option<SecurityCommittee> {
 
 fn require_member(env: &Env, member: &Address) -> SecurityCommittee {
     member.require_auth();
-    let committee =
-        committee(env).unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
+    let committee = committee(env).unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
     if !committee.members.contains(member) {
         panic_with_error!(env, Error::Unauthorized);
     }
@@ -289,9 +288,9 @@ pub fn trip(env: &Env, member: &Address, incident_hash: BytesN<32>) -> BreakerSt
 
     // Snapshot the quorum so staking during the pause cannot move the goalposts.
     // A floor of 1 keeps the veto from passing with zero participation.
-    let quorum_power =
-        (total_staked(env).saturating_mul(committee.veto_quorum_bps as i128) / BPS_DENOMINATOR)
-            .max(1);
+    let quorum_power = (total_staked(env).saturating_mul(committee.veto_quorum_bps as i128)
+        / BPS_DENOMINATOR)
+        .max(1);
 
     let state = BreakerState {
         epoch: previous.epoch.saturating_add(1),
@@ -315,7 +314,12 @@ pub fn trip(env: &Env, member: &Address, incident_hash: BytesN<32>) -> BreakerSt
             Symbol::new(env, "v1"),
             state.epoch,
         ),
-        (member.clone(), incident_hash, state.expires_at, quorum_power),
+        (
+            member.clone(),
+            incident_hash,
+            state.expires_at,
+            quorum_power,
+        ),
     );
     state
 }

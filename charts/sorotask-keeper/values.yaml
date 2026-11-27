@@ -34,6 +34,18 @@ startupProbe:
   timeoutSeconds: 3
   failureThreshold: 30
 
+# Blue/Green deployment (#1657). Install the chart twice, as releases
+# `sorotask-keeper-blue` and `sorotask-keeper-green`, each with its color.
+# The AWS Load Balancer Controller registers the pods of each release into
+# that color's ALB target group (terraform output keeper_target_group_arns),
+# and the deploy pipeline shifts listener weights between them.
+blueGreen:
+  enabled: false
+  # blue | green
+  color: blue
+  # ARN of this color's target group; leave empty to skip the binding.
+  targetGroupArn: ""
+
 resources:
   requests:
     cpu: "250m"

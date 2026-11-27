@@ -325,7 +325,7 @@ pub fn initialize_guardians(env: &Env, admin: &Address, guardians: Vec<Address>)
 
     // Set threshold to majority of guardians
     let threshold = ((guardians.len() as u32 + 1) / 2).max(EMERGENCY_GUARDIAN_THRESHOLD);
-    
+
     config.guardians = guardians;
     config.threshold = threshold;
     config.initialized = true;
@@ -413,12 +413,7 @@ pub fn propose_upgrade_with_announcement(
             Symbol::new(env, "UpgradeCodeHashAnnounced"),
             Symbol::new(env, "v1"),
         ),
-        (
-            new_wasm_hash,
-            new_version,
-            execute_after,
-            now,
-        ),
+        (new_wasm_hash, new_version, execute_after, now),
     );
 }
 
@@ -464,7 +459,7 @@ pub fn emergency_freeze_upgrade(env: &Env, guardian: &Address, reason: Option<By
     }
 
     public_proposal.emergency_frozen = true;
-    
+
     env.storage()
         .instance()
         .set(&DataKey::PublicUpgradeProposal, &public_proposal);
@@ -477,7 +472,11 @@ pub fn emergency_freeze_upgrade(env: &Env, guardian: &Address, reason: Option<By
 }
 
 /// Emergency unfreeze an upgrade (requires threshold guardian signatures)
-pub fn emergency_unfreeze_upgrade(env: &Env, guardian: &Address, signatures: Vec<GuardianSignature>) {
+pub fn emergency_unfreeze_upgrade(
+    env: &Env,
+    guardian: &Address,
+    signatures: Vec<GuardianSignature>,
+) {
     guardian.require_auth();
 
     let guardian_config = load_guardian_config(env);
@@ -514,7 +513,7 @@ pub fn emergency_unfreeze_upgrade(env: &Env, guardian: &Address, signatures: Vec
     }
 
     public_proposal.emergency_frozen = false;
-    
+
     env.storage()
         .instance()
         .set(&DataKey::PublicUpgradeProposal, &public_proposal);
