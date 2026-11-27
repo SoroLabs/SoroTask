@@ -2,6 +2,7 @@ const {
   KeeperP2PNetwork,
   assignTasksByRendezvous,
   createSignedEnvelope,
+  parseLibp2pBootstrapPeers,
   parsePeerList,
   verifySignedEnvelope,
 } = require('../src/p2pNetwork');
@@ -41,6 +42,15 @@ describe('P2P keeper network utilities', () => {
     ]);
   });
 
+  test('requires libp2p bootstrap multiaddresses with peer IDs', () => {
+    expect(parseLibp2pBootstrapPeers(
+      '/dns4/keeper.example.com/tcp/4001/p2p/12D3KooWExample',
+    )).toEqual(['/dns4/keeper.example.com/tcp/4001/p2p/12D3KooWExample']);
+    expect(() => parseLibp2pBootstrapPeers('http://keeper.example.com:4100'))
+      .toThrow('multiaddresses ending in /p2p/<peer-id>');
+    expect(parseLibp2pBootstrapPeers([])).toEqual([]);
+  });
+
   test('signs and verifies envelopes with replay protection', () => {
     const seenNonces = new Set();
     const envelope = createSignedEnvelope({
@@ -78,6 +88,31 @@ describe('P2P keeper network utilities', () => {
     expect(verifySignedEnvelope({ ...envelope, payload: { url: 'bad' } }, 'shared-secret', {
       now: 1000,
     })).toEqual({ ok: false, reason: 'signature_mismatch' });
+  });
+
+  test('bounds replay-protection memory and expires old nonce entries', () => {
+    const network = new KeeperP2PNetwork({
+      enabled: true,
+      nodeId: 'keeper-a',
+      sharedSecret: 'shared-secret',
+      maxSeenNonces: 1,
+      logger,
+    });
+    const first = createSignedEnvelope({
+      type: 'heartbeat',
+      nodeId: 'keeper-b',
+      secret: 'shared-secret',
+    });
+    const second = createSignedEnvelope({
+      type: 'heartbeat',
+      nodeId: 'keeper-b',
+      secret: 'shared-secret',
+    });
+
+    expect(network.verify(first)).toEqual({ ok: true });
+    expect(network.verify(second)).toEqual({ ok: false, reason: 'replay_cache_full' });
+    network.seenNonces.set(first.nonce, Date.now() - 60000);
+    expect(network.verify(second)).toEqual({ ok: true });
   });
 
   test('uses load-aware rendezvous ownership without losing tasks', () => {
@@ -196,6 +231,7 @@ describe('KeeperP2PNetwork', () => {
     expect(subscribed).toEqual([
       'sorotask.keeper.discovery.v1',
       'sorotask.keeper.task-locks.v1',
+      'sorotask.keeper.task-claims.v2',
       'sorotask.keeper.bids.v1',
       'sorotask.keeper.consensus.v1',
     ]);
@@ -204,6 +240,57 @@ describe('KeeperP2PNetwork', () => {
       transport: 'libp2p',
       libp2pStarted: true,
     });
+  });
+
+  test('passes libp2p bootstrap multiaddresses to the node factory and reports DHT state', async () => {
+    const bootstrapPeer = '/dns4/keeper.example.com/tcp/4100/p2p/12D3KooWExample';
+    const libp2pNode = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      services: { dht: {}, pubsub: { subscribe: jest.fn(), publish: jest.fn() } },
+    };
+    const libp2pNodeFactory = jest.fn(async () => libp2pNode);
+    const network = new KeeperP2PNetwork({
+      enabled: true,
+      nodeId: 'keeper-libp2p',
+      sharedSecret: 'shared-secret',
+      transport: 'libp2p',
+      libp2pBootstrapPeers: [bootstrapPeer],
+      libp2pNodeFactory,
+      logger,
+    });
+    networks.push(network);
+
+    await network.start();
+
+    expect(libp2pNodeFactory).toHaveBeenCalledWith(expect.objectContaining({
+      bootstrapPeers: [bootstrapPeer],
+    }));
+    expect(network.getStateSnapshot()).toMatchObject({
+      dhtStarted: true,
+      transport: 'libp2p',
+    });
+  });
+
+  test('cleans up the socket transport when libp2p startup fails', async () => {
+    const network = new KeeperP2PNetwork({
+      enabled: true,
+      nodeId: 'keeper-hybrid',
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      sharedSecret: 'shared-secret',
+      transport: 'hybrid',
+      libp2pNodeFactory: async () => {
+        throw new Error('injected libp2p startup failure');
+      },
+      logger,
+    });
+    networks.push(network);
+
+    await expect(network.start()).rejects.toThrow('injected libp2p startup failure');
+    expect(network.started).toBe(false);
+    expect(network.io).toBeNull();
+    expect(network.httpServer).toBeNull();
   });
 
   test('records task locks, skips remotely claimed work, and reassigns on stale peer', () => {
@@ -274,5 +361,38 @@ describe('KeeperP2PNetwork', () => {
     });
     expect(network.getActiveTaskLocks()['task-7'].nodeId).toBe('keeper-a');
     expect(published[0].topic).toBe('sorotask.keeper.task-locks.v1');
+  });
+
+  test('publishes coordinated task claims over the v2 GossipSub topic', async () => {
+    const published = [];
+    const network = new KeeperP2PNetwork({
+      enabled: true,
+      nodeId: 'keeper-v2',
+      sharedSecret: 'shared-secret',
+      transport: 'libp2p',
+      gossipV2: { claimWindowMs: 0 },
+      logger,
+      libp2pNode: {
+        start: jest.fn(),
+        stop: jest.fn(),
+        services: {
+          pubsub: {
+            subscribe: jest.fn(),
+            publish: jest.fn((topic, data) => published.push({ topic, data })),
+          },
+        },
+      },
+    });
+    networks.push(network);
+
+    await network.start();
+    const result = await network.claimTask('task-8');
+
+    expect(result).toMatchObject({
+      claimed: true,
+      winner: 'keeper-v2',
+      claimCount: 1,
+    });
+    expect(published.some(({ topic }) => topic === 'sorotask.keeper.task-claims.v2')).toBe(true);
   });
 });

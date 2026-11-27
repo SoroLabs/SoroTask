@@ -4,8 +4,8 @@
   "description": "SoroTask Keeper - Production-grade task execution service for Soroban smart contracts",
   "main": "index.js",
   "scripts": {
-    "start": "node init && node index.js",
-    "dev": "node init && node index.js | pino-pretty",
+    "start": "node index.js",
+    "dev": "node index.js | pino-pretty",
     "dry-run": "node index.js --dry-run",
     "mock-rpc": "node mock-rpc.js",
     "test": "jest",
@@ -26,7 +26,8 @@
     "chaos-test:list": "node scripts/chaos-test.js list",
     "chaos-test:single": "node scripts/chaos-test.js single",
     "helm:lint": "node scripts/validate-helm-keda.js",
-    "k8s:validate": "node scripts/validate-helm-keda.js"
+    "k8s:validate": "node scripts/validate-helm-keda.js",
+    "test:p2p-libp2p": "node scripts/test-p2p-libp2p.js"
   },
   "keywords": [
     "soroban",
@@ -56,7 +57,17 @@
     "socket.io": "^4.8.4",
     "socket.io-client": "^4.8.4",
     "sorotask": "file:..",
-    "wasm-metering": "^0.2.1"
+    "wasm-metering": "^0.2.1",
+    "@chainsafe/libp2p-gossipsub": "^14.1.2",
+    "@chainsafe/libp2p-noise": "^16.1.5",
+    "@chainsafe/libp2p-yamux": "^7.0.4",
+    "@libp2p/bootstrap": "^11.0.47",
+    "@libp2p/identify": "^3.0.39",
+    "@libp2p/kad-dht": "^15.1.11",
+    "@libp2p/ping": "^2.0.37",
+    "@libp2p/tcp": "^10.1.19",
+    "@libp2p/websockets": "^9.2.19",
+    "libp2p": "^2.10.0"
   },
   "devDependencies": {
     "@babel/core": "^8.0.7",

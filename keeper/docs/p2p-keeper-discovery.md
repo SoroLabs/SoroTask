@@ -11,6 +11,11 @@ The keeper can run an optional peer-to-peer discovery layer so keeper nodes can 
 - Every P2P message is wrapped in a signed envelope with `nodeId`, `timestamp`, `nonce`, payload, and HMAC-SHA256 signature.
 - Peers publish signed heartbeats containing current load, queue depth, in-flight work, task count, and pause status.
 - Peer discovery, bid announcements, and task lock claims use dedicated pubsub channels.
+- The libp2p transport runs Kademlia DHT for peer discovery and GossipSub for signed
+  heartbeat, task-lock, bid, and v2 task-claim propagation.
+- Task claims use the same deterministic HMAC-SHA-256 priority on every keeper
+  for a task and epoch. Claims are collected for a short window and expire so
+  stale ownership is recoverable after disconnects.
 - Task ownership uses deterministic load-aware rendezvous hashing across the local keeper and healthy peers.
 - Keepers broadcast task lock claims before enqueueing due work. Active remote locks are skipped locally.
 - Stale peers are pruned after `P2P_STALE_PEER_MS`, their task locks are released, and ownership automatically falls back to the remaining healthy nodes.
@@ -26,6 +31,7 @@ P2P_PUBLIC_URL=http://keeper-a.example.com:4100
 P2P_LISTEN_HOST=0.0.0.0
 P2P_LISTEN_PORT=4100
 P2P_BOOTSTRAP_PEERS=http://keeper-b.example.com:4100,http://keeper-c.example.com:4100
+P2P_LIBP2P_BOOTSTRAP_PEERS="/dns4/keeper-a.example.com/tcp/4100/p2p/<bootstrap-peer-id>"
 P2P_HEARTBEAT_INTERVAL_MS=10000
 P2P_STALE_PEER_MS=45000
 P2P_AUTH_WINDOW_MS=30000
@@ -38,8 +44,18 @@ P2P_TASK_LOCK_TTL_MS=60000
 
 `P2P_NODE_ID` is optional. When omitted, the keeper public key is used as the node ID.
 
-`P2P_TRANSPORT=libp2p` uses the optional libp2p runtime path. Install the libp2p
-transport/pubsub packages in deployments that enable it, or inject a prebuilt node factory.
+`P2P_BOOTSTRAP_PEERS` contains HTTP(S) URLs for the Socket.IO mesh.
+`P2P_LIBP2P_BOOTSTRAP_PEERS` contains comma-delimited libp2p multiaddresses,
+including the `/p2p/<peer-id>` suffix. It may be empty on designated DHT seed
+nodes; configure it on other nodes to join the mesh. Keep seed nodes redundant
+and independently operated; DHT and GossipSub continue discovery and
+propagation after peers join.
+
+`P2P_TRANSPORT=libp2p` uses the optional libp2p runtime path. Install `libp2p`,
+`@libp2p/tcp`, `@libp2p/websockets`, `@chainsafe/libp2p-noise`,
+`@chainsafe/libp2p-yamux`, `@libp2p/bootstrap`, `@libp2p/kad-dht`, and
+`@libp2p/identify`, `@libp2p/ping`, and `@chainsafe/libp2p-gossipsub` in
+deployments that enable it, or inject a prebuilt node factory.
 
 ## Health And Metrics
 
@@ -55,6 +71,8 @@ transport/pubsub packages in deployments that enable it, or inject a prebuilt no
 - healthy peer load snapshots
 - `transport`
 - `libp2pStarted`
+- `dhtStarted`
+- v2 active claim and contender counts
 - active task lock count
 
 The keeper logs P2P lifecycle events, rejected messages, stale-peer pruning, and ownership decisions with the `p2p` module label.
@@ -65,6 +83,7 @@ The P2P network publishes signed envelopes to:
 
 - `sorotask.keeper.discovery.v1`: heartbeat, load, and peer discovery.
 - `sorotask.keeper.task-locks.v1`: task lock claims before execution.
+- `sorotask.keeper.task-claims.v2`: epoch-scoped, prioritized task claims.
 - `sorotask.keeper.bids.v1`: keeper bid auction messages.
 
 When a peer goes offline or a task lock expires, the network emits `tasks:reassign` so the next ownership pass can include those tasks again.
