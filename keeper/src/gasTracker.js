@@ -25,6 +25,9 @@ class AdaptiveGasTracker {
     this.naiveMaxFee = options.naiveMaxFee || 10000;
     /** @type {Array<{ ledgerSequence: number, baseFee: number, p90Fee: number, p99Fee: number, fillRatio: number, mempoolDepth: number, timestamp: number }>} */
     this.ledgerSamples = [];
+    /** @type {Map<string, Array<{ gasUsed: number, timestamp: number }>>} */
+    this.taskGasHistory = new Map();
+    this.maxTaskHistorySamples = options.maxTaskHistorySamples || 32;
   }
 
   /**
@@ -319,6 +322,133 @@ class AdaptiveGasTracker {
       overpaymentReductionPct,
       avgPredictionLatencyMs,
       maxPredictionLatencyMs: avgPredictionLatencyMs,
+    };
+  }
+
+  /**
+   * Record gas usage for a specific task execution to support dynamic escrow rebalancing.
+   * @param {string} taskId
+   * @param {number} gasUsed
+   * @param {number} [timestamp=Date.now()]
+   * @returns {{ taskId: string, gasUsed: number, timestamp: number }}
+   */
+  recordTaskGasUsage(taskId, gasUsed, timestamp = Date.now()) {
+    if (!taskId || typeof taskId !== 'string') {
+      throw new Error('taskId must be a non-empty string');
+    }
+    const normalizedGas = Math.max(0, Number(gasUsed) || 0);
+    const ts = Number(timestamp) || Date.now();
+    if (!this.taskGasHistory.has(taskId)) {
+      this.taskGasHistory.set(taskId, []);
+    }
+    const history = this.taskGasHistory.get(taskId);
+    const entry = { gasUsed: normalizedGas, timestamp: ts };
+    history.push(entry);
+    if (history.length > this.maxTaskHistorySamples) {
+      history.shift();
+    }
+    return { taskId, ...entry };
+  }
+
+  /**
+   * Estimate a task's recent gas burn rate and idleness over a sliding window.
+   * @param {string} taskId
+   * @param {object} [options]
+   * @param {number} [options.windowMs=3600000]
+   * @param {number} [options.now=Date.now()]
+   * @returns {object}
+   */
+  estimateTaskBurnRate(taskId, options = {}) {
+    const windowMs = Math.max(1000, Number(options.windowMs ?? 3600000));
+    const now = Number(options.now ?? Date.now());
+    const history = this.taskGasHistory.get(taskId) || [];
+
+    if (history.length === 0) {
+      return {
+        taskId,
+        executionsInWindow: 0,
+        totalGasUsed: 0,
+        avgGasPerExecution: this.defaultBaseFee,
+        executionsPerHour: 0,
+        burnRatePerHour: 0,
+        lastExecutionAt: null,
+        idleDurationMs: Infinity,
+      };
+    }
+
+    const cutoff = now - windowMs;
+    const recent = history.filter((item) => item.timestamp >= cutoff);
+    const lastExecutionAt = history[history.length - 1].timestamp;
+    const idleDurationMs = Math.max(0, now - lastExecutionAt);
+
+    if (recent.length === 0) {
+      const allSum = history.reduce((acc, item) => acc + item.gasUsed, 0);
+      return {
+        taskId,
+        executionsInWindow: 0,
+        totalGasUsed: 0,
+        avgGasPerExecution: Math.round(allSum / history.length) || this.defaultBaseFee,
+        executionsPerHour: 0,
+        burnRatePerHour: 0,
+        lastExecutionAt,
+        idleDurationMs,
+      };
+    }
+
+    const totalGasUsed = recent.reduce((acc, item) => acc + item.gasUsed, 0);
+    const avgGasPerExecution = Math.round(totalGasUsed / recent.length);
+    const windowHours = windowMs / 3600000;
+    const executionsPerHour = Number((recent.length / windowHours).toFixed(4));
+    const burnRatePerHour = Math.ceil(totalGasUsed / windowHours);
+
+    return {
+      taskId,
+      executionsInWindow: recent.length,
+      totalGasUsed,
+      avgGasPerExecution,
+      executionsPerHour,
+      burnRatePerHour,
+      lastExecutionAt,
+      idleDurationMs,
+    };
+  }
+
+  /**
+   * Estimate the recommended gas escrow reserve for a task using its burn rate
+   * and the adaptive inclusion fee forecast.
+   * @param {string} taskId
+   * @param {object} [options]
+   * @param {number} [options.horizonHours=24]
+   * @param {number} [options.safetyBuffer=1.25]
+   * @param {number} [options.windowMs=3600000]
+   * @param {number} [options.now=Date.now()]
+   * @param {object} [options.forecastOptions]
+   * @returns {object}
+   */
+  estimateTaskRequiredReserve(taskId, options = {}) {
+    const horizonHours = Math.max(0.25, Number(options.horizonHours ?? 24));
+    const safetyBuffer = Math.max(1, Number(options.safetyBuffer ?? 1.25));
+    const burn = this.estimateTaskBurnRate(taskId, {
+      windowMs: options.windowMs,
+      now: options.now,
+    });
+    const forecast = this.forecastInclusionFee(options.forecastOptions || {});
+    const unitGas = Math.max(burn.avgGasPerExecution, forecast.recommendedFee);
+    const projectedExecutions = burn.executionsPerHour * horizonHours;
+    const projectedGas = projectedExecutions > 0
+      ? projectedExecutions * unitGas
+      : unitGas;
+    const recommendedReserve = Math.ceil(projectedGas * safetyBuffer);
+
+    return {
+      taskId,
+      recommendedReserve,
+      unitGas,
+      projectedExecutions: Number(projectedExecutions.toFixed(2)),
+      burnRatePerHour: burn.burnRatePerHour,
+      idleDurationMs: burn.idleDurationMs,
+      forecastedFee: forecast.recommendedFee,
+      spikeDetected: forecast.spikeDetected,
     };
   }
 }

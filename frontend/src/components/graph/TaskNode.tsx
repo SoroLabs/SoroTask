@@ -7,6 +7,7 @@ export type TaskNodeStatus = "selected" | "has_run" | "pending";
 export interface TaskNodeData {
   label: string;
   status: TaskNodeStatus;
+  isCycle?: boolean;
 }
 
 export const TASK_NODE_WIDTH = 180;
@@ -25,13 +26,16 @@ const STATUS_LABEL: Record<TaskNodeStatus, string> = {
 
 function TaskNodeComponent({ id, data, selected }: NodeProps<TaskNodeData>) {
   const status: TaskNodeStatus = selected ? "selected" : data.status;
+  const isCycle = Boolean(data.isCycle);
 
   return (
     <div
       data-testid={`task-node-${id}`}
       style={{ width: TASK_NODE_WIDTH }}
       className={`rounded-lg border px-3 py-2 shadow-sm transition-colors ${
-        status === "selected"
+        isCycle
+          ? "border-red-500 bg-red-950/60 text-red-100 ring-2 ring-red-500/50"
+          : status === "selected"
           ? "border-blue-500 bg-blue-600 text-white"
           : "border-neutral-700 bg-neutral-900 text-neutral-100"
       }`}

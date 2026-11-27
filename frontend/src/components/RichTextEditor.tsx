@@ -14,12 +14,14 @@ interface RichTextEditorProps {
   "data-testid"?: string;
 }
 
-const EXTENSIONS = [
-  StarterKit.configure({ codeBlock: false }),
-  CodeBlock,
-  Link.configure({ openOnClick: false, autolink: true }),
-  Placeholder.configure({ placeholder: "Add a description…" }),
-];
+function getExtensions(placeholder?: string) {
+  return [
+    StarterKit.configure({ codeBlock: false }),
+    CodeBlock,
+    Link.configure({ openOnClick: false, autolink: true }),
+    Placeholder.configure({ placeholder: placeholder ?? "Add a description…" }),
+  ];
+}
 
 export default function RichTextEditor({
   initialContent,
@@ -28,14 +30,7 @@ export default function RichTextEditor({
   "data-testid": testId,
 }: RichTextEditorProps) {
   const editor = useEditor({
-    extensions: placeholder
-      ? [
-          StarterKit.configure({ codeBlock: false }),
-          CodeBlock,
-          Link.configure({ openOnClick: false, autolink: true }),
-          Placeholder.configure({ placeholder }),
-        ]
-      : EXTENSIONS,
+    extensions: getExtensions(placeholder),
     content: initialContent ?? undefined,
     onUpdate({ editor }) {
       onChange?.(editor.getJSON() as TaskContent);

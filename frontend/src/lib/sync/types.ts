@@ -132,7 +132,8 @@ export type SyncEventType =
   | "action_failed"
   | "network_changed"
   | "queue_flushed"
-  | "queue_exhausted";
+  | "queue_exhausted"
+  | "rollback_requested";
 
 export interface SyncMetrics {
   totalActionsProcessed: number;

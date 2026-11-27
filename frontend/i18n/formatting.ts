@@ -62,72 +62,16 @@ export function formatNumber(
     currency?: string;
   },
 ): string {
-  return withIntl(
-    () =>
-      new Intl.NumberFormat(toIntlLocale(locale), {
-        minimumFractionDigits: options?.minimumFractionDigits ?? 0,
-        maximumFractionDigits: options?.maximumFractionDigits ?? 2,
-        style: options?.style ?? "decimal",
-        currency: options?.currency,
-      }).format(value),
-    () => value.toString(),
-  );
-}
-
-/**
- * Format an XLM amount for the locale, with the currency symbol appended.
- *
- * `Intl` does not know about XLM, so a currency style with an unknown code
- * renders as "XLM 1,234.50" in some engines and "¤1,234.50" in others. Appending
- * the code ourselves keeps the output predictable and translatable.
- */
-export function formatXlm(
-  value: number,
-  locale: Locale,
-  fractionDigits = 4,
-): string {
-  if (!Number.isFinite(value)) return "—";
-
-  return withIntl(
-    () => {
-      const formatted = new Intl.NumberFormat(toIntlLocale(locale), {
-        minimumFractionDigits: 0,
-        // Seven decimals is the on-chain precision, but showing all of them
-        // for a typical gas balance is noise, so default to four.
-        maximumFractionDigits: Math.max(0, Math.min(7, fractionDigits)),
-      }).format(value);
-      return `${formatted} ${XLM_CURRENCY}`;
-    },
-    () => `${value} ${XLM_CURRENCY}`,
-  );
-}
-
-/**
- * Format a raw stroop amount, converting to XLM first.
- *
- * Amounts arrive from the chain as strings because a u64 overflows a JS number
- * well before it overflows the ledger, so the conversion is done on the string
- * where it is still exact.
- */
-export function formatStroops(
-  stroops: string | number | bigint,
-  locale: Locale,
-): string {
-  const asBigInt = toBigInt(stroops);
-  if (asBigInt === null) return "—";
-
-  const negative = asBigInt < 0n;
-  const absolute = negative ? -asBigInt : asBigInt;
-
-  const whole = absolute / BigInt(STROOPS_PER_XLM);
-  const fraction = absolute % BigInt(STROOPS_PER_XLM);
-
-  // Trim trailing zeros in the fractional part: 0.1000000 XLM is 0.1 XLM.
-  const fractionText = fraction.toString().padStart(7, "0").replace(/0+$/, "");
-  const sign = negative ? "-" : "";
-
-  return `${sign}${whole}${fractionText ? `.${fractionText}` : ""} ${XLM_CURRENCY}`;
-}
+  const localeMap: Record<Locale, string> = {
+    en: 'en-US',
+    es: 'es-ES',
+    pt: 'pt-BR',
+    fr: 'fr-FR',
+    zh: 'zh-CN',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    ar: 'ar-SA',
+  };
 
 /** Parses a stroop amount without losing precision. Returns null if invalid. */
 export function toBigInt(stroops: string | number | bigint): bigint | null {
@@ -157,21 +101,29 @@ export function formatInterval(
 ): { hours: number; display: string } {
   const hours = Math.round(intervalSeconds / 3600);
 
-  const formatter = new Intl.NumberFormat(toIntlLocale(locale));
+  const localeMap: Record<Locale, string> = {
+    en: 'en-US',
+    es: 'es-ES',
+    pt: 'pt-BR',
+    fr: 'fr-FR',
+    zh: 'zh-CN',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    ar: 'ar-SA',
+  };
+
+  const formatter = new Intl.NumberFormat(localeMap[locale]);
 
   const formats: Record<Locale, string> = {
     en: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} seconds)`,
     es: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} segundos)`,
+    pt: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} segundos)`,
     fr: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} secondes)`,
     pt: `${formatter.format(hours)}h (${formatter.format(intervalSeconds)} segundos)`,
     zh: `${formatter.format(hours)}小时(${formatter.format(intervalSeconds)}秒)`,
-    ja: `${formatter.format(hours)}時間 (${formatter.format(intervalSeconds)}秒)`,
-    ko: `${formatter.format(hours)}시간 (${formatter.format(intervalSeconds)}초)`,
-    de: `${formatter.format(hours)}Std (${formatter.format(intervalSeconds)} Sekunden)`,
-    ru: `${formatter.format(hours)} ч (${formatter.format(intervalSeconds)} сек)`,
-    ar: `${formatter.format(hours)}س (${formatter.format(intervalSeconds)} ثانية)`,
-    hi: `${formatter.format(hours)} घंटे (${formatter.format(intervalSeconds)} सेकंड)`,
-    tr: `${formatter.format(hours)} sa (${formatter.format(intervalSeconds)} saniye)`,
+    ja: `${formatter.format(hours)}時間（${formatter.format(intervalSeconds)}秒）`,
+    ko: `${formatter.format(hours)}시간(${formatter.format(intervalSeconds)}초)`,
+    ar: `${formatter.format(hours)} س (${formatter.format(intervalSeconds)} ثانية)`,
   };
 
   return {
@@ -191,11 +143,16 @@ export function formatRelativeTime(date: Date, locale: Locale): string {
   const diffHours = Math.floor(diffMins / 60);
   const diffDays = Math.floor(diffHours / 24);
 
-  return withIntl(
-    () => {
-      const rtf = new Intl.RelativeTimeFormat(toIntlLocale(locale), {
-        numeric: "auto",
-      });
+  const localeMap: Record<Locale, string> = {
+    en: 'en-US',
+    es: 'es-ES',
+    pt: 'pt-BR',
+    fr: 'fr-FR',
+    zh: 'zh-CN',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    ar: 'ar-SA',
+  };
 
       if (diffDays > 0) {
         return rtf.format(-diffDays, "day");
@@ -236,21 +193,40 @@ export function formatDateTime(
     timeZone?: string;
   },
 ): string {
-  return withIntl(
-    () =>
-      new Intl.DateTimeFormat(toIntlLocale(locale), {
-        year: options?.year ?? "numeric",
-        month: options?.month ?? "short",
-        day: options?.day ?? "numeric",
-        hour: options?.hour ?? "2-digit",
-        minute: options?.minute ?? "2-digit",
-        timeZone: options?.timeZone,
-      }).format(date),
-    () => date.toLocaleDateString(toIntlLocale(locale)),
-  );
+  const localeMap: Record<Locale, string> = {
+    en: 'en-US',
+    es: 'es-ES',
+    pt: 'pt-BR',
+    fr: 'fr-FR',
+    zh: 'zh-CN',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    ar: 'ar-SA',
+  };
+
+  try {
+    const formatter = new Intl.DateTimeFormat(localeMap[locale], {
+      year: options?.year ?? 'numeric',
+      month: options?.month ?? 'short',
+      day: options?.day ?? 'numeric',
+      hour: options?.hour ?? '2-digit',
+      minute: options?.minute ?? '2-digit',
+      timeZone: options?.timeZone,
+    });
+
+    return formatter.format(date);
+  } catch {
+    return date.toLocaleDateString(localeMap[locale]);
+  }
 }
 
-export { getTextDirection };
+/**
+ * Lis supported locales with their collation order for addressing
+ */
+export function getTextDirection(locale: Locale): 'ltr' | 'rtl' {
+  const rtlLocales: Locale[] = ['ar'];
+  return rtlLocales.includes(locale) ? 'rtl' : 'ltr';
+}
 
 /**
  * Get CSS classes for text direction
@@ -274,16 +250,13 @@ export function getTextExpansionFactor(locale: Locale): number {
   const factors: Record<Locale, number> = {
     en: 1.0,
     es: 1.25,
+    pt: 1.25,
     fr: 1.3,
     pt: 1.2,
     zh: 0.75,
     ja: 0.8,
-    ko: 0.9,
-    de: 1.35,
-    ru: 1.3,
-    ar: 1.1,
-    hi: 1.2,
-    tr: 1.2,
+    ko: 0.85,
+    ar: 1.25,
   };
 
   return factors[locale];
@@ -300,18 +273,14 @@ export function getFontAdjustments(locale: Locale): {
     Locale,
     { letterSpacing: string; lineHeight: number }
   > = {
-    en: { letterSpacing: "normal", lineHeight: 1.5 },
-    es: { letterSpacing: "normal", lineHeight: 1.55 },
-    fr: { letterSpacing: "normal", lineHeight: 1.55 },
-    pt: { letterSpacing: "normal", lineHeight: 1.55 },
-    zh: { letterSpacing: "0.05em", lineHeight: 1.8 },
-    ja: { letterSpacing: "0.02em", lineHeight: 1.8 },
-    ko: { letterSpacing: "normal", lineHeight: 1.7 },
-    de: { letterSpacing: "normal", lineHeight: 1.6 },
-    ru: { letterSpacing: "normal", lineHeight: 1.6 },
-    ar: { letterSpacing: "normal", lineHeight: 1.7 },
-    hi: { letterSpacing: "normal", lineHeight: 1.8 },
-    tr: { letterSpacing: "normal", lineHeight: 1.55 },
+    en: { letterSpacing: 'normal', lineHeight: 1.5 },
+    es: { letterSpacing: 'normal', lineHeight: 1.55 },
+    pt: { letterSpacing: 'normal', lineHeight: 1.55 },
+    fr: { letterSpacing: 'normal', lineHeight: 1.55 },
+    zh: { letterSpacing: '0.05em', lineHeight: 1.8 },
+    ja: { letterSpacing: '0.05em', lineHeight: 1.8 },
+    ko: { letterSpacing: '0.05em', lineHeight: 1.75 },
+    ar: { letterSpacing: 'normal', lineHeight: 1.75 },
   };
 
   return adjustments[locale];

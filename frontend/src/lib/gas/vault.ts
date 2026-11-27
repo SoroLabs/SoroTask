@@ -57,9 +57,9 @@ export interface BurnRateEstimate {
 }
 
 /** Hours of runway below which the vault is considered low. */
-export const DEFAULT_ALRT_THRESHOLD_HOURS = 48;
+export const DEFAULT_ALERT_THRESHOLD_HOURS = 48;
 
-const MS_PER_HOUR = 3.600_000;
+const MS_PER_HOUR = 3_600_000;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -238,7 +238,7 @@ export function projectBalance(
 export function topUpRequired(
   balanceXlm: number,
   estimate: BurnRateEstimate,
-  targetHours: number = DEFAULT_ALRT_THRESHOLD_HOURS,
+  targetHours: number = DEFAULT_ALERT_THRESHOLD_HOURS,
 ): number {
   if (estimate.burnRatePerHour <= 0) return 0;
   const target = isFiniteNumber(targetHours) && targetHours > 0 ? targetHours : 0;
@@ -275,7 +275,7 @@ export type VaultSeverity = 'healthy' | 'warning' | 'critical' | 'exhausted';
  */
 export function classifyVault(
   forecast: DepletionForecast,
-  thresholdHours: number = DEFAULT_ALRT_THRESHOLD_HOURS,
+  thresholdHours: number = DEFAULT_ALERT_THRESHOLD_HOURS,
 ): VaultSeverity {
   if (forecast.hoursRemaining === null) return 'healthy';
   if (forecast.hoursRemaining <= 0) return 'exhausted';
@@ -306,7 +306,7 @@ export function formatRunway(hoursRemaining: number | null): string {
  * `alreadyAlertedAtHours` suppresses the repeat notification once it has fired,
  * but a materially worse runway is allowed through again — a keeper should not
  * be told "low on gas" six times in an hour and then stay silent when it turns
-* critical.
+ * critical.
  */
 export function shouldAlert(
   forecast: DepletionForecast,

@@ -14,6 +14,7 @@ const { createRateLimiter } = require('./rateLimiter');
 const { traceContextMiddleware } = require('../../scripts/traceContext');
 const { requestSpanMiddleware, getTrace } = require('./otel');
 const { openApiSpec } = require('./openapi');
+const { createStaleTaskRouter } = require('./staleTasks');
 
 const DEFAULT_PORT = 4000;
 
@@ -206,6 +207,40 @@ function registerRestRoutes(app, deps = dbHelpers) {
       return res.status(500).json({ error: err.message });
     }
   });
+
+  // Issue #1714: query cold-storage execution archives through DuckDB.
+  app.get('/executions/archived', requireRole(ROLES.USER), async (req, res) => {
+    const taskId = req.query.taskId;
+    if (typeof taskId !== 'string' || !/^\d+$/.test(taskId)) {
+      return res.status(400).json({ error: 'taskId query parameter must be a non-negative integer' });
+    }
+    const limit = req.query.limit === undefined ? 100 : Number(req.query.limit);
+    const year = req.query.year === undefined ? undefined : Number(req.query.year);
+    const month = req.query.month === undefined ? undefined : Number(req.query.month);
+    if (
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 1000 ||
+      (year !== undefined && !Number.isInteger(year)) ||
+      (month !== undefined && !Number.isInteger(month))
+    ) {
+      return res.status(400).json({ error: 'limit, year, or month is out of range' });
+    }
+    try {
+      const { queryArchivedExecutions } = require('./archivalQuery');
+      const rows = await queryArchivedExecutions(taskId, limit, { year, month });
+      return res.json({ executions: rows });
+    } catch (err) {
+      if (err instanceof RangeError || err instanceof TypeError) {
+        return res.status(400).json({ error: err.message });
+      }
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+// BE-FINAL-26: stale task lifecycle auditor. Admin-only: exposes dry-run
+  // reports and manual purge triggers for tasks whose intervals have lapsed.
+  app.use('/api/stale-tasks', requireRole(ROLES.ADMIN), createStaleTaskRouter(deps));
 
   return app;
 }

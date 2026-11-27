@@ -46,6 +46,9 @@ const { createLogger } = require('./logger');
 
 const DEFAULT_CHECK_INTERVAL_MS = 60000;
 const DEFAULT_COOLDOWN_MS = 600000;
+const DEFAULT_TREASURY_WARNING_THRESHOLD_XLM = 500;
+const DEFAULT_MAX_SINGLE_REFILL_XLM = 500;
+const DEFAULT_ALERT_DEBOUNCE_MS = 300000;
 const STROOPS_PER_XLM = 10_000_000;
 
 /**
@@ -90,6 +93,16 @@ class TreasuryRefillChannel {
     this.networkPassphrase = options.networkPassphrase || Networks.FUTURENET;
     this.logger = options.logger || createLogger('treasury-refill');
     this.metrics = options.metrics || null;
+
+    // Multi-sig security & reserve monitoring (BE-FINAL-21)
+    this.maxSingleRefillXlm = options.maxSingleRefillXlm ?? (parseFloat(process.env.TREASURY_REFILL_MAX_AMOUNT_XLM) || DEFAULT_MAX_SINGLE_REFILL_XLM);
+    this.getTreasuryBalance = options.getTreasuryBalance || null;
+    this.treasuryWarningThresholdXlm = options.treasuryWarningThresholdXlm ?? (parseFloat(process.env.TREASURY_WARNING_THRESHOLD_XLM) || DEFAULT_TREASURY_WARNING_THRESHOLD_XLM);
+    this.sendAlertFn = options.sendAlertFn || null;
+    this.alertDebounceMs = options.alertDebounceMs ?? DEFAULT_ALERT_DEBOUNCE_MS;
+    this._lastTreasuryReserve = null;
+    this._lastReserveAlertAt = 0;
+    this._inFlight = false;
   }
 
   static fromEnv(server, keeperPublicKey, logger) {
@@ -107,6 +120,8 @@ class TreasuryRefillChannel {
       treasuryContractId: process.env.TREASURY_CONTRACT_ID || null,
       refillFunction: process.env.TREASURY_REFILL_FUNCTION || 'request_refill',
       networkPassphrase: process.env.NETWORK_PASSPHRASE || Networks.FUTURENET,
+      maxSingleRefillXlm: parseFloat(process.env.TREASURY_REFILL_MAX_AMOUNT_XLM) || DEFAULT_MAX_SINGLE_REFILL_XLM,
+      treasuryWarningThresholdXlm: parseFloat(process.env.TREASURY_WARNING_THRESHOLD_XLM) || DEFAULT_TREASURY_WARNING_THRESHOLD_XLM,
       logger,
     });
   }
@@ -118,23 +133,105 @@ class TreasuryRefillChannel {
   }
 
   /**
+   * Returns deduplicated signer secrets to enforce distinct multi-sig quorum.
+   * @returns {string[]}
+   */
+  getDistinctSigners() {
+    return [...new Set(this.signerSecrets.filter(Boolean))];
+  }
+
+  /**
+   * Check the treasury vault's XLM reserve against `treasuryWarningThresholdXlm`
+   * and trigger automated alerting if reserves are at or below the warning threshold.
+   *
+   * @returns {Promise<{ checked: boolean, reserveBalance?: number, warning?: boolean, alerted?: boolean }>}
+   */
+  async checkTreasuryReserve() {
+    if (!this.getTreasuryBalance) {
+      return { checked: false };
+    }
+
+    const reserveBalance = await this.getTreasuryBalance();
+    this._lastTreasuryReserve = reserveBalance;
+
+    if (reserveBalance <= this.treasuryWarningThresholdXlm) {
+      this.metrics?.increment?.('treasuryReserveWarningTotal');
+      this.logger.warn('Treasury reserve reached warning threshold', {
+        reserveBalance,
+        threshold: this.treasuryWarningThresholdXlm,
+      });
+
+      const now = Date.now();
+      let alerted = false;
+      if (this.sendAlertFn && now - this._lastReserveAlertAt >= this.alertDebounceMs) {
+        this._lastReserveAlertAt = now;
+        alerted = true;
+        await this.sendAlertFn('warning', {
+          type: 'TREASURY_RESERVE_LOW',
+          reserveBalance,
+          threshold: this.treasuryWarningThresholdXlm,
+          message: `Treasury vault reserve low: ${reserveBalance} XLM (warning threshold: ${this.treasuryWarningThresholdXlm} XLM)`,
+        });
+      }
+
+      return { checked: true, reserveBalance, warning: true, alerted };
+    }
+
+    return { checked: true, reserveBalance, warning: false, alerted: false };
+  }
+
+  getTreasuryStatus() {
+    return {
+      configured: this.isConfigured,
+      distinctSigners: this.getDistinctSigners().length,
+      minSignatures: this.minSignatures,
+      maxSingleRefillXlm: this.maxSingleRefillXlm,
+      lastTreasuryReserve: this._lastTreasuryReserve,
+      treasuryWarningThresholdXlm: this.treasuryWarningThresholdXlm,
+      reserveWarningActive:
+        this._lastTreasuryReserve !== null &&
+        this._lastTreasuryReserve <= this.treasuryWarningThresholdXlm,
+    };
+  }
+
+  /**
    * Submit an automated top-up request to the treasury contract.
    *
    * @param {object} params
    * @param {number} params.amountXlm - Refill amount in XLM.
    * @param {string} [params.reason] - Free-form reason recorded in the request.
-   * @returns {Promise<{ requested: boolean, reason?: string, txHash?: string }>}
+   * @returns {Promise<{ requested: boolean, reason?: string, txHash?: string, reserveWarning?: boolean }>}
    */
   async requestTopUp({ amountXlm, reason = 'keeper_gas_low' } = {}) {
     if (!this.isConfigured) {
       return { requested: false, reason: 'not_configured' };
     }
 
-    if (this.signerSecrets.length < this.minSignatures) {
+    const distinctSigners = this.getDistinctSigners();
+    if (distinctSigners.length < this.minSignatures) {
       return { requested: false, reason: 'insufficient_signers' };
     }
 
-    return this._submit({ amountXlm, reason });
+    if (!Number.isFinite(amountXlm) || amountXlm <= 0) {
+      return { requested: false, reason: 'invalid_amount' };
+    }
+
+    if (this._inFlight) {
+      return { requested: false, reason: 'request_in_flight' };
+    }
+
+    const cappedAmountXlm = Math.min(amountXlm, this.maxSingleRefillXlm);
+    this._inFlight = true;
+    try {
+      const submitResult = await this._submit({ amountXlm: cappedAmountXlm, reason });
+      const reserveCheck = await this.checkTreasuryReserve();
+      if (reserveCheck.checked) {
+        return { ...submitResult, reserveWarning: reserveCheck.warning };
+      }
+      return submitResult;
+    } finally {
+      this._inFlight = false;
+    }
   }
 
   /**
@@ -146,7 +243,8 @@ class TreasuryRefillChannel {
   async _submit({ amountXlm, reason }) {
     const { Keypair, TransactionBuilder, Account } = require('@stellar/stellar-sdk');
 
-    const signers = this.signerSecrets.slice(0, Math.max(this.minSignatures, 1))
+    const distinctSecrets = this.getDistinctSigners();
+    const signers = distinctSecrets.slice(0, Math.max(this.minSignatures, 1))
       .map((secret) => Keypair.fromSecret(secret));
     const payer = signers[0];
 
@@ -221,7 +319,8 @@ class GasVaultRefillMonitor {
     this.keypair = options.keypair;
     this.getXlmBalance = options.getXlmBalance;
     this.getSourceAssetBalance = options.getSourceAssetBalance;
-    this.triggerThresholdXlm = options.triggerThresholdXlm ?? 30;
+    this.triggerThresholdXlm = options.lowWaterMarkXlm ?? options.triggerThresholdXlm ?? 30;
+    this.lowWaterMarkXlm = this.triggerThresholdXlm;
     this.targetBalanceXlm = options.targetBalanceXlm ?? 100;
     this.maxHotBalanceXlm = options.maxHotBalanceXlm ?? this.targetBalanceXlm * 2;
     this.sweepToColdStorage = options.sweepToColdStorage;
@@ -276,7 +375,11 @@ class GasVaultRefillMonitor {
     if (Date.now() - this._lastSwapAt < this.cooldownMs) {
       return { triggered: false, reason: 'cooldown' };
     }
-    if (!this.routerContractId || !this.xlmContractId || this.sourceAssetContractIds.length === 0) {
+    const swapConfigured = Boolean(
+      this.routerContractId && this.xlmContractId && this.sourceAssetContractIds.length > 0,
+    );
+    const treasuryConfigured = Boolean(this.treasuryChannel && this.treasuryChannel.isConfigured);
+    if (!swapConfigured && !treasuryConfigured) {
       return { triggered: false, reason: 'not_configured' };
     }
 
@@ -290,44 +393,47 @@ class GasVaultRefillMonitor {
       return { triggered: false, reason: 'above_threshold', xlmBalance };
     }
 
-    this.logger.warn('XLM balance below refill threshold, attempting swap', {
+    this.logger.warn('XLM balance below refill threshold, attempting refill', {
       xlmBalance,
       triggerThresholdXlm: this.triggerThresholdXlm,
     });
 
-    for (const sourceAssetContractId of this.sourceAssetContractIds) {
-      const sourceBalance = await this.getSourceAssetBalance(sourceAssetContractId);
-      if (sourceBalance <= 0) continue;
+    if (swapConfigured) {
+      for (const sourceAssetContractId of this.sourceAssetContractIds) {
+        const sourceBalance = await this.getSourceAssetBalance(sourceAssetContractId);
+        if (sourceBalance <= 0) continue;
 
-      this._swapInProgress = true;
-      try {
-        const shortfallXlm = this.targetBalanceXlm - xlmBalance;
-        const swapResult = await this._executeSwap({
-          sourceAssetContractId,
-          sourceBalance,
-          targetXlmAmount: shortfallXlm,
-        });
-        this._lastSwapAt = Date.now();
-        this.metrics?.increment?.('gasVaultRefillSwapSucceededTotal');
-        this.logger.info('Gas vault refill swap submitted', {
-          sourceAssetContractId,
-          txHash: swapResult.txHash,
-        });
-        return { triggered: true, swapped: swapResult };
-      } catch (error) {
-        this.metrics?.increment?.('gasVaultRefillSwapFailedTotal');
-        this.logger.error('Gas vault refill swap failed', {
-          sourceAssetContractId,
-          error: error.message,
-        });
-        // Try the next configured source asset rather than giving up entirely.
-      } finally {
-        this._swapInProgress = false;
+        this._swapInProgress = true;
+        try {
+          const shortfallXlm = this.targetBalanceXlm - xlmBalance;
+          const swapResult = await this._executeSwap({
+            sourceAssetContractId,
+            sourceBalance,
+            targetXlmAmount: shortfallXlm,
+          });
+          this._lastSwapAt = Date.now();
+          this.metrics?.increment?.('gasVaultRefillSwapSucceededTotal');
+          this.logger.info('Gas vault refill swap submitted', {
+            sourceAssetContractId,
+            txHash: swapResult.txHash,
+          });
+          return { triggered: true, swapped: swapResult };
+        } catch (error) {
+          this.metrics?.increment?.('gasVaultRefillSwapFailedTotal');
+          this.logger.error('Gas vault refill swap failed', {
+            sourceAssetContractId,
+            error: error.message,
+          });
+          // Try the next configured source asset rather than giving up entirely.
+        } finally {
+          this._swapInProgress = false;
+        }
       }
     }
 
     const treasuryFallback = await this.requestTreasuryTopUp(xlmBalance);
     if (treasuryFallback.triggered) {
+      this._lastSwapAt = Date.now();
       return { triggered: true, reason: 'treasury_refill_requested', treasury: treasuryFallback.treasury };
     }
 

@@ -12,11 +12,14 @@
 //! - Automated dust consolidation on task deregistration
 //! - Prevention of dust lockup across completed/canceled tasks
 
-use soroban_sdk::{Address, Env, Symbol, Vec, panic_with_error};
+use soroban_sdk::{panic_with_error, Address, Bytes, Env, Symbol, Vec};
 
+use crate::math::{split_gas_escrow, FixedPoint128, GasEscrowSplit, MathError};
 use crate::DataKey;
-use crate::gas::EscrowManager;
 use crate::Error;
+
+/// Gas price scaling denominator for `calculate_gas_refund`.
+pub const GAS_PRICE_SCALE: i128 = 1_000;
 
 /// Minimum dust threshold for automatic sweeping (10 units)
 pub const MIN_DUST_THRESHOLD: i128 = 10;
@@ -187,14 +190,16 @@ pub fn record_gas_consumption(
         panic_with_error!(env, Error::InvalidBounty);
     }
 
-    // Calculate refund amount (unused gas)
-    let refund = gas_allocated.saturating_sub(gas_consumed);
-    
+    // Calculate unused gas without signed underflow
+    let unused_gas = estimate_refund(gas_allocated, gas_consumed);
+
     // Only refund if there's unused gas and execution succeeded
-    let refund_amount = if execution_success && refund > 0 {
-        calculate_gas_refund(env, refund)
+    let (refund_amount, sub_unit_dust) = if execution_success && unused_gas > 0 {
+        let config = get_gas_price_config(env);
+        calculate_refund_with_dust(unused_gas, config.base_fee)
+            .unwrap_or_else(|_| panic_with_error!(env, Error::InvalidBounty))
     } else {
-        0
+        (0, 0)
     };
 
     // Record consumption
@@ -217,8 +222,10 @@ pub fn record_gas_consumption(
         credit_refund_to_accumulator(env, creator, refund_amount);
     }
 
-    // Update task's dust record
-    update_dust_record(env, task_id, creator, refund);
+    // Track only the sub-unit dust remainder so zero stroops are lost or double-counted
+    if sub_unit_dust > 0 {
+        update_dust_record(env, task_id, creator, sub_unit_dust);
+    }
 
     // Update global gas stats
     update_gas_usage_stats(env, gas_consumed, refund_amount, 0);
@@ -234,7 +241,41 @@ pub fn record_gas_consumption(
     refund_amount
 }
 
-/// Calculates the token refund amount from unused gas.
+/// Calculates the token refund and exact sub-unit dust remainder from unused gas.
+///
+/// Guarantees: `refund * GAS_PRICE_SCALE + dust == unused_gas * base_fee`
+/// with checked arithmetic preventing overflow and underflow.
+pub fn calculate_refund_with_dust(unused_gas: i128, base_fee: i128) -> Result<(i128, i128), MathError> {
+    if unused_gas < 0 || base_fee < 0 {
+        return Err(MathError::Underflow);
+    }
+    if unused_gas == 0 || base_fee == 0 {
+        return Ok((0, 0));
+    }
+    let scaled = unused_gas
+        .checked_mul(base_fee)
+        .ok_or(MathError::Overflow)?;
+    let refund = FixedPoint128::div_floor(unused_gas, base_fee, GAS_PRICE_SCALE)?;
+    let refunded_scaled = refund
+        .checked_mul(GAS_PRICE_SCALE)
+        .ok_or(MathError::Overflow)?;
+    let dust = scaled
+        .checked_sub(refunded_scaled)
+        .ok_or(MathError::Underflow)?;
+    Ok((refund, dust))
+}
+
+/// Computes the exact three-way zero-dust gas escrow settlement:
+/// `protocol_fee + keeper_reward + refund_amount == gas_allocated`.
+pub fn calculate_escrow_settlement(
+    gas_allocated: i128,
+    gas_consumed: i128,
+    protocol_fee_bps: u32,
+) -> Result<GasEscrowSplit, MathError> {
+    split_gas_escrow(gas_allocated, gas_consumed, protocol_fee_bps)
+}
+
+/// Calculates the token refund amount from unused gas using overflow-safe floor division.
 ///
 /// # Arguments
 /// * `unused_gas` - Amount of unused gas
@@ -242,14 +283,15 @@ pub fn record_gas_consumption(
 /// # Returns
 /// * Token value of unused gas
 fn calculate_gas_refund(env: &Env, unused_gas: i128) -> i128 {
-    // Get current gas prices
+    if unused_gas <= 0 {
+        return 0;
+    }
     let config = get_gas_price_config(env);
-    
-    // Calculate refund based on gas prices
-    // This is a simplified calculation - in production, use actual gas modeling
-    let refund = unused_gas * config.base_fee / 1000;
-    
-    refund
+    if config.base_fee <= 0 {
+        return 0;
+    }
+    FixedPoint128::div_floor(unused_gas, config.base_fee, GAS_PRICE_SCALE)
+        .unwrap_or_else(|_| panic_with_error!(env, Error::InvalidBounty))
 }
 
 /// Gets current gas price configuration.
@@ -292,7 +334,7 @@ fn credit_refund_to_accumulator(env: &Env, creator: &Address, amount: i128) {
     };
 
     accumulator.accumulated_amount = accumulator.accumulated_amount.saturating_add(amount);
-    accumulator.refund_count += 1;
+    accumulator.refund_count = accumulator.refund_count.saturating_add(1);
     save_yield_accumulator(env, creator, &name, &accumulator);
 
     env.events().publish(
@@ -327,7 +369,7 @@ fn update_dust_record(env: &Env, task_id: u64, creator: &Address, unused_gas: i1
 
     dust.dust_amount = dust.dust_amount.saturating_add(unused_gas);
     dust.last_updated = env.ledger().timestamp();
-    dust.refund_count += 1;
+    dust.refund_count = dust.refund_count.saturating_add(1);
 
     env.storage()
         .persistent()
@@ -433,8 +475,11 @@ fn update_gas_usage_stats(env: &Env, gas_consumed: i128, refunds_issued: i128, d
     stats.total_gas_consumed = stats.total_gas_consumed.saturating_add(gas_consumed);
     stats.total_refunds_issued = stats.total_refunds_issued.saturating_add(refunds_issued);
     stats.total_dust_swept = stats.total_dust_swept.saturating_add(dust_swept);
-    stats.total_tasks_processed += 1;
-    stats.average_gas_per_task = stats.total_gas_consumed / stats.total_tasks_processed.max(1);
+    stats.total_tasks_processed = stats.total_tasks_processed.saturating_add(1);
+    stats.average_gas_per_task = stats
+        .total_gas_consumed
+        .checked_div(stats.total_tasks_processed.max(1) as i128)
+        .unwrap_or(0);
     stats.last_updated = env.ledger().timestamp();
 
     env.storage()
@@ -624,21 +669,24 @@ pub fn update_gas_price_config(env: &Env, cpu_price: i128, mem_price: i128, base
 /// # Returns
 /// * Estimated refund amount
 pub fn estimate_refund(gas_allocated: i128, expected_usage: i128) -> i128 {
-    if gas_allocated <= 0 || expected_usage < 0 {
+    if gas_allocated <= 0 || expected_usage < 0 || expected_usage >= gas_allocated {
         return 0;
     }
-    gas_allocated.saturating_sub(expected_usage)
+    gas_allocated.checked_sub(expected_usage).unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_estimate_refund() {
         assert_eq!(estimate_refund(1000, 800), 200);
-        assert_eq!(estimate_refund(1000, 1200), 0); // Negative case
+        assert_eq!(estimate_refund(1000, 1200), 0); // Clamped to zero without underflow
         assert_eq!(estimate_refund(0, 100), 0);
+        assert_eq!(estimate_refund(-50, 10), 0);
+        assert_eq!(estimate_refund(1000, -1), 0);
     }
 
     #[test]
@@ -650,5 +698,67 @@ mod tests {
     #[test]
     fn test_gas_refund_precision() {
         assert!(GAS_REFUND_PRECISION > 0);
+    }
+
+    #[test]
+    fn test_calculate_refund_with_dust_exact_conservation() {
+        let (refund, dust) = calculate_refund_with_dust(333, 1_001).unwrap();
+        assert_eq!(refund * GAS_PRICE_SCALE + dust, 333 * 1_001);
+        assert!(dust >= 0 && dust < GAS_PRICE_SCALE);
+        assert_eq!(calculate_refund_with_dust(-1, 1000), Err(MathError::Underflow));
+        assert_eq!(calculate_refund_with_dust(1000, -1), Err(MathError::Underflow));
+        assert_eq!(
+            calculate_refund_with_dust(i128::MAX, 2),
+            Err(MathError::Overflow)
+        );
+    }
+
+    #[test]
+    fn test_calculate_escrow_settlement_zero_dust() {
+        let split = calculate_escrow_settlement(10_000, 7_777, 333).unwrap();
+        assert_eq!(split.protocol_fee + split.keeper_reward, 7_777);
+        assert_eq!(split.refund_amount, 2_223);
+        assert_eq!(split.protocol_fee + split.keeper_reward + split.refund_amount, 10_000);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_estimate_refund_never_underflows(
+            gas_allocated in -1_000_000i128..=1_000_000_000i128,
+            expected_usage in -1_000_000i128..=1_000_000_000i128,
+        ) {
+            let refund = estimate_refund(gas_allocated, expected_usage);
+            prop_assert!(refund >= 0);
+            if gas_allocated > 0 && expected_usage >= 0 {
+                prop_assert!(refund <= gas_allocated);
+            }
+        }
+
+        #[test]
+        fn prop_refund_with_dust_conserves_scaled_value(
+            unused_gas in 0i128..=1_000_000_000_000i128,
+            base_fee in 0i128..=1_000_000i128,
+        ) {
+            let (refund, dust) = calculate_refund_with_dust(unused_gas, base_fee).unwrap();
+            prop_assert!(refund >= 0);
+            prop_assert!(dust >= 0 && dust < GAS_PRICE_SCALE);
+            prop_assert_eq!(refund * GAS_PRICE_SCALE + dust, unused_gas * base_fee);
+        }
+
+        #[test]
+        fn prop_escrow_settlement_conserves_every_stroop(
+            gas_allocated in 0i128..=1_000_000_000_000i128,
+            gas_consumed in 0i128..=1_500_000_000_000i128,
+            protocol_fee_bps in 0u32..=10_000u32,
+        ) {
+            let split = calculate_escrow_settlement(gas_allocated, gas_consumed, protocol_fee_bps).unwrap();
+            prop_assert!(split.protocol_fee >= 0);
+            prop_assert!(split.keeper_reward >= 0);
+            prop_assert!(split.refund_amount >= 0);
+            prop_assert_eq!(
+                split.protocol_fee + split.keeper_reward + split.refund_amount,
+                gas_allocated
+            );
+        }
     }
 }

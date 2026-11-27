@@ -53,13 +53,24 @@ const config: NextAuthConfig = {
     }),
   ],
   callbacks: {
-    async jwt({ token, user, account }) {
+    async jwt({ token, user, account, profile }) {
       if (user) {
         token.id = user.id;
       }
       if (account) {
         token.provider = account.provider;
         token.providerAccountId = account.providerAccountId;
+        // Only the actual GitHub OAuth callback can establish a GitHub identity.
+        // Neither email auth nor a posted AuthResult/profile is sufficient.
+        const github = profile as { login?: unknown; id?: unknown } | undefined;
+        token.keeperGithub = account.provider === "github"
+          && typeof github?.login === "string"
+          && /^[a-zA-Z0-9_.-]{1,100}$/.test(github.login)
+          && /^\d{1,20}$/.test(account.providerAccountId)
+          && (typeof github.id === "number" || typeof github.id === "string")
+          && String(github.id) === account.providerAccountId
+          ? { id: account.providerAccountId, username: github.login }
+          : undefined;
       }
       return token;
     },
@@ -68,6 +79,10 @@ const config: NextAuthConfig = {
         session.user.id = token.id as string;
         session.user.provider = token.provider as string;
         session.user.providerAccountId = token.providerAccountId as string;
+        const github = token.keeperGithub as { id?: unknown; username?: unknown } | undefined;
+        session.user.keeperGithub = github && typeof github.id === "string" && /^\d{1,20}$/.test(github.id)
+          && typeof github.username === "string" && /^[a-zA-Z0-9_.-]{1,100}$/.test(github.username)
+          ? { id: github.id, username: github.username } : undefined;
       }
       return session;
     },

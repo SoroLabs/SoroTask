@@ -1,45 +1,121 @@
-//! Multi-oracle price aggregation with freshness checks and deviation detection.
-//! Implements robust price querying from multiple independent oracle feeds.
+//! Multi-oracle price aggregation with freshness checks and outlier rejection.
 
-use soroban_sdk::{Address, Env, Vec, panic_with_error};
+use soroban_sdk::{Env, Vec};
 
-use crate::{DataKey, Error, OracleFeed, OracleProvider};
+use crate::{DataKey, Error, OracleConfig, OracleFeed, OracleProvider};
 
 /// Maximum age in seconds for oracle price feed data before it is considered stale.
-const MAX_ORACLE_DELAY_SECONDS: u64 = 300;
+pub const MAX_ORACLE_DELAY_SECONDS: u64 = 300;
 
-/// Maximum deviation between oracle feeds in basis points before halting execution (10% = 1000 bps).
-const MAX_ORACLE_DEVIATION_BPS: u32 = 1000;
+/// Maximum deviation from the median cluster, in basis points (5%).
+pub const MAX_ORACLE_DEVIATION_BPS: u32 = 500;
 
-/// Minimum number of valid oracle feeds required for price aggregation.
-const MIN_ORACLE_FEEDS: u32 = 3;
+/// Minimum number of fresh, in-cluster oracle feeds required for aggregation.
+pub const MIN_ORACLE_FEEDS: u32 = 3;
 
-/// Stores an oracle price feed for a specific provider.
-pub fn set_oracle_feed(env: &Env, provider: OracleProvider, feed: OracleFeed) {
-    env.storage()
-        .instance()
-        .set(&DataKey::OracleFeed(provider), &feed);
+const PRICE_DECIMALS: u32 = 8;
+const PROVIDERS: [OracleProvider; 4] = [
+    OracleProvider::Chainlink,
+    OracleProvider::Band,
+    OracleProvider::Pyth,
+    OracleProvider::Reflector,
+];
 
-    // Update feed count
-    let mut count: u32 = env
-        .storage()
-        .instance()
-        .get(&DataKey::OracleFeedCount)
-        .unwrap_or(0);
-    count += 1;
-    env.storage()
-        .instance()
-        .set(&DataKey::OracleFeedCount, &count);
-}
-
-/// Retrieves an oracle price feed for a specific provider.
+/// Retrieves a price feed for a configured provider.
 pub fn get_oracle_feed(env: &Env, provider: OracleProvider) -> Option<OracleFeed> {
     env.storage()
-        .instance()
+        .persistent()
         .get(&DataKey::OracleFeed(provider))
 }
 
-/// Gets the total number of configured oracle feeds.
+/// Aggregates fresh prices, normalizing each feed to eight decimal places,
+/// rejecting outliers, and requiring at least three remaining sources.
+pub fn get_aggregated_price(env: &Env) -> Result<i128, Error> {
+    get_aggregated_price_with_count(env).map(|(price, _)| price)
+}
+
+/// Aggregates fresh prices and returns the median and accepted feed count.
+pub fn get_aggregated_price_with_count(env: &Env) -> Result<(i128, u32), Error> {
+    let current_time = env.ledger().timestamp();
+    let mut prices = Vec::new(env);
+
+    for provider in PROVIDERS {
+        let is_active = env
+            .storage()
+            .instance()
+            .get::<_, OracleConfig>(&DataKey::OracleConfig(provider))
+            .is_some_and(|config| config.active);
+        if !is_active {
+            continue;
+        }
+
+        if let Some(feed) = get_oracle_feed(env, provider) {
+            if feed.price <= 0
+                || feed.timestamp == 0
+                || feed.timestamp > current_time
+                || current_time.saturating_sub(feed.timestamp) > MAX_ORACLE_DELAY_SECONDS
+            {
+                continue;
+            }
+
+            if let Some(price) = normalize_price(feed.price, feed.decimals) {
+                prices.push_back(price);
+            }
+        }
+    }
+
+    aggregate_prices(env, &prices)
+}
+
+/// Filters out prices more than 5% from the initial median and computes the
+/// median of the remaining cluster.
+pub fn aggregate_prices(env: &Env, prices: &Vec<i128>) -> Result<(i128, u32), Error> {
+    let mut positive_prices = Vec::new(env);
+    for i in 0..prices.len() {
+        let price = prices.get(i).unwrap();
+        if price > 0 {
+            positive_prices.push_back(price);
+        }
+    }
+    if positive_prices.len() < MIN_ORACLE_FEEDS {
+        return Err(Error::InsufficientOracleFeeds);
+    }
+
+    let initial_median = calculate_median(env, &positive_prices);
+    let mut cluster = Vec::new(env);
+    for i in 0..positive_prices.len() {
+        let price = positive_prices.get(i).unwrap();
+        if !is_outlier(initial_median, price) {
+            cluster.push_back(price);
+        }
+    }
+
+    if cluster.len() < MIN_ORACLE_FEEDS {
+        return Err(Error::InsufficientOracleFeeds);
+    }
+
+    Ok((calculate_median(env, &cluster), cluster.len()))
+}
+
+/// Updates the stored feed for a provider.
+pub fn set_oracle_feed(env: &Env, provider: OracleProvider, feed: OracleFeed) {
+    let existed = env
+        .storage()
+        .persistent()
+        .has(&DataKey::OracleFeed(provider));
+    env.storage()
+        .persistent()
+        .set(&DataKey::OracleFeed(provider), &feed);
+
+    if !existed {
+        let count = get_oracle_feed_count(env).saturating_add(1);
+        env.storage()
+            .instance()
+            .set(&DataKey::OracleFeedCount, &count);
+    }
+}
+
+/// Gets the number of providers with a stored feed.
 pub fn get_oracle_feed_count(env: &Env) -> u32 {
     env.storage()
         .instance()
@@ -47,216 +123,145 @@ pub fn get_oracle_feed_count(env: &Env) -> u32 {
         .unwrap_or(0)
 }
 
-/// Queries multiple configured oracles and returns the aggregated median price.
-/// 
-/// This function:
-/// 1. Collects price feeds from all configured oracle providers
-/// 2. Filters out stale feeds (>300 seconds old)
-/// 3. Checks for excessive price dispersion (>10%)
-/// 4. Calculates the mathematical median of valid feeds
-/// 5. Returns the median price or an error if insufficient valid feeds
-pub fn get_aggregated_price(env: &Env) -> Result<i128, Error> {
-    let current_time = env.ledger().timestamp();
-    let mut valid_prices: Vec<i128> = Vec::new(env);
-
-    // Collect prices from all configured oracle providers
-    let providers = vec![
-        OracleProvider::Band,
-        OracleProvider::Chainlink,
-        OracleProvider::Reflector,
-        OracleProvider::Sep40,
-    ];
-
-    for provider in providers {
-        if let Some(feed) = get_oracle_feed(env, provider) {
-            // Check if feed is stale
-            if current_time.saturating_sub(feed.timestamp) > MAX_ORACLE_DELAY_SECONDS {
-                continue; // Skip stale feeds
-            }
-            valid_prices.push_back(feed.price);
-        }
+/// Queries a single provider, requiring a fresh and positive price.
+pub fn query_oracle_price(env: &Env, provider: OracleProvider) -> Result<i128, Error> {
+    let feed = get_oracle_feed(env, provider).ok_or(Error::OracleNotSet)?;
+    if feed.price <= 0 {
+        return Err(Error::OracleInvalidResponse);
+    }
+    if feed.timestamp == 0
+        || feed.timestamp > env.ledger().timestamp()
+        || env
+            .ledger()
+            .timestamp()
+            .saturating_sub(feed.timestamp)
+            > MAX_ORACLE_DELAY_SECONDS
+    {
+        return Err(Error::OracleStale);
     }
 
-    // Ensure we have minimum required feeds
-    if valid_prices.len() < MIN_ORACLE_FEEDS as u32 {
-        return Err(Error::InsufficientOracleFeeds);
-    }
-
-    // Check for excessive price dispersion
-    if let Err(e) = check_price_dispersion(env, &valid_prices) {
-        return Err(e);
-    }
-
-    // Calculate and return median
-    let median = calculate_median(env, &valid_prices);
-    Ok(median)
+    normalize_price(feed.price, feed.decimals).ok_or(Error::OracleInvalidResponse)
 }
 
-/// Checks if the dispersion between oracle prices exceeds the maximum allowed threshold.
-/// Returns an error if any price deviates more than 10% from the median.
-fn check_price_dispersion(env: &Env, prices: &Vec<i128>) -> Result<(), Error> {
-    let median = calculate_median(env, prices);
-
-    for i in 0..prices.len() {
-        let price = prices.get(i).unwrap();
-        let deviation = calculate_deviation_bps(median, *price);
-
-        if deviation > MAX_ORACLE_DEVIATION_BPS {
-            return Err(Error::OracleDeviationExceeded);
-        }
-    }
-
-    Ok(())
+/// Indicates fallback mode when fewer than three valid cluster feeds exist.
+pub fn is_oracle_fallback_mode(env: &Env) -> bool {
+    get_aggregated_price(env).is_err()
 }
 
-/// Calculates the mathematical median of a sorted vector of prices.
+fn normalize_price(price: i128, decimals: u32) -> Option<i128> {
+    if decimals == PRICE_DECIMALS {
+        return Some(price);
+    }
+
+    if decimals < PRICE_DECIMALS {
+        let factor = pow10(PRICE_DECIMALS - decimals)?;
+        price.checked_mul(factor)
+    } else {
+        let factor = pow10(decimals - PRICE_DECIMALS)?;
+        Some(price / factor)
+    }
+}
+
+fn pow10(exponent: u32) -> Option<i128> {
+    let mut result = 1i128;
+    for _ in 0..exponent {
+        result = result.checked_mul(10)?;
+    }
+    Some(result)
+}
+
+fn is_outlier(median: i128, price: i128) -> bool {
+    let difference = if price >= median {
+        price - median
+    } else {
+        median - price
+    };
+
+    difference > median / (10_000 / MAX_ORACLE_DEVIATION_BPS as i128)
+}
+
 fn calculate_median(env: &Env, prices: &Vec<i128>) -> i128 {
     let mut sorted = Vec::new(env);
     for i in 0..prices.len() {
         sorted.push_back(prices.get(i).unwrap());
     }
-
-    // Sort the prices
     sort_vec(&mut sorted);
 
-    let len = sorted.len();
-    let mid = len / 2;
-
-    if len % 2 == 0 {
-        // Even number of elements: average the two middle values
-        let a = sorted.get(mid - 1).unwrap();
-        let b = sorted.get(mid).unwrap();
-        (a + b) / 2
+    let middle = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        let lower = sorted.get(middle - 1).unwrap();
+        let upper = sorted.get(middle).unwrap();
+        lower + (upper - lower) / 2
     } else {
-        // Odd number of elements: return the middle value
-        sorted.get(mid).unwrap()
+        sorted.get(middle).unwrap()
     }
 }
 
-/// Sorts a vector of i128 values in ascending order using bubble sort.
-/// (Simple implementation suitable for small arrays of oracle prices)
-fn sort_vec(vec: &mut Vec<i128>) {
-    let len = vec.len();
-    if len <= 1 {
-        return;
-    }
-
-    for i in 0..len {
-        for j in 0..len.saturating_sub(i + 1) {
-            let a = vec.get(j).unwrap();
-            let b = vec.get(j + 1).unwrap();
-            if a > b {
-                vec.set(j, b);
-                vec.set(j + 1, a);
+fn sort_vec(prices: &mut Vec<i128>) {
+    for i in 0..prices.len() {
+        for j in 0..prices.len().saturating_sub(i + 1) {
+            let left = prices.get(j).unwrap();
+            let right = prices.get(j + 1).unwrap();
+            if left > right {
+                prices.set(j, right);
+                prices.set(j + 1, left);
             }
         }
     }
-}
-
-/// Calculates the deviation between two prices in basis points.
-/// Returns the absolute deviation as a percentage in basis points (1% = 100 bps).
-fn calculate_deviation_bps(base: i128, value: i128) -> u32 {
-    if base == 0 {
-        return u32::MAX; // Infinite deviation if base is zero
-    }
-
-    let diff = if value > base {
-        value - base
-    } else {
-        base - value
-    };
-
-    // Calculate deviation in basis points: (diff / base) * 10000
-    let deviation_bps = (diff * 10000) / base;
-    deviation_bps as u32
-}
-
-/// Queries a single oracle for an asset price with freshness check.
-/// Returns the price if the feed is fresh (<300s old), otherwise returns an error.
-pub fn query_oracle_price(env: &Env, provider: OracleProvider) -> Result<i128, Error> {
-    let feed = get_oracle_feed(env, provider).ok_or(Error::OracleNotSet)?;
-
-    let current_time = env.ledger().timestamp();
-    if current_time.saturating_sub(feed.timestamp) > MAX_ORACLE_DELAY_SECONDS {
-        return Err(Error::OracleStale);
-    }
-
-    Ok(feed.price)
-}
-
-/// Updates an oracle feed with new price data.
-/// This would typically be called by an oracle adapter or keeper.
-pub fn update_oracle_feed(
-    env: &Env,
-    provider: OracleProvider,
-    price: i128,
-    timestamp: u64,
-    decimals: u32,
-) {
-    let feed = OracleFeed {
-        provider: provider.clone(),
-        price,
-        timestamp,
-        decimals,
-    };
-    set_oracle_feed(env, provider, feed);
-}
-
-/// Checks if the oracle system is in fallback mode (insufficient valid feeds).
-pub fn is_oracle_fallback_mode(env: &Env) -> bool {
-    let current_time = env.ledger().timestamp();
-    let mut valid_count = 0;
-
-    let providers = vec![
-        OracleProvider::Band,
-        OracleProvider::Chainlink,
-        OracleProvider::Reflector,
-        OracleProvider::Sep40,
-    ];
-
-    for provider in providers {
-        if let Some(feed) = get_oracle_feed(env, provider) {
-            if current_time.saturating_sub(feed.timestamp) <= MAX_ORACLE_DELAY_SECONDS {
-                valid_count += 1;
-            }
-        }
-    }
-
-    valid_count < MIN_ORACLE_FEEDS
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::Address;
 
     #[test]
-    fn test_calculate_deviation_bps() {
-        // 5% deviation
-        assert_eq!(calculate_deviation_bps(1000, 1050), 500);
-        // 10% deviation
-        assert_eq!(calculate_deviation_bps(1000, 1100), 1000);
-        // 0% deviation
-        assert_eq!(calculate_deviation_bps(1000, 1000), 0);
+    fn rejects_one_outlier_and_keeps_three_source_median() {
+        let env = Env::default();
+        let mut prices = Vec::new(&env);
+        prices.push_back(100_000_000);
+        prices.push_back(101_000_000);
+        prices.push_back(102_000_000);
+        prices.push_back(900_000_000);
+
+        assert_eq!(
+            aggregate_prices(&env, &prices),
+            Ok((101_000_000, 3))
+        );
     }
 
     #[test]
-    fn test_median_calculation() {
+    fn requires_three_inliers_after_outlier_rejection() {
         let env = Env::default();
-        
-        // Odd number of elements
-        let mut prices1: Vec<i128> = Vec::new(&env);
-        prices1.push_back(100);
-        prices1.push_back(200);
-        prices1.push_back(300);
-        assert_eq!(calculate_median(&env, &prices1), 200);
+        let mut prices = Vec::new(&env);
+        prices.push_back(100);
+        prices.push_back(101);
+        prices.push_back(10_000);
+        prices.push_back(10_001);
 
-        // Even number of elements
-        let mut prices2: Vec<i128> = Vec::new(&env);
-        prices2.push_back(100);
-        prices2.push_back(200);
-        prices2.push_back(300);
-        prices2.push_back(400);
-        assert_eq!(calculate_median(&env, &prices2), 250);
+        assert_eq!(
+            aggregate_prices(&env, &prices),
+            Err(Error::InsufficientOracleFeeds)
+        );
+    }
+
+    #[test]
+    fn rejects_deviation_above_five_percent() {
+        let env = Env::default();
+        let mut prices = Vec::new(&env);
+        prices.push_back(100_000_000);
+        prices.push_back(100_000_000);
+        prices.push_back(100_000_000);
+        prices.push_back(105_000_001);
+
+        assert_eq!(
+            aggregate_prices(&env, &prices),
+            Ok((100_000_000, 3))
+        );
+    }
+
+    #[test]
+    fn normalizes_price_to_eight_decimals() {
+        assert_eq!(normalize_price(123, 6), Some(12_300));
+        assert_eq!(normalize_price(12_300, 10), Some(123));
     }
 }

@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { useLocale } from '@/hooks/useI18n';
-import { getAvailableLocales, isLocale } from '@/i18n';
+import { getAvailableLocales, type Locale } from '@/i18n';
 
 interface LocaleSwitcherProps {
   className?: string;
@@ -39,9 +39,7 @@ export default function LocaleSwitcher({
         // Dropdown version for compact layouts
         <select
           value={locale}
-          onChange={(e) => {
-            if (isLocale(e.target.value)) setLocale(e.target.value);
-          }}
+          onChange={(e) => setLocale(e.target.value as Locale)}
           className="bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-sm text-neutral-200 hover:bg-neutral-700 transition-colors focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
           aria-label="Select language"
         >

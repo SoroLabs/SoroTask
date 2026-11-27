@@ -8,6 +8,7 @@ See the centralized [Glossary](../GLOSSARY.md) for definitions of domain-specifi
 
 - [Prerequisites](#prerequisites)
 - [Environment Variables](#environment-variables)
+- [Multi-Network Configuration](#multi-network-configuration)
 - [RPC Load Balancer Configuration](#rpc-load-balancer-configuration)
 - [Setup Instructions](#setup-instructions)
 - [P2P Keeper Discovery](#p2p-keeper-discovery)
@@ -51,6 +52,10 @@ MAX_CONCURRENT_READS=10
 
 # Maximum number of concurrent task executions (default: 3)
 MAX_CONCURRENT_EXECUTIONS=3
+
+# Opt in to adaptive PID concurrency (default: false)
+# See docs/DYNAMIC_CONCURRENCY_GOVERNOR.md
+KEEPER_ADAPTIVE_CONCURRENCY=true
 
 # Maximum task ID to check (default: 100) - or use TASK_IDS for specific tasks
 MAX_TASK_ID=100
@@ -214,6 +219,45 @@ RESOLVER_FAILURE_MODE=skip
 - **`SOROBAN_RPC_URLS` / `RPC_FAILOVER_ENABLED`**: Optional multi-region RPC list and failover toggle (automatically enabled when multiple URLs are configured).
 - **`RPC_FAILOVER_FAILURE_THRESHOLD` / `RPC_FAILOVER_COOLDOWN_MS`**: Endpoint quarantine policy after repeated failures.
 - **`RPC_FAILOVER_HEALTH_CHECK_INTERVAL_MS`**: Background health-probe interval used for endpoint recovery and rebalancing.
+
+## Mempool Conflict Protection
+
+Optional protection is enabled with `MEMPOOL_PROTECTION_ENABLED=true` and a
+`STELLAR_MEMPOOL_RPC_URL` for a Stellar Core overlay/RPC gateway implementing
+`getPendingTransactions` (or the configured
+`STELLAR_MEMPOOL_RPC_METHOD`). Standard public Soroban RPC endpoints do not
+expose the Core transaction queue, so this feature reports the unsupported
+endpoint and continues normal transaction submission when no compatible
+gateway is available. Scan cadence is configurable, but actual detection
+latency depends on the gateway; polling alone does not guarantee a 15 ms
+observation window.
+
+On a conflicting transaction identified by the same contract/task ID, or by
+the keeper's own account and sequence, the keeper can submit a Stellar fee-bump
+envelope for its already-signed transaction. Task-level conflicts require the
+gateway to return decoded `contractId` and `taskId` fields. It only bumps when
+the registry bounty is available and the resulting fee stays below both
+`MEMPOOL_MAX_FEE_STROOPS` and the bounty less `MEMPOOL_MIN_PROFIT_STROOPS`.
+Configure a finite fee cap; if a conflict cannot be safely bumped, the original
+signed transaction is submitted unchanged. HSM-backed keepers use the
+configured HSM signer for the outer fee-bump envelope.
+## Multi-Network Configuration
+
+To run Mainnet, Testnet, and Futurenet keepers under one parent daemon, copy
+[`config/networks.example.yaml`](./config/networks.example.yaml), set
+`KEEPER_CONFIG_FILE` to its path, and provide each network's referenced secret
+as an environment variable (for example, `MAINNET_KEEPER_SECRET`). The
+coordinator starts a separate worker process pool for every configured network;
+each pool receives only that profile's RPC endpoint, passphrase, contract, and
+signing key. Keep secrets in a secret manager or the process environment, never
+in the YAML file.
+
+Each network requires its own `rpcUrl`, `networkPassphrase`, and `contractId`.
+`keeperSecretEnv` names the environment variable containing that network's
+local signing key. `workerCount` can be set globally or per network. The
+coordinator assigns distinct metrics ports from the `METRICS_PORT` base and
+namespaces distributed locks, idempotency state, and realtime streams by
+network.
 
 ## RPC Load Balancer Configuration
 

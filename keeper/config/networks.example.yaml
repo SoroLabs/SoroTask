@@ -1,0 +1,19 @@
+# Set KEEPER_CONFIG_FILE to this file and provide each referenced secret in
+# the process environment. Keep private keys out of this YAML file.
+workerCount: 1
+networks:
+  mainnet:
+    rpcUrl: https://soroban-rpc.stellar.org
+    networkPassphrase: Public Global Stellar Network ; September 2015
+    contractId: C_REPLACE_WITH_MAINNET_CONTRACT_ID
+    keeperSecretEnv: MAINNET_KEEPER_SECRET
+  testnet:
+    rpcUrl: https://soroban-testnet.stellar.org
+    networkPassphrase: Test SDF Network ; September 2015
+    contractId: C_REPLACE_WITH_TESTNET_CONTRACT_ID
+    keeperSecretEnv: TESTNET_KEEPER_SECRET
+  futurenet:
+    rpcUrl: https://rpc-futurenet.stellar.org
+    networkPassphrase: Test SDF Future Network ; October 2022
+    contractId: C_REPLACE_WITH_FUTURENET_CONTRACT_ID
+    keeperSecretEnv: FUTURENET_KEEPER_SECRET

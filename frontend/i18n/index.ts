@@ -7,69 +7,44 @@
  * lives in `./formatting`. This module is the stable surface those build on.
  */
 
-import en from "./translations/en.json";
-import es from "./translations/es.json";
-import fr from "./translations/fr.json";
-import pt from "./translations/pt.json";
-import zh from "./translations/zh.json";
-import de from "./translations/de.json";
-import ar from "./translations/ar.json";
-import ja from "./translations/ja.json";
-import ko from "./translations/ko.json";
-import ru from "./translations/ru.json";
-import hi from "./translations/hi.json";
-import tr from "./translations/tr.json";
-import {
-  formatMessage,
-  getPluralCategory,
-  type MessageVariables,
-} from "./plural";
+import en from './translations/en.json';
+import es from './translations/es.json';
+import fr from './translations/fr.json';
+import zh from './translations/zh.json';
+import pt from './translations/pt.json';
+import ja from './translations/ja.json';
+import ko from './translations/ko.json';
+import ar from './translations/ar.json';
 
-export type Locale =
-  | "en"
-  | "es"
-  | "zh"
-  | "ja"
-  | "ko"
-  | "de"
-  | "fr"
-  | "pt"
-  | "ru"
-  | "ar"
-  | "hi"
-  | "tr";
+export type Locale = 'en' | 'es' | 'pt' | 'fr' | 'zh' | 'ja' | 'ko' | 'ar';
 
-export const SUPPORTED_LOCALES: Locale[] = [
-  "en",
-  "es",
-  "zh",
-  "ja",
-  "ko",
-  "de",
-  "fr",
-  "pt",
-  "ru",
-  "ar",
-  "hi",
-  "tr",
+export const SUPPORTED_LOCALES: readonly Locale[] = [
+  'en',
+  'es',
+  'pt',
+  'zh',
+  'ja',
+  'ko',
+  'ar',
+  'fr',
 ];
 
-export const DEFAULT_LOCALE: Locale = "en";
+export const DEFAULT_LOCALE: Locale = 'en';
+export const LOCALE_COOKIE = 'sorotask_locale';
+export const LOCALE_STORAGE_KEY = LOCALE_COOKIE;
+export type MessageCatalog = typeof en;
 
 // Translation catalog
 const translations: Record<Locale, typeof en> = {
   en,
   es,
+  pt,
   fr,
   pt,
   zh,
   ja,
   ko,
-  de,
-  ru,
   ar,
-  hi,
-  tr,
 };
 
 /** Exposed for the async loader, which needs the statically-bundled English. */
@@ -80,18 +55,14 @@ export { translations };
  */
 export function getLocaleName(locale: Locale): string {
   const names: Record<Locale, string> = {
-    en: "English",
-    es: "Español (Spanish)",
-    fr: "Français (French)",
-    pt: "Português (Portuguese)",
-    zh: "中文 (Chinese)",
-    ja: "日本語 (Japanese)",
-    ko: "한국어 (Korean)",
-    de: "Deutsch (German)",
-    ru: "Русский (Russian)",
-    ar: "العربية (Arabic)",
-    hi: "हिन्दी (Hindi)",
-    tr: "Türkçe (Turkish)",
+    en: 'English',
+    es: 'Español (Spanish)',
+    pt: 'Português (Portuguese)',
+    fr: 'Français (French)',
+    zh: '中文 (Chinese)',
+    ja: '日本語 (Japanese)',
+    ko: '한국어 (Korean)',
+    ar: 'العربية (Arabic)',
   };
   return names[locale];
 }
@@ -101,18 +72,14 @@ export function getLocaleName(locale: Locale): string {
  */
 export function getLocaleFlag(locale: Locale): string {
   const flags: Record<Locale, string> = {
-    en: "🇺🇸",
-    es: "🇪🇸",
-    fr: "🇫🇷",
-    pt: "🇵🇹",
-    zh: "🇨🇳",
-    ja: "🇯🇵",
-    ko: "🇰🇷",
-    de: "🇩🇪",
-    ru: "🇷🇺",
-    ar: "🇸🇦",
-    hi: "🇮🇳",
-    tr: "🇹🇷",
+    en: '🇺🇸',
+    es: '🇪🇸',
+    pt: '🇧🇷',
+    fr: '🇫🇷',
+    zh: '🇨🇳',
+    ja: '🇯🇵',
+    ko: '🇰🇷',
+    ar: '🇸🇦',
   };
   return flags[locale];
 }
@@ -146,18 +113,14 @@ export function detectLocale(): Locale {
 
   // Map common locale codes to supported locales
   const localeMap: Record<string, Locale> = {
-    en: "en",
-    es: "es",
-    zh: "zh",
-    ja: "ja",
-    ko: "ko",
-    de: "de",
-    fr: "fr",
-    pt: "pt",
-    ru: "ru",
-    ar: "ar",
-    hi: "hi",
-    tr: "tr",
+    en: 'en',
+    es: 'es',
+    pt: 'pt',
+    fr: 'fr',
+    zh: 'zh',
+    ja: 'ja',
+    ko: 'ko',
+    ar: 'ar',
   };
 
   return localeMap[baseLocale] ?? DEFAULT_LOCALE;
@@ -208,8 +171,10 @@ export function getStoredLocalePreference(): Locale | undefined {
   }
 
   try {
-    const stored = localStorage.getItem("sorotask_locale");
-    return isLocale(stored ?? undefined) ? stored : undefined;
+    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (stored && SUPPORTED_LOCALES.includes(stored as Locale)) {
+      return stored as Locale;
+    }
   } catch {
     // localStorage not available
   }
@@ -223,7 +188,8 @@ export function getStoredLocalePreference(): Locale | undefined {
 export function saveLocale(locale: Locale): void {
   if (typeof window !== "undefined") {
     try {
-      localStorage.setItem("sorotask_locale", locale);
+      localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+      document.cookie = `${LOCALE_COOKIE}=${locale}; path=/; max-age=31536000; samesite=lax`;
     } catch {
       // localStorage not available
     }
@@ -309,11 +275,28 @@ export function pluralCategory(count: number, locale: Locale) {
  * `./plural` and `getTranslation`.
  */
 export function pluralize(count: number, locale: Locale): string {
-  const category = getPluralCategory(count, locale);
-  if (category === "one") return "";
-  // Chinese and Japanese have no plural inflection at all.
-  if (locale === "zh") return "";
-  return "s";
+  if (count === 1) return '';
+
+  // Most European languages add 's' for plural
+  switch (locale) {
+    case 'en':
+      return 's';
+    case 'es':
+      return 's'; // Task -> Tasks = tarea -> tareas
+    case 'fr':
+      return 's'; // Task -> Tasks = tâche -> tâches
+    case 'zh':
+      return ''; // Chinese doesn't use plurals
+    case 'ja':
+    case 'ko':
+      return '';
+    case 'ar':
+      return '';
+    case 'pt':
+      return 's';
+    default:
+      return 's';
+  }
 }
 
 /**
@@ -327,15 +310,56 @@ export function getAvailableLocales(): Array<{
   /** Drives the `dir` attribute when the locale is selected. */
   direction: "ltr" | "rtl";
 }> {
-  return SUPPORTED_LOCALES.map((code) => ({
-    code,
-    name: getLocaleName(code),
-    flag: getLocaleFlag(code),
-    // The picker shows the endonym, so a reader who cannot read the English
-    // name can still find their language.
-    nativeName: NATIVE_NAMES[code],
-    direction: getTextDirection(code),
-  }));
+  return [
+    {
+      code: 'en',
+      name: 'English',
+      flag: '🇺🇸',
+      nativeName: 'English',
+    },
+    {
+      code: 'es',
+      name: 'Spanish',
+      flag: '🇪🇸',
+      nativeName: 'Español',
+    },
+    {
+      code: 'pt',
+      name: 'Portuguese',
+      flag: '🇧🇷',
+      nativeName: 'Português',
+    },
+    {
+      code: 'fr',
+      name: 'French',
+      flag: '🇫🇷',
+      nativeName: 'Français',
+    },
+    {
+      code: 'zh',
+      name: 'Chinese',
+      flag: '🇨🇳',
+      nativeName: '中文',
+    },
+    {
+      code: 'ja',
+      name: 'Japanese',
+      flag: '🇯🇵',
+      nativeName: '日本語',
+    },
+    {
+      code: 'ko',
+      name: 'Korean',
+      flag: '🇰🇷',
+      nativeName: '한국어',
+    },
+    {
+      code: 'ar',
+      name: 'Arabic',
+      flag: '🇸🇦',
+      nativeName: 'العربية',
+    },
+  ];
 }
 
 const NATIVE_NAMES: Record<Locale, string> = {

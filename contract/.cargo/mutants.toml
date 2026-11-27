@@ -1,0 +1,4 @@
+# cargo-mutants configuration for SC-FINAL-49
+examine_globs = ["src/math.rs"]
+exclude_globs = ["fuzz/**"]
+timeout_multiplier = 2.0

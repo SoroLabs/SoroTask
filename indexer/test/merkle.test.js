@@ -6,7 +6,9 @@ const sqlite3 = require("sqlite3").verbose();
 
 const {
   buildEventTree,
+  buildAuditEventTree,
   hashEvent,
+  hashAuditEvent,
   getProof,
   verifyProof,
 } = require("../src/merkle");
@@ -51,6 +53,28 @@ test("merkle: tampering with an event invalidates the proof", () => {
   const tamperedLeaf = hashEvent(tampered);
 
   assert.equal(verifyProof(tamperedLeaf, proof, tree.root), false);
+});
+
+test("merkle: audit trees canonicalize JSON but commit to row identity and timestamp", () => {
+  const event = {
+    ...makeEvents(100)[0],
+    id: 17,
+    processed_at: "2026-03-04T11:15:00.000Z",
+    data_json: '{"creator":"A","metadata":{"b":2,"a":1}}',
+  };
+  const reordered = {
+    ...event,
+    data_json: '{"metadata":{"a":1,"b":2},"creator":"A"}',
+  };
+  assert.equal(hashAuditEvent(event), hashAuditEvent(reordered));
+  assert.notEqual(hashAuditEvent(event), hashAuditEvent({ ...event, id: 18 }));
+  assert.notEqual(hashAuditEvent(event), hashAuditEvent({
+    ...event,
+    processed_at: "2026-03-04T11:16:00.000Z",
+  }));
+
+  const tree = buildAuditEventTree([event, { ...event, id: 19 }]);
+  assert.equal(verifyProof(tree.leaves[0], getProof(tree, 0), tree.root), true);
 });
 
 function makeDbDeps() {

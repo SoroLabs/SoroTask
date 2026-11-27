@@ -1,4 +1,7 @@
 const dotenv = require('dotenv');
+const fs = require('fs');
+const path = require('path');
+const yaml = require('js-yaml');
 const { createLogger } = require('./logger');
 
 dotenv.config();
@@ -25,6 +28,17 @@ function parseList(value) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseJsonEnv(value, name, fallback) {
+  if (value == null || value === '') {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    throw new Error(`${name} must be valid JSON: ${error.message}`);
+  }
 }
 
 const VALID_LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
@@ -382,8 +396,129 @@ class ConsulConfigService {
 
 let globalActiveConfig = null;
 
-function loadConfig() {
-  const signerType = (process.env.SIGNER_TYPE || 'local').toLowerCase();
+function loadNetworkProfiles(configFile, env = process.env) {
+  if (!configFile) {
+    return [];
+  }
+
+  const resolvedPath = path.resolve(configFile);
+  let document;
+  try {
+    document = yaml.safeLoad(fs.readFileSync(resolvedPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`Failed to load keeper YAML configuration "${resolvedPath}": ${err.message}`);
+  }
+
+  if (!document || typeof document !== 'object' || Array.isArray(document)) {
+    throw new Error(`Keeper YAML configuration "${resolvedPath}" must contain a mapping.`);
+  }
+  if (!document.networks || typeof document.networks !== 'object' || Array.isArray(document.networks)) {
+    throw new Error('Keeper YAML configuration must define a networks mapping.');
+  }
+
+  const profiles = Object.entries(document.networks).map(([id, profile]) => {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(id)) {
+      throw new Error(`Invalid network id "${id}" in keeper YAML configuration.`);
+    }
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+      throw new Error(`Network "${id}" must be a mapping.`);
+    }
+
+    const rpcUrl = profile.rpcUrl;
+    const networkPassphrase = profile.networkPassphrase;
+    const contractId = profile.contractId;
+    if (typeof rpcUrl !== 'string' || !/^https?:\/\//.test(rpcUrl)) {
+      throw new Error(`Network "${id}" must define a valid HTTP/HTTPS rpcUrl.`);
+    }
+    if (typeof networkPassphrase !== 'string' || !networkPassphrase.trim()) {
+      throw new Error(`Network "${id}" must define a networkPassphrase.`);
+    }
+    if (typeof contractId !== 'string' || !contractId.trim()) {
+      throw new Error(`Network "${id}" must define a contractId.`);
+    }
+
+    const signerType = String(profile.signerType || process.env.SIGNER_TYPE || 'local').toLowerCase();
+    const secretEnv = profile.keeperSecretEnv;
+    if (secretEnv !== undefined && (typeof secretEnv !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(secretEnv))) {
+      throw new Error(`Network "${id}" has an invalid keeperSecretEnv reference.`);
+    }
+    if (signerType === 'local' && (!secretEnv || !env[secretEnv])) {
+      throw new Error(`Network "${id}" must reference a populated keeperSecretEnv for local signing.`);
+    }
+
+    const configuredRpcUrls = Array.isArray(profile.rpcUrls) ? profile.rpcUrls : [];
+    if (!configuredRpcUrls.every((url) => typeof url === 'string' && /^https?:\/\//.test(url))) {
+      throw new Error(`Network "${id}" rpcUrls must contain only valid HTTP/HTTPS URLs.`);
+    }
+    if (profile.environment !== undefined &&
+        (!profile.environment || typeof profile.environment !== 'object' || Array.isArray(profile.environment))) {
+      throw new Error(`Network "${id}" environment must be a mapping of environment-variable names to values.`);
+    }
+    const additionalEnv = profile.environment || {};
+    for (const [key, value] of Object.entries(additionalEnv)) {
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(key) ||
+          ['SOROBAN_RPC_URL', 'SOROBAN_RPC_URLS', 'NETWORK_PASSPHRASE', 'CONTRACT_ID', 'KEEPER_SECRET', 'KEEPER_NETWORK_ID', 'METRICS_PORT'].includes(key) ||
+          !['string', 'number', 'boolean'].includes(typeof value)) {
+        throw new Error(`Network "${id}" contains an invalid or reserved environment override "${key}".`);
+      }
+    }
+
+    const workerCountValue = profile.workerCount ?? document.workerCount ?? 1;
+    if (!Number.isInteger(Number(workerCountValue)) || Number(workerCountValue) < 1) {
+      throw new Error(`Network "${id}" workerCount must be a positive integer.`);
+    }
+
+    const workerEnv = {
+      ...Object.fromEntries(Object.entries(additionalEnv).map(([key, value]) => [key, String(value)])),
+      SOROBAN_RPC_URL: rpcUrl,
+      SOROBAN_RPC_URLS: configuredRpcUrls.join(','),
+      NETWORK_PASSPHRASE: networkPassphrase,
+      CONTRACT_ID: contractId,
+      SIGNER_TYPE: signerType,
+      KEEPER_NETWORK_ID: id,
+      REALTIME_STREAM_NAMESPACE: profile.realtimeStreamNamespace ||
+        `${process.env.REALTIME_STREAM_NAMESPACE || 'sorotask'}:${id}`,
+    };
+    if (secretEnv) {
+      workerEnv.KEEPER_SECRET = env[secretEnv];
+    }
+
+    return {
+      id,
+      rpcUrl,
+      rpcUrls: configuredRpcUrls.length ? configuredRpcUrls : [rpcUrl],
+      networkPassphrase,
+      contractId,
+      signerType,
+      workerCount: Number(workerCountValue),
+      workerEnv,
+    };
+  });
+
+  if (profiles.length === 0) {
+    throw new Error('Keeper YAML configuration must define at least one network.');
+  }
+  return profiles;
+}
+
+function loadConfig(options = {}) {
+  const configFile = options.configFile || process.env.KEEPER_CONFIG_FILE;
+  const networkProfiles = loadNetworkProfiles(configFile, process.env);
+  const requestedNetworkId = process.env.KEEPER_NETWORK_ID;
+  const selectedNetwork = requestedNetworkId
+    ? networkProfiles.find((profile) => profile.id === requestedNetworkId)
+    : networkProfiles.length === 1
+      ? networkProfiles[0]
+      : null;
+
+  if (requestedNetworkId && !selectedNetwork) {
+    throw new Error(`Network "${requestedNetworkId}" is not defined in keeper YAML configuration.`);
+  }
+  if (selectedNetwork) {
+    Object.assign(process.env, selectedNetwork.workerEnv);
+  }
+
+  const signerType = (process.env.SIGNER_TYPE || process.env.KMS_PROVIDER || 'local').toLowerCase();
 
   const required = [
     'SOROBAN_RPC_URL',
@@ -397,8 +532,11 @@ function loadConfig() {
     required.push('KEEPER_SECRET');
   }
 
-  const missing = required.filter((key) => !process.env[key]);
-  if (!process.env.NETWORK_PASSPHRASE && !process.env.NETWORK_PASSTHRAPE) {
+  const missing = networkProfiles.length > 0
+    ? []
+    : required.filter((key) => !process.env[key]);
+  if (networkProfiles.length === 0 &&
+      !process.env.NETWORK_PASSPHRASE && !process.env.NETWORK_PASSTHRAPE) {
     missing.push('NETWORK_PASSPHRASE');
   }
 
@@ -417,7 +555,7 @@ function loadConfig() {
   ].filter(Boolean)));
 
   const config = {
-    rpcUrl: process.env.SOROBAN_RPC_URL,
+    rpcUrl: process.env.SOROBAN_RPC_URL || networkProfiles[0]?.rpcUrl,
     rpcUrls,
     rpcFailoverEnabled: parseBoolean(process.env.RPC_FAILOVER_ENABLED, rpcUrls.length > 1),
     rpcFailoverFailureThreshold: parseInteger(process.env.RPC_FAILOVER_FAILURE_THRESHOLD, 3),
@@ -425,8 +563,8 @@ function loadConfig() {
     rpcFailoverHealthCheckIntervalMs: parseInteger(process.env.RPC_FAILOVER_HEALTH_CHECK_INTERVAL_MS, 15000),
     rpcFailoverMaxHealthyLedgerLag: parseInteger(process.env.RPC_FAILOVER_MAX_HEALTHY_LEDGER_LAG, 3),
     rpcFailoverLatencyPenaltyThresholdMs: parseInteger(process.env.RPC_FAILOVER_LATENCY_PENALTY_THRESHOLD_MS, 1000),
-    networkPassphrase: process.env.NETWORK_PASSPHRASE || process.env.NETWORK_PASSTHRAPE,
-    keeperSecret: process.env.KEEPER_SECRET,
+    networkPassphrase: process.env.NETWORK_PASSPHRASE || process.env.NETWORK_PASSTHRAPE || networkProfiles[0]?.networkPassphrase,
+    keeperSecret: process.env.KEEPER_SECRET || networkProfiles[0]?.workerEnv.KEEPER_SECRET,
     vault: {
       primaryAddr: process.env.VAULT_ADDR,
       secondaryAddr: process.env.VAULT_SECONDARY_ADDR,
@@ -434,7 +572,7 @@ function loadConfig() {
       renewFraction: Number(process.env.VAULT_RENEW_FRACTION || 0.75),
       transitKeyPath: process.env.VAULT_TRANSIT_KEY_PATH,
     },
-    contractId: process.env.CONTRACT_ID,
+    contractId: process.env.CONTRACT_ID || networkProfiles[0]?.contractId,
     pollIntervalMs: parseInteger(process.env.POLLING_INTERVAL_MS, 10000),
     adaptivePollingEnabled: parseBoolean(process.env.ADAPTIVE_POLLING_ENABLED, false),
     adaptivePollMinIntervalMs: parseInteger(process.env.ADAPTIVE_POLL_MIN_MS, 1000),
@@ -515,9 +653,9 @@ function loadConfig() {
     rpcHealthCheckIntervalMs: parseInteger(process.env.RPC_HEALTH_CHECK_INTERVAL_MS, 30000),
     rpcHealthCheckTimeoutMs: parseInteger(process.env.RPC_HEALTH_CHECK_TIMEOUT_MS, 5000),
     rpcLoadBalancingStrategy: process.env.RPC_LOAD_BALANCING_STRATEGY || 'weighted_round_robin',
-    batchReadsEnabled: parseBoolean(process.env.BATCH_READS_ENABLED, false),
+    batchReadsEnabled: parseBoolean(process.env.BATCH_READS_ENABLED, true),
     batchWindowMs: parseInteger(process.env.BATCH_WINDOW_MS, 10),
-    readBatchSize: parseInteger(process.env.READ_BATCH_SIZE, 50),
+    readBatchSize: parseInteger(process.env.READ_BATCH_SIZE, 100),
     batchConcurrency: parseInteger(process.env.BATCH_CONCURRENCY, 2),
     batchRps: parseInteger(process.env.BATCH_RPS, 10),
     taskCacheEnabled: parseBoolean(process.env.TASK_CACHE_ENABLED, true),
@@ -535,6 +673,13 @@ function loadConfig() {
     vaultKeyName: process.env.VAULT_KEY_NAME || null,
     vaultNamespace: process.env.VAULTNAMESPACE || null,
     kmsAuditLogEnabled: parseBoolean(process.env.KMS_AUDIT_LOG_ENABLED, true),
+    kmsProvider: process.env.KMS_PROVIDER
+      || (signerType.startsWith('aws-kms') ? 'aws-kms'
+        : (signerType.startsWith('gcp-kms') ? 'gcp-kms' : null)),
+    kmsKeyIds: parseList(process.env.KMS_KEY_IDS),
+    kmsSignLatencyBudgetMs: parseInteger(process.env.KMS_SIGN_LATENCY_BUDGET_MS, 50),
+    kmsSignTimeoutMs: parseInteger(process.env.KMS_SIGN_TIMEOUT_MS, 3000),
+    kmsEnforceLatencyBudget: parseBoolean(process.env.KMS_ENFORCE_LATENCY_BUDGET, false),
     profitabilityGate: {
       enabled: parseBoolean(process.env.PROFITABILITY_GATE_ENABLED, false),
       minNetProfitStroops: parseInteger(process.env.PROFITABILITY_MIN_NET_PROFIT_STROOPS, 0),
@@ -551,6 +696,11 @@ function loadConfig() {
     realtimeStreamEnabled: parseBoolean(process.env.REALTIME_STREAM_ENABLED, false),
     realtimeStreamNamespace: process.env.REALTIME_STREAM_NAMESPACE || 'sorotask',
     apiGatewayEnabled: parseBoolean(process.env.API_GATEWAY_ENABLED, false),
+    apiGatewayProjects: parseJsonEnv(
+      process.env.API_GATEWAY_PROJECTS,
+      'API_GATEWAY_PROJECTS',
+      {},
+    ),
     apiGatewayDefaultCapacity: parseInteger(process.env.API_GATEWAY_DEFAULT_CAPACITY, 100),
     apiGatewayDefaultRefillPerSecond: parseInteger(process.env.API_GATEWAY_DEFAULT_REFILL_PER_SECOND, 10),
     apiGatewayDefaultBillingUnits: parseInteger(process.env.API_GATEWAY_DEFAULT_BILLING_UNITS, 1),
@@ -559,6 +709,21 @@ function loadConfig() {
     resolverFailureMode: process.env.RESOLVER_FAILURE_MODE || 'skip',
     gasThreshold: parseInteger(process.env.GAS_THRESHOLD, 0),
     minGasThreshold: parseInteger(process.env.MIN_GAS_THRESHOLD, 0),
+    mempoolProtection: {
+      enabled: parseBoolean(
+        process.env.MEMPOOL_PROTECTION_ENABLED,
+        Boolean(process.env.STELLAR_MEMPOOL_RPC_URL),
+      ),
+      rpcUrl: process.env.STELLAR_MEMPOOL_RPC_URL || null,
+      rpcMethod: process.env.STELLAR_MEMPOOL_RPC_METHOD || 'getPendingTransactions',
+      scanIntervalMs: parseInteger(process.env.MEMPOOL_SCAN_INTERVAL_MS, 1000),
+      requestTimeoutMs: parseInteger(process.env.MEMPOOL_REQUEST_TIMEOUT_MS, 1000),
+      maxFeeStroops: parseInteger(process.env.MEMPOOL_MAX_FEE_STROOPS, 0),
+      minProfitStroops: parseInteger(process.env.MEMPOOL_MIN_PROFIT_STROOPS, 0),
+      maxBumpMultiplier: parseInteger(process.env.MEMPOOL_MAX_BUMP_MULTIPLIER, 100),
+    },
+    networks: networkProfiles,
+    networkId: selectedNetwork?.id || requestedNetworkId || null,
   };
 
   globalActiveConfig = config;
@@ -578,6 +743,7 @@ function getActiveConfig() {
 
 module.exports = {
   loadConfig,
+  loadNetworkProfiles,
   parseInteger,
   parseBoolean,
   parseList,

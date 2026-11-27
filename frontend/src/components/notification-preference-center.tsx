@@ -1,15 +1,14 @@
 "use client";
 
-import { useContext, useEffect, useMemo, useState, useTransition } from "react";
-import { AuthContext } from "@/context/AuthContext";
+import { signMessage } from "@stellar/freighter-api";
+import { useWallet } from "@/app/context/WalletContext";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import {
   defaultNotificationPreferences,
   getActiveDeliveryChannels,
   getBlockedDeliveryChannels,
   getBrowserPermissionState,
-  loadNotificationPreferences,
   notificationCategories,
-  saveNotificationPreferences,
   type BrowserPermissionState,
   type NotificationCategoryDefinition,
   type NotificationCategoryId,
@@ -17,9 +16,6 @@ import {
   type NotificationPreferences,
 } from "../lib/notification-preferences";
 import {
-  encryptChannelSecret,
-  resolveChannelUrl,
-  sendChannelTestPing,
   type ExternalChannelId,
 } from "../lib/notification-secrets";
 
@@ -30,6 +26,15 @@ type SimulationEntry = {
   channels: NotificationChannel[];
   blockedChannels: NotificationChannel[];
   createdAt: string;
+};
+
+type DeliveredNotification = {
+  id: string;
+  type: NotificationCategoryId;
+  title: string;
+  message: string;
+  url: string;
+  timestamp: string;
 };
 
 const channelCopy: Record<
@@ -46,7 +51,7 @@ const channelCopy: Record<
   browser: {
     label: "Browser push",
     description:
-      "Show desktop or tab notifications when the browser grants permission.",
+      "Receive service-worker push alerts when this browser is closed.",
   },
   email: {
     label: "Email summaries",
@@ -151,12 +156,26 @@ function buildSimulationEntry(
   };
 }
 
+function decodeVapidPublicKey(value: string): ArrayBuffer {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = window.atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return buffer;
+}
+
+function encodeSignature(value: string | Uint8Array): string {
+  if (typeof value === "string") return value;
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return window.btoa(binary);
+}
+
 export function NotificationPreferenceCenter() {
-  // Read the auth context directly (instead of useAuth) so the preference
-  // center also renders for signed-out users; the wallet public key is only
-  // required when encrypting channel secrets (issue #1263).
-  const auth = useContext(AuthContext);
-  const user = auth?.user ?? null;
+  const wallet = useWallet();
   const [draft, setDraft] = useState<NotificationPreferences>(
     defaultNotificationPreferences,
   );
@@ -168,31 +187,119 @@ export function NotificationPreferenceCenter() {
   );
   const [saveMessage, setSaveMessage] = useState("No unsaved changes");
   const [simulationFeed, setSimulationFeed] = useState<SimulationEntry[]>([]);
+  const [deliveredFeed, setDeliveredFeed] = useState<DeliveredNotification[]>([]);
   const [isSaving, startTransition] = useTransition();
+  const [linkedAddress, setLinkedAddress] = useState<string | null>(null);
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [externalSecretsConfigured, setExternalSecretsConfigured] = useState<
+    Record<ExternalChannelId, boolean>
+  >({ webhook: false, telegram: false, discord: false });
+  const [externalEndpointDrafts, setExternalEndpointDrafts] = useState<
+    Record<ExternalChannelId, { url: string; secret: string }>
+  >({ webhook: { url: "", secret: "" }, telegram: { url: "", secret: "" }, discord: { url: "", secret: "" } });
+  const [pingResults, setPingResults] = useState<
+    Partial<Record<ExternalChannelId, { ok: boolean; detail: string }>>
+  >({});
+
+  const loadServerPreferences = useCallback(async () => {
+    const response = await fetch("/api/notifications/preferences", {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? "Unable to load notification preferences");
+    }
+    const preferences = (await response.json()) as NotificationPreferences & {
+      externalSecretsConfigured: Record<ExternalChannelId, boolean>;
+    };
+    setDraft(preferences);
+    setSaved(preferences);
+    setExternalSecretsConfigured(preferences.externalSecretsConfigured);
+    setExternalEndpointDrafts({
+      webhook: { url: preferences.externalEndpoints.webhook.url, secret: "" },
+      telegram: { url: preferences.externalEndpoints.telegram.url, secret: "" },
+      discord: { url: preferences.externalEndpoints.discord.url, secret: "" },
+    });
+    setSaveMessage(
+      preferences.updatedAt ? "Preferences loaded" : "Using smart defaults",
+    );
+  }, []);
+
+  const loadDeliveredFeed = useCallback(async () => {
+    const response = await fetch("/api/notifications/feed", {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? "Unable to load recent notifications");
+    }
+    setDeliveredFeed((await response.json()) as DeliveredNotification[]);
+  }, []);
 
   useEffect(() => {
-    const initialPreferences = loadNotificationPreferences();
-    setDraft(initialPreferences);
-    setSaved(initialPreferences);
     setPermission(getBrowserPermissionState());
-    setSaveMessage(
-      initialPreferences.updatedAt ? "Preferences loaded" : "Using smart defaults",
-    );
-    setExternalEndpointDrafts({
-      webhook: {
-        url: initialPreferences.externalEndpoints.webhook.url,
-        secret: "",
-      },
-      telegram: {
-        url: initialPreferences.externalEndpoints.telegram.url,
-        secret: "",
-      },
-      discord: {
-        url: initialPreferences.externalEndpoints.discord.url,
-        secret: "",
-      },
-    });
   }, []);
+
+  useEffect(() => {
+    if (!wallet.session?.address) return;
+    let active = true;
+    void fetch("/api/notifications/wallet-session", {
+      cache: "no-store",
+      credentials: "same-origin",
+    })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json()) as { address?: string };
+      })
+      .then(async (session) => {
+        if (!active || !session?.address) return;
+        if (session.address !== wallet.session?.address) {
+          await fetch("/api/notifications/wallet-session", {
+            method: "DELETE",
+            credentials: "same-origin",
+          });
+          return;
+        }
+        setLinkedAddress(session.address);
+        await loadServerPreferences();
+        await loadDeliveredFeed();
+        const registration = await navigator.serviceWorker?.getRegistration("/");
+        setPushSubscribed(
+          Boolean(
+            getBrowserPermissionState() === "granted" &&
+              (await registration?.pushManager.getSubscription()),
+          ),
+        );
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setSaveMessage(
+            error instanceof Error ? error.message : "Unable to restore notification wallet",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [wallet.session?.address, loadServerPreferences, loadDeliveredFeed]);
+
+  useEffect(() => {
+    if (wallet.session || wallet.status !== "disconnected") return;
+    void fetch("/api/notifications/wallet-session", {
+      method: "DELETE",
+      credentials: "same-origin",
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("Unable to revoke notification session");
+      })
+      .catch((error: unknown) => {
+        setSaveMessage(
+          error instanceof Error ? error.message : "Unable to revoke notification session",
+        );
+      });
+  }, [wallet.session, wallet.status]);
 
   useEffect(() => {
     const syncPermission = () => setPermission(getBrowserPermissionState());
@@ -212,15 +319,24 @@ export function NotificationPreferenceCenter() {
     JSON.stringify(draft.categories) !== JSON.stringify(saved.categories) ||
     JSON.stringify(draft.categoryChannels) !==
       JSON.stringify(saved.categoryChannels) ||
-    JSON.stringify(draft.externalEndpoints) !==
-      JSON.stringify(saved.externalEndpoints);
-
-  const [externalEndpointDrafts, setExternalEndpointDrafts] = useState<
-    Record<ExternalChannelId, { url: string; secret: string }>
-  >({ webhook: { url: "", secret: "" }, telegram: { url: "", secret: "" }, discord: { url: "", secret: "" } });
-  const [pingResults, setPingResults] = useState<
-    Partial<Record<ExternalChannelId, { ok: boolean; detail: string }>>
-  >({});
+    JSON.stringify(
+      Object.fromEntries(
+        Object.entries(draft.externalEndpoints).map(([channel, endpoint]) => [
+          channel,
+          endpoint.url,
+        ]),
+      ),
+    ) !==
+      JSON.stringify(
+        Object.fromEntries(
+          Object.entries(saved.externalEndpoints).map(([channel, endpoint]) => [
+            channel,
+            endpoint.url,
+          ]),
+        ),
+      ) ||
+    Object.values(externalEndpointDrafts).some((endpoint) => endpoint.secret) ||
+    draft.emailAddress !== saved.emailAddress;
 
   const groupedCategories = useMemo(() => {
     return notificationCategories.reduce<
@@ -240,53 +356,162 @@ export function NotificationPreferenceCenter() {
     return Object.values(draft.channels).filter(Boolean).length;
   }, [draft.channels]);
 
+  useEffect(() => {
+    if (!linkedAddress || wallet.session?.address === linkedAddress) return;
+    void fetch("/api/notifications/wallet-session", {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    setLinkedAddress(null);
+    setPushSubscribed(false);
+    setDraft(defaultNotificationPreferences);
+    setSaved(defaultNotificationPreferences);
+    setDeliveredFeed([]);
+    setExternalSecretsConfigured({ webhook: false, telegram: false, discord: false });
+    setSaveMessage("Wallet disconnected; notification settings are not loaded");
+  }, [linkedAddress, wallet.session?.address]);
+
+  const connectNotificationWallet = async () => {
+    if (!wallet.session) {
+      wallet.openConnectModal();
+      setSaveMessage("Connect a wallet to manage notification preferences");
+      return;
+    }
+    setSaveMessage("Requesting a wallet signature...");
+    try {
+      const challengeResponse = await fetch("/api/notifications/wallet-challenge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          address: wallet.session.address,
+          networkPassphrase: wallet.session.network.networkPassphrase,
+        }),
+      });
+      const challengeBody = (await challengeResponse.json()) as {
+        challenge?: string;
+        networkPassphrase?: string;
+        error?: string;
+      };
+      if (!challengeResponse.ok || !challengeBody.challenge) {
+        throw new Error(challengeBody.error ?? "Could not create wallet challenge");
+      }
+
+      const proof = await signMessage(challengeBody.challenge, {
+        address: wallet.session.address,
+        networkPassphrase: challengeBody.networkPassphrase,
+      });
+      if (proof.error || !proof.signedMessage || proof.signerAddress !== wallet.session.address) {
+        throw new Error("Wallet signature was rejected or returned for another address");
+      }
+
+      const signatureResponse = await fetch("/api/notifications/wallet-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          address: wallet.session.address,
+          challenge: challengeBody.challenge,
+          signature: encodeSignature(proof.signedMessage),
+        }),
+      });
+      const signatureBody = (await signatureResponse.json()) as { error?: string };
+      if (!signatureResponse.ok) {
+        throw new Error(signatureBody.error ?? "Wallet proof could not be verified");
+      }
+
+      setLinkedAddress(wallet.session.address);
+      await loadServerPreferences();
+      await loadDeliveredFeed();
+      setSaveMessage("Wallet linked securely");
+    } catch (error) {
+      setSaveMessage(
+        error instanceof Error ? error.message : "Unable to link notification wallet",
+      );
+    }
+  };
+
   const savePreferences = async () => {
+    if (!linkedAddress) {
+      setSaveMessage("Link your wallet before saving notification preferences");
+      return;
+    }
     startTransition(async () => {
       try {
-        const walletPublicKey = user?.address ?? "";
-        const externalEndpoints = { ...draft.externalEndpoints };
-
-        for (const channel of ["webhook", "telegram", "discord"] as ExternalChannelId[]) {
-          const endpointDraft = externalEndpointDrafts[channel];
-          const url = resolveChannelUrl(channel, endpointDraft).trim();
-          if (!endpointDraft.secret) {
-            // Keep the previously stored secret when the field is untouched.
-            externalEndpoints[channel] = {
-              url,
-              secret: externalEndpoints[channel].secret,
-            };
-            continue;
-          }
-          if (!walletPublicKey) {
-            setSaveMessage("Connect a wallet to encrypt channel secrets");
-            return;
-          }
-          externalEndpoints[channel] = {
-            url: url,
-            secret: await encryptChannelSecret(endpointDraft.secret, walletPublicKey),
-          };
+        const draftToSave = {
+          ...draft,
+          externalEndpoints: {
+            webhook: {
+              ...draft.externalEndpoints.webhook,
+              ...externalEndpointDrafts.webhook,
+            },
+            telegram: {
+              ...draft.externalEndpoints.telegram,
+              ...externalEndpointDrafts.telegram,
+            },
+            discord: {
+              ...draft.externalEndpoints.discord,
+              ...externalEndpointDrafts.discord,
+            },
+          },
+        };
+        const response = await fetch("/api/notifications/preferences", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify(draftToSave),
+        });
+        const savedPreferences = (await response.json()) as NotificationPreferences & {
+          externalSecretsConfigured?: Record<ExternalChannelId, boolean>;
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(savedPreferences.error ?? "Unable to save notification preferences");
         }
-
-        const draftToSave = { ...draft, externalEndpoints };
-        const next = saveNotificationPreferences(draftToSave);
+        const next = savedPreferences;
         setDraft(next);
         setSaved(next);
+        setExternalSecretsConfigured(
+          savedPreferences.externalSecretsConfigured ?? externalSecretsConfigured,
+        );
         setExternalEndpointDrafts({
           webhook: { url: next.externalEndpoints.webhook.url, secret: "" },
           telegram: { url: next.externalEndpoints.telegram.url, secret: "" },
           discord: { url: next.externalEndpoints.discord.url, secret: "" },
         });
         setSaveMessage("Preferences saved successfully");
-      } catch {
-        setSaveMessage("Saving failed. Please try again.");
+      } catch (error) {
+        setSaveMessage(
+          error instanceof Error ? `Saving failed: ${error.message}` : "Saving failed. Please try again.",
+        );
       }
     });
   };
 
   const runTestPing = async (channel: ExternalChannelId) => {
     const endpointDraft = externalEndpointDrafts[channel];
-    const url = resolveChannelUrl(channel, endpointDraft);
-    const result = await sendChannelTestPing(channel, url);
+    setPingResults((current) => ({
+      ...current,
+      [channel]: { ok: false, detail: "Sending test ping..." },
+    }));
+    let result: { ok: boolean; status?: number; error?: string };
+    try {
+      const response = await fetch("/api/notifications/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ channel, ...endpointDraft }),
+      });
+      const body = (await response.json()) as { error?: string };
+      result = response.ok
+        ? { ok: true, status: response.status }
+        : { ok: false, status: response.status, error: body.error };
+    } catch (error) {
+      result = {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
     setPingResults((current) => ({
       ...current,
       [channel]: {
@@ -328,8 +553,104 @@ export function NotificationPreferenceCenter() {
       return;
     }
 
-    const result = await window.Notification.requestPermission();
-    setPermission(result);
+    if (!linkedAddress) {
+      setSaveMessage("Link your wallet before enabling background push");
+      return;
+    }
+    try {
+      const result =
+        window.Notification.permission === "granted"
+          ? "granted"
+          : await window.Notification.requestPermission();
+      setPermission(result);
+      if (result !== "granted") return;
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        throw new Error("This browser does not support background push");
+      }
+      const configResponse = await fetch("/api/notifications/push-config", {
+        cache: "no-store",
+      });
+      const configBody = (await configResponse.json()) as {
+        publicKey?: string;
+        error?: string;
+      };
+      if (!configResponse.ok || !configBody.publicKey) {
+        throw new Error(configBody.error ?? "Web Push is not configured");
+      }
+      const registration =
+        (await navigator.serviceWorker.getRegistration("/")) ??
+        (await navigator.serviceWorker.register("/sw.js"));
+      const subscription =
+        (await registration.pushManager.getSubscription()) ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeVapidPublicKey(configBody.publicKey),
+        }));
+      const response = await fetch("/api/notifications/push-subscriptions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(subscription.toJSON()),
+      });
+      const body = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not save push subscription");
+      setPushSubscribed(true);
+      setDraft((current) => ({
+        ...current,
+        channels: { ...current.channels, browser: true },
+      }));
+      setSaveMessage("Background push is ready for this browser");
+    } catch (error) {
+      setSaveMessage(
+        error instanceof Error ? error.message : "Unable to enable background push",
+      );
+    }
+  };
+
+  const sendBrowserTest = async () => {
+    if (!linkedAddress || !pushSubscribed) {
+      setSaveMessage("Link your wallet and enable background push before testing");
+      return;
+    }
+    try {
+      const response = await fetch("/api/notifications/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ channel: "browser" }),
+      });
+      const body = (await response.json()) as { error?: string };
+      setSaveMessage(
+        response.ok
+          ? "Test push sent to this browser"
+          : `Test push failed: ${body.error ?? "delivery error"}`,
+      );
+    } catch (error) {
+      setSaveMessage(
+        error instanceof Error ? `Test push failed: ${error.message}` : "Test push failed",
+      );
+    }
+  };
+
+  const disconnectNotificationWallet = async () => {
+    try {
+      const response = await fetch("/api/notifications/wallet-session", {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      if (!response.ok) throw new Error("Unable to disconnect wallet");
+      setLinkedAddress(null);
+      setPushSubscribed(false);
+      setDraft(defaultNotificationPreferences);
+      setSaved(defaultNotificationPreferences);
+      setDeliveredFeed([]);
+      setExternalSecretsConfigured({ webhook: false, telegram: false, discord: false });
+      setSaveMessage("Notification wallet disconnected");
+    } catch (error) {
+      setSaveMessage(
+        error instanceof Error ? error.message : "Unable to disconnect notification wallet",
+      );
+    }
   };
 
   const runSimulation = async (category: NotificationCategoryDefinition) => {
@@ -356,6 +677,42 @@ export function NotificationPreferenceCenter() {
 
   return (
     <div className="space-y-8">
+      <section
+        aria-labelledby="notification-wallet-heading"
+        className="flex flex-col gap-4 rounded-[28px] border border-white/10 bg-slate-950/70 p-6 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div>
+          <h2
+            id="notification-wallet-heading"
+            className="text-lg font-semibold text-white"
+          >
+            Notification wallet
+          </h2>
+          <p className="mt-1 text-sm text-slate-300" role="status" aria-live="polite">
+            {linkedAddress
+              ? `Verified wallet: ${linkedAddress}`
+              : "Sign a one-time message with Freighter to access and save wallet-specific settings."}
+          </p>
+        </div>
+        {linkedAddress ? (
+          <button
+            type="button"
+            onClick={disconnectNotificationWallet}
+            className="rounded-full border border-white/20 px-4 py-2 text-sm text-white hover:bg-white/10"
+          >
+            Disconnect wallet
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={connectNotificationWallet}
+            className="rounded-full bg-teal-300 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-teal-200"
+          >
+            {wallet.session ? "Link wallet" : "Connect wallet"}
+          </button>
+        )}
+      </section>
+
       <section className="grid gap-4 lg:grid-cols-[1.25fr_0.85fr]">
         <div className="rounded-[28px] border border-white/10 bg-[linear-gradient(135deg,rgba(16,185,129,0.2),rgba(15,23,42,0.88)_48%,rgba(59,130,246,0.18))] p-6 shadow-[0_25px_80px_rgba(15,23,42,0.45)]">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
@@ -376,7 +733,7 @@ export function NotificationPreferenceCenter() {
               <div className="flex items-center justify-between">
                 <span>Enabled channels</span>
                 <span className="rounded-full bg-white/10 px-3 py-1 font-medium text-white">
-                  {enabledChannelCount}/3
+                  {enabledChannelCount}/{Object.keys(channelCopy).length}
                 </span>
               </div>
               <div className="flex items-center justify-between">
@@ -414,13 +771,30 @@ export function NotificationPreferenceCenter() {
               <button
                 type="button"
                 onClick={requestPermission}
-                disabled={permission === "granted" || permission === "unsupported"}
+                disabled={
+                  !linkedAddress ||
+                  pushSubscribed ||
+                  permission === "unsupported"
+                }
                 className="rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-white/25 disabled:text-white/70"
               >
-                {permission === "denied"
-                  ? "Try again after enabling in browser settings"
-                  : "Request browser permission"}
+                {pushSubscribed
+                  ? "Background push enabled"
+                  : permission === "denied"
+                    ? "Enable notifications in browser settings"
+                    : permission === "granted"
+                      ? "Enable background push"
+                      : "Enable background push"}
               </button>
+              {pushSubscribed ? (
+                <button
+                  type="button"
+                  onClick={sendBrowserTest}
+                  className="rounded-full border border-current/25 px-4 py-2 text-sm font-medium text-current transition hover:bg-white/10"
+                >
+                  Send push test
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => setPermission(getBrowserPermissionState())}
@@ -463,7 +837,7 @@ export function NotificationPreferenceCenter() {
                 <button
                   type="button"
                   onClick={savePreferences}
-                  disabled={!dirty || isSaving}
+                  disabled={!linkedAddress || !dirty || isSaving}
                   className="rounded-full bg-teal-300 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-teal-200 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                 >
                   {isSaving ? "Saving..." : "Save preferences"}
@@ -474,6 +848,23 @@ export function NotificationPreferenceCenter() {
             <p className="mt-8 text-xs uppercase tracking-[0.24em] text-teal-200/70">
               Multi-channel endpoints (webhook / Telegram / Discord)
             </p>
+            <label className="mt-3 block max-w-lg space-y-2 text-sm text-slate-200">
+              <span>Email address for transactional notifications</span>
+              <input
+                aria-label="Notification email address"
+                type="email"
+                autoComplete="email"
+                value={draft.emailAddress}
+                onChange={(event) => {
+                  setDraft((current) => ({
+                    ...current,
+                    emailAddress: event.target.value,
+                  }));
+                  setSaveMessage("Unsaved changes ready");
+                }}
+                className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
+              />
+            </label>
             <div className="mt-3 grid gap-4 md:grid-cols-3">
               {(["webhook", "telegram", "discord"] as ExternalChannelId[]).map((channel) => {
                 const ping = pingResults[channel];
@@ -489,7 +880,11 @@ export function NotificationPreferenceCenter() {
                       <input
                         aria-label={`${channelCopy[channel].label} endpoint URL`}
                         type="url"
-                        placeholder="https://hooks.example.com/…"
+                        placeholder={
+                          channel === "telegram"
+                            ? "Not required for Telegram"
+                            : "https://hooks.example.com/…"
+                        }
                         value={externalEndpointDrafts[channel].url}
                         onChange={(event) => {
                           const value = event.target.value;
@@ -505,34 +900,40 @@ export function NotificationPreferenceCenter() {
                         }}
                         className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
                       />
-                      <input
-                        aria-label={`${channelCopy[channel].label} secret`}
-                        type="password"
-                        placeholder={
-                          draft.externalEndpoints[channel].secret
-                            ? "Secret stored (encrypted) — enter to replace"
-                            : "Secret (encrypted with your wallet key)"
-                        }
-                        value={externalEndpointDrafts[channel].secret}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          setExternalEndpointDrafts((current) => ({
-                            ...current,
-                            [channel]: { ...current[channel], secret: value },
-                          }));
-                          if (value) {
-                            setDraft((current) => ({
-                              ...current,
-                              channels: { ...current.channels, [channel]: true },
-                            }));
-                            setSaveMessage("Unsaved changes ready");
+                      {channel !== "discord" ? (
+                        <input
+                          aria-label={`${channelCopy[channel].label} secret`}
+                          type="password"
+                          autoComplete="new-password"
+                          placeholder={
+                            externalSecretsConfigured[channel]
+                              ? "Secret stored securely — enter to replace"
+                              : channel === "telegram"
+                                ? "Chat ID:Bot token"
+                                : "Webhook signing secret"
                           }
-                        }}
-                        className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
-                      />
+                          value={externalEndpointDrafts[channel].secret}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setExternalEndpointDrafts((current) => ({
+                              ...current,
+                              [channel]: { ...current[channel], secret: value },
+                            }));
+                            if (value) {
+                              setDraft((current) => ({
+                                ...current,
+                                channels: { ...current.channels, [channel]: true },
+                              }));
+                              setSaveMessage("Unsaved changes ready");
+                            }
+                          }}
+                          className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none"
+                        />
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => runTestPing(channel)}
+                        disabled={!linkedAddress}
                         className="w-full rounded-full border border-teal-300/30 px-4 py-2 text-sm font-medium text-teal-100 transition hover:bg-teal-300/10"
                       >
                         Send test ping
@@ -754,6 +1155,65 @@ export function NotificationPreferenceCenter() {
         </div>
 
         <aside className="space-y-6">
+          <section
+            aria-labelledby="notification-feed-heading"
+            className="rounded-[28px] border border-white/10 bg-slate-950/70 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.35)]"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-teal-200/70">
+                  Delivered
+                </p>
+                <h2 id="notification-feed-heading" className="mt-2 text-xl font-semibold text-white">
+                  Recent notifications
+                </h2>
+              </div>
+              <button
+                type="button"
+                disabled={!linkedAddress}
+                onClick={() => {
+                  void loadDeliveredFeed().catch((error: unknown) =>
+                    setSaveMessage(
+                      error instanceof Error ? error.message : "Unable to refresh notifications",
+                    ),
+                  );
+                }}
+                className="rounded-full border border-white/20 px-3 py-1.5 text-xs text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Refresh
+              </button>
+            </div>
+            {!linkedAddress ? (
+              <p className="mt-4 text-sm text-slate-400">
+                Link your wallet to view its notification history.
+              </p>
+            ) : deliveredFeed.length === 0 ? (
+              <p className="mt-4 text-sm text-slate-400" role="status">
+                No notifications have been delivered yet.
+              </p>
+            ) : (
+              <ul className="mt-4 space-y-3">
+                {deliveredFeed.map((notification) => (
+                  <li
+                    key={notification.id}
+                    className="rounded-2xl border border-white/10 bg-white/[0.03] p-3"
+                  >
+                    <p className="font-medium text-white">{notification.title}</p>
+                    <p className="mt-1 text-sm leading-5 text-slate-300">
+                      {notification.message}
+                    </p>
+                    <time
+                      className="mt-2 block text-xs text-slate-500"
+                      dateTime={notification.timestamp}
+                    >
+                      {new Date(notification.timestamp).toLocaleString()}
+                    </time>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
           <section className="rounded-[28px] border border-white/10 bg-slate-950/70 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.35)]">
             <p className="text-xs uppercase tracking-[0.24em] text-teal-200/70">
               Behavior Preview

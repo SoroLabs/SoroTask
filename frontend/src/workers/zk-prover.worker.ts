@@ -9,11 +9,10 @@
  * main thread so the page stays responsive and the progress indicator keeps
  * moving.
  *
- * # Why snarkjs is imported dynamically
+ * # Why snark js is imported dynamically
  *
  * The proving key and the snarkjs WASM are megabytes. A static import puts
- * them in the worker's initial fetch for every user, including everyone who
- * never generates a proof. Importing on the first proof request keeps the cost
+ * them in the worker's initial fetch for every user, including everyone who * never generates a proof. Importing on the first proof request keeps the cost
  * on the users who ask for it.
  *
  * # Why the private witness never leaves here
@@ -65,17 +64,19 @@ type SnarkjsModule = {
   };
 };
 
-let snarkjsPromise: Promise<SnarkjsModule> | null = null;
+const snarkjsPromise: Record<string, Promise<SnarkjsModule>> = {};
 
 function loadSnarkjs(): Promise<SnarkjsModule> {
-  if (!snarkjsPromise) {
-    // Variable specifier keeps the bundler from trying to resolve snarkjs at
-    // build time, so the app still builds in environments where the optional
-    // proving dependency is not installed.
-    const specifier = "snarkjs";
-    snarkjsPromise = import(/* webpackIgnore: true */ specifier) as Promise<SnarkjsModule>;
-  }
-  return snarkjsPromise;
+  const cached = snarkjsPromise["default"];
+  if (cached) return cached;
+
+  // Variable specifier keeps the bundler from trying to resolve snarkjs at
+  // build time, so the app still builds in environments where the optional
+  // proving dependency is not installed.
+  const specifier = "snarkjs";
+  const loaded = import(/* webpackIgnore: true */ specifier) as Promise<SnarkjsModule>;
+  snarkjsPromise["default"] = loaded;
+  return loaded;
 }
 
 /**

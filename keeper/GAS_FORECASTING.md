@@ -22,25 +22,33 @@ The Gas Budget Forecasting Model helps the SoroTask keeper predict near-term gas
 Core forecasting engine that:
 - Maintains rolling history of execution costs per task
 - Computes statistical measures (mean, median, p95, p99, std dev)
-- Generates individual task forecasts with confidence levels
+- Fits ARIMA(1,1,1) models for upcoming execution costs
+- Generates individual task forecasts with confidence levels and 99% upper bounds
 - Aggregates forecasts by time window
 - Detects underfunded conditions
 
-#### 2. **GasMonitor** (`src/gasMonitor.js`)
+#### 2. **ARIMA Model** (`src/arimaForecast.js`)
+Dependency-free time-series helper that:
+- Cleans and difference-transforms fee series
+- Fits AR and MA coefficients with bounded least-squares estimates
+- Produces multi-step forecasts with one-sided 99% confidence bounds
+- Selects the cheapest execution window from the forecast
+
+#### 3. **GasMonitor** (`src/gasMonitor.js`)
 Updated monitoring layer that:
 - Records execution costs from completed transactions
 - Exposes forecasting methods to other components
 - Supplies forecaster state to metrics endpoints
 - Maintains backward compatibility with existing alert logic
 
-#### 3. **Metrics Integration** (`src/metrics.js`)
+#### 4. **Metrics Integration** (`src/metrics.js`)
 Surfaces forecasting data through:
 - `/metrics/forecast` endpoint - forecaster state and configuration
 - `/metrics` endpoint - includes forecasting metrics
 - Prometheus metrics - underfunded count, confidence levels, risk level
 - Real-time forecast queries for external integrations
 
-#### 4. **Task Poller** (`src/poller.js`)
+#### 5. **Task Poller** (`src/poller.js`)
 Enhanced with:
 - `checkForecast()` method for querying predictions before execution
 - Optional forecast-based task skipping (can be enabled per workflow)
@@ -73,7 +81,7 @@ Return: {estimatedCost, confidence, isUnderfunded, ...}
 
 ### Statistical Approach
 
-For each task, the forecaster maintains a **rolling window of execution costs** (last 100 samples by default).
+For each task, the forecaster maintains a **rolling window of execution costs** (last 100 samples by default) and fits a dependency-free ARIMA(1,1,1) model (`src/arimaForecast.js`). A separate network-wide model tracks fee movement in `gasPriceTrend.js`.
 
 **Metrics Computed**:
 - **Mean**: Average gas cost
@@ -81,20 +89,24 @@ For each task, the forecaster maintains a **rolling window of execution costs** 
 - **Std Dev**: Standard deviation measuring variability
 - **Min/Max**: Bounds of historical costs
 - **P95/P99**: 95th and 99th percentile costs
+- **ARIMA drift, AR and MA coefficients**: Short-term direction and momentum
+- **One-sided 99% upper bound**: Spike-safe funding threshold
 
 ### Forecast Calculation
 
-**Estimated Cost** = P95 (95th percentile of historical costs)
+**Estimated Cost** = ARIMA forecast for the requested ledger horizon (clamped to a positive fee)
 
-Using the 95th percentile provides a conservative estimate that accounts for normal variability while avoiding extreme outliers.
+The first difference of the series is fitted with ordinary least squares, the moving-average term is estimated from residuals, and forecasts are integrated back to fee units. Models are refit whenever a new sample is recorded, so forecasting updates continuously.
 
-**Recommended Balance** = Estimated Cost + Safety Buffer
+**Recommended Balance** = 99% Upper Bound × Safety Buffer
 
-**Safety Buffer** = Estimated Cost × (SAFETY_BUFFER_MULTIPLIER - 1)
+**Safety Buffer** = Upper Bound × SAFETY_BUFFER_MULTIPLIER
 
 Default: `SAFETY_BUFFER_MULTIPLIER = 1.5x`
-- Recommended = P95 × 1.5
-- Example: If P95 = 1000, recommend 1500 (500 stroops buffer)
+- Recommended = Upper Bound × 1.5
+- Example: If the upper bound is 1000, recommend 1500 (500 stroops buffer)
+
+`getExecutionPlan(taskId)` returns forecasts for the next five ledgers and flags `delay_execution` when waiting lowers the expected fee by at least 18%. `getDynamicFeeMultiplier()` uses the next-ledger ARIMA forecast to lower bids during fee drops and cap bids during spikes.
 
 ### Confidence Levels
 
@@ -176,6 +188,10 @@ Environment variables (in `.env` or system environment):
 # Gas Forecasting
 GAS_FORECAST_SAFETY_BUFFER=1.5           # Multiplier for recommended balance (default: 1.5)
 GAS_FORECAST_WINDOW_SECONDS=3600         # Aggregation window for multi-task forecasts (default: 3600)
+GAS_FORECAST_HORIZON=5                   # Ledgers to forecast per task (default: 5)
+GAS_FORECAST_ARIMA_MIN_SAMPLES=8         # Samples before fitting an ARIMA model (default: 8)
+GAS_PRICE_FORECAST_HORIZON=5             # Network-fee forecast horizon (default: 5)
+GAS_PRICE_ARIMA_MIN_SAMPLES=8            # Samples before fitting the network model (default: 8)
 
 # Metrics Server
 METRICS_PORT=3000                         # Port for metrics endpoints

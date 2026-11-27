@@ -1,6 +1,157 @@
 #!/bin/bash
 set -e
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MAINNET_PASSPHRASE="Public Global Stellar Network ; September 2015"
+
+setup_mainnet_genesis() {
+  : "${MAINNET_RPC_URL:?Set MAINNET_RPC_URL to a Stellar Mainnet Soroban RPC endpoint}"
+  : "${MAINNET_BOOTSTRAP_IDENTITY:?Set MAINNET_BOOTSTRAP_IDENTITY to the funded Stellar CLI identity alias}"
+  : "${MAINNET_GOVERNANCE_ADDRESS:?Set MAINNET_GOVERNANCE_ADDRESS to the approved multisig address}"
+  : "${MAINNET_TOKEN_ID:?Set MAINNET_TOKEN_ID to the production gas-token contract address}"
+  : "${MAINNET_CONFIRMATION:?Set MAINNET_CONFIRMATION=DEPLOY_TO_STELLAR_MAINNET to authorize irreversible Mainnet transactions}"
+
+  if [ "$MAINNET_CONFIRMATION" != "DEPLOY_TO_STELLAR_MAINNET" ]; then
+    echo "Refusing Mainnet deployment: MAINNET_CONFIRMATION must equal DEPLOY_TO_STELLAR_MAINNET" >&2
+    return 1
+  fi
+
+  if ! [[ "$MAINNET_GOVERNANCE_ADDRESS" =~ ^[GC][A-Z2-7]{55}$ ]]; then
+    echo "Invalid governance address: expected a Stellar account (G...) or contract (C...) address" >&2
+    return 1
+  fi
+
+  if ! [[ "$MAINNET_TOKEN_ID" =~ ^C[A-Z2-7]{55}$ ]]; then
+    echo "Invalid token address: expected a Stellar contract address (C...)" >&2
+    return 1
+  fi
+
+  BOOTSTRAP_ADDRESS="$(stellar keys address "$MAINNET_BOOTSTRAP_IDENTITY")"
+  if ! [[ "$BOOTSTRAP_ADDRESS" =~ ^G[A-Z2-7]{55}$ ]]; then
+    echo "Bootstrap identity must resolve to a Stellar account address (G...)" >&2
+    return 1
+  fi
+  if [ "$BOOTSTRAP_ADDRESS" = "$MAINNET_GOVERNANCE_ADDRESS" ]; then
+    echo "Bootstrap and governance addresses must differ so bootstrap authority can be revoked" >&2
+    return 1
+  fi
+
+  echo "Checking that the configured RPC endpoint is Stellar Mainnet..."
+  NETWORK_INFO="$(curl -fsS -X POST "$MAINNET_RPC_URL" \
+    -H "Content-Type: application/json" \
+    --data-binary '{"jsonrpc":"2.0","id":1,"method":"getNetwork"}')"
+  if ! printf '%s' "$NETWORK_INFO" | grep -Eq '"passphrase"[[:space:]]*:[[:space:]]*"Public Global Stellar Network ; September 2015"'; then
+    echo "Refusing deployment: RPC endpoint did not report the Stellar Mainnet passphrase" >&2
+    return 1
+  fi
+
+  WASM_PATH="${MAINNET_WASM_PATH:-$ROOT_DIR/contract/target/wasm32v1-none/release/soro_task_contract.wasm}"
+  if [ -z "${MAINNET_WASM_PATH:-}" ]; then
+    echo "Building optimized contract WASM..."
+    (cd "$ROOT_DIR/contract" && stellar contract build --optimize=true --package soro_task_contract)
+  fi
+  if [ ! -s "$WASM_PATH" ]; then
+    echo "Contract WASM not found or empty: $WASM_PATH" >&2
+    return 1
+  fi
+
+  WASM_HASH="$(sha256sum "$WASM_PATH" | awk '{print $1}')"
+  echo "Deploying optimized WASM (SHA-256: $WASM_HASH)..."
+  DEPLOY_OUTPUT="$(stellar contract deploy \
+    --wasm "$WASM_PATH" \
+    --optimize=false \
+    --source "$MAINNET_BOOTSTRAP_IDENTITY" \
+    --rpc-url "$MAINNET_RPC_URL" \
+    --network-passphrase "$MAINNET_PASSPHRASE" 2>&1)"
+  echo "$DEPLOY_OUTPUT"
+  CONTRACT_ID="$(printf '%s\n' "$DEPLOY_OUTPUT" | grep -oE 'C[A-Z2-7]{55}' | tail -1 || true)"
+  if [ -z "$CONTRACT_ID" ]; then
+    echo "Deployment did not return a contract ID. Check the transaction before retrying." >&2
+    return 1
+  fi
+  echo "CONTRACT_ID: $CONTRACT_ID"
+
+  FETCHED_WASM="$(mktemp)"
+  trap 'rm -f "$FETCHED_WASM"' EXIT
+  stellar contract fetch \
+    --contract-id "$CONTRACT_ID" \
+    --out-file "$FETCHED_WASM" \
+    --rpc-url "$MAINNET_RPC_URL" \
+    --network-passphrase "$MAINNET_PASSPHRASE"
+  FETCHED_WASM_HASH="$(sha256sum "$FETCHED_WASM" | awk '{print $1}')"
+  if [ "$FETCHED_WASM_HASH" != "$WASM_HASH" ]; then
+    echo "On-chain WASM hash mismatch: expected $WASM_HASH, received $FETCHED_WASM_HASH" >&2
+    return 1
+  fi
+  echo "On-chain WASM hash verified: $FETCHED_WASM_HASH"
+
+  echo "Initializing proxy with the bootstrap admin..."
+  stellar contract invoke \
+    --contract-id "$CONTRACT_ID" \
+    --source "$MAINNET_BOOTSTRAP_IDENTITY" \
+    --rpc-url "$MAINNET_RPC_URL" \
+    --network-passphrase "$MAINNET_PASSPHRASE" \
+    -- init_proxy \
+    --admin "$BOOTSTRAP_ADDRESS" \
+    --token "$MAINNET_TOKEN_ID" \
+    --version 1
+
+  echo "Transferring proxy authority to Mainnet governance..."
+  stellar contract invoke \
+    --contract-id "$CONTRACT_ID" \
+    --source "$MAINNET_BOOTSTRAP_IDENTITY" \
+    --rpc-url "$MAINNET_RPC_URL" \
+    --network-passphrase "$MAINNET_PASSPHRASE" \
+    -- transfer_proxy_admin \
+    --admin "$BOOTSTRAP_ADDRESS" \
+    --new-admin "$MAINNET_GOVERNANCE_ADDRESS"
+
+  CURRENT_ADMIN="$(stellar contract invoke \
+    --contract-id "$CONTRACT_ID" \
+    --source "$MAINNET_BOOTSTRAP_IDENTITY" \
+    --rpc-url "$MAINNET_RPC_URL" \
+    --network-passphrase "$MAINNET_PASSPHRASE" \
+    -- get_proxy_admin)"
+  if [[ "$CURRENT_ADMIN" != *"$MAINNET_GOVERNANCE_ADDRESS"* ]]; then
+    echo "Governance verification failed: get_proxy_admin did not return the configured multisig" >&2
+    return 1
+  fi
+
+  CURRENT_VERSION="$(stellar contract invoke \
+    --contract-id "$CONTRACT_ID" \
+    --source "$MAINNET_BOOTSTRAP_IDENTITY" \
+    --rpc-url "$MAINNET_RPC_URL" \
+    --network-passphrase "$MAINNET_PASSPHRASE" \
+    -- get_contract_version)"
+  if ! printf '%s' "$CURRENT_VERSION" | tr -d '[:space:]' | grep -Fxq "1"; then
+    echo "Genesis verification failed: contract version is not 1" >&2
+    return 1
+  fi
+
+  CURRENT_TOKEN="$(stellar contract invoke \
+    --contract-id "$CONTRACT_ID" \
+    --source "$MAINNET_BOOTSTRAP_IDENTITY" \
+    --rpc-url "$MAINNET_RPC_URL" \
+    --network-passphrase "$MAINNET_PASSPHRASE" \
+    -- get_token)"
+  if [[ "$CURRENT_TOKEN" != *"$MAINNET_TOKEN_ID"* ]]; then
+    echo "Genesis verification failed: get_token did not return the configured token contract" >&2
+    return 1
+  fi
+
+  echo "Genesis verified: version 1, token $MAINNET_TOKEN_ID, governance $MAINNET_GOVERNANCE_ADDRESS."
+  echo "The bootstrap account no longer has proxy-admin authority; its local signing key was not deleted."
+}
+
+if [ "${1:-}" = "mainnet-genesis" ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 mainnet-genesis" >&2
+    exit 2
+  fi
+  setup_mainnet_genesis
+  exit $?
+fi
+
 # Configuration
 RPC_URL="http://localhost:8000/soroban/rpc"
 NETWORK_PASSPHRASE="Standalone Network ; February 2017"
